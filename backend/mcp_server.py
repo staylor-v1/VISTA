@@ -169,13 +169,20 @@ async def get_images(
     if not is_user_in_group(user.email, project.meta_group_id):
         return [{"error": "Access denied to this project"}]
     
+    # Get images with proper pagination handling for deleted vs non-deleted
     if include_deleted:
-        # Get all images including deleted ones
-        all_images = await crud.get_data_instances_for_project(db, pid, 0, 10000)
-        deleted_images = await crud.get_deleted_images_for_project(db, pid, 0, 10000)
-        # Combine and paginate
-        images = list(all_images) + [img for img in deleted_images if img not in all_images]
-        images = images[skip:skip+limit]
+        # For include_deleted, we need both active and deleted images
+        # Use a database query that combines both with proper pagination
+        from sqlalchemy import select, or_
+        from sqlalchemy.orm import selectinload
+        
+        query = select(models.DataInstance).where(
+            models.DataInstance.project_id == pid
+        ).order_by(models.DataInstance.created_at.desc())
+        
+        query = query.offset(skip).limit(limit)
+        result = await db.execute(query)
+        images = result.scalars().all()
     else:
         images = await crud.get_data_instances_for_project(
             db, pid, skip, limit
@@ -643,7 +650,7 @@ async def add_project_metadata(
         value=value
     )
     
-    metadata = await crud.create_or_update_project_metadata(db, metadata_create)
+    metadata = await crud.create_or_update_project_metadata(db, metadata_create, created_by=user.email)
     
     return {
         "success": True,
