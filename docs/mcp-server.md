@@ -1,6 +1,6 @@
 # VISTA MCP Server
 
-This directory contains the MCP (Model Context Protocol) server for VISTA. The MCP server exposes VISTA's backend functionality to external clients like Atlas-UI-3.
+This directory contains the MCP (Model Context Protocol) server for VISTA. The MCP server exposes VISTA's backend functionality to external clients like Atlas-UI-3 via HTTP with API key authentication.
 
 ## What is MCP?
 
@@ -20,12 +20,32 @@ To run the MCP server:
 
 ```bash
 cd backend
+
+# Set the API key (required)
+export MCP_API_KEY="your-secure-api-key-here"
+
+# Optional: Configure host and port
+export MCP_HOST="0.0.0.0"  # Default: 0.0.0.0
+export MCP_PORT="8001"     # Default: 8001
+
+# Start the server
 python mcp_server.py
 ```
 
-The server will start and listen for MCP client connections.
+The server will start as an HTTP service on the configured host and port (default: http://0.0.0.0:8001).
 
 ## Configuration
+
+### Environment Variables
+
+**Required:**
+- `MCP_API_KEY` - API key for authentication (default: "vista-default-key-change-me")
+
+**Optional:**
+- `MCP_HOST` - Host to bind to (default: "0.0.0.0")
+- `MCP_PORT` - Port to bind to (default: 8001)
+
+### VISTA Configuration
 
 The MCP server uses the same configuration as the main VISTA backend:
 
@@ -67,45 +87,68 @@ The VISTA MCP server exposes the following tools:
 
 ## Authentication
 
-The MCP server **trusts the username parameter** provided by the client (Atlas-UI-3). This means:
+The MCP server uses **API key authentication** via HTTP headers:
 
-1. Atlas handles authentication upstream
-2. Atlas passes the authenticated username to each MCP tool call
-3. The MCP server uses this username to check access permissions via VISTA's group membership system
-4. Users are auto-created if they don't exist
+1. Client (Atlas-UI-3) connects to the MCP server using HTTP
+2. Client includes `Authorization: Bearer <MCP_API_KEY>` header in requests
+3. Server validates the API key before processing requests
+4. Client passes the authenticated username to each MCP tool call
+5. The MCP server uses this username to check access permissions via VISTA's group membership system
+6. Users are auto-created if they don't exist
 
-This design allows Atlas to handle its own authentication while still leveraging VISTA's access control.
+This design provides secure API key authentication while still leveraging VISTA's access control.
 
 ## Usage Example
 
-When Atlas-UI-3 connects to the MCP server, it can call tools like:
+When Atlas-UI-3 connects to the MCP server over HTTP, it includes the API key in the Authorization header:
 
 ```python
-# Get projects for a user
-result = await mcp_client.call_tool(
-    "get_projects",
-    username="alice@example.com",
-    skip=0,
-    limit=10
-)
+import httpx
+from mcp.client.sse import sse_client
 
-# Get images in a project
-result = await mcp_client.call_tool(
-    "get_images", 
-    username="alice@example.com",
-    project_id="123e4567-e89b-12d3-a456-426614174000",
-    skip=0,
-    limit=50
-)
-
-# Add metadata to an image
-result = await mcp_client.call_tool(
-    "add_image_metadata",
-    username="alice@example.com",
-    image_id="789e0123-e89b-12d3-a456-426614174000",
-    key="camera_model",
-    value="Canon EOS R5"
-)
+# Connect to VISTA MCP server
+async with sse_client(
+    url="http://localhost:8001/sse",
+    headers={
+        "Authorization": "Bearer your-api-key-here"
+    }
+) as (read, write):
+    from mcp import ClientSession
+    async with ClientSession(read, write) as session:
+        await session.initialize()
+        
+        # Get projects for a user
+        result = await session.call_tool(
+            "get_projects",
+            arguments={
+                "username": "alice@example.com",
+                "skip": 0,
+                "limit": 10
+            }
+        )
+        
+        # Get images in a project
+        result = await session.call_tool(
+            "get_images",
+            arguments={
+                "username": "alice@example.com",
+                "project_id": "123e4567-e89b-12d3-a456-426614174000",
+                "skip": 0,
+                "limit": 50
+            }
+        )
+        
+        # Add metadata to an image
+        result = await session.call_tool(
+            "add_image_metadata",
+            arguments={
+                "username": "alice@example.com",
+                "image_id": "789e0123-e89b-12d3-a456-426614174000",
+                "key": "camera_model",
+                "value": "Canon EOS R5"
+            }
+        )
+```
 ```
 
 ## Development

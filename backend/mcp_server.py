@@ -6,8 +6,7 @@ This MCP (Model Context Protocol) server exposes VISTA backend functionality
 to external clients like Atlas-UI-3. It provides tools for managing projects,
 images, classifications, and metadata.
 
-The server trusts the username parameter passed by the client (Atlas),
-which handles authentication upstream.
+The server runs as an HTTP service with API key authentication.
 """
 
 import asyncio
@@ -22,6 +21,7 @@ backend_dir = Path(__file__).parent
 sys.path.insert(0, str(backend_dir))
 
 from fastmcp import FastMCP
+from fastmcp.server.auth import StaticTokenVerifier
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_db
 from core import schemas, models
@@ -31,8 +31,24 @@ import utils.crud as crud
 from utils.dependencies import get_accessible_projects_for_user
 from utils.boto3_client import get_presigned_download_url
 
-# Initialize MCP server
-mcp = FastMCP("VISTA")
+# Get API key from environment variable
+MCP_API_KEY = os.getenv("MCP_API_KEY", "vista-default-key-change-me")
+
+# Configure API key authentication
+auth_provider = StaticTokenVerifier(
+    tokens={
+        MCP_API_KEY: {
+            "sub": "vista-mcp-client",
+            "scopes": ["vista:read", "vista:write"]
+        }
+    }
+)
+
+# Initialize MCP server with HTTP and authentication
+mcp = FastMCP(
+    "VISTA",
+    auth=auth_provider
+)
 
 # Database session helper
 async def get_session():
@@ -663,5 +679,19 @@ async def add_project_metadata(
 
 
 if __name__ == "__main__":
-    # Run the MCP server
-    mcp.run()
+    # Run the MCP server over HTTP
+    # Get configuration from environment
+    host = os.getenv("MCP_HOST", "0.0.0.0")
+    port = int(os.getenv("MCP_PORT", "8001"))
+    
+    print(f"Starting VISTA MCP Server on http://{host}:{port}")
+    print(f"API Key required for authentication")
+    print(f"Use 'Authorization: Bearer <MCP_API_KEY>' header")
+    
+    # Run HTTP server
+    import asyncio
+    asyncio.run(mcp.run_http_async(
+        host=host,
+        port=port,
+        transport="sse"  # Server-Sent Events for real-time communication
+    ))
