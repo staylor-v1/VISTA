@@ -145,3 +145,4 @@ jobs:
           path: |
             graphql-files.txt
             graphql-usage.txt
+          if-no-files-found: ignore
