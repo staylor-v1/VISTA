@@ -14,21 +14,22 @@ VISTA exposes its backend functionality through an MCP server, allowing Atlas-UI
 ## Architecture
 
 ```
-Atlas-UI-3 (Client) <---> VISTA MCP Server <---> VISTA Backend
-                                 |
-                                 v
-                         PostgreSQL + MinIO
+Atlas-UI-3 (Client) <--HTTP/SSE with API Key--> VISTA MCP Server <---> VISTA Backend
+                                                        |
+                                                        v
+                                                PostgreSQL + MinIO
 ```
 
 ### Authentication Flow
 
 1. **Atlas-UI-3** authenticates users using its own authentication system
-2. **Atlas-UI-3** passes the authenticated username to each MCP tool call
-3. **VISTA MCP Server** trusts the username from Atlas
-4. **VISTA MCP Server** validates access using VISTA's group membership system
-5. Users are auto-created in VISTA if they don't exist
+2. **Atlas-UI-3** connects to VISTA MCP server using HTTP with API key in Authorization header
+3. **VISTA MCP Server** validates the API key before processing requests
+4. **Atlas-UI-3** passes the authenticated username to each MCP tool call
+5. **VISTA MCP Server** validates access using VISTA's group membership system
+6. Users are auto-created in VISTA if they don't exist
 
-This design allows Atlas to handle authentication while VISTA handles authorization.
+This design provides secure API key authentication for the HTTP connection while allowing Atlas to manage user authentication and VISTA to handle authorization.
 
 ## Available MCP Tools
 
@@ -172,25 +173,19 @@ pip install mcp
 
 ### 2. Configure Connection
 
-Create a connection to the VISTA MCP server:
+Create a connection to the VISTA MCP server via HTTP:
 
 ```python
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp import ClientSession
+from mcp.client.sse import sse_client
 
-# Server configuration
-server_params = StdioServerParameters(
-    command="python",
-    args=["path/to/vista/backend/mcp_server.py"],
-    env={
-        "DATABASE_URL": "postgresql+asyncpg://...",
-        "S3_ENDPOINT": "...",
-        # Other VISTA environment variables
+# Connect to VISTA MCP server over HTTP/SSE
+async with sse_client(
+    url="http://localhost:8001/sse",  # VISTA MCP server URL
+    headers={
+        "Authorization": "Bearer your-api-key-here"  # API key authentication
     }
-)
-
-# Connect
-async with stdio_client(server_params) as (read, write):
+) as (read, write):
     async with ClientSession(read, write) as session:
         await session.initialize()
         # Use session to call tools
@@ -274,9 +269,18 @@ podman compose up -d postgres minio
 cd backend
 alembic upgrade head
 
+# Set API key for MCP server
+export MCP_API_KEY="your-secure-api-key-here"
+
+# Optional: Configure host and port
+export MCP_HOST="0.0.0.0"
+export MCP_PORT="8001"
+
 # Start MCP server
 python mcp_server.py
 ```
+
+The server will start on http://0.0.0.0:8001 (or your configured host/port).
 
 ### Testing Tools
 
