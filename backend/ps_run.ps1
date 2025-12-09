@@ -124,6 +124,9 @@ if (-not (Test-MinIO)) {
     exit 1
 }
 
+# Get port from environment or default to 8000
+$Port = if ($env:PORT) { $env:PORT } else { "8000" }
+
 Write-Host "All containers are healthy" -ForegroundColor Green
-Write-Host "Starting uvicorn main:app --host 0.0.0.0 --port 8000" -ForegroundColor Cyan
-uvicorn main:app --host 0.0.0.0 --port 8000
+Write-Host "Starting uvicorn main:app --host 0.0.0.0 --port $Port" -ForegroundColor Cyan
+uvicorn main:app --host 0.0.0.0 --port $Port
