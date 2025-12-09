@@ -188,6 +188,9 @@ cython_debug/
 # MinIO related
 minio_data/
 
+# pgAdmin configuration (copy from .example)
+pgadmin-servers.json
+
 
 # add npm and yarn related files
 # Logs
