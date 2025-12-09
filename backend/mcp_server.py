@@ -32,13 +32,13 @@ from utils.dependencies import get_accessible_projects_for_user
 from utils.boto3_client import get_presigned_download_url
 
 # Get API key from environment variable
-MCP_API_KEY = os.getenv("MCP_API_KEY", "vista-default-key-change-me")
+VISTA_MCP_API_KEY = os.getenv("VISTA_MCP_API_KEY", "vista-default-key-change-me")
 
 # Configure API key authentication
 auth_provider = StaticTokenVerifier(
     tokens={
-        MCP_API_KEY: {
-            "sub": "vista-mcp-client",
+        VISTA_MCP_API_KEY: {
+            "client_id": "vista-mcp-client",
             "scopes": ["vista:read", "vista:write"]
         }
     }
@@ -681,17 +681,17 @@ async def add_project_metadata(
 if __name__ == "__main__":
     # Run the MCP server over HTTP
     # Get configuration from environment
-    host = os.getenv("MCP_HOST", "0.0.0.0")
+    host = os.getenv("MCP_HOST", "localhost")
     port = int(os.getenv("MCP_PORT", "8001"))
     
-    print(f"Starting VISTA MCP Server on http://{host}:{port}")
+    print(f"Starting VISTA MCP Server on http://{host}:{port}/mcp")
     print(f"API Key required for authentication")
-    print(f"Use 'Authorization: Bearer <MCP_API_KEY>' header")
+    print(f"Use 'Authorization: Bearer <VISTA_MCP_API_KEY>' header")
     
-    # Run HTTP server
-    import asyncio
-    asyncio.run(mcp.run_http_async(
+    # Run MCP server with HTTP transport on /mcp endpoint
+    mcp.run(
+        transport="http",
         host=host,
         port=port,
-        transport="sse"  # Server-Sent Events for real-time communication
-    ))
+        path="/mcp"
+    )
