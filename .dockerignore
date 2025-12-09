@@ -112,3 +112,12 @@ semgrep-results.json
 # Demo and development files
 demo_*.py
 test_*.py
+
+# Docker development files
+docker-compose.dev.yml
+docker-compose.test.yml
+Dockerfile.dev
+.env.docker
+scripts/dev.sh
+scripts/test-docker.sh
+README.docker.md
