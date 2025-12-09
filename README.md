@@ -255,6 +255,43 @@ npm test                    # Interactive mode
 npm test -- --coverage      # With coverage report
 ```
 
+### Docker Development Setup (Alternative)
+
+For a fully containerized development environment where all services run in Docker:
+
+```bash
+# One-time setup
+cp .env.example .env
+
+# Start everything (infrastructure + application)
+./scripts/dev.sh up
+
+# View logs
+./scripts/dev.sh logs
+
+# Run tests in containers
+./scripts/test-docker.sh
+
+# Stop everything
+./scripts/dev.sh down
+```
+
+**Access points:**
+- Frontend: http://localhost:3000
+- Backend API: http://localhost:8000
+- API Docs: http://localhost:8000/docs
+- MinIO Console: http://localhost:9001
+- pgAdmin: http://localhost:8080
+
+**Benefits:**
+- No local Python/Node.js installation required
+- Consistent environment across all developers
+- Hot reload for both backend and frontend
+- Automatic database migrations
+- One command to start everything
+
+See [README.docker.md](README.docker.md) for complete Docker development guide.
+
 ### Building for Production
 
 **Frontend:**

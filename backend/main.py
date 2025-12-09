@@ -65,14 +65,15 @@ def setup_logging():
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
-    
-    # Add file handler for app.json
-    log_file_path = os.path.join(os.getcwd(), "logs", "app.json")
-    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
-    file_handler = logging.FileHandler(log_file_path)
-    file_handler.setFormatter(formatter)
-    root_logger.addHandler(file_handler)
-    
+
+    # Add file handler for app.json (unless disabled for Docker)
+    if not os.getenv('DISABLE_FILE_LOGGING'):
+        log_file_path = os.path.join(os.getcwd(), "logs", "app.json")
+        os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+        file_handler = logging.FileHandler(log_file_path)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+
     return logging.getLogger(__name__)
 
 
@@ -107,7 +108,9 @@ async def lifespan(app: FastAPI):
         else:
             logger.warning("WARNING: Boto3 S3 client not initialized. Object storage operations will fail.")
     # Ensure a writable tmp dir exists for any runtime needs
-    os.makedirs(os.path.join(os.getcwd(), "tmp"), exist_ok=True)
+    # Use /tmp for Docker environments where cwd may be read-only
+    tmp_dir = "/tmp" if os.getenv('DISABLE_FILE_LOGGING', '').lower() == 'true' else os.path.join(os.getcwd(), "tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
     logger.info("Application startup complete.")
     yield
     logger.info("Application shutdown...")
