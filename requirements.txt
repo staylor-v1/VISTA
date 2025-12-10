@@ -20,3 +20,4 @@ pytest
 pytest-asyncio
 swagger-ui-bundle
 podman-compose
+fastmcp
