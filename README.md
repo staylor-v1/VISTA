@@ -8,6 +8,12 @@
 
 A full-stack web application for managing, classifying, and collaborating on visual content. Built for teams that need to organize image datasets, apply custom labels, and integrate machine learning analysis results.
 
+> **Windows Users:** PowerShell equivalents are available for development scripts:
+>
+> - `ps_launch_postgres_minio.ps1` - Launch containers
+> - `backend\ps_run.ps1` - Run backend server
+> - `frontend\ps_run.ps1` - Run frontend dev server
+
 ## Features
 
 - **Project Organization** - Group images into projects with team-based access control
