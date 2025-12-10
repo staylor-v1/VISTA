@@ -9,7 +9,6 @@ images, classifications, and metadata.
 The server runs as an HTTP service with API key authentication.
 """
 
-import asyncio
 import uuid
 import os
 import sys
@@ -27,7 +26,7 @@ sys.path.insert(0, str(backend_dir))
 from fastmcp import FastMCP
 from fastmcp.server.auth import StaticTokenVerifier
 from sqlalchemy.ext.asyncio import AsyncSession
-from core.database import get_db, AsyncSessionLocal
+from core.database import AsyncSessionLocal
 from core import schemas, models
 from core.config import settings
 from core.group_auth_helper import is_user_in_group
@@ -94,6 +93,12 @@ async def get_projects(username: str, skip: int = 0, limit: int = 100) -> List[D
     Returns:
         List of projects with their details
     """
+    # Validate pagination parameters
+    if skip < 0:
+        return [{"error": "skip must be >= 0"}]
+    if limit < 1 or limit > 1000:
+        return [{"error": "limit must be between 1 and 1000"}]
+    
     async with get_session() as db:
         user = await get_or_create_user(db, username)
         
@@ -172,6 +177,12 @@ async def get_images(
     Returns:
         List of images with their details
     """
+    # Validate pagination parameters
+    if skip < 0:
+        return [{"error": "skip must be >= 0"}]
+    if limit < 1 or limit > 1000:
+        return [{"error": "limit must be between 1 and 1000"}]
+    
     async with get_session() as db:
         user = await get_or_create_user(db, username)
 
