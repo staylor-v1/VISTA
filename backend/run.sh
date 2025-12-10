@@ -99,6 +99,9 @@ fi
 check_postgres || exit 1
 check_minio || exit 1
 
+# Get port from environment or default to 8000
+PORT=${PORT:-8000}
+
 echo "All containers are healthy"
-echo "Starting uvicorn main:app --host 0.0.0.0 --port 8000"
-exec uvicorn main:app --host 0.0.0.0 --port 8000
+echo "Starting uvicorn main:app --host 0.0.0.0 --port ${PORT}"
+exec uvicorn main:app --host 0.0.0.0 --port ${PORT}

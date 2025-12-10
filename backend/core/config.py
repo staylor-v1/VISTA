@@ -7,6 +7,7 @@ from pathlib import Path
 class Settings(BaseSettings):
     APP_NAME: str = "Data Management API"
     DEBUG: bool = False
+    PORT: int = 8000
     # When enabled, avoid any external calls and heavy startup work (for tests)
     FAST_TEST_MODE: bool = False
     SKIP_HEADER_CHECK: bool = False
