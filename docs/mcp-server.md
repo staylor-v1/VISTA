@@ -22,7 +22,7 @@ To run the MCP server:
 cd backend
 
 # Set the API key (required)
-export MCP_API_KEY="your-secure-api-key-here"
+export VISTA_MCP_API_KEY="your-secure-api-key-here"
 
 # Optional: Configure host and port
 export MCP_HOST="0.0.0.0"  # Default: 0.0.0.0
@@ -39,7 +39,7 @@ The server will start as an HTTP service on the configured host and port (defaul
 ### Environment Variables
 
 **Required:**
-- `MCP_API_KEY` - API key for authentication (default: "vista-default-key-change-me")
+- `VISTA_MCP_API_KEY` - API key for authentication (default: "vista-default-key-change-me")
 
 **Optional:**
 - `MCP_HOST` - Host to bind to (default: "0.0.0.0")
