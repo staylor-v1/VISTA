@@ -270,7 +270,7 @@ cd backend
 alembic upgrade head
 
 # Set API key for MCP server
-export MCP_API_KEY="your-secure-api-key-here"
+export VISTA_MCP_API_KEY="your-secure-api-key-here"
 
 # Optional: Configure host and port
 export MCP_HOST="0.0.0.0"
