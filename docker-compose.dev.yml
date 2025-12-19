@@ -1,0 +1,199 @@
+# Docker Compose configuration for VISTA development environment
+# This file provides a complete containerized development setup with hot reload
+# Usage: docker compose -f docker-compose.dev.yml up
+
+services:
+  # PostgreSQL database
+  postgres:
+    image: postgres:15
+    container_name: vista_postgres_dev
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vista-dev
+
+  # MinIO S3-compatible object storage
+  minio:
+    image: minio/minio:latest
+    container_name: vista_minio_dev
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadminpassword
+      MINIO_SERVER_URL: http://localhost:9000
+      MINIO_BROWSER_REDIRECT_URL: http://localhost:9001
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - vista-dev
+
+  # pgAdmin database management UI
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: vista_pgadmin_dev
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "8080:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./pgadmin-servers.json:/pgadmin4/servers.json
+    depends_on:
+      - postgres
+    networks:
+      - vista-dev
+
+  # Backend development service (FastAPI)
+  backend-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      target: backend-dev
+    container_name: vista_backend_dev
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount source code for hot reload (read-only)
+      - ./backend:/app/backend:ro
+      - ./requirements.txt:/app/requirements.txt:ro
+      - ./.env:/app/.env:ro
+      # Persistent volumes for cache
+      - backend_cache:/app/.cache
+    environment:
+      # Database configuration (use container name for networking)
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/postgres
+      - POSTGRES_SERVER=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+      # S3/MinIO configuration (use container name)
+      - S3_ENDPOINT=minio:9000
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadminpassword
+      - S3_BUCKET=data-storage
+      - S3_USE_SSL=false
+      # Development mode settings
+      - DEBUG=true
+      - SKIP_HEADER_CHECK=true
+      - CHECK_MOCK_MEMBERSHIP=true
+      - MOCK_USER_EMAIL=test@example.com
+      - MOCK_USER_GROUPS_JSON=["admin-group", "data-scientists", "project-alpha-group"]
+      # Python settings
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      # Disable file logging (use Docker logs instead)
+      - DISABLE_FILE_LOGGING=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    command: >
+      bash -c "
+        cd /app/backend &&
+        echo 'Running database migrations...' &&
+        alembic upgrade head &&
+        echo 'Starting backend server with hot reload...' &&
+        uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vista-dev
+
+  # Frontend development service (React)
+  frontend-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      target: frontend-dev
+    container_name: vista_frontend_dev
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "3000:3000"
+    volumes:
+      # Mount source for hot reload (read-only)
+      - ./frontend/src:/app/frontend/src:ro
+      - ./frontend/public:/app/frontend/public:ro
+      - ./frontend/package.json:/app/frontend/package.json:ro
+      - ./frontend/package-lock.json:/app/frontend/package-lock.json:ro
+      - ./frontend/config-overrides.js:/app/frontend/config-overrides.js:ro
+      # Named volume for node_modules (avoid host/container conflicts)
+      - frontend_node_modules:/app/frontend/node_modules
+    environment:
+      - HOST=0.0.0.0
+      - REACT_APP_API_URL=http://localhost:8000
+      - REACT_APP_BACKEND_URL=http://backend-dev:8000
+      - FAST_REFRESH=true
+      - SKIP_PREFLIGHT_CHECK=true
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_USEPOLLING=true
+    depends_on:
+      - backend-dev
+    stdin_open: true
+    tty: true
+    networks:
+      - vista-dev
+
+# Named volumes for persistent data
+volumes:
+  postgres_data:
+  minio_data:
+  pgadmin_data:
+  backend_cache:
+  frontend_node_modules:
+
+# Network for all services
+networks:
+  vista-dev:
+    driver: bridge
