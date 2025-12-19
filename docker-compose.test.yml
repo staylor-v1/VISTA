@@ -1,0 +1,105 @@
+# Docker Compose configuration for VISTA testing environment
+# Uses ephemeral storage (tmpfs) for fast, isolated test execution
+# Usage: docker compose -f docker-compose.test.yml run --rm backend-test
+
+services:
+  # PostgreSQL for testing (ephemeral)
+  postgres:
+    image: postgres:15
+    container_name: vista_postgres_test
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vista-test
+
+  # MinIO for testing (ephemeral)
+  minio:
+    image: minio/minio:latest
+    container_name: vista_minio_test
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadminpassword
+    command: server /data
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vista-test
+
+  # Backend test runner
+  backend-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      target: backend-dev
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/postgres_test
+      - POSTGRES_SERVER=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres_test
+      - S3_ENDPOINT=minio:9000
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadminpassword
+      - S3_BUCKET=data-storage
+      - S3_USE_SSL=false
+      - FAST_TEST_MODE=true
+      - SKIP_HEADER_CHECK=true
+      - DEBUG=false
+      - PYTHONUNBUFFERED=1
+      - DISABLE_FILE_LOGGING=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app/backend:ro
+      - ./test:/app/test:ro
+      - ./requirements.txt:/app/requirements.txt:ro
+    working_dir: /app/backend
+    command: >
+      bash -c "
+        echo 'Running database migrations...' &&
+        alembic upgrade head &&
+        echo 'Running backend tests...' &&
+        pytest tests/ -v
+      "
+    networks:
+      - vista-test
+
+  # Frontend test runner
+  frontend-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      target: frontend-dev
+    volumes:
+      - ./frontend/src:/app/frontend/src:ro
+      - ./frontend/public:/app/frontend/public:ro
+      - ./frontend/package.json:/app/frontend/package.json:ro
+      - ./frontend/package-lock.json:/app/frontend/package-lock.json:ro
+    working_dir: /app/frontend
+    environment:
+      - CI=true
+    command: npm test -- --watchAll=false
+    networks:
+      - vista-test
+
+networks:
+  vista-test:
+    driver: bridge
