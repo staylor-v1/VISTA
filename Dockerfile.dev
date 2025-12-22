@@ -1,21 +1,25 @@
-# Development Dockerfile for VISTA (RHEL/UBI9 based)
-# Single image with Python 3.11 and Node.js 20 for full-stack development
+# Development Dockerfile for VISTA (RHEL/UBI9 Minimal based)
+# Single image with Python 3.11 and Node.js for full-stack development
 
-FROM registry.access.redhat.com/ubi9/python-311 AS base
+FROM registry.access.redhat.com/ubi9/ubi-minimal AS base
 
-USER root
-
-# Install system dependencies and Node.js (curl-minimal already included in base image)
-RUN dnf install -y --nodocs \
+# Install Python 3.11, Node.js, and system dependencies
+RUN microdnf install -y --nodocs \
+    python3.11 \
+    python3.11-pip \
+    python3.11-devel \
     gcc \
     gcc-c++ \
-    postgresql-devel \
+    libpq-devel \
     git \
     ca-certificates \
     nodejs \
     npm \
-    && dnf clean all \
-    && rm -rf /var/cache/dnf
+    shadow-utils \
+    && microdnf clean all
+# Create symlinks for python
+RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && \
+    ln -sf /usr/bin/python3.11 /usr/bin/python
 
 # Create appuser
 RUN useradd -m -s /bin/bash appuser
