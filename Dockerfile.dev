@@ -1,23 +1,27 @@
-# Development Dockerfile for VISTA
-# Multi-stage build with separate targets for backend and frontend development
+# Development Dockerfile for VISTA (RHEL/UBI9 based)
+# Single image with Python 3.11 and Node.js 20 for full-stack development
 
-# Backend development stage
-FROM python:3.11-bookworm AS backend-dev
+FROM registry.access.redhat.com/ubi9/python-311 AS base
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+USER root
+
+# Install system dependencies and Node.js (curl-minimal already included in base image)
+RUN dnf install -y --nodocs \
     gcc \
-    g++ \
-    libpq-dev \
+    gcc-c++ \
+    postgresql-devel \
     git \
-    curl \
-    wget \
     ca-certificates \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    nodejs \
+    npm \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+# Create appuser
+RUN useradd -m -s /bin/bash appuser
 
 # Create virtual environment
-RUN python -m venv /opt/venv
+RUN python -m venv /opt/venv && chown -R appuser:appuser /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Install uv and debugging tools
@@ -36,27 +40,35 @@ COPY ./backend /app/backend
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
+# Backend development stage
+FROM base AS backend-dev
+
+RUN chown -R appuser:appuser /app
 WORKDIR /app/backend
 EXPOSE 8000
 
-# Default command (can be overridden in docker-compose)
+USER appuser
+
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
 # Frontend development stage
-FROM node:22-bookworm AS frontend-dev
+FROM base AS frontend-dev
 
 WORKDIR /app/frontend
 
 # Copy package files first (for caching)
 COPY frontend/package*.json ./
 
-# Install dependencies
-RUN npm install
+# Install dependencies and set ownership
+RUN npm install && chown -R appuser:appuser /app
 
 # Copy frontend source (will be overridden by volume mount in development)
 COPY frontend/ ./
 
+RUN chown -R appuser:appuser /app
+
 EXPOSE 3000
 
-# Development server with hot reload
+USER appuser
+
 CMD ["npm", "run", "dev"]
