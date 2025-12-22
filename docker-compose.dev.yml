@@ -126,6 +126,8 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
       # Disable file logging (use Docker logs instead)
       - DISABLE_FILE_LOGGING=true
+      # Cache directory (writable volume)
+      - CACHE_DIR=/app/.cache
     depends_on:
       postgres:
         condition: service_healthy
