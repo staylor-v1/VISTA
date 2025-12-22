@@ -13,6 +13,9 @@ class CacheManager:
         # In testing/CI environments, prefer temp directory for cache
         if os.getenv('CI') or os.getenv('PYTEST_CURRENT_TEST'):
             cache_dir = Path(tempfile.mkdtemp(prefix='test_cache_'))
+        elif os.getenv('CACHE_DIR'):
+            # Use configured cache directory (for Docker environments)
+            cache_dir = Path(os.getenv('CACHE_DIR'))
         else:
             cache_dir = Path(__file__).parent.parent / '_cache'
             
