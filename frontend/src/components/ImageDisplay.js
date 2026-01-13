@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'react';
 import BoundingBoxOverlay from './BoundingBoxOverlay';
 import HeatmapOverlay from './HeatmapOverlay';
+import MeasurementTool from './MeasurementTool';
+import MeasurementOverlay from './MeasurementOverlay';
 
 // Deleted image placeholder SVG for larger display
 const DELETED_IMAGE_DISPLAY_SVG = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgZmlsbD0iI2ZiZjVmNSIgc3Ryb2tlPSIjZjU5ZTBiIiBzdHJva2Utd2lkdGg9IjQiIHN0cm9rZS1kYXNoYXJyYXk9IjE1LDgiLz48dGV4dCB4PSI1MCUiIHk9IjM1JSIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjM2IiBmb250LXdlaWdodD0iNjAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSIgZmlsbD0iI2M0MzAyYiI+SW1hZ2UgRGVsZXRlZDwvdGV4dD48dGV4dCB4PSI1MCUiIHk9IjUwJSIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjY0IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSIgZmlsbD0iI2Y1OWUwYiI+8J+XkeKcgO+4jzwvdGV4dD48dGV4dCB4PSI1MCUiIHk9IjY1JSIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjE4IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSIgZmlsbD0iIzk3OWNhMSI+VGhpcyBpbWFnZSBoYXMgYmVlbiBkZWxldGVkPC90ZXh0Pjx0ZXh0IHg9IjUwJSIgeT0iNzAlIiBmb250LWZhbWlseT0iQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIiBmaWxsPSIjOTc5Y2ExIj5DaGVjayB0aGUgZGVsZXRpb24gY29udHJvbHMgYmVsb3cgZm9yIG1vcmUgaW5mbzwvdGV4dD48L3N2Zz4=';
@@ -18,7 +20,14 @@ function ImageDisplay({
   projectImages,
   selectedAnalysis,
   annotations,
-  overlayOptions
+  overlayOptions,
+  calibration,
+  measurements,
+  measurementActive,
+  setMeasurementActive,
+  onSaveMeasurement,
+  selectedMeasurementId,
+  visibleMeasurementIds
 }) {
   const [zoomLevel, setZoomLevel] = useState(1);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -207,6 +216,7 @@ function ImageDisplay({
   const containerRef = useRef(null);
   const imgRef = useRef(null);
   const [displaySize, setDisplaySize] = useState({ width: 0, height: 0 });
+  const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
 
   const measure = useCallback(() => {
     if (imgRef.current) {
@@ -218,9 +228,15 @@ function ImageDisplay({
         height: imgRef.current.offsetHeight
       };
 
+      const naturalDimensions = {
+        width: imgRef.current.naturalWidth,
+        height: imgRef.current.naturalHeight
+      };
+
       if (process.env.NODE_ENV === 'development') {
         console.log('[ImageDisplay] Measured display size:', {
           displaySize: measuredSize,
+          naturalSize: naturalDimensions,
           naturalWidth: imgRef.current.naturalWidth,
           naturalHeight: imgRef.current.naturalHeight,
           offsetWidth: imgRef.current.offsetWidth,
@@ -233,12 +249,14 @@ function ImageDisplay({
       }
 
       setDisplaySize(measuredSize);
+      setNaturalSize(naturalDimensions);
     }
   }, [zoomLevel, imageId]);
 
   // Reset display size when imageId changes to prevent stale dimensions
   useEffect(() => {
     setDisplaySize({ width: 0, height: 0 });
+    setNaturalSize({ width: 0, height: 0 });
   }, [imageId]);
 
   useLayoutEffect(() => { measure(); }, [image, measure, annotations]);
@@ -294,7 +312,7 @@ function ImageDisplay({
           <div style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'top left', position: 'absolute', top: 0, left: 0 }}>
             <BoundingBoxOverlay
               annotations={annotations}
-              naturalSize={{ width: image.width, height: image.height }}
+              naturalSize={naturalSize}
               containerSize={displaySize}
               opacity={overlayOptions.opacity}
             />
@@ -309,6 +327,30 @@ function ImageDisplay({
             opacity={overlayOptions.opacity}
           />
         </div>
+      )}
+      {showOverlays && image && measurements && measurements.length > 0 && displaySize.width > 0 && naturalSize.width > 0 && (
+        <div style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'top left', position: 'absolute', top: 0, left: 0 }}>
+          <MeasurementOverlay
+            measurements={measurements}
+            naturalSize={naturalSize}
+            containerSize={displaySize}
+            calibration={calibration}
+            selectedMeasurementId={selectedMeasurementId}
+            visibleMeasurementIds={visibleMeasurementIds}
+            zoomLevel={zoomLevel}
+          />
+        </div>
+      )}
+      {measurementActive && image && displaySize.width > 0 && naturalSize.width > 0 && (
+        <MeasurementTool
+          containerSize={displaySize}
+          naturalSize={naturalSize}
+          zoomLevel={zoomLevel}
+          calibration={calibration}
+          onSaveMeasurement={onSaveMeasurement}
+          onCancel={() => setMeasurementActive && setMeasurementActive(false)}
+          existingMeasurementCount={measurements ? measurements.length : 0}
+        />
       )}
     </div>
   );
@@ -374,6 +416,14 @@ function ImageDisplay({
         </button>
 
         {/* Other controls */}
+        {image && !image.deleted_at && setMeasurementActive && (
+          <button
+            className={`btn control-btn ${measurementActive ? 'btn-warning' : 'btn-secondary'}`}
+            onClick={() => setMeasurementActive(!measurementActive)}
+          >
+            {measurementActive ? 'Done Measuring' : 'Measure'}
+          </button>
+        )}
         <button
           className="btn btn-success control-btn"
           onClick={handleDownload}
