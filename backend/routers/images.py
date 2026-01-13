@@ -372,9 +372,12 @@ async def get_image_thumbnail(
 
                 # Convert to web-friendly format for thumbnails
                 # Handle TIFF, CMYK, 16-bit, and other non-web formats
-                if img.mode in ('RGBA', 'LA', 'PA'):
-                    # Preserve transparency with PNG
+                if img.mode in ('LA', 'PA'):
+                    # Convert to RGBA to preserve transparency
                     img = img.convert('RGBA')
+                    img_format = 'PNG'
+                elif img.mode == 'RGBA':
+                    # Already RGBA, just use PNG
                     img_format = 'PNG'
                 elif img.mode not in ('RGB', 'L'):
                     # Convert CMYK, 16-bit, etc. to RGB for JPEG
