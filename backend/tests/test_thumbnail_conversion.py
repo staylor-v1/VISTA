@@ -1,8 +1,10 @@
 """Tests for thumbnail conversion of non-web image formats (TIFF, CMYK, etc.)."""
 
 import io
+import pytest
 from PIL import Image
 from unittest.mock import patch, AsyncMock, MagicMock
+from utils.cache_manager import get_cache
 
 
 def _make_tiff_bytes(mode="RGB", size=(100, 100)):
@@ -21,6 +23,15 @@ def _make_tiff_bytes(mode="RGB", size=(100, 100)):
     img.save(buf, format="TIFF")
     buf.seek(0)
     return buf.getvalue()
+
+
+@pytest.fixture(autouse=True)
+def clear_cache():
+    """Clear cache before and after each test."""
+    cache = get_cache()
+    cache.clear()
+    yield
+    cache.clear()
 
 
 class TestThumbnailConversion:
