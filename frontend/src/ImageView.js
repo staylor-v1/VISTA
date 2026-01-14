@@ -397,8 +397,7 @@ function ImageView() {
     console.log('[handleDeleteMeasurement] Called with measurementId:', measurementId);
     console.log('[handleDeleteMeasurement] Current measurements:', measurements);
 
-    // Calculate updated measurements first
-    const deletedMeasurement = measurements.find(m => m.id === measurementId);
+    // Calculate updated measurements
     const updatedMeasurements = measurements.filter(m => m.id !== measurementId);
 
     console.log('[handleDeleteMeasurement] updatedMeasurements:', updatedMeasurements);
