@@ -23,13 +23,27 @@ def _make_tiff_bytes(mode="RGB", size=(100, 100)):
     elif mode == "RGBA":
         img = Image.new("RGBA", size, (255, 0, 0, 128))  # Semi-transparent red
     elif mode == "I;16":
-        # 16-bit grayscale
-        img = Image.new("I;16", size)
+        # 16-bit grayscale with explicit mid-gray value
+        img = Image.new("I;16", size, 32768)
     else:
         img = Image.new("RGB", size, (255, 0, 0))  # Red
 
     buf = io.BytesIO()
     img.save(buf, format="TIFF")
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _make_palette_png_bytes(with_transparency=False, size=(100, 100)):
+    """Create test palette mode PNG image bytes."""
+    # Create an RGB image first, then convert to palette
+    img = Image.new("RGB", size, (255, 0, 0))  # Red
+    img = img.convert("P")
+    if with_transparency:
+        # Set transparency for palette index 0
+        img.info['transparency'] = 0
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", transparency=0 if with_transparency else None)
     buf.seek(0)
     return buf.getvalue()
 
@@ -193,3 +207,79 @@ class TestThumbnailConversion:
             # Verify it's a valid JPEG image
             result_img = Image.open(io.BytesIO(r.content))
             assert result_img.format == "JPEG"
+
+    def test_palette_mode_without_transparency_converts_to_jpeg(self, client):
+        """Test that palette mode images without transparency convert to JPEG."""
+        # Create project
+        pr = client.post("/api/projects/", json={
+            "name": "PaletteTest",
+            "description": None,
+            "meta_group_id": "test-group"
+        })
+        assert pr.status_code == 201
+        pid = pr.json()["id"]
+
+        # Upload palette PNG without transparency
+        png_bytes = _make_palette_png_bytes(with_transparency=False)
+        files = {"file": ("test_palette.png", io.BytesIO(png_bytes), "image/png")}
+        ur = client.post(f"/api/projects/{pid}/images", files=files)
+        assert ur.status_code == 201
+        image_id = ur.json()["id"]
+
+        # Mock httpx
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.aread = AsyncMock(return_value=png_bytes)
+
+        with patch("routers.images.httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                return_value=mock_response
+            )
+
+            # Request thumbnail
+            r = client.get(f"/api/images/{image_id}/thumbnail?width=50&height=50")
+            assert r.status_code == 200
+
+            # Verify it was converted to JPEG (no transparency to preserve)
+            assert r.headers["content-type"] == "image/jpeg"
+
+            result_img = Image.open(io.BytesIO(r.content))
+            assert result_img.format == "JPEG"
+
+    def test_palette_mode_with_transparency_converts_to_png(self, client):
+        """Test that palette mode images with transparency convert to PNG."""
+        # Create project
+        pr = client.post("/api/projects/", json={
+            "name": "PaletteTransTest",
+            "description": None,
+            "meta_group_id": "test-group"
+        })
+        assert pr.status_code == 201
+        pid = pr.json()["id"]
+
+        # Upload palette PNG with transparency
+        png_bytes = _make_palette_png_bytes(with_transparency=True)
+        files = {"file": ("test_palette_trans.png", io.BytesIO(png_bytes), "image/png")}
+        ur = client.post(f"/api/projects/{pid}/images", files=files)
+        assert ur.status_code == 201
+        image_id = ur.json()["id"]
+
+        # Mock httpx
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.aread = AsyncMock(return_value=png_bytes)
+
+        with patch("routers.images.httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                return_value=mock_response
+            )
+
+            # Request thumbnail
+            r = client.get(f"/api/images/{image_id}/thumbnail?width=50&height=50")
+            assert r.status_code == 200
+
+            # Verify it was converted to PNG (preserves transparency)
+            assert r.headers["content-type"] == "image/png"
+
+            result_img = Image.open(io.BytesIO(r.content))
+            assert result_img.format == "PNG"
