@@ -8,7 +8,7 @@ from utils.cache_manager import get_cache
 
 
 @pytest.fixture(autouse=True)
-def clear_test_cache():
+def clear_cache():
     """Clear cache before and after each test."""
     cache = get_cache()
     cache.clear()
