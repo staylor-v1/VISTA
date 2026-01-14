@@ -1,7 +1,6 @@
 """Tests for thumbnail conversion of non-web image formats (TIFF, CMYK, etc.)."""
 
 import io
-import pytest
 from PIL import Image
 from unittest.mock import patch, AsyncMock, MagicMock
 
@@ -144,3 +143,42 @@ class TestThumbnailConversion:
             result_img = Image.open(io.BytesIO(r.content))
             assert result_img.format == "JPEG"
             assert result_img.mode == "RGB"
+
+    def test_tiff_16bit_grayscale_converts_to_jpeg(self, client):
+        """Test that 16-bit grayscale TIFF images are converted to JPEG."""
+        # Create project
+        pr = client.post("/api/projects/", json={
+            "name": "Tiff16bitTest",
+            "description": None,
+            "meta_group_id": "test-group"
+        })
+        assert pr.status_code == 201
+        pid = pr.json()["id"]
+
+        # Upload 16-bit grayscale TIFF image
+        tiff_bytes = _make_tiff_bytes(mode="I;16")
+        files = {"file": ("test_16bit.tiff", io.BytesIO(tiff_bytes), "image/tiff")}
+        ur = client.post(f"/api/projects/{pid}/images", files=files)
+        assert ur.status_code == 201
+        image_id = ur.json()["id"]
+
+        # Mock httpx
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.aread = AsyncMock(return_value=tiff_bytes)
+
+        with patch("routers.images.httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                return_value=mock_response
+            )
+
+            # Request thumbnail
+            r = client.get(f"/api/images/{image_id}/thumbnail?width=50&height=50")
+            assert r.status_code == 200
+
+            # Verify it was converted to JPEG
+            assert r.headers["content-type"] == "image/jpeg"
+
+            # Verify it's a valid JPEG image
+            result_img = Image.open(io.BytesIO(r.content))
+            assert result_img.format == "JPEG"
