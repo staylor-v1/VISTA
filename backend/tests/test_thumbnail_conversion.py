@@ -7,6 +7,15 @@ from unittest.mock import patch, AsyncMock, MagicMock
 from utils.cache_manager import get_cache
 
 
+@pytest.fixture(autouse=True)
+def clear_test_cache():
+    """Clear cache before and after each test."""
+    cache = get_cache()
+    cache.clear()
+    yield
+    cache.clear()
+
+
 def _make_tiff_bytes(mode="RGB", size=(100, 100)):
     """Create test TIFF image bytes in specified mode."""
     if mode == "CMYK":
@@ -23,15 +32,6 @@ def _make_tiff_bytes(mode="RGB", size=(100, 100)):
     img.save(buf, format="TIFF")
     buf.seek(0)
     return buf.getvalue()
-
-
-@pytest.fixture(autouse=True)
-def clear_cache():
-    """Clear cache before and after each test."""
-    cache = get_cache()
-    cache.clear()
-    yield
-    cache.clear()
 
 
 class TestThumbnailConversion:
