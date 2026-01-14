@@ -394,36 +394,23 @@ function ImageView() {
   };
 
   const handleDeleteMeasurement = async (measurementId) => {
-    console.log('[handleDeleteMeasurement] Called with measurementId:', measurementId);
-    console.log('[handleDeleteMeasurement] Current measurements:', measurements);
-
-    // Calculate updated measurements
     const updatedMeasurements = measurements.filter(m => m.id !== measurementId);
 
-    console.log('[handleDeleteMeasurement] updatedMeasurements:', updatedMeasurements);
-
-    // Update state
     setMeasurements(updatedMeasurements);
     setVisibleMeasurementIds(updatedMeasurements.map(m => m.id));
 
     try {
-      const payload = {
-        key: 'measurements',
-        value: updatedMeasurements
-      };
-      console.log('[handleDeleteMeasurement] Sending payload:', JSON.stringify(payload, null, 2));
-
       const response = await fetch(`/api/images/${imageId}/metadata`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({
+          key: 'measurements',
+          value: updatedMeasurements
+        })
       });
-
-      console.log('[handleDeleteMeasurement] Response status:', response.status);
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('[handleDeleteMeasurement] Error response:', errorText);
         throw new Error(`Failed to delete measurement: ${response.status} - ${errorText}`);
       }
 
