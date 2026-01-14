@@ -379,8 +379,16 @@ async def get_image_thumbnail(
                 elif img.mode == 'RGBA':
                     # Already RGBA, just use PNG
                     img_format = 'PNG'
+                elif img.mode == 'P':
+                    # Palette mode may have transparency info
+                    if 'transparency' in img.info:
+                        img = img.convert('RGBA')
+                        img_format = 'PNG'
+                    else:
+                        img = img.convert('RGB')
+                        img_format = 'JPEG'
                 elif img.mode not in ('RGB', 'L'):
-                    # Convert CMYK, 16-bit, etc. to RGB for JPEG
+                    # Convert CMYK, 16-bit, 1-bit, etc. to RGB for JPEG
                     img = img.convert('RGB')
                     img_format = 'JPEG'
                 elif img.format in ('JPEG', 'PNG', 'GIF', 'WEBP'):
