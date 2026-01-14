@@ -145,7 +145,7 @@ export default function MeasurementTool({
     const distances = calculateRealWorldDistances(drawingLine);
 
     const measurement = {
-      id: `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
+      id: crypto.randomUUID(),
       name: measurementName.trim(),
       x1: imageX1,
       y1: imageY1,
