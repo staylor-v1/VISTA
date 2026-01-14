@@ -1,7 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 
-const MM_PER_INCH = 25.4;
-
 export default function MeasurementTool({
   containerSize,
   naturalSize,
@@ -89,8 +87,6 @@ export default function MeasurementTool({
   };
 
   const calculateRealWorldDistances = (line) => {
-    const distancePixelsDisplay = calculateDistance(line);
-
     const scaleX = naturalSize.width / containerSize.width;
     const scaleY = naturalSize.height / containerSize.height;
 
@@ -149,7 +145,7 @@ export default function MeasurementTool({
     const distances = calculateRealWorldDistances(drawingLine);
 
     const measurement = {
-      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      id: `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
       name: measurementName.trim(),
       x1: imageX1,
       y1: imageY1,
@@ -345,6 +341,11 @@ export default function MeasurementTool({
               onChange={(e) => {
                 setMeasurementName(e.target.value);
                 if (validationError) setValidationError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  handleSave();
+                }
               }}
               placeholder="Enter name"
               autoFocus
