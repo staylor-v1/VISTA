@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import MeasurementListItem from './MeasurementListItem';
 
 export default function MeasurementList({
   measurements,
@@ -33,8 +34,7 @@ export default function MeasurementList({
     setEditingName('');
   };
 
-  const handleDelete = (e, measurementId, measurementName) => {
-    e.stopPropagation();
+  const handleDelete = (measurementId, measurementName) => {
     if (window.confirm(`Delete measurement "${measurementName}"?`)) {
       if (onDeleteMeasurement) {
         onDeleteMeasurement(measurementId);
@@ -68,20 +68,6 @@ export default function MeasurementList({
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  };
-
-  const formatDistance = (measurement) => {
-    if (!calibration || measurement.distance_mm === null) {
-      return `${measurement.distance_pixels.toFixed(1)} px`;
-    }
-    return (
-      <div>
-        <div>{measurement.distance_mm.toFixed(2)} mm</div>
-        <div style={{ fontSize: '11px', color: '#9ca3af' }}>
-          {measurement.distance_inches.toFixed(3)}"
-        </div>
-      </div>
-    );
   };
 
   const isVisible = (id) => {
@@ -160,245 +146,25 @@ export default function MeasurementList({
       {!isCollapsed && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {measurements.map((measurement) => (
-            <div
+            <MeasurementListItem
               key={measurement.id}
-              style={{
-                padding: '12px',
-                background: selectedMeasurementId === measurement.id ? '#eff6ff' : 'white',
-                borderRadius: '4px',
-                border: selectedMeasurementId === measurement.id ? '2px solid #3b82f6' : '1px solid #e5e7eb'
-              }}
+              measurement={measurement}
+              calibration={calibration}
+              isSelected={selectedMeasurementId === measurement.id}
+              isEditing={editingId === measurement.id}
+              editingName={editingName}
+              setEditingName={setEditingName}
+              isExpanded={expandedId === measurement.id}
+              isVisible={isVisible(measurement.id)}
+              onStartRename={() => handleStartRename(measurement)}
+              onSaveRename={handleSaveRename}
+              onCancelRename={handleCancelRename}
+              onDelete={() => handleDelete(measurement.id, measurement.name)}
+              onToggleVisibility={() => onToggleVisibility && onToggleVisibility(measurement.id)}
+              onToggleExpanded={() => toggleExpanded(measurement.id)}
               onMouseEnter={() => onSelectMeasurement && onSelectMeasurement(measurement.id)}
               onMouseLeave={() => onSelectMeasurement && onSelectMeasurement(null)}
-            >
-              {editingId === measurement.id ? (
-                <div>
-                  <input
-                    type="text"
-                    value={editingName}
-                    onChange={(e) => setEditingName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') handleSaveRename();
-                      if (e.key === 'Escape') handleCancelRename();
-                    }}
-                    autoFocus
-                    style={{
-                      width: '100%',
-                      padding: '6px',
-                      border: '1px solid #d1d5db',
-                      borderRadius: '4px',
-                      fontSize: '13px',
-                      marginBottom: '8px'
-                    }}
-                  />
-                  <div style={{ display: 'flex', gap: '4px' }}>
-                    <button
-                      onClick={handleSaveRename}
-                      style={{
-                        flex: 1,
-                        padding: '4px',
-                        fontSize: '12px',
-                        background: '#10b981',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      Save
-                    </button>
-                    <button
-                      onClick={handleCancelRename}
-                      style={{
-                        flex: 1,
-                        padding: '4px',
-                        fontSize: '12px',
-                        background: 'white',
-                        color: '#6b7280',
-                        border: '1px solid #d1d5db',
-                        borderRadius: '4px',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div>
-                  <div style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'flex-start',
-                    marginBottom: '8px'
-                  }}>
-                    <div
-                      style={{
-                        fontSize: '14px',
-                        fontWeight: '500',
-                        color: '#1f2937',
-                        cursor: 'pointer',
-                        flex: 1
-                      }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleStartRename(measurement);
-                      }}
-                    >
-                      {measurement.name}
-                    </div>
-                    <div style={{ display: 'flex', gap: '4px' }}>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onToggleVisibility && onToggleVisibility(measurement.id);
-                        }}
-                        style={{
-                          padding: '2px 6px',
-                          fontSize: '11px',
-                          background: 'transparent',
-                          color: isVisible(measurement.id) ? '#3b82f6' : '#9ca3af',
-                          border: 'none',
-                          cursor: 'pointer'
-                        }}
-                        title={isVisible(measurement.id) ? 'Hide' : 'Show'}
-                      >
-                        {isVisible(measurement.id) ? '●' : '○'}
-                      </button>
-                      <button
-                        onClick={(e) => handleDelete(e, measurement.id, measurement.name)}
-                        style={{
-                          padding: '2px 6px',
-                          fontSize: '11px',
-                          background: 'transparent',
-                          color: '#dc2626',
-                          border: 'none',
-                          cursor: 'pointer'
-                        }}
-                        title="Delete"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  </div>
-
-                  <div
-                    style={{
-                      padding: '8px',
-                      background: '#f3f4f6',
-                      borderRadius: '4px',
-                      fontSize: '13px',
-                      color: '#374151',
-                      cursor: 'pointer'
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleExpanded(measurement.id);
-                    }}
-                  >
-                    {formatDistance(measurement)}
-                  </div>
-
-                  {expandedId === measurement.id && (
-                    <div style={{
-                      marginTop: '8px',
-                      padding: '8px',
-                      background: '#eff6ff',
-                      borderRadius: '4px',
-                      fontSize: '12px',
-                      color: '#1f2937',
-                      borderLeft: '3px solid #3b82f6'
-                    }}>
-                      <div style={{ fontWeight: '600', marginBottom: '8px' }}>Measurement Details</div>
-
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <span style={{ color: '#6b7280' }}>Start Point:</span>
-                          <span style={{ fontFamily: 'monospace' }}>
-                            ({measurement.x1?.toFixed(0)}, {measurement.y1?.toFixed(0)})
-                          </span>
-                        </div>
-
-                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <span style={{ color: '#6b7280' }}>End Point:</span>
-                          <span style={{ fontFamily: 'monospace' }}>
-                            ({measurement.x2?.toFixed(0)}, {measurement.y2?.toFixed(0)})
-                          </span>
-                        </div>
-
-                        <div style={{ height: '1px', background: '#cbd5e1', margin: '4px 0' }} />
-
-                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                          <span style={{ color: '#6b7280' }}>Distance (pixels):</span>
-                          <span style={{ fontFamily: 'monospace' }}>
-                            {measurement.distance_pixels?.toFixed(2)} px
-                          </span>
-                        </div>
-
-                        {calibration && (
-                          <>
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                              <span style={{ color: '#6b7280' }}>Distance (mm):</span>
-                              <span style={{ fontFamily: 'monospace' }}>
-                                {measurement.distance_mm?.toFixed(4)} mm
-                              </span>
-                            </div>
-
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                              <span style={{ color: '#6b7280' }}>Distance (inches):</span>
-                              <span style={{ fontFamily: 'monospace' }}>
-                                {measurement.distance_inches?.toFixed(6)}"
-                              </span>
-                            </div>
-                          </>
-                        )}
-
-                        {measurement.created_at && (
-                          <>
-                            <div style={{ height: '1px', background: '#cbd5e1', margin: '4px 0' }} />
-                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                              <span style={{ color: '#6b7280' }}>Created:</span>
-                              <span style={{ fontSize: '11px' }}>
-                                {new Date(measurement.created_at).toLocaleString()}
-                              </span>
-                            </div>
-                          </>
-                        )}
-
-                        {measurement.created_by && (
-                          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <span style={{ color: '#6b7280' }}>Created By:</span>
-                            <span style={{ fontSize: '11px' }}>
-                              {measurement.created_by}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-
-                      <div style={{
-                        marginTop: '8px',
-                        fontSize: '11px',
-                        color: '#6b7280',
-                        fontStyle: 'italic',
-                        textAlign: 'center'
-                      }}>
-                        Click again to collapse
-                      </div>
-                    </div>
-                  )}
-
-                  {!expandedId && measurement.created_at && (
-                    <div style={{
-                      marginTop: '4px',
-                      fontSize: '11px',
-                      color: '#9ca3af'
-                    }}>
-                      {new Date(measurement.created_at).toLocaleString()}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+            />
           ))}
         </div>
       )}
