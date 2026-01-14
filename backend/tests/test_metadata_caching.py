@@ -5,15 +5,6 @@ from PIL import Image
 from utils.cache_manager import get_cache
 
 
-@pytest.fixture(autouse=True)
-def clear_test_cache():
-    """Clear cache before and after each test."""
-    cache = get_cache()
-    cache.clear()
-    yield
-    cache.clear()
-
-
 def _make_png_bytes(size=(10, 10), color=(255, 0, 0)):
     """Create test PNG image bytes."""
     img = Image.new("RGB", size, color)
@@ -21,6 +12,15 @@ def _make_png_bytes(size=(10, 10), color=(255, 0, 0)):
     img.save(buf, format="PNG")
     buf.seek(0)
     return buf
+
+
+@pytest.fixture(autouse=True)
+def clear_cache():
+    """Clear cache before each test."""
+    cache = get_cache()
+    cache.clear()
+    yield
+    cache.clear()
 
 
 class TestMetadataCaching:
