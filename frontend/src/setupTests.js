@@ -4,6 +4,20 @@
 // learn more: https://github.com/testing-library/jest-dom
 import '@testing-library/jest-dom';
 
+// Polyfill for crypto.randomUUID in Jest environment
+if (typeof global.crypto === 'undefined') {
+  global.crypto = {};
+}
+if (typeof global.crypto.randomUUID === 'undefined') {
+  global.crypto.randomUUID = () => {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = Math.random() * 16 | 0;
+      const v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  };
+}
+
 // Reduce noisy console output from React Router future-flag warnings
 // and expected app logs during tests, while preserving other warnings/errors.
 
