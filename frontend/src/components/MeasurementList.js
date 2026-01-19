@@ -46,13 +46,22 @@ export default function MeasurementList({
     if (!measurements || measurements.length === 0) return;
 
     const headers = ['Name', 'Distance (pixels)', 'Distance (mm)', 'Distance (inches)', 'Created At'];
-    const rows = measurements.map(m => [
-      m.name,
-      m.distance_pixels?.toFixed(2) || '',
-      m.distance_mm?.toFixed(4) || '',
-      m.distance_inches?.toFixed(6) || '',
-      m.created_at || ''
-    ]);
+    const rows = measurements.map(m => {
+      // Calculate distances dynamically from current calibration
+      let distanceMm = '';
+      let distanceInches = '';
+      if (calibration && calibration.pixels_per_mm) {
+        distanceMm = (m.distance_pixels / calibration.pixels_per_mm).toFixed(4);
+        distanceInches = (m.distance_pixels / calibration.pixels_per_inch).toFixed(6);
+      }
+      return [
+        m.name,
+        m.distance_pixels?.toFixed(2) || '',
+        distanceMm,
+        distanceInches,
+        m.created_at || ''
+      ];
+    });
 
     const csvContent = [
       headers.join(','),

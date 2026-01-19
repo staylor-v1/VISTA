@@ -17,7 +17,8 @@ const mockMeasurement = {
 };
 
 const mockCalibration = {
-  pixels_per_mm: 10
+  pixels_per_mm: 10,
+  pixels_per_inch: 254  // 10 * 25.4
 };
 
 const defaultProps = {
@@ -89,10 +90,10 @@ describe('MeasurementListItem', () => {
     test('formats distance with calibration (mm and inches)', () => {
       const { container } = render(<MeasurementListItem {...defaultProps} />);
       expect(screen.getByText('28.28 mm')).toBeInTheDocument();
-      // The inches value is rendered with the quote character - check the container text
-      expect(screen.getByText(/1\.113/)).toBeInTheDocument();
+      // The inches value (282.84 / 254 = 1.1135...) rounds to 1.114
+      expect(screen.getByText(/1\.114/)).toBeInTheDocument();
       // Verify the inches formatting appears in the rendered output
-      expect(container.textContent).toContain('1.113');
+      expect(container.textContent).toContain('1.114');
     });
 
     test('formats distance as pixels when no calibration', () => {
@@ -100,14 +101,21 @@ describe('MeasurementListItem', () => {
       expect(screen.getByText('282.8 px')).toBeInTheDocument();
     });
 
-    test('formats distance as pixels when distance_mm is null', () => {
-      const measurementWithoutMm = {
-        ...mockMeasurement,
-        distance_mm: null,
-        distance_inches: null
-      };
-      render(<MeasurementListItem {...defaultProps} measurement={measurementWithoutMm} />);
+    test('formats distance as pixels when calibration lacks pixels_per_mm', () => {
+      const incompleteCalibration = { someOtherField: 123 };
+      render(<MeasurementListItem {...defaultProps} calibration={incompleteCalibration} />);
       expect(screen.getByText('282.8 px')).toBeInTheDocument();
+    });
+
+    test('recalculates distance when calibration changes', () => {
+      // With original calibration (10 pixels_per_mm), 282.84 px = 28.284 mm
+      const { rerender } = render(<MeasurementListItem {...defaultProps} />);
+      expect(screen.getByText('28.28 mm')).toBeInTheDocument();
+
+      // With new calibration (5 pixels_per_mm), 282.84 px = 56.568 mm
+      const newCalibration = { pixels_per_mm: 5, pixels_per_inch: 127 };
+      rerender(<MeasurementListItem {...defaultProps} calibration={newCalibration} />);
+      expect(screen.getByText('56.57 mm')).toBeInTheDocument();
     });
   });
 
@@ -329,7 +337,7 @@ describe('MeasurementListItem', () => {
 
     test('shows collapse instruction when expanded', () => {
       render(<MeasurementListItem {...defaultProps} isExpanded={true} />);
-      expect(screen.getByText('Click again to collapse')).toBeInTheDocument();
+      expect(screen.getByText('Click to collapse')).toBeInTheDocument();
     });
 
     test('does not show details when collapsed', () => {
