@@ -25,13 +25,17 @@ export default function MeasurementOverlay({
         displayX2: m.x2 * scaleX,
         displayY2: m.y2 * scaleY
       }));
-  }, [measurements, naturalSize, containerSize, visibleMeasurementIds]);
+  // Include calibration in deps to ensure re-render when calibration changes
+  }, [measurements, naturalSize, containerSize, visibleMeasurementIds, calibration]);
 
+  // Calculate real-world distances dynamically from pixels using current calibration
   const formatDistance = (measurement) => {
-    if (!calibration || measurement.distance_mm === null) {
+    if (!calibration || !calibration.pixels_per_mm) {
       return `${measurement.distance_pixels.toFixed(1)} px`;
     }
-    return `${measurement.distance_mm.toFixed(2)} mm (${measurement.distance_inches.toFixed(3)}")`;
+    const mm = measurement.distance_pixels / calibration.pixels_per_mm;
+    const inches = measurement.distance_pixels / calibration.pixels_per_inch;
+    return `${mm.toFixed(2)} mm (${inches.toFixed(3)}")`;
   };
 
   if (!transformedMeasurements.length) return null;

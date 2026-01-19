@@ -18,15 +18,26 @@ export default function MeasurementListItem({
   onMouseEnter,
   onMouseLeave
 }) {
+  // Calculate real-world distances dynamically from pixels using current calibration
+  const calculateDistances = () => {
+    if (!calibration || !calibration.pixels_per_mm) {
+      return { mm: null, inches: null };
+    }
+    const mm = measurement.distance_pixels / calibration.pixels_per_mm;
+    const inches = measurement.distance_pixels / calibration.pixels_per_inch;
+    return { mm, inches };
+  };
+
   const formatDistance = () => {
-    if (!calibration || measurement.distance_mm === null) {
+    const distances = calculateDistances();
+    if (distances.mm === null) {
       return `${measurement.distance_pixels.toFixed(1)} px`;
     }
     return (
       <div>
-        <div>{measurement.distance_mm.toFixed(2)} mm</div>
+        <div>{distances.mm.toFixed(2)} mm</div>
         <div style={{ fontSize: '11px', color: '#9ca3af' }}>
-          {measurement.distance_inches.toFixed(3)}"
+          {distances.inches.toFixed(3)}"
         </div>
       </div>
     );
@@ -172,6 +183,16 @@ export default function MeasurementListItem({
             }}
           >
             {formatDistance()}
+            {isExpanded && (
+              <div style={{
+                marginTop: '4px',
+                fontSize: '11px',
+                color: '#9ca3af',
+                fontStyle: 'italic'
+              }}>
+                Click to collapse
+              </div>
+            )}
           </div>
 
           {isExpanded && (
@@ -210,23 +231,27 @@ export default function MeasurementListItem({
                   </span>
                 </div>
 
-                {calibration && (
-                  <>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: '#6b7280' }}>Distance (mm):</span>
-                      <span style={{ fontFamily: 'monospace' }}>
-                        {measurement.distance_mm?.toFixed(4)} mm
-                      </span>
-                    </div>
+                {(() => {
+                  const distances = calculateDistances();
+                  if (distances.mm === null) return null;
+                  return (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#6b7280' }}>Distance (mm):</span>
+                        <span style={{ fontFamily: 'monospace' }}>
+                          {distances.mm.toFixed(4)} mm
+                        </span>
+                      </div>
 
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: '#6b7280' }}>Distance (inches):</span>
-                      <span style={{ fontFamily: 'monospace' }}>
-                        {measurement.distance_inches?.toFixed(6)}"
-                      </span>
-                    </div>
-                  </>
-                )}
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#6b7280' }}>Distance (inches):</span>
+                        <span style={{ fontFamily: 'monospace' }}>
+                          {distances.inches.toFixed(6)}"
+                        </span>
+                      </div>
+                    </>
+                  );
+                })()}
 
                 {measurement.created_at && (
                   <>
@@ -248,16 +273,6 @@ export default function MeasurementListItem({
                     </span>
                   </div>
                 )}
-              </div>
-
-              <div style={{
-                marginTop: '8px',
-                fontSize: '11px',
-                color: '#6b7280',
-                fontStyle: 'italic',
-                textAlign: 'center'
-              }}>
-                Click again to collapse
               </div>
             </div>
           )}
