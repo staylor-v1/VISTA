@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 
 function MetadataEditDialog({
   isOpen,
@@ -45,7 +46,7 @@ function MetadataEditDialog({
 
   const isNewMetadata = !initialKey;
 
-  return (
+  return createPortal(
     <div className="modal" onClick={onClose}>
       <div
         className="modal-content edit-metadata-modal"
@@ -118,7 +119,8 @@ function MetadataEditDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
