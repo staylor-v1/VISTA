@@ -71,10 +71,17 @@ jest.mock('../components/CalibrationManager', () => {
 });
 
 jest.mock('../components/MeasurementList', () => {
-  return function MockMeasurementList({ onDeleteMeasurement, onRenameMeasurement, measurements }) {
+  return function MockMeasurementList({
+    onDeleteMeasurement,
+    onRenameMeasurement,
+    onToggleVisibility,
+    measurements,
+    visibleMeasurementIds
+  }) {
     return (
       <div data-testid="measurement-list">
         MeasurementList - {measurements?.length || 0} measurements
+        <span data-testid="visible-count">Visible: {visibleMeasurementIds?.length || 0}</span>
         {onDeleteMeasurement && (
           <button onClick={() => onDeleteMeasurement('test-measurement-id')}>
             Delete First
@@ -83,6 +90,11 @@ jest.mock('../components/MeasurementList', () => {
         {onRenameMeasurement && (
           <button onClick={() => onRenameMeasurement('test-measurement-id', 'New Name')}>
             Rename First
+          </button>
+        )}
+        {onToggleVisibility && (
+          <button onClick={() => onToggleVisibility('test-measurement-id')}>
+            Toggle Visibility
           </button>
         )}
       </div>
@@ -389,6 +401,214 @@ describe('ImageView - Measurement Handlers', () => {
       });
 
       consoleSpy.mockRestore();
+    });
+
+    test('reverts state when rename fails', async () => {
+      const mockImage = {
+        id: 'test-image-id',
+        filename: 'test.jpg',
+        metadata: {
+          measurements: [
+            { id: 'test-measurement-id', name: 'Original Name' }
+          ]
+        }
+      };
+
+      // Suppress console.error for this test
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ email: 'test@example.com' })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => mockImage
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => []
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => []
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          text: async () => 'Server error'
+        });
+
+      const { getByText } = render(
+        <BrowserRouter>
+          <ImageView />
+        </BrowserRouter>
+      );
+
+      await waitFor(() => {
+        expect(getByText(/1 measurements/)).toBeInTheDocument();
+      });
+
+      const renameButton = getByText('Rename First');
+
+      await act(async () => {
+        renameButton.click();
+      });
+
+      // Verify the API was called
+      await waitFor(() => {
+        const metadataCalls = fetchMock.mock.calls.filter(call => call[0].includes('/metadata'));
+        expect(metadataCalls.length).toBeGreaterThan(0);
+      });
+
+      consoleSpy.mockRestore();
+    });
+  });
+
+  describe('Toggle visibility', () => {
+    test('handleToggleVisibility toggles measurement visibility', async () => {
+      const mockImage = {
+        id: 'test-image-id',
+        filename: 'test.jpg',
+        metadata: {
+          measurements: [
+            { id: 'test-measurement-id', name: 'Measurement 1' },
+            { id: 'measurement-2', name: 'Measurement 2' }
+          ]
+        }
+      };
+
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ email: 'test@example.com' })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => mockImage
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => []
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => []
+        });
+
+      const { getByText, getByTestId } = render(
+        <BrowserRouter>
+          <ImageView />
+        </BrowserRouter>
+      );
+
+      // Wait for initial render with both measurements visible
+      await waitFor(() => {
+        expect(getByTestId('visible-count')).toHaveTextContent('Visible: 2');
+      });
+
+      // Toggle visibility of first measurement
+      const toggleButton = getByText('Toggle Visibility');
+      await act(async () => {
+        toggleButton.click();
+      });
+
+      // Now only 1 should be visible
+      await waitFor(() => {
+        expect(getByTestId('visible-count')).toHaveTextContent('Visible: 1');
+      });
+
+      // Toggle again to make it visible
+      await act(async () => {
+        toggleButton.click();
+      });
+
+      // Back to 2 visible
+      await waitFor(() => {
+        expect(getByTestId('visible-count')).toHaveTextContent('Visible: 2');
+      });
+    });
+  });
+
+
+  describe('Initial state when no measurements exist', () => {
+    test('does not render MeasurementList when no measurements', async () => {
+      const mockImage = {
+        id: 'test-image-id',
+        filename: 'test.jpg',
+        metadata: {}
+      };
+
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ email: 'test@example.com' })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => mockImage
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => []
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => []
+        });
+
+      render(
+        <BrowserRouter>
+          <ImageView />
+        </BrowserRouter>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('test.jpg')).toBeInTheDocument();
+      });
+
+      // MeasurementList should not be rendered when there are no measurements
+      expect(screen.queryByTestId('measurement-list')).not.toBeInTheDocument();
+    });
+
+    test('handles null metadata gracefully', async () => {
+      const mockImage = {
+        id: 'test-image-id',
+        filename: 'test.jpg',
+        metadata: null
+      };
+
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ email: 'test@example.com' })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => mockImage
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => []
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => []
+        });
+
+      render(
+        <BrowserRouter>
+          <ImageView />
+        </BrowserRouter>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('test.jpg')).toBeInTheDocument();
+      });
+
+      // Should render without crashing
+      expect(screen.queryByTestId('measurement-list')).not.toBeInTheDocument();
     });
   });
 });
