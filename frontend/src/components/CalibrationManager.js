@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import CalibrationEditForm from './CalibrationEditForm';
 
 const MM_PER_INCH = 25.4;
@@ -18,11 +18,7 @@ export default function CalibrationManager({
   const [error, setError] = useState(null);
   const [message, setMessage] = useState(null);
 
-  useEffect(() => {
-    loadCalibration();
-  }, [imageId, image]);
-
-  const loadCalibration = async () => {
+  const loadCalibration = useCallback(async () => {
     setError(null);
 
     const metadata = image?.metadata || image?.metadata_;
@@ -57,7 +53,11 @@ export default function CalibrationManager({
     if (onCalibrationChange) {
       onCalibrationChange(null);
     }
-  };
+  }, [image, projectId, onCalibrationChange]);
+
+  useEffect(() => {
+    loadCalibration();
+  }, [loadCalibration]);
 
   const handleStartEdit = () => {
     if (calibration) {
