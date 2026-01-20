@@ -277,7 +277,7 @@ function ImageView() {
     setSelectedMeasurementId(null);
   }, [imageId]);
 
-  // Load measurements when image ID changes (not when image object is updated)
+  // Load measurements when image changes (syncs state with image metadata)
   useEffect(() => {
     // Check both metadata and metadata_ for compatibility
     const metadata = image?.metadata || image?.metadata_;
@@ -361,10 +361,14 @@ function ImageView() {
 
   // Measurement handlers
   const handleSaveMeasurement = async (measurement) => {
-    // Calculate updated measurements first
+    // Save original state for potential rollback
+    const originalMeasurements = [...measurements];
+    const originalVisibleIds = visibleMeasurementIds ? [...visibleMeasurementIds] : null;
+
+    // Calculate updated measurements
     const updatedMeasurements = [...measurements, measurement];
 
-    // Update state
+    // Optimistic update
     setMeasurements(updatedMeasurements);
     setVisibleMeasurementIds(updatedMeasurements.map(m => m.id));
 
@@ -387,15 +391,20 @@ function ImageView() {
     } catch (err) {
       console.error('Error saving measurement:', err);
       setError('Failed to save measurement. Please try again.');
-      // Revert to previous state on error
-      setMeasurements(measurements);
-      setVisibleMeasurementIds(measurements.map(m => m.id));
+      // Revert to original state on error
+      setMeasurements(originalMeasurements);
+      setVisibleMeasurementIds(originalVisibleIds);
     }
   };
 
   const handleDeleteMeasurement = async (measurementId) => {
+    // Save original state for potential rollback
+    const originalMeasurements = [...measurements];
+    const originalVisibleIds = visibleMeasurementIds ? [...visibleMeasurementIds] : null;
+
     const updatedMeasurements = measurements.filter(m => m.id !== measurementId);
 
+    // Optimistic update
     setMeasurements(updatedMeasurements);
     setVisibleMeasurementIds(updatedMeasurements.map(m => m.id));
 
@@ -420,20 +429,20 @@ function ImageView() {
       console.error('Error deleting measurement:', err);
       setError('Failed to delete measurement. Please try again.');
       // Revert to original state
-      setMeasurements(measurements);
-      setVisibleMeasurementIds(measurements.map(m => m.id));
+      setMeasurements(originalMeasurements);
+      setVisibleMeasurementIds(originalVisibleIds);
     }
   };
 
   const handleRenameMeasurement = async (measurementId, newName) => {
-    // Calculate updated measurements first
-    const measurement = measurements.find(m => m.id === measurementId);
-    const oldName = measurement?.name;
+    // Save original state for potential rollback
+    const originalMeasurements = [...measurements];
+
     const updatedMeasurements = measurements.map(m =>
       m.id === measurementId ? { ...m, name: newName } : m
     );
 
-    // Update state
+    // Optimistic update
     setMeasurements(updatedMeasurements);
 
     try {
@@ -455,10 +464,8 @@ function ImageView() {
     } catch (err) {
       console.error('Error renaming measurement:', err);
       setError('Failed to rename measurement. Please try again.');
-      // Revert to old name
-      setMeasurements(measurements.map(m =>
-        m.id === measurementId ? { ...m, name: oldName } : m
-      ));
+      // Revert to original state
+      setMeasurements(originalMeasurements);
     }
   };
 
