@@ -233,7 +233,6 @@ describe('MeasurementListItem', () => {
 
   describe('Event propagation', () => {
     test('stops propagation on name click', () => {
-      const mockEvent = { stopPropagation: jest.fn() };
       render(<MeasurementListItem {...defaultProps} />);
       const nameElement = screen.getByText('Test Measurement');
 
