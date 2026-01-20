@@ -244,10 +244,57 @@ async def get_image_download_url(
     
     return schemas.PresignedUrlResponse(url=proxy_url, object_key=db_image.object_storage_key)
 
+# Content types that browsers can display natively
+WEB_FRIENDLY_CONTENT_TYPES = {
+    'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'
+}
+
+
+def convert_to_web_format(image_data: bytes, content_type: str) -> tuple[bytes, str]:
+    """
+    Convert non-web-friendly image formats to PNG/JPEG while preserving dimensions.
+    Returns (converted_data, new_content_type) or (original_data, original_content_type).
+    """
+    if content_type in WEB_FRIENDLY_CONTENT_TYPES:
+        return image_data, content_type
+
+    try:
+        img = Image.open(io.BytesIO(image_data))
+
+        # Determine output format based on image characteristics
+        if img.mode in ('RGBA', 'LA', 'PA') or (img.mode == 'P' and 'transparency' in img.info):
+            # Has transparency - use PNG
+            if img.mode == 'P':
+                img = img.convert('RGBA')
+            elif img.mode in ('LA', 'PA'):
+                img = img.convert('RGBA')
+            output_format = 'PNG'
+            output_content_type = 'image/png'
+        else:
+            # No transparency - use JPEG for efficiency
+            if img.mode not in ('RGB', 'L'):
+                img = img.convert('RGB')
+            output_format = 'JPEG'
+            output_content_type = 'image/jpeg'
+
+        output_buffer = io.BytesIO()
+        if output_format == 'JPEG':
+            img.save(output_buffer, format=output_format, quality=95)
+        else:
+            img.save(output_buffer, format=output_format)
+        output_buffer.seek(0)
+        return output_buffer.getvalue(), output_content_type
+
+    except Exception:
+        # If conversion fails, return original data
+        return image_data, content_type
+
+
 @router.get("/images/{image_id}/content", response_class=StreamingResponse)
 async def get_image_content(
     image_id: uuid.UUID,
     include_deleted: bool = Query(False),
+    convert: bool = Query(True, description="Convert non-web formats (TIFF, BMP) to PNG/JPEG"),
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
 ):
@@ -255,11 +302,15 @@ async def get_image_content(
     Streams the content of an image from object storage.
     This endpoint acts as a proxy, ensuring proper access control.
     It returns the image data with appropriate headers for inline display.
+
+    Non-web-friendly formats (TIFF, BMP, etc.) are automatically converted to
+    PNG or JPEG to ensure browser compatibility while preserving original dimensions.
+    Set convert=false to download the original file without conversion.
     """
     db_image = await crud.get_data_instance(db=db, image_id=image_id)
     if db_image is None or (db_image.deleted_at and not include_deleted):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
-    
+
     # Check access permissions
     is_member = is_user_in_group(current_user.email, db_image.project.meta_group_id)
     if not is_member:
@@ -267,7 +318,7 @@ async def get_image_content(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"User '{current_user.email}' does not have access to image '{image_id}'",
         )
-    
+
     # Get the presigned URL for internal use
     internal_url = get_presigned_download_url(
         bucket_name=settings.S3_BUCKET,
@@ -275,17 +326,32 @@ async def get_image_content(
     )
     if not internal_url:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not generate download URL")
-    
+
     # Use httpx to fetch the image from s3
     async with httpx.AsyncClient() as client:
         try:
             response = await client.get(internal_url)
             response.raise_for_status()
-            
-            # Create a streaming response with the same content type
+
+            content_type = db_image.content_type or "application/octet-stream"
+
+            # Check if conversion is needed and requested
+            if convert and content_type not in WEB_FRIENDLY_CONTENT_TYPES:
+                # Need to read full content for conversion
+                image_data = await response.aread()
+                converted_data, converted_type = convert_to_web_format(image_data, content_type)
+                return StreamingResponse(
+                    content=io.BytesIO(converted_data),
+                    media_type=converted_type,
+                    headers={
+                        "Content-Disposition": get_content_disposition_header(db_image.filename, "inline")
+                    }
+                )
+
+            # Return original content for web-friendly formats or when convert=false
             return StreamingResponse(
                 content=response.iter_bytes(),
-                media_type=db_image.content_type or "application/octet-stream",
+                media_type=content_type,
                 headers={
                     "Content-Disposition": get_content_disposition_header(db_image.filename, "inline")
                 }
