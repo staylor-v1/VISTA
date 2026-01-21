@@ -366,16 +366,43 @@ async def get_image_thumbnail(
             # Use PIL to resize the image
             try:
                 img = Image.open(io.BytesIO(image_data))
-                
+
                 # Resize the image while maintaining aspect ratio
                 img.thumbnail((width, height))
-                
+
+                # Convert to web-friendly format for thumbnails
+                # Handle TIFF, CMYK, 16-bit, and other non-web formats
+                if img.mode in ('LA', 'PA'):
+                    # Convert to RGBA to preserve transparency
+                    img = img.convert('RGBA')
+                    img_format = 'PNG'
+                elif img.mode == 'RGBA':
+                    # Already RGBA, just use PNG
+                    img_format = 'PNG'
+                elif img.mode == 'P':
+                    # Palette mode may have transparency info
+                    if 'transparency' in img.info:
+                        img = img.convert('RGBA')
+                        img_format = 'PNG'
+                    else:
+                        img = img.convert('RGB')
+                        img_format = 'JPEG'
+                elif img.mode not in ('RGB', 'L'):
+                    # Convert CMYK, 16-bit, 1-bit, etc. to RGB for JPEG
+                    img = img.convert('RGB')
+                    img_format = 'JPEG'
+                elif img.format in ('JPEG', 'PNG', 'GIF', 'WEBP'):
+                    # Keep original web-friendly format
+                    img_format = img.format
+                else:
+                    # Default non-web formats (TIFF, BMP, etc.) to JPEG
+                    img_format = 'JPEG'
+
                 # Save the resized image to a bytes buffer
                 output_buffer = io.BytesIO()
-                img_format = img.format or 'JPEG'  # Default to JPEG if format is unknown
                 img.save(output_buffer, format=img_format)
                 output_buffer.seek(0)
-                
+
                 # Determine the content type based on the image format
                 content_type_map = {
                     'JPEG': 'image/jpeg',
