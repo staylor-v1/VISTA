@@ -1,0 +1,289 @@
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import MeasurementTool from '../MeasurementTool';
+
+describe('MeasurementTool', () => {
+  const defaultProps = {
+    containerSize: { width: 800, height: 600 },
+    naturalSize: { width: 1600, height: 1200 },
+    zoomLevel: 1,
+    calibration: {
+      pixels_per_mm: 10,
+      pixels_per_inch: 254,
+      unit: 'mm'
+    },
+    onSaveMeasurement: jest.fn(),
+    onCancel: jest.fn(),
+    existingMeasurementCount: 0
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('when no calibration is set', () => {
+    it('shows "No Calibration Set" message', () => {
+      render(<MeasurementTool {...defaultProps} calibration={null} />);
+
+      expect(screen.getByText('No Calibration Set')).toBeInTheDocument();
+      expect(screen.getByText(/Please set calibration/)).toBeInTheDocument();
+    });
+
+    it('shows Close button that calls onCancel', () => {
+      render(<MeasurementTool {...defaultProps} calibration={null} />);
+
+      const closeButton = screen.getByRole('button', { name: 'Close' });
+      fireEvent.click(closeButton);
+
+      expect(defaultProps.onCancel).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('when calibration is set', () => {
+    it('renders the drawing overlay', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} />);
+
+      const svg = container.querySelector('svg');
+      expect(svg).toBeInTheDocument();
+      expect(svg).toHaveAttribute('width', '800');
+      expect(svg).toHaveAttribute('height', '600');
+    });
+
+    it('has crosshair cursor on the overlay', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} />);
+
+      const overlay = container.querySelector('div[style*="cursor: crosshair"]');
+      expect(overlay).toBeInTheDocument();
+    });
+  });
+
+  describe('keyboard shortcuts', () => {
+    it('calls onCancel when Escape is pressed and no dialog is open', () => {
+      render(<MeasurementTool {...defaultProps} />);
+
+      fireEvent.keyDown(window, { key: 'Escape' });
+
+      expect(defaultProps.onCancel).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('drawing interaction', () => {
+    it('does not show line before drawing', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} />);
+
+      const line = container.querySelector('line');
+      expect(line).not.toBeInTheDocument();
+    });
+
+    it('discards measurements shorter than 5 pixels', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} />);
+
+      const overlay = container.querySelector('div[style*="cursor"]');
+
+      // Mock getBoundingClientRect
+      overlay.getBoundingClientRect = jest.fn(() => ({
+        left: 0,
+        top: 0,
+        width: 800,
+        height: 600
+      }));
+
+      // Draw a very short line (2 pixels)
+      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100 });
+      fireEvent.mouseMove(overlay, { clientX: 102, clientY: 100 });
+      fireEvent.mouseUp(overlay, { clientX: 102, clientY: 100 });
+
+      // Save dialog should not appear
+      expect(screen.queryByText('Save Measurement')).not.toBeInTheDocument();
+    });
+
+    it('shows save dialog after valid measurement', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} />);
+
+      const overlay = container.querySelector('div[style*="cursor"]');
+
+      overlay.getBoundingClientRect = jest.fn(() => ({
+        left: 0,
+        top: 0,
+        width: 800,
+        height: 600
+      }));
+
+      // Draw a line longer than 5 pixels
+      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100 });
+      fireEvent.mouseMove(overlay, { clientX: 200, clientY: 100 });
+      fireEvent.mouseUp(overlay, { clientX: 200, clientY: 100 });
+
+      expect(screen.getByText('Save Measurement')).toBeInTheDocument();
+    });
+
+    it('sets default measurement name based on existing count', () => {
+      const { container } = render(
+        <MeasurementTool {...defaultProps} existingMeasurementCount={5} />
+      );
+
+      const overlay = container.querySelector('div[style*="cursor"]');
+
+      overlay.getBoundingClientRect = jest.fn(() => ({
+        left: 0,
+        top: 0,
+        width: 800,
+        height: 600
+      }));
+
+      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100 });
+      fireEvent.mouseUp(overlay, { clientX: 200, clientY: 100 });
+
+      const input = screen.getByRole('textbox');
+      expect(input.value).toBe('Measurement 6');
+    });
+  });
+
+  describe('save dialog', () => {
+    const openSaveDialog = (container) => {
+      const overlay = container.querySelector('div[style*="cursor"]');
+
+      overlay.getBoundingClientRect = jest.fn(() => ({
+        left: 0,
+        top: 0,
+        width: 800,
+        height: 600
+      }));
+
+      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100 });
+      fireEvent.mouseUp(overlay, { clientX: 200, clientY: 100 });
+    };
+
+    it('shows validation error when name is empty', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} />);
+      openSaveDialog(container);
+
+      // Clear the default name
+      const input = screen.getByRole('textbox');
+      fireEvent.change(input, { target: { value: '' } });
+
+      // Click save
+      const saveButton = screen.getByRole('button', { name: 'Save' });
+      fireEvent.click(saveButton);
+
+      expect(screen.getByText('Please enter a name for this measurement')).toBeInTheDocument();
+      expect(defaultProps.onSaveMeasurement).not.toHaveBeenCalled();
+    });
+
+    it('calls onSaveMeasurement with correct data when saved', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} />);
+      openSaveDialog(container);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.change(input, { target: { value: 'Test Measurement' } });
+
+      const saveButton = screen.getByRole('button', { name: 'Save' });
+      fireEvent.click(saveButton);
+
+      expect(defaultProps.onSaveMeasurement).toHaveBeenCalledTimes(1);
+      expect(defaultProps.onSaveMeasurement).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: expect.any(String),
+          name: 'Test Measurement',
+          distance_pixels: expect.any(Number),
+          distance_mm: expect.any(Number),
+          distance_inches: expect.any(Number),
+          created_at: expect.any(String),
+          x1: expect.any(Number),
+          y1: expect.any(Number),
+          x2: expect.any(Number),
+          y2: expect.any(Number)
+        })
+      );
+    });
+
+    it('closes dialog when Cancel is clicked', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} />);
+      openSaveDialog(container);
+
+      expect(screen.getByText('Save Measurement')).toBeInTheDocument();
+
+      const cancelButton = screen.getByRole('button', { name: 'Cancel' });
+      fireEvent.click(cancelButton);
+
+      expect(screen.queryByText('Save Measurement')).not.toBeInTheDocument();
+    });
+
+    it('closes dialog when Escape is pressed', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} />);
+      openSaveDialog(container);
+
+      expect(screen.getByText('Save Measurement')).toBeInTheDocument();
+
+      fireEvent.keyDown(window, { key: 'Escape' });
+
+      expect(screen.queryByText('Save Measurement')).not.toBeInTheDocument();
+      // Should not call onCancel when dialog is open
+      expect(defaultProps.onCancel).not.toHaveBeenCalled();
+    });
+
+    it('saves when Enter is pressed in the input', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} />);
+      openSaveDialog(container);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.change(input, { target: { value: 'Enter Test' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      expect(defaultProps.onSaveMeasurement).toHaveBeenCalledTimes(1);
+    });
+
+    it('clears validation error when user starts typing', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} />);
+      openSaveDialog(container);
+
+      const input = screen.getByRole('textbox');
+      fireEvent.change(input, { target: { value: '' } });
+
+      const saveButton = screen.getByRole('button', { name: 'Save' });
+      fireEvent.click(saveButton);
+
+      expect(screen.getByText('Please enter a name for this measurement')).toBeInTheDocument();
+
+      // Start typing
+      fireEvent.change(input, { target: { value: 'N' } });
+
+      expect(screen.queryByText('Please enter a name for this measurement')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('coordinate scaling', () => {
+    it('scales coordinates from container to natural size', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} />);
+
+      const overlay = container.querySelector('div[style*="cursor"]');
+
+      overlay.getBoundingClientRect = jest.fn(() => ({
+        left: 0,
+        top: 0,
+        width: 800,
+        height: 600
+      }));
+
+      // Draw at container coords (100, 100) to (200, 200)
+      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100 });
+      fireEvent.mouseUp(overlay, { clientX: 200, clientY: 200 });
+
+      const input = screen.getByRole('textbox');
+      fireEvent.change(input, { target: { value: 'Scale Test' } });
+
+      const saveButton = screen.getByRole('button', { name: 'Save' });
+      fireEvent.click(saveButton);
+
+      const savedMeasurement = defaultProps.onSaveMeasurement.mock.calls[0][0];
+
+      // Container is 800x600, natural is 1600x1200 (2x scale)
+      // So container (100, 100) -> natural (200, 200)
+      // And container (200, 200) -> natural (400, 400)
+      expect(savedMeasurement.x1).toBe(200);
+      expect(savedMeasurement.y1).toBe(200);
+      expect(savedMeasurement.x2).toBe(400);
+      expect(savedMeasurement.y2).toBe(400);
+    });
+  });
+});
