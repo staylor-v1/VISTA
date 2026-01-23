@@ -11,6 +11,8 @@ import ImageDeletionControls from './components/ImageDeletionControls';
 import MLAnalysisPanel from './components/MLAnalysisPanel';
 import OverlayControls from './components/OverlayControls';
 import MLDebugOutputs from './components/MLDebugOutputs';
+import CalibrationManager from './components/CalibrationManager';
+import MeasurementList from './components/MeasurementList';
 
 function ImageView() {
   const { imageId } = useParams();
@@ -60,6 +62,13 @@ function ImageView() {
     const saved = localStorage.getItem('mlAutoSelectLatest');
     return saved === 'true' || saved === null; // Default to true
   });
+
+  // Measurement state
+  const [calibration, setCalibration] = useState(null);
+  const [measurements, setMeasurements] = useState([]);
+  const [measurementActive, setMeasurementActive] = useState(false);
+  const [selectedMeasurementId, setSelectedMeasurementId] = useState(null);
+  const [visibleMeasurementIds, setVisibleMeasurementIds] = useState(null);
 
   // ML analysis selection handler
   const handleMLAnalysisSelect = useCallback((data) => {
@@ -263,7 +272,25 @@ function ImageView() {
       ...prev,
       bitmapAvailable: false
     }));
+    // Clear measurement mode when image changes
+    setMeasurementActive(false);
+    setSelectedMeasurementId(null);
   }, [imageId]);
+
+  // Load measurements when image changes (syncs state with image metadata)
+  useEffect(() => {
+    // Check both metadata and metadata_ for compatibility
+    const metadata = image?.metadata || image?.metadata_;
+
+    if (metadata?.measurements) {
+      setMeasurements(metadata.measurements);
+      const ids = metadata.measurements.map(m => m.id);
+      setVisibleMeasurementIds(ids);
+    } else {
+      setMeasurements([]);
+      setVisibleMeasurementIds(null);
+    }
+  }, [imageId, image]);
 
   // Save overlay options to localStorage when they change
   useEffect(() => {
@@ -324,13 +351,134 @@ function ImageView() {
         navigateToNextImage();
       }
     };
-    
+
     document.addEventListener('keydown', handleKeyDown);
-    
+
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
     };
   }, [currentImageIndex, projectImages.length, navigateToNextImage, navigateToPreviousImage]);
+
+  // Measurement handlers
+  const handleSaveMeasurement = async (measurement) => {
+    // Save original state for potential rollback
+    const originalMeasurements = [...measurements];
+    const originalVisibleIds = visibleMeasurementIds ? [...visibleMeasurementIds] : null;
+
+    // Calculate updated measurements
+    const updatedMeasurements = [...measurements, measurement];
+
+    // Optimistic update
+    setMeasurements(updatedMeasurements);
+    setVisibleMeasurementIds(updatedMeasurements.map(m => m.id));
+
+    try {
+      const response = await fetch(`/api/images/${imageId}/metadata`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          key: 'measurements',
+          value: updatedMeasurements
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to save measurement');
+      }
+
+      const updatedImage = await response.json();
+      setImage(updatedImage);
+    } catch (err) {
+      console.error('Error saving measurement:', err);
+      setError('Failed to save measurement. Please try again.');
+      // Revert to original state on error
+      setMeasurements(originalMeasurements);
+      setVisibleMeasurementIds(originalVisibleIds);
+    }
+  };
+
+  const handleDeleteMeasurement = async (measurementId) => {
+    // Save original state for potential rollback
+    const originalMeasurements = [...measurements];
+    const originalVisibleIds = visibleMeasurementIds ? [...visibleMeasurementIds] : null;
+
+    const updatedMeasurements = measurements.filter(m => m.id !== measurementId);
+
+    // Optimistic update
+    setMeasurements(updatedMeasurements);
+    setVisibleMeasurementIds(updatedMeasurements.map(m => m.id));
+
+    try {
+      const response = await fetch(`/api/images/${imageId}/metadata`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          key: 'measurements',
+          value: updatedMeasurements
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to delete measurement: ${response.status} - ${errorText}`);
+      }
+
+      const updatedImage = await response.json();
+      setImage(updatedImage);
+    } catch (err) {
+      console.error('Error deleting measurement:', err);
+      setError('Failed to delete measurement. Please try again.');
+      // Revert to original state
+      setMeasurements(originalMeasurements);
+      setVisibleMeasurementIds(originalVisibleIds);
+    }
+  };
+
+  const handleRenameMeasurement = async (measurementId, newName) => {
+    // Save original state for potential rollback
+    const originalMeasurements = [...measurements];
+
+    const updatedMeasurements = measurements.map(m =>
+      m.id === measurementId ? { ...m, name: newName } : m
+    );
+
+    // Optimistic update
+    setMeasurements(updatedMeasurements);
+
+    try {
+      const response = await fetch(`/api/images/${imageId}/metadata`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          key: 'measurements',
+          value: updatedMeasurements
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to rename measurement');
+      }
+
+      const updatedImage = await response.json();
+      setImage(updatedImage);
+    } catch (err) {
+      console.error('Error renaming measurement:', err);
+      setError('Failed to rename measurement. Please try again.');
+      // Revert to original state
+      setMeasurements(originalMeasurements);
+    }
+  };
+
+  const handleToggleVisibility = (measurementId) => {
+    setVisibleMeasurementIds(prev => {
+      if (!prev) return [measurementId];
+      if (prev.includes(measurementId)) {
+        return prev.filter(id => id !== measurementId);
+      } else {
+        return [...prev, measurementId];
+      }
+    });
+  };
 
   return (
     <div className="App" style={{ maxWidth: '100%', padding: '0' }}>
@@ -395,6 +543,30 @@ function ImageView() {
                 setError={setError}
               />
 
+              {/* Calibration Manager */}
+              {image && (
+                <CalibrationManager
+                  projectId={projectId}
+                  imageId={imageId}
+                  image={image}
+                  onCalibrationChange={setCalibration}
+                />
+              )}
+
+              {/* Measurement List */}
+              {image && measurements.length > 0 && (
+                <MeasurementList
+                  measurements={measurements}
+                  calibration={calibration}
+                  onDeleteMeasurement={handleDeleteMeasurement}
+                  onRenameMeasurement={handleRenameMeasurement}
+                  onToggleVisibility={handleToggleVisibility}
+                  visibleMeasurementIds={visibleMeasurementIds}
+                  selectedMeasurementId={selectedMeasurementId}
+                  onSelectMeasurement={setSelectedMeasurementId}
+                />
+              )}
+
               {/* ML Analysis Panel (read-only, only visible when analyses exist) */}
               {image && (
                 <MLAnalysisPanel
@@ -440,6 +612,13 @@ function ImageView() {
                 selectedAnalysis={selectedAnalysis}
                 annotations={selectedAnnotations}
                 overlayOptions={overlayOptions}
+                calibration={calibration}
+                measurements={measurements}
+                measurementActive={measurementActive}
+                setMeasurementActive={setMeasurementActive}
+                onSaveMeasurement={handleSaveMeasurement}
+                selectedMeasurementId={selectedMeasurementId}
+                visibleMeasurementIds={visibleMeasurementIds}
               />
             </div>
           </div>
