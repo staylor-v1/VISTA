@@ -1,29 +1,31 @@
 import React, { useState } from 'react';
+import MetadataEditDialog from './MetadataEditDialog';
 
 function ImageMetadata({ imageId, image, setImage, loading, setLoading, setError }) {
-  const [newMetadata, setNewMetadata] = useState({ key: '', value: '' });
-  const [editingMetadata, setEditingMetadata] = useState(null);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editingKey, setEditingKey] = useState(null);
+  const [editingValue, setEditingValue] = useState('');
 
   // Helper function to format file size
   const formatFileSize = (bytes) => {
     if (!bytes) return 'Unknown size';
-    
+
     const units = ['B', 'KB', 'MB', 'GB'];
     let size = bytes;
     let unitIndex = 0;
-    
+
     while (size >= 1024 && unitIndex < units.length - 1) {
       size /= 1024;
       unitIndex++;
     }
-    
+
     return `${size.toFixed(1)} ${units[unitIndex]}`;
   };
 
   // Helper function to format date
   const formatDate = (dateString) => {
     if (!dateString) return 'Unknown date';
-    
+
     const date = new Date(dateString);
     return date.toLocaleString();
   };
@@ -33,7 +35,7 @@ function ImageMetadata({ imageId, image, setImage, loading, setLoading, setError
     if (value.trim() === '') {
       return null;
     }
-    
+
     try {
       return JSON.parse(value);
     } catch (e) {
@@ -41,77 +43,45 @@ function ImageMetadata({ imageId, image, setImage, loading, setLoading, setError
     }
   };
 
-  // Handle adding metadata
-  const handleAddMetadata = async (e) => {
-    e.preventDefault();
-    
-    if (newMetadata.key.trim() === '') {
-      setError('Metadata key cannot be empty');
-      return;
+  // Helper to format value for display in dialog
+  const formatValueForEdit = (value) => {
+    if (value === null || value === undefined) {
+      return '';
     }
-    
-    try {
-      setLoading(true);
-      
-      const response = await fetch(`/api/images/${imageId}/metadata`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          key: newMetadata.key,
-          value: parseMetadataValue(newMetadata.value),
-        }),
-      });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! Status: ${response.status}`);
-      }
-      
-      // Update the image metadata
-      setImage(prev => {
-        const currentMetadata = prev.metadata || prev.metadata_ || {};
-        const updatedMetadata = {
-          ...currentMetadata,
-          [newMetadata.key]: parseMetadataValue(newMetadata.value)
-        };
-
-        return {
-          ...prev,
-          metadata: updatedMetadata,
-          metadata_: updatedMetadata
-        };
-      });
-      
-      // Reset form
-      setNewMetadata({ key: '', value: '' });
-      setError(null);
-      
-    } catch (error) {
-      console.error('Error adding metadata:', error);
-      setError('Failed to add metadata. Please try again later.');
-    } finally {
-      setLoading(false);
+    if (typeof value === 'object') {
+      return JSON.stringify(value, null, 2);
     }
+    return value.toString();
   };
 
-  // Handle updating metadata
-  const handleUpdateMetadata = async () => {
-    if (!editingMetadata) return;
+  // Open dialog for adding new metadata
+  const handleOpenAddDialog = () => {
+    setEditingKey(null);
+    setEditingValue('');
+    setEditDialogOpen(true);
+  };
 
-    if (editingMetadata.key.trim() === '') {
+  // Open dialog for editing existing metadata
+  const handleOpenEditDialog = (key, value) => {
+    setEditingKey(key);
+    setEditingValue(formatValueForEdit(value));
+    setEditDialogOpen(true);
+  };
+
+  // Handle save from dialog
+  const handleSaveMetadata = async (newKey, newValue) => {
+    if (newKey.trim() === '') {
       setError('Metadata key cannot be empty');
       return;
     }
 
     try {
       setLoading(true);
+      const keyChanged = editingKey && editingKey !== newKey;
 
-      const keyChanged = editingMetadata.originalKey !== editingMetadata.key;
-
-      // If key changed, delete the old key first
-      if (keyChanged && editingMetadata.originalKey) {
-        const deleteResponse = await fetch(`/api/images/${imageId}/metadata/${editingMetadata.originalKey}`, {
+      // If editing and key changed, delete the old key first
+      if (keyChanged) {
+        const deleteResponse = await fetch(`/api/images/${imageId}/metadata/${editingKey}`, {
           method: 'DELETE',
         });
 
@@ -127,8 +97,8 @@ function ImageMetadata({ imageId, image, setImage, loading, setLoading, setError
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          key: editingMetadata.key,
-          value: parseMetadataValue(editingMetadata.value),
+          key: newKey,
+          value: parseMetadataValue(newValue),
         }),
       });
 
@@ -142,12 +112,12 @@ function ImageMetadata({ imageId, image, setImage, loading, setLoading, setError
         const updatedMetadata = { ...currentMetadata };
 
         // Remove old key if it changed
-        if (keyChanged && editingMetadata.originalKey) {
-          delete updatedMetadata[editingMetadata.originalKey];
+        if (keyChanged) {
+          delete updatedMetadata[editingKey];
         }
 
         // Add/update new key
-        updatedMetadata[editingMetadata.key] = parseMetadataValue(editingMetadata.value);
+        updatedMetadata[newKey] = parseMetadataValue(newValue);
 
         return {
           ...prev,
@@ -156,13 +126,15 @@ function ImageMetadata({ imageId, image, setImage, loading, setLoading, setError
         };
       });
 
-      // Exit inline editing
-      setEditingMetadata(null);
+      // Close dialog and reset state
+      setEditDialogOpen(false);
+      setEditingKey(null);
+      setEditingValue('');
       setError(null);
 
     } catch (error) {
-      console.error('Error updating metadata:', error);
-      setError('Failed to update metadata. Please try again later.');
+      console.error('Error saving metadata:', error);
+      setError('Failed to save metadata. Please try again later.');
     } finally {
       setLoading(false);
     }
@@ -173,18 +145,18 @@ function ImageMetadata({ imageId, image, setImage, loading, setLoading, setError
     if (!window.confirm(`Are you sure you want to delete the metadata key "${key}"?`)) {
       return;
     }
-    
+
     try {
       setLoading(true);
-      
+
       const response = await fetch(`/api/images/${imageId}/metadata/${key}`, {
         method: 'DELETE',
       });
-      
+
       if (!response.ok) {
         throw new Error(`HTTP error! Status: ${response.status}`);
       }
-      
+
       // Update the image metadata
       setImage(prev => {
         const currentMetadata = prev.metadata || prev.metadata_ || {};
@@ -197,9 +169,9 @@ function ImageMetadata({ imageId, image, setImage, loading, setLoading, setError
           metadata_: updatedMetadata
         };
       });
-      
+
       setError(null);
-      
+
     } catch (error) {
       console.error('Error deleting metadata:', error);
       setError('Failed to delete metadata. Please try again later.');
@@ -207,6 +179,9 @@ function ImageMetadata({ imageId, image, setImage, loading, setLoading, setError
       setLoading(false);
     }
   };
+
+  const customMetadata = image?.metadata || image?.metadata_ || {};
+  const hasCustomMetadata = Object.keys(customMetadata).length > 0;
 
   return (
     <div className="card" id="metadata-container">
@@ -242,154 +217,76 @@ function ImageMetadata({ imageId, image, setImage, loading, setLoading, setError
                 </tr>
               </tbody>
             </table>
-            
-            <h3>Custom Metadata</h3>
-            {((image.metadata || image.metadata_) && Object.keys(image.metadata || image.metadata_).length > 0) ? (
-              <>
-                <table className="metadata-table custom-metadata-table">
-                  <tbody>
-                    {Object.entries(image.metadata || image.metadata_).map(([key, value]) => (
-                      <tr key={key}>
-                        <td className="metadata-label">
-                          {editingMetadata && editingMetadata.originalKey === key ? (
-                            <input
-                              type="text"
-                              className="metadata-key-input-inline"
-                              value={editingMetadata.key}
-                              onChange={(e) => setEditingMetadata({...editingMetadata, key: e.target.value})}
-                              placeholder="Metadata key"
-                            />
-                          ) : (
-                            <span onClick={() => setEditingMetadata({
-                              originalKey: key,
-                              key,
-                              value: typeof value === 'object'
-                                ? JSON.stringify(value, null, 2)
-                                : value.toString()
-                            })} style={{ cursor: 'pointer' }}>
-                              {key}
-                            </span>
-                          )}
-                        </td>
-                        <td className="metadata-value">
-                          {editingMetadata && editingMetadata.originalKey === key ? (
-                            <textarea
-                              className="metadata-value-textarea-inline"
-                              value={editingMetadata.value}
-                              onChange={(e) => setEditingMetadata({...editingMetadata, value: e.target.value})}
-                              placeholder="Enter a simple value or valid JSON"
-                            ></textarea>
-                          ) : (
-                            <div onClick={() => setEditingMetadata({
-                              originalKey: key,
-                              key,
-                              value: typeof value === 'object'
-                                ? JSON.stringify(value, null, 2)
-                                : value.toString()
-                            })} style={{ cursor: 'pointer' }}>
-                              {value === null ? (
-                                <span className="metadata-null">null</span>
-                              ) : typeof value === 'object' ? (
-                                <pre>{JSON.stringify(value, null, 2)}</pre>
-                              ) : (
-                                value.toString()
-                              )}
-                            </div>
-                          )}
-                        </td>
-                        <td className="metadata-actions">
-                          {(!editingMetadata || editingMetadata.originalKey !== key) && (
-                            <>
-                              <button
-                                className="btn btn-small"
-                                onClick={() => setEditingMetadata({
-                                  originalKey: key,
-                                  key,
-                                  value: typeof value === 'object'
-                                    ? JSON.stringify(value, null, 2)
-                                    : value.toString()
-                                })}
-                              >
-                                Edit
-                              </button>
-                              <button
-                                className="btn btn-small btn-danger"
-                                onClick={() => handleDeleteMetadata(key)}
-                              >
-                                Delete
-                              </button>
-                            </>
-                          )}
-                          {editingMetadata && editingMetadata.originalKey === key && (
-                            <span className="editing-indicator">Editing...</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
 
-                {/* Edit actions below table */}
-                {editingMetadata && (
-                  <div className="metadata-edit-actions-below">
-                    <button
-                      className="btn btn-small btn-primary"
-                      onClick={handleUpdateMetadata}
-                      disabled={loading}
-                    >
-                      {loading ? 'Saving...' : 'Save'}
-                    </button>
-                    <button
-                      className="btn btn-small btn-secondary"
-                      onClick={() => setEditingMetadata(null)}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                )}
-              </>
-            ) : (
-              <p>No custom metadata available</p>
-            )}
-            
-            <form id="add-metadata-form" className="form" onSubmit={handleAddMetadata}>
-              <h3>Add Metadata</h3>
-              <div className="form-group">
-                <label htmlFor="metadata-key">Key:</label>
-                <input 
-                  type="text" 
-                  id="metadata-key" 
-                  name="metadata-key" 
-                  value={newMetadata.key}
-                  onChange={(e) => setNewMetadata({...newMetadata, key: e.target.value})}
-                  required 
-                />
-              </div>
-              <div className="form-group">
-                <label htmlFor="metadata-value">Value:</label>
-                <textarea 
-                  id="metadata-value" 
-                  name="metadata-value" 
-                  rows="3"
-                  value={newMetadata.value}
-                  onChange={(e) => setNewMetadata({...newMetadata, value: e.target.value})}
-                ></textarea>
-                <small>You can enter a simple value or valid JSON</small>
-              </div>
-              <button 
-                type="submit" 
-                className="btn btn-primary"
+            <div className="custom-metadata-header">
+              <h3>Custom Metadata</h3>
+              <button
+                className="btn btn-small btn-primary"
+                onClick={handleOpenAddDialog}
                 disabled={loading}
               >
                 Add Metadata
               </button>
-            </form>
+            </div>
+
+            {hasCustomMetadata ? (
+              <table className="metadata-table custom-metadata-table">
+                <tbody>
+                  {Object.entries(customMetadata).map(([key, value]) => (
+                    <tr key={key}>
+                      <td className="metadata-label">{key}</td>
+                      <td className="metadata-value">
+                        <div className="metadata-value-content">
+                          {value === null ? (
+                            <span className="metadata-null">null</span>
+                          ) : typeof value === 'object' ? (
+                            <pre>{JSON.stringify(value, null, 2)}</pre>
+                          ) : (
+                            value.toString()
+                          )}
+                        </div>
+                        <div className="metadata-actions">
+                          <button
+                            className="btn btn-small"
+                            onClick={() => handleOpenEditDialog(key, value)}
+                            disabled={loading}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            className="btn btn-small btn-danger"
+                            onClick={() => handleDeleteMetadata(key)}
+                            disabled={loading}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="no-metadata-message">No custom metadata available</p>
+            )}
           </>
         ) : (
           <p>Failed to load metadata</p>
         )}
       </div>
 
+      <MetadataEditDialog
+        isOpen={editDialogOpen}
+        onClose={() => {
+          setEditDialogOpen(false);
+          setEditingKey(null);
+          setEditingValue('');
+        }}
+        onSave={handleSaveMetadata}
+        initialKey={editingKey}
+        initialValue={editingValue}
+        isLoading={loading}
+      />
     </div>
   );
 }
