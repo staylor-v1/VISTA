@@ -25,8 +25,7 @@ export default function MeasurementOverlay({
         displayX2: m.x2 * scaleX,
         displayY2: m.y2 * scaleY
       }));
-  // Include calibration in deps to ensure re-render when calibration changes
-  }, [measurements, naturalSize, containerSize, visibleMeasurementIds, calibration]);
+  }, [measurements, naturalSize, containerSize, visibleMeasurementIds]);
 
   // Calculate real-world distances dynamically from pixels using current calibration
   const formatDistance = (measurement) => {
