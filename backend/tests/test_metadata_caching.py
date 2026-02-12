@@ -40,7 +40,7 @@ class TestMetadataCaching:
         image_id = ur.json()["id"]
         
         cache = get_cache()
-        cache_key = f"image:{image_id}:metadata"
+        cache_key = f"image:{image_id}:user:test@example.com:metadata"
         
         # Verify cache key structure
         assert "image:" in cache_key
@@ -64,7 +64,7 @@ class TestMetadataCaching:
         image_id = ur.json()["id"]
         
         cache = get_cache()
-        metadata_cache_key = f"image:{image_id}:metadata"
+        metadata_cache_key = f"image:{image_id}:user:test@example.com:metadata"
         
         # Manually set cache entry
         cache.set(metadata_cache_key, {"cached": "metadata"})
@@ -94,7 +94,7 @@ class TestMetadataCaching:
         image_id = ur.json()["id"]
         
         cache = get_cache()
-        metadata_cache_key = f"image:{image_id}:metadata"
+        metadata_cache_key = f"image:{image_id}:user:test@example.com:metadata"
         
         # Manually set cache entry
         cache.set(metadata_cache_key, {"cached": "metadata"})
@@ -117,5 +117,5 @@ class TestMetadataCaching:
         assert r.status_code == 404
         
         # Verify no cache entry was created
-        cache_key = f"image:{nonexistent_id}:metadata"
+        cache_key = f"image:{nonexistent_id}:user:test@example.com:metadata"
         assert cache.get(cache_key) is None
