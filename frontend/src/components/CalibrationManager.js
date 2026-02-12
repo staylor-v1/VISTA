@@ -34,13 +34,13 @@ export default function CalibrationManager({
     setIsImageOverride(false);
 
     try {
-      const response = await fetch(`/api/projects/${projectId}/metadata/calibration_default`);
+      const response = await fetch(`/api/projects/${projectId}/metadata-dict`);
       if (response.ok) {
         const data = await response.json();
-        if (data.value) {
-          setCalibration(data.value);
+        if (data.calibration_default) {
+          setCalibration(data.calibration_default);
           if (onCalibrationChange) {
-            onCalibrationChange(data.value);
+            onCalibrationChange(data.calibration_default);
           }
           return;
         }
