@@ -10,7 +10,7 @@ A full-stack web application for managing, classifying, and collaborating on vis
 
 > **Windows Users:** PowerShell equivalents are available for development scripts:
 >
-> - `ps_launch_postgres_minio.ps1` - Launch containers
+> - `scripts/launch_postgres_minio.ps1` - Launch containers
 > - `backend\ps_run.ps1` - Run backend server
 > - `frontend\ps_run.ps1` - Run frontend dev server
 
@@ -62,7 +62,7 @@ SKIP_HEADER_CHECK=true
 
 ```bash
 # Start PostgreSQL and MinIO containers
-bash short-cut-launch-postgres-minio.sh
+bash scripts/launch_postgres_minio.sh
 ```
 
 ### 3. Setup Python Environment
