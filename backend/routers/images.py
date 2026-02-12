@@ -103,15 +103,7 @@ async def list_images_in_project(
     It checks the cache first for performance and then fetches from the database.
     Handles project existence and user permissions.
     """
-    # Check cache first
-    cache = get_cache()
-    cache_key = f"project_images:{project_id}:skip:{skip}:limit:{limit}:include_deleted:{include_deleted}:deleted_only:{deleted_only}:search_field:{search_field}:search_value:{search_value}"
-    cached_images = cache.get(cache_key)
-    
-    if cached_images is not None:
-        return cached_images
-    
-    # First check if the project exists and user has access
+    # Check project access BEFORE cache lookup to prevent cross-user data leakage
     try:
         await get_project_or_403(project_id, db, current_user)
     except HTTPException as e:
@@ -120,6 +112,14 @@ async def list_images_in_project(
             return []
         # Re-raise other exceptions (like permission issues)
         raise
+
+    # Check cache (keyed per-user to prevent cross-user leakage)
+    cache = get_cache()
+    cache_key = f"project_images:{project_id}:user:{current_user.email}:skip:{skip}:limit:{limit}:include_deleted:{include_deleted}:deleted_only:{deleted_only}:search_field:{search_field}:search_value:{search_value}"
+    cached_images = cache.get(cache_key)
+
+    if cached_images is not None:
+        return cached_images
         
     # Get images for the project
     if deleted_only:
@@ -182,7 +182,7 @@ async def get_image_metadata(
     """
     # Check cache first
     cache = get_cache()
-    cache_key = f"image:{image_id}:metadata"
+    cache_key = f"image:{image_id}:user:{current_user.email}:metadata"
     cached_metadata = cache.get(cache_key)
     
     if cached_metadata is not None:
@@ -542,7 +542,7 @@ async def delete_image(
     await db.refresh(db_image)
     cache = get_cache()
     cache.clear_pattern(f"project_images:{project_id}")
-    cache.delete(f"image:{image_id}:metadata")
+    cache.clear_pattern(f"image:{image_id}:")
     cache.clear_pattern(f"thumbnail:{image_id}")
     return to_data_instance_schema(db_image)
 
@@ -573,7 +573,7 @@ async def restore_deleted_image(
     await db.refresh(db_image)
     cache = get_cache()
     cache.clear_pattern(f"project_images:{project_id}")
-    cache.delete(f"image:{image_id}:metadata")
+    cache.clear_pattern(f"image:{image_id}:")
     cache.clear_pattern(f"thumbnail:{image_id}")
     return to_data_instance_schema(db_image)
 
@@ -629,7 +629,7 @@ async def update_image_metadata(
     
     # Invalidate caches
     cache = get_cache()
-    cache.delete(f"image:{image_id}:metadata")
+    cache.clear_pattern(f"image:{image_id}:")
     cache.clear_pattern(f"project_images:{db_image.project_id}")
     cache.clear_pattern(f"thumbnail:{image_id}")
     
@@ -692,7 +692,7 @@ async def delete_image_metadata(
     
     # Invalidate caches
     cache = get_cache()
-    cache.delete(f"image:{image_id}:metadata")
+    cache.clear_pattern(f"image:{image_id}:")
     cache.clear_pattern(f"project_images:{db_image.project_id}")
     cache.clear_pattern(f"thumbnail:{image_id}")
     
