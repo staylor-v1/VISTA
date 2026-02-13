@@ -205,8 +205,6 @@ class TestImageListCaching:
         assert r.status_code == 200
         assert r.json() == []
         
-        # Verify no cache entry was created for nonexistent project
-        cache_key = f"project_images:{nonexistent_pid}:user:test@example.com:skip:0:limit:100:include_deleted:False:deleted_only:False:search_field:None:search_value:None"
-        # Note: The current implementation may still cache empty results
-        # This test documents the current behavior - empty results are cached
-        # which is actually beneficial to avoid repeated database queries
+        # Note: For nonexistent projects, access check returns empty list before
+        # reaching the cache layer, so no cache entry is created. This is correct
+        # behavior since auth runs before caching.
