@@ -61,7 +61,7 @@ describe('CalibrationManager', () => {
     beforeEach(() => {
       global.fetch.mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({ value: projectCalibration })
+        json: () => Promise.resolve({ calibration_default: projectCalibration })
       });
     });
 
@@ -183,7 +183,7 @@ describe('CalibrationManager', () => {
 
       global.fetch.mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({ value: projectCalibration })
+        json: () => Promise.resolve({ calibration_default: projectCalibration })
       });
 
       render(<CalibrationManager {...defaultProps} />);
