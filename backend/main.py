@@ -206,28 +206,42 @@ def create_app() -> FastAPI:
         dependencies=[Depends(require_hmac_auth)]
     )
 
-    # Standardized router registration: define once, register across all prefixes
-    routers_config = [
+    # ---- Router registration by auth tier ----
+    #
+    # /api (proxy auth, user sessions): all user-facing routers
+    # /api-key (API key auth): data-access routers only, NOT user admin or key mgmt
+    # /api-ml (HMAC auth): ML pipeline callback endpoints only
+    #
+    # This prevents:
+    #   - API keys from creating new API keys (privilege escalation)
+    #   - API keys from accessing user admin endpoints
+    #   - ML pipeline endpoints from being reachable without HMAC auth
+
+    # Routers available on both /api and /api-key (general data access)
+    shared_routers = [
         {"router": projects.router, "prefix": "/projects"},
-        {"router": images.router, "prefix": None},  # full paths include /projects
-        {"router": users.router, "prefix": "/users"},
+        {"router": images.router, "prefix": None},
         {"router": image_classes.router, "prefix": None},
         {"router": comments.router, "prefix": None},
         {"router": project_metadata.router, "prefix": None},
-        {"router": api_keys.router, "prefix": None},
         {"router": ml_analyses.router, "prefix": None},
     ]
 
-    for cfg in routers_config:
+    for cfg in shared_routers:
         prefix = cfg["prefix"]
         if prefix:
             api_router.include_router(cfg["router"], prefix=prefix)
             api_key_router.include_router(cfg["router"], prefix=prefix)
-            api_ml_router.include_router(cfg["router"], prefix=prefix)
         else:
             api_router.include_router(cfg["router"])
             api_key_router.include_router(cfg["router"])
-            api_ml_router.include_router(cfg["router"])
+
+    # Routers available on /api only (user sessions, not API keys)
+    api_router.include_router(users.router, prefix="/users")
+    api_router.include_router(api_keys.router)
+
+    # ML pipeline callback endpoints on /api-ml only (HMAC auth required)
+    api_ml_router.include_router(ml_analyses.pipeline_router)
 
     # Add health check endpoint (no auth required)
     @app.get("/api/health")
