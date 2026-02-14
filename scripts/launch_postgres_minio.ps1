@@ -5,7 +5,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 # Change to script directory
-Set-Location $PSScriptRoot
+Set-Location (Join-Path $PSScriptRoot "..")
 
 # Detect container runtime (prefer podman, fallback to docker)
 $containerCmd = $null
