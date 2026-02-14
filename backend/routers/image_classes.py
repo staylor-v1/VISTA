@@ -199,7 +199,7 @@ async def delete_classification(
     
     # Only allow the user who created the classification or admin users to delete it
     is_admin = is_user_in_group(current_user.email, "admin")
-    if (current_user.id and str(db_classification.created_by_id) != str(current_user.id)) and not is_admin:
+    if (not current_user.id or str(db_classification.created_by_id) != str(current_user.id)) and not is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to delete this classification",
