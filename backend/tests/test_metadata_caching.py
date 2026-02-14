@@ -1,6 +1,7 @@
 import io
 import uuid
 import pytest
+from unittest.mock import patch
 from PIL import Image
 from utils.cache_manager import get_cache
 
@@ -111,11 +112,46 @@ class TestMetadataCaching:
         """Test metadata request for nonexistent image doesn't create cache entries."""
         nonexistent_id = uuid.uuid4()
         cache = get_cache()
-        
+
         # Request metadata for nonexistent image
         r = client.get(f"/api/images/{nonexistent_id}")
         assert r.status_code == 404
-        
+
         # Verify no cache entry was created
         cache_key = f"image:{nonexistent_id}:user:test@example.com:metadata"
         assert cache.get(cache_key) is None
+
+    def test_metadata_cache_denied_after_permission_revocation(self, client):
+        """Test that cached metadata is NOT returned after user loses group access.
+
+        This is the core security scenario: a user fetches image metadata (which
+        gets cached), then their group membership is revoked. The next request
+        must return 403, not stale cached data.
+        """
+        # Create project and upload image
+        pr = client.post("/api/projects/", json={
+            "name": "PermRevokeTest", "description": None, "meta_group_id": "g"
+        })
+        pid = pr.json()["id"]
+
+        img_bytes = _make_png_bytes()
+        files = {"file": ("test.png", img_bytes, "image/png")}
+        ur = client.post(f"/api/projects/{pid}/images", files=files)
+        assert ur.status_code == 201
+        image_id = ur.json()["id"]
+
+        # First request succeeds and populates the cache
+        r1 = client.get(f"/api/images/{image_id}")
+        assert r1.status_code == 200
+
+        cache = get_cache()
+        cache_key = f"image:{image_id}:user:test@example.com:metadata"
+        assert cache.get(cache_key) is not None, "Cache should be populated"
+
+        # Simulate permission revocation: is_user_in_group now returns False
+        with patch("routers.images.is_user_in_group", return_value=False):
+            r2 = client.get(f"/api/images/{image_id}")
+
+        assert r2.status_code == 403, (
+            "Should deny access after permission revocation, not serve cached data"
+        )
