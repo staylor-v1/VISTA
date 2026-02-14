@@ -100,18 +100,10 @@ async def list_images_in_project(
 ):
     """
     Retrieves a list of images for a given project.
-    It checks the cache first for performance and then fetches from the database.
-    Handles project existence and user permissions.
+    It first verifies project existence and user access, then uses a per-user
+    cache for performance before falling back to the database.
     """
-    # Check cache first
-    cache = get_cache()
-    cache_key = f"project_images:{project_id}:skip:{skip}:limit:{limit}:include_deleted:{include_deleted}:deleted_only:{deleted_only}:search_field:{search_field}:search_value:{search_value}"
-    cached_images = cache.get(cache_key)
-    
-    if cached_images is not None:
-        return cached_images
-    
-    # First check if the project exists and user has access
+    # Check project access BEFORE cache lookup to prevent cross-user data leakage
     try:
         await get_project_or_403(project_id, db, current_user)
     except HTTPException as e:
@@ -120,6 +112,14 @@ async def list_images_in_project(
             return []
         # Re-raise other exceptions (like permission issues)
         raise
+
+    # Check cache (keyed per-user to prevent cross-user leakage)
+    cache = get_cache()
+    cache_key = f"project_images:{project_id}:user:{current_user.email}:skip:{skip}:limit:{limit}:include_deleted:{include_deleted}:deleted_only:{deleted_only}:search_field:{search_field}:search_value:{search_value}"
+    cached_images = cache.get(cache_key)
+
+    if cached_images is not None:
+        return cached_images
         
     # Get images for the project
     if deleted_only:
@@ -177,17 +177,11 @@ async def get_image_metadata(
 ):
     """
     Fetches metadata for a specific image using its ID.
-    It checks the cache for existing metadata before querying the database.
-    Access is restricted based on user group membership.
+    It verifies image existence and user access before checking the per-user
+    cache, then falls back to serialization from the database record.
     """
-    # Check cache first
-    cache = get_cache()
-    cache_key = f"image:{image_id}:metadata"
-    cached_metadata = cache.get(cache_key)
-    
-    if cached_metadata is not None:
-        return cached_metadata
-    
+    # Check image existence and access BEFORE cache lookup to prevent
+    # serving stale data after permission revocation
     db_image = await crud.get_data_instance(db=db, image_id=image_id)
     if db_image is None or (db_image.deleted_at and not include_deleted):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
@@ -197,13 +191,21 @@ async def get_image_metadata(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"User '{current_user.email}' does not have access to image '{image_id}'",
         )
-    
+
+    # Check cache (keyed per-user) for serialized response
+    cache = get_cache()
+    cache_key = f"image:{image_id}:user:{current_user.email}:metadata"
+    cached_metadata = cache.get(cache_key)
+
+    if cached_metadata is not None:
+        return cached_metadata
+
     # Use utility function for consistent metadata serialization
     result = to_data_instance_schema(db_image)
-    
+
     # Cache the result (1 hour)
     cache.set(cache_key, result, expire=60*60)
-    
+
     return result
 
 import httpx
@@ -542,7 +544,7 @@ async def delete_image(
     await db.refresh(db_image)
     cache = get_cache()
     cache.clear_pattern(f"project_images:{project_id}")
-    cache.delete(f"image:{image_id}:metadata")
+    cache.clear_pattern(f"image:{image_id}:")
     cache.clear_pattern(f"thumbnail:{image_id}")
     return to_data_instance_schema(db_image)
 
@@ -573,7 +575,7 @@ async def restore_deleted_image(
     await db.refresh(db_image)
     cache = get_cache()
     cache.clear_pattern(f"project_images:{project_id}")
-    cache.delete(f"image:{image_id}:metadata")
+    cache.clear_pattern(f"image:{image_id}:")
     cache.clear_pattern(f"thumbnail:{image_id}")
     return to_data_instance_schema(db_image)
 
@@ -629,7 +631,7 @@ async def update_image_metadata(
     
     # Invalidate caches
     cache = get_cache()
-    cache.delete(f"image:{image_id}:metadata")
+    cache.clear_pattern(f"image:{image_id}:")
     cache.clear_pattern(f"project_images:{db_image.project_id}")
     cache.clear_pattern(f"thumbnail:{image_id}")
     
@@ -692,7 +694,7 @@ async def delete_image_metadata(
     
     # Invalidate caches
     cache = get_cache()
-    cache.delete(f"image:{image_id}:metadata")
+    cache.clear_pattern(f"image:{image_id}:")
     cache.clear_pattern(f"project_images:{db_image.project_id}")
     cache.clear_pattern(f"thumbnail:{image_id}")
     
