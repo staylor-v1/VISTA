@@ -437,7 +437,7 @@ def _verify_pipeline_hmac(request: Request, body_bytes: bytes):
         raise HTTPException(status_code=500, detail="HMAC secret not configured")
     sig = request.headers.get("X-ML-Signature", "")
     ts = request.headers.get("X-ML-Timestamp", "0")
-    if not verify_hmac_signature_flexible(secret, body_bytes, ts, sig):
+    if not verify_hmac_signature_flexible(secret, body_bytes, ts, sig, skew_seconds=settings.ML_HMAC_TIMESTAMP_SKEW_SECONDS):
         raise HTTPException(status_code=401, detail="Invalid HMAC signature")
 
 
