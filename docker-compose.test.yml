@@ -70,7 +70,8 @@ services:
     volumes:
       - ./backend:/app/backend:ro
       - ./test:/app/test:ro
-      - ./requirements.txt:/app/requirements.txt:ro
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./uv.lock:/app/uv.lock:ro
     working_dir: /app/backend
     command: >
       bash -c "

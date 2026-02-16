@@ -1,23 +1,28 @@
-# Use Debian-based Python image to match devcontainer environment
+# RHEL 9 / UBI 9 Minimal based production image
 # Multi-stage build for optimized production image
-FROM python:3.11-bookworm AS base
+FROM registry.access.redhat.com/ubi9/ubi-minimal AS base
 
-# Install system dependencies and development tools in a single layer
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install Python 3.11, Node.js, and system dependencies
+RUN microdnf install -y --nodocs \
+    python3.11 \
+    python3.11-pip \
+    python3.11-devel \
     gcc \
-    g++ \
-    libpq-dev \
+    gcc-c++ \
+    libpq-devel \
     git \
-    curl \
     wget \
     ca-certificates \
     nodejs \
     npm \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && microdnf clean all
+
+# Create symlinks for python
+RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && \
+    ln -sf /usr/bin/python3.11 /usr/bin/python
 
 # Create a Python virtual environment
-RUN python -m venv /opt/venv
+RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Install uv package installer and debugging tools
@@ -32,9 +37,9 @@ ENV PYTHONUNBUFFERED=1
 FROM base AS builder
 
 # Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    uv pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml uv.lock ./
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy backend code
 COPY ./backend /app/backend
@@ -70,6 +75,10 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Install uv in the final stage for testing
 RUN pip install --no-cache-dir uv
+
+# Copy pyproject.toml and lockfile (needed for installing dev deps in CI)
+COPY pyproject.toml uv.lock ./
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 
 # Copy backend code
 COPY --from=builder /app/backend /app/backend

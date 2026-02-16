@@ -14,7 +14,7 @@ These guidelines are for AI coding agents (like GitHub Copilot Chat) working in 
 
 - **Bootstrap dev stack (from repo root):**
   - `podman compose up -d postgres minio`
-  - `pip install uv && uv venv .venv && source .venv/bin/activate && uv pip install -r requirements.txt`
+  - `pip install uv && uv sync`
   - `cd backend && alembic upgrade head && (uvicorn main:app --reload || ./run.sh)`
   - `cd frontend && npm install && npm run dev`
 - **Tests:** Prefer the unified runner when adding/changing code:

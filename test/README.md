@@ -68,7 +68,7 @@ The backend test suite includes:
 - Python 3.11+
 - pytest
 - pytest-asyncio
-- All backend dependencies (see `requirements.txt`)
+- All backend dependencies (see `pyproject.toml`)
 
 ### Exit Codes
 

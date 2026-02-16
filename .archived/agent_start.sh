@@ -121,7 +121,7 @@ source .venv/bin/activate
 # Install dependencies if needed
 if ! python -c "import fastapi" &>/dev/null; then
     echo -e "${YELLOW}  Installing Python dependencies...${NC}"
-    uv pip install -r requirements.txt
+    uv sync
     echo -e "${GREEN}  Dependencies installed${NC}"
 else
     echo -e "${GREEN}  Python dependencies already installed${NC}"
