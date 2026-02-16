@@ -97,7 +97,8 @@ services:
     volumes:
       # Mount source code for hot reload (read-only)
       - ./backend:/app/backend:ro
-      - ./requirements.txt:/app/requirements.txt:ro
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./uv.lock:/app/uv.lock:ro
       - ./.env:/app/.env:ro
       # Persistent volumes for cache
       - backend_cache:/app/.cache
