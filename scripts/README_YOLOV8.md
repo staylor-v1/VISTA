@@ -55,7 +55,7 @@ export ML_CALLBACK_HMAC_SECRET='your-secret-here'
 # With options
 ./scripts/run_yolov8_pipeline.sh <project_id> \
   --model-size n \
-  --limit 5 \
+  --limit 50 \
   --api-url http://localhost:8000
 ```
 
@@ -84,7 +84,7 @@ Options:
                         m=medium
                         l=large
                         x=xlarge (most accurate, GPU recommended)
-    --limit N           Maximum images to process (default: 10)
+    --limit N           Maximum images to process (default: 50)
     --install-deps      Install ML dependencies before running
     --help              Show help message
 ```
@@ -104,8 +104,8 @@ Options:
 ## Examples
 
 ```bash
-# Test with 5 images using nano model (fast)
-./scripts/run_yolov8_pipeline.sh abc-123-def --model-size n --limit 5 --install-deps
+# Test with nano model (fast)
+./scripts/run_yolov8_pipeline.sh abc-123-def --model-size n --install-deps
 
 # Process 20 images with medium model
 ./scripts/run_yolov8_pipeline.sh abc-123-def --model-size m --limit 20
@@ -273,7 +273,7 @@ pipeline = YOLOv8Pipeline(
 pipeline.run_project_pipeline(
     project_id='abc-123-def',
     model_size='n',
-    limit=10
+    limit=50
 )
 ```
 

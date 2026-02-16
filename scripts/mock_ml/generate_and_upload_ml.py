@@ -4,30 +4,27 @@ mock ML analyses (classification, detection, segmentation/heatmap) and attach an
 
 Usage:
   python scripts/mock_ml/generate_and_upload_ml.py --api-base http://localhost:8000 --project <project_id> \
-      [--api-key XYZ] [--hmac-secret SECRET]
+      [--api-key XYZ]
 
 Steps:
  1. Generate PNG with colored shapes.
- 2. Upload image (POST /api/images/upload or fallback to /api/projects/{id}/images if different).
+ 2. Upload image (POST /api/projects/{id}/images).
  3. Create one or more ML analyses (POST /api/images/{image_id}/analyses).
  4. For each analysis, bulk insert annotations (POST /api/analyses/{analysis_id}/annotations:bulk).
  5. Finalize analysis (POST /api/analyses/{analysis_id}/finalize) with status=completed.
 
-HMAC: The ML pipeline endpoints may require HMAC. We compute X-ML-Signature if --hmac-secret provided.
+Authentication: API key (Bearer token) or debug-mode headers (X-User-Email).
+All endpoints use the unified /api prefix.
 
 Requires: Pillow (PIL). Install via: pip install Pillow requests
 """
 from __future__ import annotations
 import argparse
-import base64
-import hashlib
-import hmac
 import io
 import json
 import os
 import sys
 import time
-import uuid
 from typing import Dict, Any, List
 
 import requests
@@ -55,18 +52,23 @@ def gen_image(width=640, height=480) -> bytes:
     return buf.getvalue()
 
 
-def upload_image(api_base: str, project_id: str, png_bytes: bytes, api_key: str|None) -> str:
-    # Try a simple upload endpoint; if the project has a multipart endpoint, adapt here.
-    # We'll attempt /api/projects/{project_id}/images (if exists) else bail.
+def _build_session(api_key: str | None) -> requests.Session:
+    """Create an authenticated requests session."""
+    session = requests.Session()
+    if api_key:
+        session.headers.update({'Authorization': f'Bearer {api_key}'})
+    else:
+        session.headers.update({'X-User-Email': 'test@example.com'})
+    return session
+
+
+def upload_image(api_base: str, project_id: str, png_bytes: bytes, session: requests.Session) -> str:
     files = {
         'file': (f'synthetic_{int(time.time())}.png', png_bytes, 'image/png')
     }
-    headers = {}
-    if api_key:
-        headers['X-API-Key'] = api_key
     url = f"{api_base}/api/projects/{project_id}/images"
     log(f"Uploading image -> {url}")
-    resp = requests.post(url, files=files, headers=headers)
+    resp = session.post(url, files=files)
     if resp.status_code >= 400:
         raise RuntimeError(f"Image upload failed: {resp.status_code} {resp.text}")
     data = resp.json()
@@ -77,19 +79,16 @@ def upload_image(api_base: str, project_id: str, png_bytes: bytes, api_key: str|
     return image_id
 
 
-def create_analysis(api_base: str, image_id: str, model_name: str, model_version: str, api_key: str|None, *, fallback: bool = True) -> str:
+def create_analysis(api_base: str, image_id: str, model_name: str, model_version: str,
+                    session: requests.Session, *, fallback: bool = True) -> str:
     """Attempt to create an analysis; if model not allowed and fallback enabled, retry with a default allowed model."""
     attempt_names = [model_name]
     # Known default allowed models from backend settings (can drift; safe baseline)
     default_allowed = ["resnet50_classifier", "vgg16", "inception_v3", "efficientnet_b0"]
     if fallback:
-        # Append defaults (skip duplicates preserving order)
         for d in default_allowed:
             if d not in attempt_names:
                 attempt_names.append(d)
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers['X-API-Key'] = api_key
     url = f"{api_base}/api/images/{image_id}/analyses"
     last_error = None
     for name in attempt_names:
@@ -100,15 +99,13 @@ def create_analysis(api_base: str, image_id: str, model_name: str, model_version
             "parameters": {"demo": True, "requested_name": model_name}
         }
         log(f"Create analysis -> {url} model={name}")
-        resp = requests.post(url, headers=headers, json=payload)
+        resp = session.post(url, json=payload)
         if resp.status_code < 400:
             data = resp.json()
             if name != model_name:
                 log(f"Model '{model_name}' not allowed; fell back to '{name}'")
             return data['id']
-        # capture error detail
         last_error = f"{resp.status_code} {resp.text}"
-        # If not allowed error and we have more names, continue
         if "Model not allowed" in resp.text and fallback:
             continue
         else:
@@ -116,46 +113,23 @@ def create_analysis(api_base: str, image_id: str, model_name: str, model_version
     raise RuntimeError(f"Create analysis failed after fallbacks: {last_error}")
 
 
-def _hmac_headers(secret: str, body_bytes: bytes) -> Dict[str,str]:
-    ts = str(int(time.time()))
-    hm = hmac.new(secret.encode(), body_bytes + ts.encode(), hashlib.sha256).hexdigest()
-    return {"X-ML-Timestamp": ts, "X-ML-Signature": hm}
-
-
-def bulk_annotations(api_base: str, analysis_id: str, annotations: List[Dict[str,Any]], api_key: str|None, hmac_secret: str|None):
+def bulk_annotations(api_base: str, analysis_id: str, annotations: List[Dict[str,Any]],
+                     session: requests.Session):
     payload = {"annotations": annotations, "mode": "append"}
-    body = json.dumps(payload).encode()
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers['X-API-Key'] = api_key
-    if hmac_secret:
-        headers.update(_hmac_headers(hmac_secret, body))
     url = f"{api_base}/api/analyses/{analysis_id}/annotations:bulk"
     log(f"Bulk annotations -> {url} count={len(annotations)}")
-    resp = requests.post(url, headers=headers, data=body)
+    resp = session.post(url, json=payload)
     if resp.status_code >= 400:
-        detail = resp.text
-        if ("HMAC secret not configured" in detail or "Invalid HMAC" in detail) and not hmac_secret:
-            detail += "\nHint: Set ML_CALLBACK_HMAC_SECRET in backend env (or .env) and pass --hmac-secret <value> here, or disable HMAC via ML_PIPELINE_REQUIRE_HMAC=false for local dev."
-        raise RuntimeError(f"Bulk annotations failed: {resp.status_code} {detail}")
+        raise RuntimeError(f"Bulk annotations failed: {resp.status_code} {resp.text}")
 
 
-def finalize(api_base: str, analysis_id: str, api_key: str|None, hmac_secret: str|None):
+def finalize(api_base: str, analysis_id: str, session: requests.Session):
     payload = {"status": "completed"}
-    body = json.dumps(payload).encode()
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers['X-API-Key'] = api_key
-    if hmac_secret:
-        headers.update(_hmac_headers(hmac_secret, body))
     url = f"{api_base}/api/analyses/{analysis_id}/finalize"
     log(f"Finalize analysis -> {analysis_id}")
-    resp = requests.post(url, headers=headers, data=body)
+    resp = session.post(url, json=payload)
     if resp.status_code >= 400:
-        detail = resp.text
-        if ("HMAC secret not configured" in detail or "Invalid HMAC" in detail) and not hmac_secret:
-            detail += "\nHint: Set ML_CALLBACK_HMAC_SECRET in backend env (or .env) and pass --hmac-secret <value> here, or disable HMAC via ML_PIPELINE_REQUIRE_HMAC=false for local dev."
-        raise RuntimeError(f"Finalize failed: {resp.status_code} {detail}")
+        raise RuntimeError(f"Finalize failed: {resp.status_code} {resp.text}")
 
 
 def build_detection_annotations(image_w: int, image_h: int) -> List[Dict[str,Any]]:
@@ -196,8 +170,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--api-base', default='http://localhost:8000')
     ap.add_argument('--project', required=True, help='Project UUID')
-    ap.add_argument('--api-key', help='API key value (sets X-API-Key)')
-    ap.add_argument('--hmac-secret', help='ML callback HMAC secret if required')
+    ap.add_argument('--api-key', help='API key for Bearer token authentication')
     ap.add_argument('--no-heatmap', action='store_true')
     ap.add_argument('--model-name-base', default='demo-model')
     ap.add_argument('--no-fallback-model', action='store_true', help='Disable auto fallback to default allowed models')
@@ -210,13 +183,18 @@ def main():
     with open(os.path.join(out_dir, 'synthetic.png'), 'wb') as f:
         f.write(png)
 
-    image_id = upload_image(args.api_base, args.project, png, args.api_key)
+    # Build authenticated session
+    api_key = args.api_key or os.environ.get('API_KEY')
+    session = _build_session(api_key)
+
+    image_id = upload_image(args.api_base, args.project, png, session)
 
     # ANALYSIS 1: detection + classification combined
-    analysis1 = create_analysis(args.api_base, image_id, f"{args.model_name_base}-detcls", "1", args.api_key, fallback=not args.no_fallback_model)
+    analysis1 = create_analysis(args.api_base, image_id, f"{args.model_name_base}-detcls", "1",
+                                session, fallback=not args.no_fallback_model)
     det_anns = build_detection_annotations(640,480) + build_classification_annotations()
-    bulk_annotations(args.api_base, analysis1, det_anns, args.api_key, args.hmac_secret)
-    finalize(args.api_base, analysis1, args.api_key, args.hmac_secret)
+    bulk_annotations(args.api_base, analysis1, det_anns, session)
+    finalize(args.api_base, analysis1, session)
     log(f"Analysis {analysis1} (det+cls) completed with {len(det_anns)} annotations")
 
     # ANALYSIS 2: heatmap (optional)
@@ -226,12 +204,12 @@ def main():
             image_id,
             f"{args.model_name_base}-heatmap",
             "1",
-            args.api_key,
+            session,
             fallback=not args.no_fallback_model,
         )
         heatmap_anns = build_heatmap_annotation(640,480)
-        bulk_annotations(args.api_base, analysis2, heatmap_anns, args.api_key, args.hmac_secret)
-        finalize(args.api_base, analysis2, args.api_key, args.hmac_secret)
+        bulk_annotations(args.api_base, analysis2, heatmap_anns, session)
+        finalize(args.api_base, analysis2, session)
         log(f"Analysis {analysis2} (heatmap) completed with {len(heatmap_anns)} annotations")
 
     log("Done.")
