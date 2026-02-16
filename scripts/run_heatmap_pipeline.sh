@@ -56,7 +56,7 @@ Options:
                         Optional for dev/test (with DEBUG=true)
     --heatmap-type TYPE Heatmap type: random (default: random)
                         Future: gradcam, saliency, attention
-    --limit N           Maximum images to process (default: 10)
+    --limit N           Maximum images to process (default: 50)
     --skip-existing     Skip images that already have ML analysis results
     --output-dir DIR    Directory to save heatmaps locally for inspection (optional)
     --install-deps      Install ML dependencies before running
@@ -67,13 +67,13 @@ Environment Variables:
 
 Examples:
     # Development/testing (with DEBUG=true on backend)
-    $0 abc-123-def --limit 5
+    $0 abc-123-def --limit 50
 
     # Production (requires API key)
-    $0 abc-123-def --api-url https://api.example.com --api-key your-api-key --limit 5
+    $0 abc-123-def --api-url https://api.example.com --api-key your-api-key --limit 50
 
     # Save heatmaps locally for inspection
-    $0 abc-123-def --limit 5 --output-dir ./heatmap_outputs
+    $0 abc-123-def --limit 50 --output-dir ./heatmap_outputs
 
     # Skip images with existing analyses
     $0 abc-123-def --skip-existing --api-key your-api-key
@@ -89,7 +89,7 @@ PROJECT_ID=""
 API_URL="http://localhost:8000"
 API_KEY="${API_KEY:-}"
 HEATMAP_TYPE="random"
-LIMIT=10
+LIMIT=50
 SKIP_EXISTING=false
 OUTPUT_DIR=""
 INSTALL_DEPS=false
@@ -192,12 +192,13 @@ say "Checking system dependencies..."
 MISSING_DEPS=()
 
 # Check for OpenGL library (required by opencv-python)
-if ! ldconfig -p | grep -q "libGL.so.1"; then
+# Note: use grep > /dev/null instead of grep -q to avoid SIGPIPE with pipefail
+if ! ldconfig -p | grep "libGL.so.1" > /dev/null; then
     MISSING_DEPS+=("libgl1-mesa-glx")
 fi
 
 # Check for GLib (required by opencv-python)
-if ! ldconfig -p | grep -q "libglib-2.0.so.0"; then
+if ! ldconfig -p | grep "libglib-2.0.so.0" > /dev/null; then
     MISSING_DEPS+=("libglib2.0-0")
 fi
 
