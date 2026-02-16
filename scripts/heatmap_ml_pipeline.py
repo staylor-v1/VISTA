@@ -5,14 +5,14 @@ End-to-end test that:
 1. Fetches images from a project
 2. Generates heatmaps (random/synthetic for UI testing)
 3. Pushes results back to the ML analysis API
+
+Authentication: API key (Bearer token) or debug-mode headers (X-User-Email).
+All endpoints use the unified /api prefix.
 """
 
 import os
 import sys
 import json
-import hmac
-import hashlib
-import time
 import argparse
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -33,10 +33,9 @@ import numpy as np
 class HeatmapPipeline:
     """Heatmap generation pipeline with ML API integration"""
 
-    def __init__(self, api_base_url: str, hmac_secret: str, api_key: Optional[str] = None,
+    def __init__(self, api_base_url: str, api_key: Optional[str] = None,
                  user_email: str = "test@example.com", output_dir: Optional[str] = None):
         self.api_base_url = api_base_url.rstrip('/')
-        self.hmac_secret = hmac_secret
         self.api_key = api_key
         self.user_email = user_email
         self.output_dir = output_dir
@@ -47,99 +46,31 @@ class HeatmapPipeline:
             os.makedirs(self.output_dir, exist_ok=True)
             print(f"Output directory: {self.output_dir}")
 
-        # Set up headers
-        # Always include mock user header for auth compatibility
-        self.session.headers.update({'X-User-Email': self.user_email})
-
+        # Set up authentication headers
         if self.api_key:
             self.session.headers.update({'Authorization': f'Bearer {self.api_key}'})
+        else:
+            # For dev/testing without API key -- assumes DEBUG=true on backend
+            self.session.headers.update({'X-User-Email': self.user_email})
 
-    def _get_api_url(self, path: str) -> str:
+    def _get_url(self, path: str) -> str:
         """
-        Build URL for regular API endpoint (non-HMAC).
-        Uses /api-key prefix when using API key, /api when using OAuth.
+        Build URL for API endpoint. All endpoints use /api prefix.
 
         Args:
             path: API path (e.g., "/projects/123/images")
 
         Returns:
-            Full URL with appropriate prefix
+            Full URL with /api prefix
         """
         path = path.lstrip('/')
-        # Use /api-key prefix if we have an API key, otherwise /api (OAuth)
-        prefix = "api-key" if self.api_key else "api"
-        return f"{self.api_base_url}/{prefix}/{path}"
-
-    def _get_ml_url(self, path: str) -> str:
-        """
-        Build URL for ML pipeline endpoint.
-        Uses /api-ml prefix which requires API key + HMAC authentication.
-
-        Args:
-            path: API path (e.g., "/analyses/123/status")
-
-        Returns:
-            Full URL with /api-ml prefix
-        """
-        # Remove leading slash if present
-        path = path.lstrip('/')
-        return f"{self.api_base_url}/api-ml/{path}"
-
-    def _generate_hmac_signature(self, body: str) -> tuple[str, str]:
-        """Generate HMAC signature for ML pipeline authentication"""
-        timestamp = str(int(time.time()))
-        # Message format: timestamp.body (dot separator)
-        message = timestamp.encode('utf-8') + b'.' + body.encode('utf-8')
-        signature_hex = hmac.new(
-            self.hmac_secret.encode('utf-8'),
-            message,
-            hashlib.sha256
-        ).hexdigest()
-        # Signature format: sha256=<hex>
-        signature = f"sha256={signature_hex}"
-        return signature, timestamp
-
-    def _make_hmac_request(self, method: str, url: str, json_data: Dict[str, Any]) -> requests.Response:
-        """Make authenticated request with HMAC signature
-
-        HMAC requests require TWO layers of authentication:
-        1. User authentication (API key OR user email headers)
-        2. HMAC signature (proves request is from authorized ML pipeline)
-
-        This prevents unauthorized pipelines from making callbacks, even if they
-        have valid user credentials.
-        """
-        body = json.dumps(json_data, separators=(',', ':'))
-        signature, timestamp = self._generate_hmac_signature(body)
-
-        headers = {
-            'X-ML-Signature': signature,
-            'X-ML-Timestamp': timestamp,
-            'Content-Type': 'application/json'
-        }
-
-        # Add user authentication headers
-        # Prefer API key if available, otherwise use user email (for dev/testing)
-        if self.api_key:
-            headers['Authorization'] = f'Bearer {self.api_key}'
-        else:
-            # For dev/testing without API key - assumes DEBUG=true on backend
-            headers['X-User-Email'] = self.user_email
-
-        # Make request with both auth layers
-        response = requests.request(
-            method=method,
-            url=url,
-            data=body,
-            headers=headers
-        )
-        return response
+        return f"{self.api_base_url}/api/{path}"
 
     def get_project_images(self, project_id: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Fetch images from a project"""
         print(f"Fetching images from project {project_id}")
 
-        url = self._get_api_url(f"projects/{project_id}/images")
+        url = self._get_url(f"projects/{project_id}/images")
         params = {'skip': 0, 'limit': limit}
 
         response = self.session.get(url, params=params)
@@ -151,7 +82,7 @@ class HeatmapPipeline:
 
     def get_image_analyses(self, image_id: str) -> List[Dict[str, Any]]:
         """Fetch existing analyses for an image"""
-        url = self._get_api_url(f"images/{image_id}/analyses")
+        url = self._get_url(f"images/{image_id}/analyses")
 
         try:
             response = self.session.get(url)
@@ -168,7 +99,7 @@ class HeatmapPipeline:
         print(f"  Downloading image {image_id}")
 
         # First, get the download info (returns JSON with URL)
-        info_url = self._get_api_url(f"images/{image_id}/download")
+        info_url = self._get_url(f"images/{image_id}/download")
         info_response = self.session.get(info_url)
         info_response.raise_for_status()
 
@@ -180,11 +111,8 @@ class HeatmapPipeline:
 
         # Now download the actual image content
         if not content_url.startswith('http'):
-            # Ensure the content URL has proper API prefix if it's a relative path
-            if not content_url.startswith(('/api/', '/api-key/', '/api-ml/')):
-                # Prepend appropriate prefix for relative URLs
-                prefix = "api-key" if self.api_key else "api"
-                content_url = f"/{prefix}{content_url}"
+            if not content_url.startswith('/api/'):
+                content_url = f"/api{content_url}"
             content_url = f"{self.api_base_url}{content_url}"
 
         response = self.session.get(content_url, stream=True)
@@ -224,7 +152,7 @@ class HeatmapPipeline:
         """Create ML analysis entry"""
         print(f"  Creating analysis for image {image_id}")
 
-        url = self._get_api_url(f"images/{image_id}/analyses")
+        url = self._get_url(f"images/{image_id}/analyses")
         data = {
             "image_id": image_id,
             "model_name": "heatmap_generator",
@@ -251,9 +179,7 @@ class HeatmapPipeline:
         """Update analysis status"""
         print(f"  Updating analysis status to: {status}")
 
-        # Status updates go through the standard API (API key auth),
-        # not the dedicated /api-ml HMAC pipeline endpoints.
-        url = self._get_api_url(f"analyses/{analysis_id}/status")
+        url = self._get_url(f"analyses/{analysis_id}/status")
         data = {"status": status}
 
         response = self.session.patch(url, json=data)
@@ -361,19 +287,17 @@ class HeatmapPipeline:
         print(f"  Uploading {artifact_type}: {filename}")
 
         # Get presigned URL
-        url = self._get_ml_url(f"analyses/{analysis_id}/artifacts/presign")
+        url = self._get_url(f"analyses/{analysis_id}/artifacts/presign")
         presign_data = {
             "artifact_type": artifact_type,
             "filename": filename
         }
 
-        response = self._make_hmac_request('POST', url, presign_data)
+        response = self.session.post(url, json=presign_data)
 
         if not response.ok:
             print(f"  Presign request failed: {response.status_code}")
             print(f"  Response: {response.text}")
-            print(f"  Headers sent: X-ML-Signature={response.request.headers.get('X-ML-Signature')[:16]}...")
-            print(f"  HMAC secret (first 16 chars): {self.hmac_secret[:16]}...")
 
         response.raise_for_status()
 
@@ -413,13 +337,13 @@ class HeatmapPipeline:
             "ordering": 0
         }]
 
-        url = self._get_ml_url(f"analyses/{analysis_id}/annotations:bulk")
+        url = self._get_url(f"analyses/{analysis_id}/annotations:bulk")
         data = {
             "annotations": annotations,
             "mode": "append"
         }
 
-        response = self._make_hmac_request('POST', url, data)
+        response = self.session.post(url, json=data)
         response.raise_for_status()
 
         print(f"  Submitted {len(annotations)} annotation(s)")
@@ -428,12 +352,12 @@ class HeatmapPipeline:
         """Finalize analysis"""
         print(f"  Finalizing analysis as {status}")
 
-        url = self._get_ml_url(f"analyses/{analysis_id}/finalize")
+        url = self._get_url(f"analyses/{analysis_id}/finalize")
         data = {"status": status}
         if error_message:
             data["error_message"] = error_message
 
-        response = self._make_hmac_request('POST', url, data)
+        response = self.session.post(url, json=data)
         response.raise_for_status()
         print(f"  Analysis finalized")
 
@@ -581,8 +505,7 @@ def main():
     parser.add_argument('project_id', help='Project ID to process')
     parser.add_argument('--api-url', default='http://localhost:8000',
                        help='API base URL (default: http://localhost:8000)')
-    parser.add_argument('--hmac-secret', help='HMAC secret for pipeline authentication')
-    parser.add_argument('--api-key', help='API key for authentication')
+    parser.add_argument('--api-key', help='API key for Bearer token authentication')
     parser.add_argument('--heatmap-type', default='random', choices=['random'],
                        help='Heatmap type (currently only random is supported)')
     parser.add_argument('--limit', type=int, default=10,
@@ -594,12 +517,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Get HMAC secret from args or environment
-    hmac_secret = args.hmac_secret or os.environ.get('ML_CALLBACK_HMAC_SECRET')
-    if not hmac_secret:
-        print("Error: HMAC secret required. Set ML_CALLBACK_HMAC_SECRET or use --hmac-secret")
-        sys.exit(1)
-
     # Get API key from args or environment
     api_key = args.api_key or os.environ.get('API_KEY')
 
@@ -607,7 +524,7 @@ def main():
     user_email = os.environ.get('MOCK_USER_EMAIL', 'test@example.com')
 
     # Run pipeline
-    pipeline = HeatmapPipeline(args.api_url, hmac_secret, api_key, user_email=user_email, output_dir=args.output_dir)
+    pipeline = HeatmapPipeline(args.api_url, api_key, user_email=user_email, output_dir=args.output_dir)
     pipeline.run_project_pipeline(args.project_id, args.heatmap_type, args.limit, args.skip_existing)
 
 
