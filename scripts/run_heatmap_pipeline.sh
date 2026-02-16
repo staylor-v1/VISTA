@@ -51,39 +51,35 @@ Arguments:
 
 Options:
     --api-url URL       API base URL (default: http://localhost:8000)
-    --api-key KEY       API key for authentication
+    --api-key KEY       API key for Bearer token authentication
                         REQUIRED for production (with auth enabled)
                         Optional for dev/test (with DEBUG=true)
     --heatmap-type TYPE Heatmap type: random (default: random)
                         Future: gradcam, saliency, attention
-    --limit N           Maximum images to process (default: 10)
+    --limit N           Maximum images to process (default: 50)
     --skip-existing     Skip images that already have ML analysis results
     --output-dir DIR    Directory to save heatmaps locally for inspection (optional)
     --install-deps      Install ML dependencies before running
     --help              Show this help message
 
 Environment Variables:
-    ML_CALLBACK_HMAC_SECRET    HMAC secret (required)
     API_KEY                    API key for authentication (alternative to --api-key)
 
 Examples:
     # Development/testing (with DEBUG=true on backend)
-    $0 abc-123-def --limit 5
+    $0 abc-123-def --limit 50
 
     # Production (requires API key)
-    $0 abc-123-def --api-url https://api.example.com --api-key your-api-key --limit 5
+    $0 abc-123-def --api-url https://api.example.com --api-key your-api-key --limit 50
 
     # Save heatmaps locally for inspection
-    $0 abc-123-def --limit 5 --output-dir ./heatmap_outputs
+    $0 abc-123-def --limit 50 --output-dir ./heatmap_outputs
 
     # Skip images with existing analyses
     $0 abc-123-def --skip-existing --api-key your-api-key
 
     # Install dependencies first
     $0 abc-123-def --install-deps
-
-Note: ML pipeline callbacks require BOTH API key AND HMAC signature in production.
-      The API key authenticates the user, HMAC proves the request is from an authorized pipeline.
 
 EOF
 }
@@ -93,7 +89,7 @@ PROJECT_ID=""
 API_URL="http://localhost:8000"
 API_KEY="${API_KEY:-}"
 HEATMAP_TYPE="random"
-LIMIT=10
+LIMIT=50
 SKIP_EXISTING=false
 OUTPUT_DIR=""
 INSTALL_DEPS=false
@@ -163,28 +159,6 @@ if [[ ! "$HEATMAP_TYPE" =~ ^(random)$ ]]; then
     exit 1
 fi
 
-# Try to load .env file if HMAC secret is not set
-if [[ -z "${ML_CALLBACK_HMAC_SECRET:-}" ]]; then
-    if [[ -f "$PROJECT_ROOT/.env" ]]; then
-        say "Loading environment from $PROJECT_ROOT/.env"
-        set -a
-        source "$PROJECT_ROOT/.env"
-        set +a
-    fi
-fi
-
-# Check HMAC secret
-if [[ -z "${ML_CALLBACK_HMAC_SECRET:-}" ]]; then
-    error "ML_CALLBACK_HMAC_SECRET environment variable is required"
-    echo ""
-    echo "Set it with:"
-    echo "  export ML_CALLBACK_HMAC_SECRET='your-secret-here'"
-    echo ""
-    echo "Or add it to your .env file:"
-    echo "  echo 'ML_CALLBACK_HMAC_SECRET=your-secret' >> $PROJECT_ROOT/.env"
-    exit 1
-fi
-
 say "Heatmap ML Pipeline Integration Test"
 echo "===================================="
 echo ""
@@ -192,7 +166,6 @@ echo "Project ID:    $PROJECT_ID"
 echo "API URL:       $API_URL"
 echo "Heatmap Type:  $HEATMAP_TYPE"
 echo "Image Limit:   $LIMIT"
-echo "HMAC Secret:   ${ML_CALLBACK_HMAC_SECRET:0:8}... (set)"
 [[ -n "$API_KEY" ]] && echo "API Key:       ${API_KEY:0:8}... (set)"
 [[ -n "$OUTPUT_DIR" ]] && echo "Output Dir:    $OUTPUT_DIR"
 echo ""
@@ -219,12 +192,13 @@ say "Checking system dependencies..."
 MISSING_DEPS=()
 
 # Check for OpenGL library (required by opencv-python)
-if ! ldconfig -p | grep -q "libGL.so.1"; then
+# Note: use grep > /dev/null instead of grep -q to avoid SIGPIPE with pipefail
+if ! ldconfig -p | grep "libGL.so.1" > /dev/null; then
     MISSING_DEPS+=("libgl1-mesa-glx")
 fi
 
 # Check for GLib (required by opencv-python)
-if ! ldconfig -p | grep -q "libglib-2.0.so.0"; then
+if ! ldconfig -p | grep "libglib-2.0.so.0" > /dev/null; then
     MISSING_DEPS+=("libglib2.0-0")
 fi
 
