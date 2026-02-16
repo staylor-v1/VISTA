@@ -89,6 +89,6 @@ jobs:
         with:
           name: security-scan-results
           path: |
-            backend/safety-results.json
+            safety-results.json
             backend/bandit-results.json
             semgrep-results.json
