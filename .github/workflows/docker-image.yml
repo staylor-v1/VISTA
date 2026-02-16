@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  checks: write
   security-events: write
   packages: write
 
@@ -84,6 +85,15 @@ jobs:
         DEBUG: true
         SKIP_HEADER_CHECK: true
         MOCK_USER_EMAIL: test@example.com
+        JUNIT_XML_PATH: ${{ github.workspace }}/test-results/backend.xml
+
+    - name: Publish test results
+      uses: dorny/test-reporter@v1
+      if: success() || failure()
+      with:
+        name: Backend Test Results
+        path: test-results/backend.xml
+        reporter: java-junit
 
   build:
     needs: test
