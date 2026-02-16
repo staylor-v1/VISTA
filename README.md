@@ -32,6 +32,9 @@ A full-stack web application for managing, classifying, and collaborating on vis
 ### Individual Image View
 ![Individual Image View](docs/readme_imgs/individual-snl.png)
 
+### ML Analysis Overlay
+![ML Analysis with Bounding Box Overlays](docs/images/image-view-ml-overlay.png)
+
 ## Requirements
 
 - **Node.js** 22+

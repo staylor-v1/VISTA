@@ -80,9 +80,21 @@ These guidelines are for AI coding agents (like GitHub Copilot Chat) working in 
   - Backend: router + CRUD + schemas + tests (`backend/tests/`), and migrations if DB models change.
   - Frontend: view + components under `frontend/src/components/` with matching tests if applicable.
 
+## Pull Request Checklist
+
+Before creating or approving a PR, always verify that relevant documentation has been updated to reflect the changes. Check these files and update as needed:
+
+- `CLAUDE.md` -- architecture, patterns, setup instructions.
+- `.github/copilot-instructions.md` -- this file; Copilot agent guidance.
+- `README.md` -- user-facing overview and quick start.
+- `docs/developer-guide.md`, `docs/api-ml-guide.md` -- detailed guides.
+- `.env.example` -- new environment variables.
+
+Add a short, helpful hint to `CLAUDE.md` and `.github/copilot-instructions.md` describing what the PR changes and how it affects the codebase, so future AI agents stay up to date.
+
 ## Useful References
 
 - High‑level overview & quick start: `README.md`.
 - Detailed backend/frontend/infra docs: `docs/developer-guide.md`.
 - ML API details: `docs/api-ml-guide.md` and `scripts/README_YOLOV8.md`.
-- Existing AI guidance for this repo: `CLAUDE.md` (good architectural summary—keep new patterns aligned).
+- Existing AI guidance for this repo: `CLAUDE.md` (good architectural summary -- keep new patterns aligned).

@@ -6,7 +6,7 @@ from pydantic import Field
 from core import schemas
 from core.config import settings
 from core.database import get_db
-from utils.dependencies import get_current_user, get_image_or_403, verify_hmac_signature_flexible
+from utils.dependencies import get_current_user, get_image_or_403
 import utils.crud as crud
 from datetime import datetime, timezone
 import logging
@@ -20,22 +20,6 @@ def sanitize_for_log(value: str) -> str:
     return value.replace('\r', '').replace('\n', '')
 
 router = APIRouter(tags=["ML Analyses"])
-
-# Pipeline-only router for HMAC-protected ML callback endpoints.
-# These must only be mounted on /api-ml (HMAC auth tier).
-pipeline_router = APIRouter(tags=["ML Pipeline"])
-
-
-# Dependency to get cached request body
-async def get_raw_body(request: Request) -> bytes:
-    """
-    Get raw request body from cache.
-    The BodyCacheMiddleware caches the body early in the request lifecycle.
-    """
-    if hasattr(request.state, "cached_body"):
-        return request.state.cached_body
-    # Fallback for non-cached requests (shouldn't happen for POST/PATCH/PUT)
-    return await request.body()
 
 
 @router.get("/ml/artifacts/download")
@@ -168,7 +152,7 @@ async def get_artifact_content(
             "error": str(e),
             "error_type": type(e).__name__
         })
-        raise HTTPException(status_code=500, detail="Failed to stream artifact") 
+        raise HTTPException(status_code=500, detail="Failed to stream artifact")
 
 @router.post("/images/{image_id}/analyses", response_model=schemas.MLAnalysis, status_code=status.HTTP_201_CREATED)
 async def create_ml_analysis(
@@ -336,7 +320,7 @@ async def list_analysis_annotations(
 
 
 class StatusUpdatePayload(schemas.BaseModel):  # type: ignore[attr-defined]
-    """Minimal payload for status updates (Phase 1)."""
+    """Minimal payload for status updates."""
     status: str
     error_message: Optional[str] = None
 
@@ -366,12 +350,10 @@ async def update_ml_analysis_status(
 
     new_status = payload.status.lower()
     old_status = (db_obj.status or "").lower()
-    # Sanitize status values before logging to avoid log injection
     sanitized_old_status = sanitize_for_log(old_status)
     sanitized_new_status = sanitize_for_log(new_status)
     if old_status == new_status:
-        # No-op: status hasn't changed, but keep lock until commit
-        await db.commit()  # Release lock
+        await db.commit()
         return await get_ml_analysis(analysis_id, db, current_user)
     allowed = VALID_STATUS_TRANSITIONS.get(old_status, set())
     if new_status not in allowed:
@@ -396,72 +378,29 @@ async def update_ml_analysis_status(
     return await get_ml_analysis(analysis_id, db, current_user)
 
 
-# ---------------- Phase 2 Callback / Pipeline Endpoints ---------------- #
+# ---------------- Pipeline Callback Endpoints --------------------------------
+# Previously on a separate router with HMAC auth; now use standard get_current_user.
+
 class BulkAnnotationsPayload(schemas.BaseModel):  # type: ignore[attr-defined]
     annotations: List[schemas.MLAnnotationCreate]
-    mode: str = "append"  # append|replace (replace not yet differentiating; future extension)
+    mode: str = "append"
 
 
-def _verify_pipeline_hmac(request: Request, body_bytes: bytes):
-    """
-    Verify HMAC signature for ML pipeline callbacks.
-
-    This function implements dual-layer security for ML pipeline endpoints:
-    1. User authentication (API key or user session) - verified by get_current_user() dependency
-    2. HMAC signature verification - proves the request comes from an authorized ML pipeline
-
-    The dual-layer approach prevents unauthorized pipelines from making callbacks even if they
-    obtain valid user credentials (API keys). HMAC validation is optional when ML_PIPELINE_REQUIRE_HMAC=false
-    for backward compatibility during migration.
-
-    Args:
-        request: FastAPI request object containing headers
-        body_bytes: Raw request body bytes for signature verification
-
-    Raises:
-        HTTPException: If HMAC verification fails or is required but not configured
-    """
-    if not settings.ML_PIPELINE_REQUIRE_HMAC:
-        return
-    secret = settings.ML_CALLBACK_HMAC_SECRET
-    if not secret:
-        # Add debug logging to help diagnose why secret may be missing during tests
-        logger.warning(
-            "ML_HMAC_SECRET_MISSING",
-            extra={
-                "require_hmac": settings.ML_PIPELINE_REQUIRE_HMAC,
-                "configured_secret": bool(secret),
-                "settings_id": id(settings),
-            },
-        )
-        raise HTTPException(status_code=500, detail="HMAC secret not configured")
-    sig = request.headers.get("X-ML-Signature", "")
-    ts = request.headers.get("X-ML-Timestamp", "0")
-    if not verify_hmac_signature_flexible(secret, body_bytes, ts, sig, skew_seconds=settings.ML_HMAC_TIMESTAMP_SKEW_SECONDS):
-        raise HTTPException(status_code=401, detail="Invalid HMAC signature")
-
-
-@pipeline_router.post("/analyses/{analysis_id}/annotations:bulk", response_model=schemas.MLAnnotationList)
+@router.post("/analyses/{analysis_id}/annotations:bulk", response_model=schemas.MLAnnotationList)
 async def bulk_upload_annotations(
     analysis_id: uuid.UUID,
     payload: BulkAnnotationsPayload,
-    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
-    body_bytes: bytes = Depends(get_raw_body),
 ):
     if not settings.ML_ANALYSIS_ENABLED:
         raise HTTPException(status_code=404, detail="ML analysis feature disabled")
     db_obj = await crud.get_ml_analysis(db, analysis_id)
     if not db_obj:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    # Access check (user must have image access)
     await get_image_or_403(db_obj.image_id, db, current_user)
     if len(payload.annotations) > settings.ML_MAX_BULK_ANNOTATIONS:
         raise HTTPException(status_code=400, detail="Too many annotations in one request")
-    # HMAC verify using the raw original request body
-    _verify_pipeline_hmac(request, body_bytes)
-    # If mode == replace, we could delete existing first (future). For now always append.
     inserted = await crud.bulk_insert_ml_annotations(db, analysis_id, payload.annotations)
     anns = await crud.list_ml_annotations(db, analysis_id)
     total_count = await crud.count_ml_annotations(db, analysis_id)
@@ -500,14 +439,12 @@ class PresignResponse(schemas.BaseModel):  # type: ignore[attr-defined]
     storage_path: str
 
 
-@pipeline_router.post("/analyses/{analysis_id}/artifacts/presign", response_model=PresignResponse)
+@router.post("/analyses/{analysis_id}/artifacts/presign", response_model=PresignResponse)
 async def presign_artifact_upload(
     analysis_id: uuid.UUID,
     req: PresignRequest,
-    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
-    body_bytes: bytes = Depends(get_raw_body),
 ):
     if not settings.ML_ANALYSIS_ENABLED:
         raise HTTPException(status_code=404, detail="ML analysis feature disabled")
@@ -515,25 +452,19 @@ async def presign_artifact_upload(
     if not db_obj:
         raise HTTPException(status_code=404, detail="Analysis not found")
     await get_image_or_403(db_obj.image_id, db, current_user)
-    # Use raw body for HMAC verification
-    _verify_pipeline_hmac(request, body_bytes)
 
-    # Generate real presigned upload URL
     from utils.boto3_client import get_presigned_upload_url, boto3_client
     from datetime import timedelta
     import os
 
     artifact_name = req.filename or f"{req.artifact_type}.bin"
 
-    # Additional path traversal protection (pattern validation in Pydantic should prevent this, but defense in depth)
     if '..' in artifact_name or '/' in artifact_name or '\\' in artifact_name:
         raise HTTPException(status_code=400, detail="Invalid filename: path traversal not allowed")
 
-    # Normalize path to prevent any path traversal attacks
     artifact_name = os.path.basename(artifact_name)
     storage_path = f"ml_outputs/{analysis_id}/{artifact_name}"
 
-    # Determine content type based on artifact type
     content_type_map = {
         "heatmap": "image/png",
         "mask": "image/png",
@@ -544,12 +475,10 @@ async def presign_artifact_upload(
     content_type = content_type_map.get(req.artifact_type, "application/octet-stream")
 
     if boto3_client is None:
-        # Fallback to fake URL for testing/dev when S3 not available
         logger.warning("S3 client not available, returning mock presigned URL")
         fake_url = f"https://example.com/upload/{storage_path}?signature=fake"
         return PresignResponse(upload_url=fake_url, storage_path=storage_path)
 
-    # Generate real presigned URL
     expires_delta = timedelta(seconds=settings.ML_PRESIGNED_URL_EXPIRY_SECONDS)
     upload_url = get_presigned_upload_url(
         bucket_name=settings.S3_BUCKET,
@@ -565,17 +494,15 @@ async def presign_artifact_upload(
 
 
 class FinalizeRequest(schemas.BaseModel):  # type: ignore[attr-defined]
-    status: Optional[str] = None  # typically completed
+    status: Optional[str] = None
     error_message: Optional[str] = None
 
-@pipeline_router.post("/analyses/{analysis_id}/finalize", response_model=schemas.MLAnalysis)
+@router.post("/analyses/{analysis_id}/finalize", response_model=schemas.MLAnalysis)
 async def finalize_analysis(
     analysis_id: uuid.UUID,
     req: FinalizeRequest,
-    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
-    body_bytes: bytes = Depends(get_raw_body),
 ):
     if not settings.ML_ANALYSIS_ENABLED:
         raise HTTPException(status_code=404, detail="ML analysis feature disabled")
@@ -583,16 +510,12 @@ async def finalize_analysis(
     if not db_obj:
         raise HTTPException(status_code=404, detail="Analysis not found")
     await get_image_or_403(db_obj.image_id, db, current_user)
-    # Use raw body for HMAC verification
-    _verify_pipeline_hmac(request, body_bytes)
     if req.status:
-        # Special case: allow pipeline to finalize directly from queued -> completed|failed without requiring an explicit
-        # intermediate PATCH to "processing". This is convenient for fast/atomic analyses and matches test expectations.
         normalized_new = req.status.lower()
         if db_obj.status == "queued" and normalized_new in {"completed", "failed"}:
             now = datetime.now(timezone.utc)
             if not db_obj.started_at:
-                db_obj.started_at = now  # treat as if processing started just now
+                db_obj.started_at = now
             db_obj.completed_at = now
             db_obj.status = normalized_new
             if req.error_message:
@@ -606,8 +529,7 @@ async def finalize_analysis(
                 "to": sanitize_for_log(normalized_new),
                 "user": sanitized_user_id
             })
-            return db_obj  # Fast path return
-        # Otherwise reuse the stricter status update logic (which enforces valid transitions)
+            return db_obj
         return await update_ml_analysis_status(analysis_id, StatusUpdatePayload(status=req.status, error_message=req.error_message), db, current_user)  # type: ignore
     return await get_ml_analysis(analysis_id, db, current_user)
 
@@ -630,11 +552,9 @@ async def export_analysis(
     if not db_obj:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
-    # Access control via image ownership
     await get_image_or_403(db_obj.image_id, db, current_user)
 
     if format == "json":
-        # Full export as JSON
         from fastapi.responses import JSONResponse
 
         annotations_data = [
@@ -681,7 +601,6 @@ async def export_analysis(
         output = io.StringIO()
         writer = csv.writer(output)
 
-        # CSV header
         writer.writerow([
             "annotation_id",
             "annotation_type",
@@ -693,7 +612,6 @@ async def export_analysis(
             "created_at"
         ])
 
-        # CSV rows
         for a in db_obj.annotations:
             import json
             writer.writerow([
@@ -709,7 +627,6 @@ async def export_analysis(
 
         output.seek(0)
 
-        # Generate filename
         filename = f"analysis_{db_obj.model_name}_{db_obj.created_at.strftime('%Y%m%d_%H%M%S')}.csv"
 
         return StreamingResponse(
