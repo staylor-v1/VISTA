@@ -343,15 +343,13 @@ install_dependencies() {
     fi
 
     # Install Python dependencies
-    if [[ -f "$PROJECT_ROOT/backend/requirements.txt" ]]; then
+    if [[ -f "$PROJECT_ROOT/pyproject.toml" ]]; then
         say "Installing Python dependencies..."
-        cd "$PROJECT_ROOT/backend"
-        source .venv/bin/activate
-        uv pip install -r requirements.txt
         cd "$PROJECT_ROOT"
+        uv sync
         success "Python dependencies installed"
     else
-        warn "backend/requirements.txt not found; skipping pip install"
+        warn "pyproject.toml not found; skipping dependency install"
     fi
 
     # Install frontend dependencies
