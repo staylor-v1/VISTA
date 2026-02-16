@@ -111,17 +111,14 @@ The FastAPI backend follows a modular architecture:
   - `schemas.py`: Pydantic models for request/response validation
   - `database.py`: Async database engine and session management
   - `config.py`: Centralized settings using Pydantic BaseSettings
-  - `security.py`: Authentication and authorization utilities
   - `group_auth.py` / `group_auth_helper.py`: Group-based authorization system
 - **`routers/`**: API endpoint definitions organized by resource (projects, images, users, comments, image_classes, ml_analyses, etc.)
 - **`middleware/`**: Request/response processing
-  - `auth.py`: Unified authentication middleware (header-based auth)
   - `cors_debug.py`: CORS configuration
   - `security_headers.py`: Security headers (CSP, X-Frame-Options, etc.)
-  - `body_cache.py`: Request body caching for HMAC verification
 - **`utils/`**: Shared utilities
   - `crud.py`: Database CRUD operations
-  - `dependencies.py`: FastAPI dependency injection helpers
+  - `dependencies.py`: FastAPI dependency injection and authentication (`get_current_user`, `require_proxy_user`)
   - `boto3_client.py`: S3/MinIO client initialization
   - `cache_manager.py`: Caching layer for performance optimization
   - `file_security.py`: File type validation
@@ -169,14 +166,17 @@ React application with component-based architecture:
 
 ### Authentication & Authorization
 
-The application uses **header-based authentication** via reverse proxy:
+All endpoints live under a single `/api` prefix. Authentication is handled by the `get_current_user` FastAPI dependency (in `utils/dependencies.py`), which resolves the caller from one of two sources:
 
-- **Development/Testing Mode**: Mock user from `MOCK_USER_EMAIL` and `MOCK_USER_GROUPS_JSON` environment variables
-- **Production Mode**: Validates `X-User-Email` header and `X-Proxy-Secret` against `PROXY_SHARED_SECRET`
+1. **Bearer token (API key)**: `Authorization: Bearer <key>` -- resolved against hashed keys in the database. Used by scripts, automation, and ML pipelines.
+2. **Proxy headers**: `X-User-Email` + `X-Proxy-Secret` -- set by a reverse proxy that authenticates users (OAuth2, SAML, etc.). Used by the web UI.
+
+In debug/test mode (`DEBUG=true` or `SKIP_HEADER_CHECK=true`), the dependency falls back to `MOCK_USER_EMAIL`.
+
+**Privilege boundary:** Sensitive endpoints (API key management in `api_keys.py`, user admin in `users.py`) use `require_proxy_user` instead of `get_current_user`. This dependency rejects API key auth, preventing API keys from creating new API keys or managing users.
+
 - **Group-Based Access**: Projects belong to groups (`meta_group_id`), users must be members to access
 - **API Keys**: Alternative authentication via `ApiKey` model for programmatic access
-
-Authentication is enforced by `middleware/auth.py` which sets `request.state.user_email`.
 
 ### Caching Strategy
 
@@ -227,13 +227,10 @@ External ML pipelines integrate via REST API (users cannot trigger analyses dire
 5. **Bulk create annotations** (`POST /api/analyses/{analysis_id}/annotations:bulk`)
 6. **Finalize analysis** with `completed` status
 
-**Security:** Pipeline endpoints (steps 2-6) require HMAC authentication:
-- `X-ML-Signature`: HMAC-SHA256(request_body, ML_CALLBACK_HMAC_SECRET)
-- `X-ML-Timestamp`: Unix timestamp (prevents replay attacks)
+**Security:** All pipeline endpoints use standard `get_current_user` authentication (API key via `Authorization: Bearer <key>` or proxy headers).
 
 Configuration:
 - `ML_ANALYSIS_ENABLED=true` to enable feature
-- `ML_CALLBACK_HMAC_SECRET`: Shared secret for HMAC validation
 - `ML_ALLOWED_MODELS`: Comma-separated list of permitted model names
 
 Test script: `scripts/test_ml_pipeline.py`
@@ -247,7 +244,6 @@ Copy `.env.example` to `.env` and configure:
 - `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`: Object storage configuration
 - `DEBUG`: Set to `true` for development (skips frontend static file serving)
 - `PROXY_SHARED_SECRET`: Production authentication shared secret
-- `ML_CALLBACK_HMAC_SECRET`: ML pipeline authentication secret
 
 ## Common Development Patterns
 
@@ -338,7 +334,19 @@ Single container deployment via `Dockerfile`:
 - Backend should only accept connections from trusted reverse proxy
 
 
-# style
+# Pull Request Checklist
+
+Before creating or approving a PR, always verify that relevant documentation has been updated to reflect the changes. Check these files and update as needed:
+
+- `CLAUDE.md` -- architecture, patterns, setup instructions
+- `.github/copilot-instructions.md` -- Copilot agent guidance
+- `README.md` -- user-facing overview and quick start
+- `docs/developer-guide.md`, `docs/api-ml-guide.md` -- detailed guides
+- `.env.example` -- new environment variables
+
+Add a short, helpful hint to `CLAUDE.md` and `.github/copilot-instructions.md` describing what the PR changes and how it affects the codebase, so future AI agents stay up to date.
+
+# Style
 
 * no emojis ever.
 * each file less than 400 lines of code.
@@ -346,7 +354,5 @@ Single container deployment via `Dockerfile`:
   - Show only essential pass/fail information
   - Suppress dependency installation and framework noise
   - Make it immediately obvious if things are working
-  - Provide --verbose flag for debugging when needed 
-
-
+  - Provide --verbose flag for debugging when needed
 
