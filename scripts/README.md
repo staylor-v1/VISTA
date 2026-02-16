@@ -11,10 +11,10 @@ End-to-end integration test for the ML analysis feature using real YOLOv8 object
 **Quick Start:**
 ```bash
 # Run pipeline on a project (auto-installs dependencies)
-./run_yolov8_pipeline.sh <project_id> --install-deps --limit 5
+./run_yolov8_pipeline.sh <project_id> --install-deps --limit 50
 
 # With API key authentication
-./run_yolov8_pipeline.sh <project_id> --api-key YOUR_KEY --limit 5
+./run_yolov8_pipeline.sh <project_id> --api-key YOUR_KEY --limit 50
 
 # View results at http://localhost:3000 in the ML Analyses panel
 ```
@@ -38,7 +38,7 @@ End-to-end integration test for the ML analysis feature using real YOLOv8 object
 Generates random/synthetic heatmaps for UI testing.
 
 ```bash
-./run_heatmap_pipeline.sh <project_id> --limit 5
+./run_heatmap_pipeline.sh <project_id> --limit 50
 ./run_heatmap_pipeline.sh <project_id> --api-key YOUR_KEY --output-dir ./heatmaps
 ```
 
@@ -107,7 +107,7 @@ These are normally loaded from the project root `.env` file by the Python and sh
 
 ```bash
 # YOLOv8 pipeline with nano model (CPU-friendly)
-./run_yolov8_pipeline.sh abc-123-def --model-size n --limit 5
+./run_yolov8_pipeline.sh abc-123-def --model-size n --limit 50
 
 # YOLOv8 with GPU-optimized large model
 ./run_yolov8_pipeline.sh abc-123-def --model-size l --limit 20

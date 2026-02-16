@@ -66,7 +66,7 @@ class HeatmapPipeline:
         path = path.lstrip('/')
         return f"{self.api_base_url}/api/{path}"
 
-    def get_project_images(self, project_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_project_images(self, project_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         """Fetch images from a project"""
         print(f"Fetching images from project {project_id}")
 
@@ -428,7 +428,7 @@ class HeatmapPipeline:
             raise
 
     def run_project_pipeline(self, project_id: str, heatmap_type: str = 'random',
-                           limit: int = 10, skip_existing: bool = False):
+                           limit: int = 50, skip_existing: bool = False):
         """Run pipeline on all images in a project"""
         print(f"\nStarting Heatmap Pipeline")
         print(f"Project ID: {project_id}")
@@ -508,8 +508,8 @@ def main():
     parser.add_argument('--api-key', help='API key for Bearer token authentication')
     parser.add_argument('--heatmap-type', default='random', choices=['random'],
                        help='Heatmap type (currently only random is supported)')
-    parser.add_argument('--limit', type=int, default=10,
-                       help='Maximum number of images to process (default: 10)')
+    parser.add_argument('--limit', type=int, default=50,
+                       help='Maximum number of images to process (default: 50)')
     parser.add_argument('--skip-existing', action='store_true',
                        help='Skip images that already have ML analysis results')
     parser.add_argument('--output-dir', type=str, default=None,
