@@ -13,7 +13,7 @@ if [ -d ".venv" ]; then
     source .venv/bin/activate
     # Verify activation succeeded
     if ! command -v uvicorn >/dev/null 2>&1; then
-        echo "ERROR: uvicorn not found after activating virtual environment. Please run 'pip install -r requirements.txt'"
+        echo "ERROR: uvicorn not found after activating virtual environment. Please run 'uv sync'"
         exit 1
     fi
 # Check for virtual environment in parent directory
@@ -22,7 +22,7 @@ elif [ -d "../.venv" ]; then
     source ../.venv/bin/activate
     # Verify activation succeeded
     if ! command -v uvicorn >/dev/null 2>&1; then
-        echo "ERROR: uvicorn not found after activating virtual environment. Please run 'pip install -r requirements.txt'"
+        echo "ERROR: uvicorn not found after activating virtual environment. Please run 'uv sync'"
         exit 1
     fi
 else

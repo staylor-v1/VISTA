@@ -141,7 +141,7 @@ Code changes do not require rebuilds. Rebuild only when dependencies change:
 
 ### Backend Dependencies Changed
 ```bash
-# Edit requirements.txt
+# Edit pyproject.toml, then run: uv lock
 ./scripts/dev.sh down
 ./scripts/dev.sh build backend-dev
 ./scripts/dev.sh up
@@ -216,7 +216,7 @@ Check logs:
 Common issues:
 - Migration failure: Check database connection
 - Port conflict: Another service using port 8000
-- Import errors: Rebuild container after requirements.txt changes
+- Import errors: Rebuild container after pyproject.toml changes
 
 ### Frontend Not Starting
 
