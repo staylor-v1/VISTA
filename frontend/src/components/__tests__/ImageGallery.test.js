@@ -40,6 +40,35 @@ const mockPermanentlyDeletedImage = {
   deletion_reason: 'Permanent deletion test'
 };
 
+const mockImageWithMetadata = {
+  id: 'img-4',
+  filename: 'brick-wall.jpg',
+  size_bytes: 2048000,
+  created_at: '2023-01-04T00:00:00Z',
+  deleted_at: null,
+  storage_deleted: false,
+  metadata: { brick: true, color: 'red', location: 'warehouse' }
+};
+
+const mockImageWithMetadataUnderscore = {
+  id: 'img-5',
+  filename: 'concrete-slab.jpg',
+  size_bytes: 3072000,
+  created_at: '2023-01-05T00:00:00Z',
+  deleted_at: null,
+  storage_deleted: false,
+  metadata_: { concrete: true, color: 'gray' }
+};
+
+const mockImageNoMetadata = {
+  id: 'img-6',
+  filename: 'no-meta.jpg',
+  size_bytes: 512000,
+  created_at: '2023-01-06T00:00:00Z',
+  deleted_at: null,
+  storage_deleted: false
+};
+
 const renderImageGallery = (props = {}) => {
   const defaultProps = {
     projectId: 'test-project-id',
@@ -216,6 +245,105 @@ describe('ImageGallery', () => {
       
       expect(screen.getByText('No images yet')).toBeInTheDocument();
       expect(screen.getByText('Upload your first image to get started')).toBeInTheDocument();
+    });
+  });
+
+  describe('Metadata Search', () => {
+    const metadataImages = [mockImageWithMetadata, mockImageWithMetadataUnderscore, mockImageNoMetadata];
+
+    test('filters by "All Metadata" and returns images with matching values', async () => {
+      renderImageGallery({ images: metadataImages });
+
+      const select = screen.getByDisplayValue('Filename');
+      fireEvent.change(select, { target: { value: 'metadata' } });
+
+      const searchInput = screen.getByPlaceholderText('Search by metadata...');
+      fireEvent.change(searchInput, { target: { value: 'red' } });
+
+      await waitFor(() => {
+        expect(screen.getByText('brick-wall.jpg')).toBeInTheDocument();
+        expect(screen.queryByText('concrete-slab.jpg')).not.toBeInTheDocument();
+        expect(screen.queryByText('no-meta.jpg')).not.toBeInTheDocument();
+      });
+    });
+
+    test('filters by "All Metadata" with metadata_ field (backward compat)', async () => {
+      renderImageGallery({ images: metadataImages });
+
+      const select = screen.getByDisplayValue('Filename');
+      fireEvent.change(select, { target: { value: 'metadata' } });
+
+      const searchInput = screen.getByPlaceholderText('Search by metadata...');
+      fireEvent.change(searchInput, { target: { value: 'gray' } });
+
+      await waitFor(() => {
+        expect(screen.getByText('concrete-slab.jpg')).toBeInTheDocument();
+        expect(screen.queryByText('brick-wall.jpg')).not.toBeInTheDocument();
+        expect(screen.queryByText('no-meta.jpg')).not.toBeInTheDocument();
+      });
+    });
+
+    test('filters by specific metadata key', async () => {
+      renderImageGallery({ images: metadataImages });
+
+      const select = screen.getByDisplayValue('Filename');
+      fireEvent.change(select, { target: { value: 'color' } });
+
+      const searchInput = screen.getByPlaceholderText('Search by color...');
+      fireEvent.change(searchInput, { target: { value: 'red' } });
+
+      await waitFor(() => {
+        expect(screen.getByText('brick-wall.jpg')).toBeInTheDocument();
+        expect(screen.queryByText('concrete-slab.jpg')).not.toBeInTheDocument();
+      });
+    });
+
+    test('populates metadata keys dropdown from both metadata and metadata_ fields', () => {
+      renderImageGallery({ images: metadataImages });
+
+      const select = screen.getByDisplayValue('Filename');
+      const options = Array.from(select.querySelectorAll('option')).map(o => o.value);
+
+      // Keys from metadata field (brick, color, location)
+      expect(options).toContain('brick');
+      expect(options).toContain('color');
+      expect(options).toContain('location');
+      // Keys from metadata_ field (concrete, color -- color already present)
+      expect(options).toContain('concrete');
+    });
+
+    test('returns no images when metadata search has no matches', async () => {
+      renderImageGallery({ images: metadataImages });
+
+      const select = screen.getByDisplayValue('Filename');
+      fireEvent.change(select, { target: { value: 'metadata' } });
+
+      const searchInput = screen.getByPlaceholderText('Search by metadata...');
+      fireEvent.change(searchInput, { target: { value: 'nonexistent_value_xyz' } });
+
+      await waitFor(() => {
+        expect(screen.queryByText('brick-wall.jpg')).not.toBeInTheDocument();
+        expect(screen.queryByText('concrete-slab.jpg')).not.toBeInTheDocument();
+        expect(screen.queryByText('no-meta.jpg')).not.toBeInTheDocument();
+      });
+    });
+
+    test('images without metadata are excluded from metadata search', async () => {
+      renderImageGallery({ images: metadataImages });
+
+      const select = screen.getByDisplayValue('Filename');
+      fireEvent.change(select, { target: { value: 'metadata' } });
+
+      const searchInput = screen.getByPlaceholderText('Search by metadata...');
+      fireEvent.change(searchInput, { target: { value: 'true' } });
+
+      await waitFor(() => {
+        // Both images with metadata match (brick: true, concrete: true)
+        expect(screen.getByText('brick-wall.jpg')).toBeInTheDocument();
+        expect(screen.getByText('concrete-slab.jpg')).toBeInTheDocument();
+        // Image without metadata is excluded
+        expect(screen.queryByText('no-meta.jpg')).not.toBeInTheDocument();
+      });
     });
   });
 
