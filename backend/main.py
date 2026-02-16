@@ -3,7 +3,7 @@ import json
 import logging
 from datetime import datetime
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, status, HTTPException, Depends
+from fastapi import FastAPI, Request, status, HTTPException
 from fastapi.routing import APIRouter
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
@@ -17,9 +17,7 @@ from core.migrations import run_migrations  # legacy no-op
 from core.config import settings as _app_settings
 from utils.boto3_client import boto3_client, ensure_bucket_exists
 from middleware.cors_debug import add_cors_middleware, debug_exception_middleware
-from middleware.auth import auth_middleware
 from middleware.security_headers import SecurityHeadersMiddleware
-from middleware.body_cache import BodyCacheMiddleware
 from routers import projects, images, users, image_classes, comments, project_metadata, api_keys, ml_analyses
 
 
@@ -33,7 +31,7 @@ Separates app creation from runtime configuration.
 def setup_logging():
     """Configure structured logging for the application."""
     log_level = logging.DEBUG if settings.DEBUG else logging.INFO
-    
+
     # JSON formatter for structured logging
     class JSONFormatter(logging.Formatter):
         def format(self, record):
@@ -49,18 +47,18 @@ def setup_logging():
             if record.exc_info:
                 log_entry['exception'] = self.formatException(record.exc_info)
             return json.dumps(log_entry)
-    
+
     # Setup root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
-    
+
     # Remove default handlers
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
-    
+
     # Create JSON formatter
     formatter = JSONFormatter()
-    
+
     # Add console handler
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
@@ -155,14 +153,8 @@ def create_app() -> FastAPI:
     cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
     add_cors_middleware(app, cors_origins)
 
-    # Add body cache middleware (must be early in the stack, before auth)
-    app.add_middleware(BodyCacheMiddleware)
-
     # Add security headers middleware
     app.add_middleware(SecurityHeadersMiddleware)
-
-    # Add authentication middleware
-    app.middleware("http")(auth_middleware)
 
     # Add debug middleware if in debug mode
     if settings.DEBUG:
@@ -181,67 +173,17 @@ def create_app() -> FastAPI:
             content={"detail": exc.errors()},
         )
 
-    # Create three API routers with different authentication methods
-
-    # Router 1: /api - OAuth authentication (header-based via middleware)
-    # Used by: Web UI, browser users
-    # Auth: Middleware validates X-User-Email + X-Proxy-Secret headers
+    # Single /api router -- auth is handled per-endpoint via dependencies
     api_router = APIRouter(prefix="/api")
 
-    # Router 2: /api-key - API key authentication only
-    # Used by: Scripts, automation, CLI tools
-    # Auth: require_api_key dependency validates Authorization header
-    from utils.dependencies import require_api_key
-    api_key_router = APIRouter(
-        prefix="/api-key",
-        dependencies=[Depends(require_api_key)]
-    )
-
-    # Router 3: /api-ml - API key + HMAC authentication
-    # Used by: ML pipelines
-    # Auth: require_hmac_auth dependency validates Authorization header + HMAC signature
-    from utils.dependencies import require_hmac_auth
-    api_ml_router = APIRouter(
-        prefix="/api-ml",
-        dependencies=[Depends(require_hmac_auth)]
-    )
-
-    # ---- Router registration by auth tier ----
-    #
-    # /api (proxy auth, user sessions): all user-facing routers
-    # /api-key (API key auth): data-access routers only, NOT user admin or key mgmt
-    # /api-ml (HMAC auth): ML pipeline callback endpoints only
-    #
-    # This prevents:
-    #   - API keys from creating new API keys (privilege escalation)
-    #   - API keys from accessing user admin endpoints
-    #   - ML pipeline endpoints from being reachable without HMAC auth
-
-    # Routers available on both /api and /api-key (general data access)
-    shared_routers = [
-        {"router": projects.router, "prefix": "/projects"},
-        {"router": images.router, "prefix": None},
-        {"router": image_classes.router, "prefix": None},
-        {"router": comments.router, "prefix": None},
-        {"router": project_metadata.router, "prefix": None},
-        {"router": ml_analyses.router, "prefix": None},
-    ]
-
-    for cfg in shared_routers:
-        prefix = cfg["prefix"]
-        if prefix:
-            api_router.include_router(cfg["router"], prefix=prefix)
-            api_key_router.include_router(cfg["router"], prefix=prefix)
-        else:
-            api_router.include_router(cfg["router"])
-            api_key_router.include_router(cfg["router"])
-
-    # Routers available on /api only (user sessions, not API keys)
+    api_router.include_router(projects.router, prefix="/projects")
+    api_router.include_router(images.router)
+    api_router.include_router(image_classes.router)
+    api_router.include_router(comments.router)
+    api_router.include_router(project_metadata.router)
+    api_router.include_router(ml_analyses.router)
     api_router.include_router(users.router, prefix="/users")
     api_router.include_router(api_keys.router)
-
-    # ML pipeline callback endpoints on /api-ml only (HMAC auth required)
-    api_ml_router.include_router(ml_analyses.pipeline_router)
 
     # Add health check endpoint (no auth required)
     @app.get("/api/health")
@@ -249,17 +191,14 @@ def create_app() -> FastAPI:
         """Health check endpoint for container monitoring."""
         return {"status": "healthy", "timestamp": datetime.utcnow().isoformat() + 'Z'}
 
-    # Include all three API routers in the main app
     app.include_router(api_router)
-    app.include_router(api_key_router)
-    app.include_router(api_ml_router)
 
     # Setup static file serving
     setup_static_files(app)
 
     # Setup local Swagger UI assets (served without external CDNs)
     setup_local_swagger_ui(app)
-    
+
     return app
 
 
@@ -348,7 +287,7 @@ def setup_static_files(app: FastAPI):
         # Don't handle API routes through this catch-all
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="API endpoint not found")
-        
+
         # Serve the React app's index.html for all other routes
         index_path = os.path.join(front_end_build_path, "index.html")
         if os.path.exists(index_path):
