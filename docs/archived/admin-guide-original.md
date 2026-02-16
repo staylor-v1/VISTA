@@ -142,7 +142,7 @@ kubectl logs -f deployment/vista
    pip install uv
    uv venv .venv
    source .venv/bin/activate
-   uv pip install -r requirements.txt
+   uv sync
 
    # Node.js frontend
    cd frontend
@@ -635,7 +635,7 @@ Keep the application and dependencies updated:
 
 ```bash
 # Update Python dependencies
-uv pip install -r requirements.txt --upgrade
+uv sync --upgrade
 
 # Update Node.js dependencies
 cd frontend

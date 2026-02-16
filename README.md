@@ -68,14 +68,8 @@ bash scripts/launch_postgres_minio.sh
 ### 3. Setup Python Environment
 
 ```bash
-# Create virtual environment
-uv venv .venv
-
-# Activate the virtual environment
-source .venv/bin/activate
-
-# Install dependencies
-uv pip install -r requirements.txt
+# Install dependencies (creates .venv automatically)
+uv sync
 ```
 
 ### 4. Split Terminal and Start Services
@@ -181,13 +175,10 @@ FRONTEND_BUILD_PATH=frontend/build
 ### Running Migrations
 
 ```bash
-# Activate virtual environment and load environment variables
-source .venv/bin/activate
+# Load environment variables and run migrations
 set -a && source .env && set +a
-
-# Run migrations
 cd backend
-alembic upgrade head
+uv run alembic upgrade head
 ```
 
 > **Common Issue:** If you get "table already exists" errors, check that `DATABASE_URL` in `.env` points to PostgreSQL, not SQLite.
@@ -238,9 +229,8 @@ alembic stamp head                # Mark DB as up-to-date (use cautiously)
 
 **Backend tests (pytest):**
 ```bash
-source .venv/bin/activate
 cd backend
-pytest                                          # Run all tests
+uv run pytest                                   # Run all tests
 pytest tests/test_specific.py                  # Run specific file
 pytest tests/test_file.py::test_function       # Run specific test
 pytest -v                                       # Verbose output

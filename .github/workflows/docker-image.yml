@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  checks: write
   security-events: write
   packages: write
 
@@ -63,25 +64,17 @@ jobs:
         npm run build
     
     - name: Install uv
-      run: |
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        echo "$HOME/.local/bin" >> $GITHUB_PATH
-        
+      uses: astral-sh/setup-uv@v5
+
     - name: Install Python dependencies with uv
-      working-directory: ./backend
-      run: |
-        uv venv .venv
-        source .venv/bin/activate
-        uv pip install -r ../requirements.txt
+      run: uv sync --frozen
 
     - name: Set up test environment
       run: |
         cp .env.example backend/.env || echo "No .env.example found, using defaults"
 
     - name: Run tests
-      run: |
-        export PATH="${PWD}/backend/.venv/bin:$PATH"
-        bash test/run_tests.sh
+      run: uv run bash test/run_tests.sh
       env:
         DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
         POSTGRES_USER: postgres
@@ -92,6 +85,15 @@ jobs:
         DEBUG: true
         SKIP_HEADER_CHECK: true
         MOCK_USER_EMAIL: test@example.com
+        JUNIT_XML_PATH: ${{ github.workspace }}/test-results/backend.xml
+
+    - name: Publish test results
+      uses: dorny/test-reporter@v1
+      if: success() || failure()
+      with:
+        name: Backend Test Results
+        path: test-results/backend.xml
+        reporter: java-junit
 
   build:
     needs: test
@@ -124,7 +126,7 @@ jobs:
 
     - name: Test container
       run: |
-        # Start the container
+        # Start the container (install dev deps for aiosqlite SQLite driver)
         docker run -d --name test-container \
           -e DATABASE_URL="sqlite+aiosqlite:///./test.db" \
           -e FAST_TEST_MODE=true \
@@ -135,7 +137,8 @@ jobs:
           -e POSTGRES_DB=postgres \
           -e POSTGRES_SERVER=localhost \
           -p 8000:8000 \
-          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+          bash -c "uv sync --frozen && uvicorn main:app --host 0.0.0.0 --port 8000"
         
         # Wait for container to start and implement health checking with retry
         echo "Waiting for container to become healthy..."
@@ -173,7 +176,7 @@ jobs:
           -e POSTGRES_SERVER=localhost \
           --workdir /app \
           ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-          bash -c "bash test/run_tests.sh --backend"
+          bash -c "uv sync --frozen && bash test/run_tests.sh --backend"
 
     - name: Push Docker image
       if: github.event_name != 'pull_request'

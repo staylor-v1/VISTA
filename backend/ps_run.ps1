@@ -76,7 +76,7 @@ if (Test-Path ".venv") {
     Write-Host "Found .venv in current directory, activating..." -ForegroundColor Cyan
     & ".\.venv\Scripts\Activate.ps1"
     if (-not (Test-Command uvicorn)) {
-        Write-Host "ERROR: uvicorn not found after activating virtual environment. Please run 'pip install -r requirements.txt'" -ForegroundColor Red
+        Write-Host "ERROR: uvicorn not found after activating virtual environment. Please run 'uv sync'" -ForegroundColor Red
         exit 1
     }
 }
@@ -85,7 +85,7 @@ elseif (Test-Path "..\.venv") {
     Write-Host "Found .venv in parent directory, activating..." -ForegroundColor Cyan
     & "..\\.venv\Scripts\Activate.ps1"
     if (-not (Test-Command uvicorn)) {
-        Write-Host "ERROR: uvicorn not found after activating virtual environment. Please run 'pip install -r requirements.txt'" -ForegroundColor Red
+        Write-Host "ERROR: uvicorn not found after activating virtual environment. Please run 'uv sync'" -ForegroundColor Red
         exit 1
     }
 }
