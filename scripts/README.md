@@ -10,12 +10,11 @@ End-to-end integration test for the ML analysis feature using real YOLOv8 object
 
 **Quick Start:**
 ```bash
-# Set HMAC secret
-# in the scripts folder
-source ../.env
-
 # Run pipeline on a project (auto-installs dependencies)
 ./run_yolov8_pipeline.sh <project_id> --install-deps --limit 5
+
+# With API key authentication
+./run_yolov8_pipeline.sh <project_id> --api-key YOUR_KEY --limit 5
 
 # View results at http://localhost:3000 in the ML Analyses panel
 ```
@@ -25,12 +24,23 @@ source ../.env
 - Runs YOLOv8 object detection (80 COCO classes: person, car, dog, etc.)
 - Creates bounding box + heatmap visualizations
 - Uploads artifacts to S3/MinIO
-- Submits annotations with HMAC authentication
-- Completes full analysis lifecycle (queued → processing → completed)
+- Submits annotations via the unified `/api` endpoint
+- Completes full analysis lifecycle (queued -> processing -> completed)
 
 **Model sizes:** `n` (nano/fast), `s` (small), `m` (medium), `l` (large), `x` (xlarge)
 
 **Full documentation:** [README_YOLOV8.md](./README_YOLOV8.md)
+
+---
+
+### Heatmap Pipeline (`heatmap_ml_pipeline.py`)
+
+Generates random/synthetic heatmaps for UI testing.
+
+```bash
+./run_heatmap_pipeline.sh <project_id> --limit 5
+./run_heatmap_pipeline.sh <project_id> --api-key YOUR_KEY --output-dir ./heatmaps
+```
 
 ---
 
@@ -39,11 +49,22 @@ source ../.env
 Mock ML pipeline for testing without running real models.
 
 ```bash
-export ML_CALLBACK_HMAC_SECRET='your-secret'
 python test_ml_pipeline.py --image-id <image_uuid>
+python test_ml_pipeline.py --image-id <image_uuid> --api-key YOUR_KEY
 ```
 
 Simulates external ML pipeline behavior with mock annotations.
+
+---
+
+### Mock ML Generator (`mock_ml/`)
+
+Generates a synthetic image with geometric shapes, uploads it, and creates mock analyses.
+
+```bash
+cd mock_ml
+./run_mock_ml.sh <project_id> http://localhost:8000 YOUR_API_KEY
+```
 
 ---
 
@@ -54,15 +75,33 @@ Simulates external ML pipeline behavior with mock annotations.
 pip install -r ml_requirements.txt
 ```
 
+**For heatmap pipeline:**
+```bash
+pip install -r heatmap_ml_requirements.txt
+```
+
 **For test pipeline:**
-- Standard Python 3.8+ (requests, hmac)
+- Standard Python 3.8+ (requests, Pillow)
+
+## Authentication
+
+All scripts authenticate via one of two methods:
+
+1. **API key (Bearer token)** -- recommended for production and automation:
+   ```bash
+   --api-key YOUR_KEY
+   # or set the API_KEY environment variable
+   ```
+
+2. **Debug mode (X-User-Email header)** -- for local development with `DEBUG=true`:
+   No API key needed; scripts automatically send the mock user header.
 
 ## Environment Variables
 
-- `ML_CALLBACK_HMAC_SECRET` - Required for ML pipeline authentication (HMAC)
-- `API_KEY` - API key used by ML scripts when calling API endpoints
+- `API_KEY` -- API key for Bearer token authentication
+- `MOCK_USER_EMAIL` -- Email for debug-mode auth (default: test@example.com)
 
-These are normally loaded from the project root `.env` file by the Python and shell scripts in this folder. If you change either value in `.env`, restart the backend so FastAPI picks up the new secrets; otherwise HMAC checks on `/api-ml` endpoints will continue to fail with 401.
+These are normally loaded from the project root `.env` file by the Python and shell scripts.
 
 ## Usage Examples
 
@@ -77,7 +116,7 @@ These are normally loaded from the project root `.env` file by the Python and sh
 python test_ml_pipeline.py --image-id abc-123-def
 
 # Custom API endpoint
-./run_yolov8_pipeline.sh abc-123 --api-url https://api.example.com
+./run_yolov8_pipeline.sh abc-123 --api-url https://api.example.com --api-key KEY
 ```
 
 ## File Structure
@@ -88,16 +127,23 @@ scripts/
 ├── README_YOLOV8.md            # Detailed YOLOv8 documentation
 ├── yolov8_ml_pipeline.py       # YOLOv8 integration script
 ├── run_yolov8_pipeline.sh      # Bash wrapper for YOLOv8
-├── ml_requirements.txt         # ML dependencies
-└── test_ml_pipeline.py         # Mock pipeline tester
+├── heatmap_ml_pipeline.py      # Heatmap generation script
+├── run_heatmap_pipeline.sh     # Bash wrapper for heatmap
+├── ml_requirements.txt         # ML dependencies (YOLOv8)
+├── heatmap_ml_requirements.txt # ML dependencies (heatmap)
+├── test_ml_pipeline.py         # Mock pipeline tester
+└── mock_ml/                    # Mock ML generator
+    ├── generate_and_upload_ml.py
+    └── run_mock_ml.sh
 ```
 
 ## Troubleshooting
 
-**HMAC secret missing:**
+**Authentication errors (401):**
 ```bash
-source ../.env  # or set manually
-export ML_CALLBACK_HMAC_SECRET='your-secret'
+# Use an API key
+export API_KEY='your-api-key'
+# Or ensure DEBUG=true on the backend for development
 ```
 
 **Dependencies not installed:**

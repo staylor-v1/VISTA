@@ -51,7 +51,7 @@ Arguments:
 
 Options:
     --api-url URL       API base URL (default: http://localhost:8000)
-    --api-key KEY       API key for authentication
+    --api-key KEY       API key for Bearer token authentication
                         REQUIRED for production (with auth enabled)
                         Optional for dev/test (with DEBUG=true)
     --heatmap-type TYPE Heatmap type: random (default: random)
@@ -63,7 +63,6 @@ Options:
     --help              Show this help message
 
 Environment Variables:
-    ML_CALLBACK_HMAC_SECRET    HMAC secret (required)
     API_KEY                    API key for authentication (alternative to --api-key)
 
 Examples:
@@ -81,9 +80,6 @@ Examples:
 
     # Install dependencies first
     $0 abc-123-def --install-deps
-
-Note: ML pipeline callbacks require BOTH API key AND HMAC signature in production.
-      The API key authenticates the user, HMAC proves the request is from an authorized pipeline.
 
 EOF
 }
@@ -163,28 +159,6 @@ if [[ ! "$HEATMAP_TYPE" =~ ^(random)$ ]]; then
     exit 1
 fi
 
-# Try to load .env file if HMAC secret is not set
-if [[ -z "${ML_CALLBACK_HMAC_SECRET:-}" ]]; then
-    if [[ -f "$PROJECT_ROOT/.env" ]]; then
-        say "Loading environment from $PROJECT_ROOT/.env"
-        set -a
-        source "$PROJECT_ROOT/.env"
-        set +a
-    fi
-fi
-
-# Check HMAC secret
-if [[ -z "${ML_CALLBACK_HMAC_SECRET:-}" ]]; then
-    error "ML_CALLBACK_HMAC_SECRET environment variable is required"
-    echo ""
-    echo "Set it with:"
-    echo "  export ML_CALLBACK_HMAC_SECRET='your-secret-here'"
-    echo ""
-    echo "Or add it to your .env file:"
-    echo "  echo 'ML_CALLBACK_HMAC_SECRET=your-secret' >> $PROJECT_ROOT/.env"
-    exit 1
-fi
-
 say "Heatmap ML Pipeline Integration Test"
 echo "===================================="
 echo ""
@@ -192,7 +166,6 @@ echo "Project ID:    $PROJECT_ID"
 echo "API URL:       $API_URL"
 echo "Heatmap Type:  $HEATMAP_TYPE"
 echo "Image Limit:   $LIMIT"
-echo "HMAC Secret:   ${ML_CALLBACK_HMAC_SECRET:0:8}... (set)"
 [[ -n "$API_KEY" ]] && echo "API Key:       ${API_KEY:0:8}... (set)"
 [[ -n "$OUTPUT_DIR" ]] && echo "Output Dir:    $OUTPUT_DIR"
 echo ""
