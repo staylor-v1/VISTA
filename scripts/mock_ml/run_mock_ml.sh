@@ -16,18 +16,16 @@ fi
 PROJECT_ID=${1:-${PROJECT_ID:-}}
 API_BASE=${2:-${API_BASE:-http://localhost:8000}}
 API_KEY=${3:-${API_KEY:-}}
-HMAC_SECRET=${4:-${HMAC_SECRET:-}}
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   cat <<EOF
-Usage: $0 [project_id] [api_base] [api_key] [hmac_secret]
+Usage: $0 [project_id] [api_base] [api_key]
 If omitted, values are loaded from .env in this directory.
 
 Environment (.env) variables:
   PROJECT_ID= (required if not passed as arg)
   API_BASE=  (default http://localhost:8000)
   API_KEY=   (optional)
-  HMAC_SECRET= (optional)
   MODEL_NAME_BASE= (optional)
   NO_HEATMAP=0|1 (optional)
 EOF
@@ -43,7 +41,6 @@ PYTHON=${PYTHON:-python3}
 
 CMD=("$PYTHON" "$SCRIPT_DIR/generate_and_upload_ml.py" --project "$PROJECT_ID" --api-base "$API_BASE")
 [[ -n "$API_KEY" ]] && CMD+=(--api-key "$API_KEY")
-[[ -n "$HMAC_SECRET" ]] && CMD+=(--hmac-secret "$HMAC_SECRET")
 if [[ "${NO_HEATMAP:-0}" == "1" ]]; then
   CMD+=(--no-heatmap)
 fi

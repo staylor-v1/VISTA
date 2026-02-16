@@ -13,18 +13,16 @@ This script simulates an external ML pipeline that:
 Usage:
     python scripts/test_ml_pipeline.py [--image-id IMAGE_ID] [--base-url BASE_URL]
 
-Environment Variables:
-    ML_CALLBACK_HMAC_SECRET: HMAC secret for authenticating with the API
-    API_BASE_URL: Base URL of the API (default: http://localhost:8000)
+Authentication:
+    --api-key KEY       API key for Bearer token authentication (recommended)
+    Or set API_KEY environment variable.
+    In debug mode (DEBUG=true on backend), no auth is needed.
 """
 
 import os
 import sys
 import argparse
 import json
-import hmac
-import hashlib
-import time
 import requests
 from io import BytesIO
 from PIL import Image, ImageDraw
@@ -35,26 +33,6 @@ from dotenv import load_dotenv
 # Load environment variables from .env file in project root
 project_root = Path(__file__).parent.parent
 load_dotenv(project_root / '.env')
-from pathlib import Path
-
-from dotenv import load_dotenv
-
-# Load environment variables from .env file in project root
-project_root = Path(__file__).parent.parent
-load_dotenv(project_root / '.env')
-
-
-def generate_hmac_headers(body_bytes: bytes, secret: str) -> dict:
-    """Generate HMAC signature headers for API authentication."""
-    timestamp = str(int(time.time()))
-    message = timestamp.encode('utf-8') + b'.' + body_bytes
-    mac = hmac.new(secret.encode('utf-8'), msg=message, digestmod=hashlib.sha256)
-
-    return {
-        'X-ML-Timestamp': timestamp,
-        'X-ML-Signature': f'sha256={mac.hexdigest()}',
-        'Content-Type': 'application/json'
-    }
 
 
 def create_fake_heatmap(width=512, height=512) -> bytes:
@@ -83,25 +61,26 @@ def create_fake_heatmap(width=512, height=512) -> bytes:
     return buffer.getvalue()
 
 
-def run_pipeline(base_url: str, image_id: str, hmac_secret: str, model_name: str = "yolo_v8", model_version: str = "1.0.0"):
+def run_pipeline(base_url: str, image_id: str, session: requests.Session,
+                 model_name: str = "yolo_v8", model_version: str = "1.0.0"):
     """
     Run a complete ML pipeline simulation.
 
     Args:
         base_url: Base URL of the API (e.g., http://localhost:8000)
         image_id: UUID of the image to analyze
-        hmac_secret: HMAC secret for authentication
+        session: Authenticated requests session
         model_name: Model name to use for analysis
         model_version: Model version
     """
-    print(f"🚀 Starting ML Pipeline Simulation")
+    print("Starting ML Pipeline Simulation")
     print(f"   Base URL: {base_url}")
     print(f"   Image ID: {image_id}")
     print(f"   Model: {model_name} v{model_version}")
     print()
 
     # Step 1: Create analysis
-    print("📝 Step 1: Creating analysis...")
+    print("Step 1: Creating analysis...")
     create_payload = {
         "image_id": image_id,
         "model_name": model_name,
@@ -113,68 +92,62 @@ def run_pipeline(base_url: str, image_id: str, hmac_secret: str, model_name: str
         }
     }
 
-    resp = requests.post(
+    resp = session.post(
         f"{base_url}/api/images/{image_id}/analyses",
         json=create_payload
     )
 
     if resp.status_code != 201:
-        print(f"❌ Failed to create analysis: {resp.status_code} - {resp.text}")
+        print(f"FAIL: Failed to create analysis: {resp.status_code} - {resp.text}")
         return False
 
     analysis = resp.json()
     analysis_id = analysis['id']
-    print(f"✅ Analysis created: {analysis_id}")
+    print(f"  OK: Analysis created: {analysis_id}")
     print(f"   Status: {analysis['status']}")
     print()
 
     # Step 2: Update status to processing
-    print("⚙️  Step 2: Updating status to 'processing'...")
+    print("Step 2: Updating status to 'processing'...")
     status_payload = {"status": "processing"}
-    status_body = json.dumps(status_payload).encode('utf-8')
-    status_headers = generate_hmac_headers(status_body, hmac_secret)
 
-    resp = requests.patch(
+    resp = session.patch(
         f"{base_url}/api/analyses/{analysis_id}/status",
-        data=status_body,
-        headers=status_headers
+        json=status_payload
     )
 
     if resp.status_code != 200:
-        print(f"❌ Failed to update status: {resp.status_code} - {resp.text}")
+        print(f"FAIL: Failed to update status: {resp.status_code} - {resp.text}")
         return False
 
-    print(f"✅ Status updated to 'processing'")
+    print("  OK: Status updated to 'processing'")
     print()
 
     # Step 3: Request presigned upload URL for heatmap
-    print("☁️  Step 3: Requesting presigned upload URL for heatmap...")
+    print("Step 3: Requesting presigned upload URL for heatmap...")
     presign_payload = {
         "artifact_type": "heatmap",
         "filename": "heatmap.png"
     }
-    presign_body = json.dumps(presign_payload).encode('utf-8')
-    presign_headers = generate_hmac_headers(presign_body, hmac_secret)
 
-    resp = requests.post(
+    resp = session.post(
         f"{base_url}/api/analyses/{analysis_id}/artifacts/presign",
-        data=presign_body,
-        headers=presign_headers
+        json=presign_payload
     )
 
     if resp.status_code != 200:
-        print(f"❌ Failed to get presigned URL: {resp.status_code} - {resp.text}")
+        print(f"FAIL: Failed to get presigned URL: {resp.status_code} - {resp.text}")
         return False
 
     presign_data = resp.json()
     upload_url = presign_data['upload_url']
     storage_path = presign_data['storage_path']
-    print(f"✅ Presigned URL obtained")
+    print("  OK: Presigned URL obtained")
     print(f"   Storage path: {storage_path}")
     print()
 
     # Step 4: Upload heatmap (only if not a mock URL)
-    print("📤 Step 4: Uploading heatmap image...")
+    print("Step 4: Uploading heatmap image...")
     if not upload_url.startswith('https://example.com'):
         # Real S3 upload
         heatmap_bytes = create_fake_heatmap()
@@ -185,16 +158,16 @@ def run_pipeline(base_url: str, image_id: str, hmac_secret: str, model_name: str
         )
 
         if upload_resp.status_code not in (200, 204):
-            print(f"⚠️  Heatmap upload failed: {upload_resp.status_code}")
-            print(f"   Continuing anyway (artifact upload is optional)")
+            print(f"  WARN: Heatmap upload failed: {upload_resp.status_code}")
+            print("   Continuing anyway (artifact upload is optional)")
         else:
-            print(f"✅ Heatmap uploaded successfully")
+            print("  OK: Heatmap uploaded successfully")
     else:
-        print(f"ℹ️  Skipping upload (mock S3 URL detected)")
+        print("  INFO: Skipping upload (mock S3 URL detected)")
     print()
 
     # Step 5: Post bulk annotations
-    print("📊 Step 5: Posting bulk annotations...")
+    print("Step 5: Posting bulk annotations...")
 
     # Generate random bounding boxes
     num_boxes = random.randint(3, 8)
@@ -258,21 +231,18 @@ def run_pipeline(base_url: str, image_id: str, hmac_secret: str, model_name: str
     })
 
     bulk_payload = {"annotations": annotations}
-    bulk_body = json.dumps(bulk_payload).encode('utf-8')
-    bulk_headers = generate_hmac_headers(bulk_body, hmac_secret)
 
-    resp = requests.post(
+    resp = session.post(
         f"{base_url}/api/analyses/{analysis_id}/annotations:bulk",
-        data=bulk_body,
-        headers=bulk_headers
+        json=bulk_payload
     )
 
     if resp.status_code != 200:
-        print(f"❌ Failed to post annotations: {resp.status_code} - {resp.text}")
+        print(f"FAIL: Failed to post annotations: {resp.status_code} - {resp.text}")
         return False
 
     result = resp.json()
-    print(f"✅ Annotations posted successfully")
+    print("  OK: Annotations posted successfully")
     print(f"   Total annotations: {result['total']}")
     print(f"   Bounding boxes: {num_boxes}")
     print(f"   Heatmap: 1")
@@ -280,30 +250,27 @@ def run_pipeline(base_url: str, image_id: str, hmac_secret: str, model_name: str
     print()
 
     # Step 6: Finalize analysis
-    print("🏁 Step 6: Finalizing analysis...")
+    print("Step 6: Finalizing analysis...")
     finalize_payload = {"status": "completed"}
-    finalize_body = json.dumps(finalize_payload).encode('utf-8')
-    finalize_headers = generate_hmac_headers(finalize_body, hmac_secret)
 
-    resp = requests.post(
+    resp = session.post(
         f"{base_url}/api/analyses/{analysis_id}/finalize",
-        data=finalize_body,
-        headers=finalize_headers
+        json=finalize_payload
     )
 
     if resp.status_code != 200:
-        print(f"❌ Failed to finalize analysis: {resp.status_code} - {resp.text}")
+        print(f"FAIL: Failed to finalize analysis: {resp.status_code} - {resp.text}")
         return False
 
     final_analysis = resp.json()
-    print(f"✅ Analysis finalized")
+    print("  OK: Analysis finalized")
     print(f"   Status: {final_analysis['status']}")
     print(f"   Started: {final_analysis.get('started_at', 'N/A')}")
     print(f"   Completed: {final_analysis.get('completed_at', 'N/A')}")
     print()
 
     print("=" * 60)
-    print("🎉 ML Pipeline Simulation Completed Successfully!")
+    print("ML Pipeline Simulation Completed Successfully!")
     print("=" * 60)
     print(f"\nAnalysis ID: {analysis_id}")
     print(f"View in UI: {base_url.replace(':8000', ':3000')}/view/{image_id}")
@@ -327,6 +294,11 @@ def main():
         help='Base URL of the API (default: http://localhost:8000)'
     )
     parser.add_argument(
+        '--api-key',
+        default=os.getenv('API_KEY'),
+        help='API key for Bearer token authentication'
+    )
+    parser.add_argument(
         '--model-name',
         default='yolo_v8',
         help='Model name to use (default: yolo_v8)'
@@ -339,19 +311,20 @@ def main():
 
     args = parser.parse_args()
 
-    # Get HMAC secret from environment
-    hmac_secret = os.getenv('ML_CALLBACK_HMAC_SECRET')
-    if not hmac_secret:
-        print("❌ Error: ML_CALLBACK_HMAC_SECRET environment variable not set")
-        print("   Please set it to match your backend configuration")
-        print("   Example: export ML_CALLBACK_HMAC_SECRET='your_secret_here'")
-        sys.exit(1)
+    # Set up authenticated session
+    session = requests.Session()
+    if args.api_key:
+        session.headers.update({'Authorization': f'Bearer {args.api_key}'})
+        print(f"Using API key authentication")
+    else:
+        print("No API key provided -- relying on debug mode (X-User-Email header)")
+        session.headers.update({'X-User-Email': 'test@example.com'})
 
     # Run the pipeline
     success = run_pipeline(
         base_url=args.base_url.rstrip('/'),
         image_id=args.image_id,
-        hmac_secret=hmac_secret,
+        session=session,
         model_name=args.model_name,
         model_version=args.model_version
     )
