@@ -5,7 +5,7 @@ from typing import List
 import utils.crud as crud
 from core import schemas
 from core.database import get_db
-from utils.dependencies import get_current_user, generate_api_key, hash_api_key
+from utils.dependencies import require_proxy_user, generate_api_key, hash_api_key
 
 router = APIRouter(
     tags=["API Keys"],
@@ -15,7 +15,7 @@ router = APIRouter(
 async def create_api_key(
     api_key: schemas.ApiKeyCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: schemas.User = Depends(get_current_user),
+    current_user: schemas.User = Depends(require_proxy_user),
 ):
     """Create a new API key for the current user"""
     # Generate a new API key
@@ -40,7 +40,7 @@ async def create_api_key(
 @router.get("/api-keys", response_model=List[schemas.ApiKey])
 async def list_api_keys(
     db: AsyncSession = Depends(get_db),
-    current_user: schemas.User = Depends(get_current_user),
+    current_user: schemas.User = Depends(require_proxy_user),
 ):
     """List all API keys for the current user (keys are masked for security)"""
     api_keys = await crud.get_api_keys_for_user(db=db, user_id=current_user.id)
@@ -63,7 +63,7 @@ async def list_api_keys(
 async def deactivate_api_key(
     api_key_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: schemas.User = Depends(get_current_user),
+    current_user: schemas.User = Depends(require_proxy_user),
 ):
     """Deactivate an API key"""
     # First, verify that the API key belongs to the current user
