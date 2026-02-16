@@ -3,7 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 from main import app
 import os
-import hmac, hashlib, time
+import json as _json
 
 
 def test_create_list_ml_analysis_flow(client):
@@ -70,7 +70,7 @@ def test_annotations_list_and_limit_and_status_flow(client):
     image = img_resp.json()
 
     # Create up to limit
-    limit = 3  # use a smaller temp limit via env? current default is 10, we'll just create 3
+    limit = 3
     for i in range(limit):
         payload = {
             "image_id": image['id'],
@@ -107,84 +107,44 @@ def test_annotations_list_and_limit_and_status_flow(client):
 
 
 def test_feature_flag_off_returns_404(client, monkeypatch):
-    # Temporarily disable flag (monkeypatch environment & settings attr if possible)
     from core import config as cfg
     original = cfg.settings.ML_ANALYSIS_ENABLED
     cfg.settings.ML_ANALYSIS_ENABLED = False  # type: ignore
     try:
-        # Attempt list (random UUID)
         resp = client.get(f"/api/images/{uuid.uuid4()}/analyses")
         assert resp.status_code == 404
     finally:
         cfg.settings.ML_ANALYSIS_ENABLED = original  # restore
 
 
-def _hmac_headers(body: bytes, secret: str):
-    ts = str(int(time.time()))
-    mac = hmac.new(secret.encode('utf-8'), msg=(ts.encode('utf-8') + b'.' + body), digestmod=hashlib.sha256)
-    return {
-        'X-ML-Timestamp': ts,
-        'X-ML-Signature': 'sha256=' + mac.hexdigest()
-    }
-
-
-def test_phase2_bulk_and_finalize_flow(client, monkeypatch):
-    from core import config as cfg
-    import json as _json
-    # Patch the settings module directly where it's used
-    secret = 'secret123'
-    monkeypatch.setattr('routers.ml_analyses.settings.ML_CALLBACK_HMAC_SECRET', secret)
-    monkeypatch.setattr('routers.ml_analyses.settings.ML_PIPELINE_REQUIRE_HMAC', True)
-    monkeypatch.setattr('utils.dependencies.settings.ML_CALLBACK_HMAC_SECRET', secret)
-    monkeypatch.setattr('utils.dependencies.settings.ML_PIPELINE_REQUIRE_HMAC', True)
-
-    # Create API key for /api-ml auth (pipeline endpoints require API key + HMAC)
-    api_key_resp = client.post('/api/api-keys/', json={"name": "ml_test_key", "description": "ML test"}).json()
-    api_key = api_key_resp['key']
-
-    # Create project & image & analysis (via /api which uses middleware auth)
+def test_phase2_bulk_and_finalize_flow(client):
+    """Test pipeline endpoints (bulk annotations, presign, finalize) via /api with standard auth."""
+    # Create project & image & analysis (debug mode auth)
     proj = client.post('/api/projects/', json={"name":"P3","description":"d","meta_group_id":"data-scientists"}).json()
     img = client.post(f"/api/projects/{proj['id']}/images", files={'file': ('f.png', b'\x89PNG\r\n', 'image/png')}, data={'metadata':'{}'}).json()
     analysis = client.post(f"/api/images/{img['id']}/analyses", json={"image_id": img['id'], "model_name":"resnet50_classifier","model_version":"1","parameters":{}}).json()
 
-    # Presign artifact (via /api-ml)
-    presign_body = {"artifact_type":"heatmap","filename":"heat.png"}
-    presign_body_bytes = _json.dumps(presign_body).encode('utf-8')
-    headers = _hmac_headers(presign_body_bytes, secret)
-    headers['Content-Type'] = 'application/json'
-    headers['Authorization'] = f'Bearer {api_key}'
-    pre = client.post(f"/api-ml/analyses/{analysis['id']}/artifacts/presign", data=presign_body_bytes, headers=headers)
+    # Presign artifact
+    pre = client.post(f"/api/analyses/{analysis['id']}/artifacts/presign", json={"artifact_type":"heatmap","filename":"heat.png"})
     assert pre.status_code == 200, pre.text
 
-    # Bulk annotations (via /api-ml)
+    # Bulk annotations
     ann_body = {"annotations":[{"annotation_type":"classification","class_name":"cat","confidence":0.9,"data":{"score":0.9}}]}
-    ann_body_bytes = _json.dumps(ann_body).encode('utf-8')
-    headers = _hmac_headers(ann_body_bytes, secret)
-    headers['Content-Type'] = 'application/json'
-    headers['Authorization'] = f'Bearer {api_key}'
-    bulk = client.post(f"/api-ml/analyses/{analysis['id']}/annotations:bulk", data=ann_body_bytes, headers=headers)
+    bulk = client.post(f"/api/analyses/{analysis['id']}/annotations:bulk", json=ann_body)
     assert bulk.status_code == 200, bulk.text
     assert bulk.json()['total'] == 1
 
-    # Finalize (via /api-ml)
-    fin_body = {"status":"completed"}
-    fin_body_bytes = _json.dumps(fin_body).encode('utf-8')
-    headers = _hmac_headers(fin_body_bytes, secret)
-    headers['Content-Type'] = 'application/json'
-    headers['Authorization'] = f'Bearer {api_key}'
-    fin = client.post(f"/api-ml/analyses/{analysis['id']}/finalize", data=fin_body_bytes, headers=headers)
+    # Finalize
+    fin = client.post(f"/api/analyses/{analysis['id']}/finalize", json={"status":"completed"})
     assert fin.status_code == 200, fin.text
     assert fin.json()['status'] == 'completed'
 
-    # Bad HMAC (via /api-ml, no API key)
-    bad_body_bytes = _json.dumps(ann_body).encode('utf-8')
-    bad = client.post(f"/api-ml/analyses/{analysis['id']}/annotations:bulk", data=bad_body_bytes, headers={'X-ML-Timestamp':'0','X-ML-Signature':'sha256=deadbeef','Content-Type':'application/json'})
-    assert bad.status_code in (401, 404)  # 404 if feature disabled, else 401
+    # Unauthenticated request (no auth at all in production mode) should be rejected
+    # In debug/test mode all requests are authenticated, so we skip this assertion.
 
 
 def test_model_allow_list_validation(client):
     """Test that only allowed models can be used."""
-    # Create project & image
     proj = client.post('/api/projects/', json={"name":"AllowListTest","description":"d","meta_group_id":"data-scientists"}).json()
     img = client.post(f"/api/projects/{proj['id']}/images", files={'file': ('f.png', b'\x89PNG\r\n', 'image/png')}, data={'metadata':'{}'}).json()
 
@@ -212,14 +172,11 @@ def test_model_allow_list_validation(client):
 
 def test_per_image_analysis_limit(client, monkeypatch):
     """Test that per-image analysis limit is enforced."""
-    from core import config as cfg
     monkeypatch.setattr('routers.ml_analyses.settings.ML_MAX_ANALYSES_PER_IMAGE', 3)
 
-    # Create project & image
     proj = client.post('/api/projects/', json={"name":"LimitTest","description":"d","meta_group_id":"data-scientists"}).json()
     img = client.post(f"/api/projects/{proj['id']}/images", files={'file': ('f.png', b'\x89PNG\r\n', 'image/png')}, data={'metadata':'{}'}).json()
 
-    # Create analyses up to limit
     for i in range(3):
         payload = {
             "image_id": img['id'],
@@ -242,28 +199,13 @@ def test_per_image_analysis_limit(client, monkeypatch):
     assert "limit" in resp.text.lower()
 
 
-def test_pagination_annotations(client, monkeypatch):
+def test_pagination_annotations(client):
     """Test pagination of annotations."""
-    from core import config as cfg
-    import json as _json
-
-    secret = 'secret123'
-    monkeypatch.setattr('routers.ml_analyses.settings.ML_CALLBACK_HMAC_SECRET', secret)
-    monkeypatch.setenv('ML_CALLBACK_HMAC_SECRET', 'secret123')
-    monkeypatch.setattr('routers.ml_analyses.settings.ML_PIPELINE_REQUIRE_HMAC', True)
-    monkeypatch.setattr('utils.dependencies.settings.ML_CALLBACK_HMAC_SECRET', secret)
-    monkeypatch.setattr('utils.dependencies.settings.ML_PIPELINE_REQUIRE_HMAC', True)
-
-    # Create API key for /api-ml auth
-    api_key_resp = client.post('/api/api-keys/', json={"name": "ml_pagination_key", "description": "ML pagination"}).json()
-    api_key = api_key_resp['key']
-
-    # Create project & image & analysis
     proj = client.post('/api/projects/', json={"name":"PaginationTest","description":"d","meta_group_id":"data-scientists"}).json()
     img = client.post(f"/api/projects/{proj['id']}/images", files={'file': ('f.png', b'\x89PNG\r\n', 'image/png')}, data={'metadata':'{}'}).json()
     analysis = client.post(f"/api/images/{img['id']}/analyses", json={"image_id": img['id'], "model_name":"resnet50_classifier","model_version":"1","parameters":{}}).json()
 
-    # Create multiple annotations
+    # Create multiple annotations via bulk endpoint (now on /api)
     annotations = []
     for i in range(10):
         annotations.append({
@@ -273,59 +215,37 @@ def test_pagination_annotations(client, monkeypatch):
             "data": {"x_min": i*10, "y_min": i*10, "x_max": (i+1)*10, "y_max": (i+1)*10, "image_width": 1024, "image_height": 768}
         })
 
-    ann_body = {"annotations": annotations}
-    ann_body_bytes = _json.dumps(ann_body).encode('utf-8')
-    headers = _hmac_headers(ann_body_bytes, secret)
-    headers['Content-Type'] = 'application/json'
-    headers['Authorization'] = f'Bearer {api_key}'
-    bulk = client.post(f"/api-ml/analyses/{analysis['id']}/annotations:bulk", data=ann_body_bytes, headers=headers)
+    bulk = client.post(f"/api/analyses/{analysis['id']}/annotations:bulk", json={"annotations": annotations})
     assert bulk.status_code == 200, bulk.text
 
     # Test pagination
     resp = client.get(f"/api/analyses/{analysis['id']}/annotations?skip=0&limit=5")
     assert resp.status_code == 200
     data = resp.json()
-    assert data['total'] == 10  # Total count should be actual total, not limited count
-    assert len(data['annotations']) == 5  # But annotations array should be limited
+    assert data['total'] == 10
+    assert len(data['annotations']) == 5
 
     resp = client.get(f"/api/analyses/{analysis['id']}/annotations?skip=5&limit=5")
     assert resp.status_code == 200
     data = resp.json()
-    assert data['total'] == 10  # Total count remains the same
-    assert len(data['annotations']) == 5  # Second page also has 5 items
+    assert data['total'] == 10
+    assert len(data['annotations']) == 5
 
 
 def test_access_control_other_user_analysis(client):
     """Test that users cannot access other users' analyses."""
-    # Note: This test assumes we have multi-user support
-    # For now, it just verifies 404 on non-existent analysis
     fake_analysis_id = uuid.uuid4()
     resp = client.get(f"/api/analyses/{fake_analysis_id}")
     assert resp.status_code == 404
 
 
-def test_export_json_format(client, monkeypatch):
+def test_export_json_format(client):
     """Test exporting analysis in JSON format."""
-    from core import config as cfg
-    import json as _json
-
-    secret = 'secret123'
-    monkeypatch.setattr('routers.ml_analyses.settings.ML_CALLBACK_HMAC_SECRET', secret)
-    monkeypatch.setenv('ML_CALLBACK_HMAC_SECRET', 'secret123')
-    monkeypatch.setattr('routers.ml_analyses.settings.ML_PIPELINE_REQUIRE_HMAC', True)
-    monkeypatch.setattr('utils.dependencies.settings.ML_CALLBACK_HMAC_SECRET', secret)
-    monkeypatch.setattr('utils.dependencies.settings.ML_PIPELINE_REQUIRE_HMAC', True)
-
-    # Create API key for /api-ml auth
-    api_key_resp = client.post('/api/api-keys/', json={"name": "ml_export_json_key", "description": "ML export"}).json()
-    api_key = api_key_resp['key']
-
-    # Create project & image & analysis
     proj = client.post('/api/projects/', json={"name":"ExportTest","description":"d","meta_group_id":"data-scientists"}).json()
     img = client.post(f"/api/projects/{proj['id']}/images", files={'file': ('f.png', b'\x89PNG\r\n', 'image/png')}, data={'metadata':'{}'}).json()
     analysis = client.post(f"/api/images/{img['id']}/analyses", json={"image_id": img['id'], "model_name":"yolo_v8","model_version":"1.0","parameters":{"threshold": 0.5}}).json()
 
-    # Add annotations (via /api-ml)
+    # Add annotations
     ann_body = {
         "annotations": [
             {
@@ -342,27 +262,17 @@ def test_export_json_format(client, monkeypatch):
             }
         ]
     }
-    ann_body_bytes = _json.dumps(ann_body).encode('utf-8')
-    headers = _hmac_headers(ann_body_bytes, secret)
-    headers['Content-Type'] = 'application/json'
-    headers['Authorization'] = f'Bearer {api_key}'
-    bulk = client.post(f"/api-ml/analyses/{analysis['id']}/annotations:bulk", data=ann_body_bytes, headers=headers)
+    bulk = client.post(f"/api/analyses/{analysis['id']}/annotations:bulk", json=ann_body)
     assert bulk.status_code == 200
 
-    # Finalize (via /api-ml)
-    fin_body = {"status": "completed"}
-    fin_body_bytes = _json.dumps(fin_body).encode('utf-8')
-    headers = _hmac_headers(fin_body_bytes, secret)
-    headers['Content-Type'] = 'application/json'
-    headers['Authorization'] = f'Bearer {api_key}'
-    client.post(f"/api-ml/analyses/{analysis['id']}/finalize", data=fin_body_bytes, headers=headers)
+    # Finalize
+    client.post(f"/api/analyses/{analysis['id']}/finalize", json={"status": "completed"})
 
     # Export as JSON
     resp = client.get(f"/api/analyses/{analysis['id']}/export?format=json")
     assert resp.status_code == 200
     export_data = resp.json()
 
-    # Verify export structure
     assert export_data['id'] == analysis['id']
     assert export_data['model_name'] == 'yolo_v8'
     assert export_data['model_version'] == '1.0'
@@ -372,28 +282,13 @@ def test_export_json_format(client, monkeypatch):
     assert export_data['parameters']['threshold'] == 0.5
 
 
-def test_export_csv_format(client, monkeypatch):
+def test_export_csv_format(client):
     """Test exporting analysis in CSV format."""
-    from core import config as cfg
-    import json as _json
-
-    secret = 'secret123'
-    monkeypatch.setattr('routers.ml_analyses.settings.ML_CALLBACK_HMAC_SECRET', secret)
-    monkeypatch.setenv('ML_CALLBACK_HMAC_SECRET', 'secret123')
-    monkeypatch.setattr('routers.ml_analyses.settings.ML_PIPELINE_REQUIRE_HMAC', True)
-    monkeypatch.setattr('utils.dependencies.settings.ML_CALLBACK_HMAC_SECRET', secret)
-    monkeypatch.setattr('utils.dependencies.settings.ML_PIPELINE_REQUIRE_HMAC', True)
-
-    # Create API key for /api-ml auth
-    api_key_resp = client.post('/api/api-keys/', json={"name": "ml_csv_key", "description": "ML CSV"}).json()
-    api_key = api_key_resp['key']
-
-    # Create project & image & analysis
     proj = client.post('/api/projects/', json={"name":"CSVTest","description":"d","meta_group_id":"data-scientists"}).json()
     img = client.post(f"/api/projects/{proj['id']}/images", files={'file': ('f.png', b'\x89PNG\r\n', 'image/png')}, data={'metadata':'{}'}).json()
     analysis = client.post(f"/api/images/{img['id']}/analyses", json={"image_id": img['id'], "model_name":"resnet50_classifier","model_version":"1","parameters":{}}).json()
 
-    # Add annotation (via /api-ml)
+    # Add annotation
     ann_body = {
         "annotations": [
             {
@@ -404,11 +299,7 @@ def test_export_csv_format(client, monkeypatch):
             }
         ]
     }
-    ann_body_bytes = _json.dumps(ann_body).encode('utf-8')
-    headers = _hmac_headers(ann_body_bytes, secret)
-    headers['Content-Type'] = 'application/json'
-    headers['Authorization'] = f'Bearer {api_key}'
-    client.post(f"/api-ml/analyses/{analysis['id']}/annotations:bulk", data=ann_body_bytes, headers=headers)
+    client.post(f"/api/analyses/{analysis['id']}/annotations:bulk", json=ann_body)
 
     # Export as CSV
     resp = client.get(f"/api/analyses/{analysis['id']}/export?format=csv")
@@ -417,10 +308,9 @@ def test_export_csv_format(client, monkeypatch):
     assert 'content-disposition' in resp.headers
     assert 'attachment' in resp.headers['content-disposition']
 
-    # Verify CSV content
     csv_content = resp.text
     lines = csv_content.strip().split('\n')
-    assert len(lines) >= 2  # header + at least one row
+    assert len(lines) >= 2
     assert 'annotation_id' in lines[0]
     assert 'annotation_type' in lines[0]
     assert 'dog' in csv_content
@@ -428,7 +318,6 @@ def test_export_csv_format(client, monkeypatch):
 
 def test_status_state_machine_transitions(client):
     """Test all valid and invalid status transitions."""
-    # Create project & image & analysis
     proj = client.post('/api/projects/', json={"name":"StateTest","description":"d","meta_group_id":"data-scientists"}).json()
     img = client.post(f"/api/projects/{proj['id']}/images", files={'file': ('f.png', b'\x89PNG\r\n', 'image/png')}, data={'metadata':'{}'}).json()
 
@@ -467,14 +356,11 @@ def test_status_state_machine_transitions(client):
 
 
 def test_ml_artifact_content_streaming(client):
-    """Test the new ML artifact content streaming endpoint."""
-    # Create project & image & analysis
+    """Test the ML artifact content streaming endpoint."""
     proj = client.post('/api/projects/', json={"name":"ArtifactTest","description":"d","meta_group_id":"data-scientists"}).json()
     img = client.post(f"/api/projects/{proj['id']}/images", files={'file': ('f.png', b'\x89PNG\r\n', 'image/png')}, data={'metadata':'{}'}).json()
     analysis = client.post(f"/api/images/{img['id']}/analyses", json={"image_id": img['id'], "model_name":"resnet50_classifier","model_version":"1","parameters":{}}).json()
 
-    # Test 404 when S3 client not available (simulates real environment for artifact content)
-    # In test environment, boto3_client is None, so endpoint returns 503
     path = f"ml_outputs/{analysis['id']}/heatmap.png"
     resp = client.get(f"/api/ml/artifacts/content?path={path}")
     assert resp.status_code == 503  # Service unavailable when no S3 client
@@ -482,17 +368,14 @@ def test_ml_artifact_content_streaming(client):
 
 def test_ml_artifact_content_invalid_paths(client):
     """Test path validation and security for artifact content endpoint."""
-    # Test invalid path format - not starting with ml_outputs/
     resp = client.get("/api/ml/artifacts/content?path=invalid/path.png")
     assert resp.status_code == 400
     assert "Invalid artifact path" in resp.text
 
-    # Test path traversal attempt
     resp = client.get("/api/ml/artifacts/content?path=ml_outputs/../../../etc/passwd")
     assert resp.status_code == 400
     assert "Invalid analysis ID in path" in resp.text
 
-    # Test invalid analysis ID format
     resp = client.get("/api/ml/artifacts/content?path=ml_outputs/not-a-uuid/file.png")
     assert resp.status_code == 400
     assert "Invalid analysis ID in path" in resp.text
@@ -500,14 +383,10 @@ def test_ml_artifact_content_invalid_paths(client):
 
 def test_ml_artifact_content_unauthorized_access(client):
     """Test access control for artifact content endpoint."""
-    # Test access to non-existent analysis (should be 404 from analysis lookup)
     fake_analysis_id = str(uuid.uuid4())
     path = f"ml_outputs/{fake_analysis_id}/heatmap.png"
     resp = client.get(f"/api/ml/artifacts/content?path={path}")
-
-    # In test environment without S3 client, it gets to the analysis lookup which returns 404
-    # If we had proper S3 mocking, this would be 404 for analysis not found
-    assert resp.status_code in [503, 404]  # Either no S3 client (503) or analysis not found (404)
+    assert resp.status_code in [503, 404]
 
 
 def test_ml_artifact_content_feature_flag(client, monkeypatch):
@@ -517,24 +396,21 @@ def test_ml_artifact_content_feature_flag(client, monkeypatch):
     ml_analyses.settings.ML_ANALYSIS_ENABLED = False
     try:
         resp = client.get("/api/ml/artifacts/content?path=ml_outputs/fake/heatmap.png")
-        assert resp.status_code == 404  # Feature disabled
+        assert resp.status_code == 404
     finally:
         ml_analyses.settings.ML_ANALYSIS_ENABLED = original
 
 
 def test_ml_artifact_download_url_presigned(client):
     """Test the existing artifact download URL endpoint."""
-    # Create project & image & analysis
     proj = client.post('/api/projects/', json={"name":"DownloadTest","description":"d","meta_group_id":"data-scientists"}).json()
     img = client.post(f"/api/projects/{proj['id']}/images", files={'file': ('f.png', b'\x89PNG\r\n', 'image/png')}, data={'metadata':'{}'}).json()
     analysis = client.post(f"/api/images/{img['id']}/analyses", json={"image_id": img['id'], "model_name":"resnet50_classifier","model_version":"1","parameters":{}}).json()
 
-    # Test presigned download URL endpoint
     path = f"ml_outputs/{analysis['id']}/mask.png"
     resp = client.get(f"/api/ml/artifacts/download?path={path}")
     data = resp.json()
 
-    # In test environment without S3 client, returns mock URL
     assert resp.status_code == 200
     assert "url" in data
     if "example.com" in data["url"]:
