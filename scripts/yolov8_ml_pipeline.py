@@ -75,7 +75,7 @@ class YOLOv8Pipeline:
         self.model = YOLO(model_name)
         print("Model loaded successfully")
 
-    def get_project_images(self, project_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_project_images(self, project_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         """Fetch images from a project"""
         print(f"Fetching images from project {project_id}")
 
@@ -256,6 +256,8 @@ class YOLOv8Pipeline:
         # Normalize and colorize
         if heatmap.max() > 0:
             heatmap = (heatmap / heatmap.max() * 255).astype(np.uint8)
+        else:
+            heatmap = heatmap.astype(np.uint8)
         heatmap_color = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
         _, heatmap_bytes = cv2.imencode('.png', heatmap_color)
 
@@ -398,7 +400,7 @@ class YOLOv8Pipeline:
             raise
 
     def run_project_pipeline(self, project_id: str, model_size: str = 'n',
-                            limit: int = 10, skip_existing: bool = False):
+                            limit: int = 50, skip_existing: bool = False):
         """Run pipeline on all images in a project"""
         print(f"\nStarting YOLOv8 Pipeline")
         print(f"Project ID: {project_id}")
@@ -474,8 +476,8 @@ def main():
     parser.add_argument('--api-key', help='API key for Bearer token authentication')
     parser.add_argument('--model-size', default='n', choices=['n', 's', 'm', 'l', 'x'],
                        help='YOLOv8 model size (n=nano, s=small, m=medium, l=large, x=xlarge)')
-    parser.add_argument('--limit', type=int, default=10,
-                       help='Maximum number of images to process (default: 10)')
+    parser.add_argument('--limit', type=int, default=50,
+                       help='Maximum number of images to process (default: 50)')
     parser.add_argument('--skip-existing', action='store_true',
                        help='Skip images that already have ML analysis results')
 

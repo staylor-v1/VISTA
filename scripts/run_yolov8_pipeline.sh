@@ -51,7 +51,7 @@ Options:
     --api-key KEY       API key for Bearer token authentication
     --model-size SIZE   YOLOv8 model size: n|s|m|l|x (default: n)
                         n=nano (fastest), s=small, m=medium, l=large, x=xlarge
-    --limit N           Maximum images to process (default: 10)
+    --limit N           Maximum images to process (default: 50)
     --skip-existing     Skip images that already have ML analysis results
     --install-deps      Install ML dependencies before running
     --help              Show this help message
@@ -61,7 +61,7 @@ Environment Variables:
 
 Examples:
     # Run on project with nano model (CPU-friendly)
-    $0 abc-123-def --model-size n --limit 5
+    $0 abc-123-def --model-size n --limit 50
 
     # Run with medium model and install dependencies first
     $0 abc-123-def --model-size m --install-deps
@@ -77,7 +77,7 @@ PROJECT_ID=""
 API_URL="http://localhost:8000"
 API_KEY="${API_KEY:-}"
 MODEL_SIZE="n"
-LIMIT=10
+LIMIT=50
 SKIP_EXISTING=false
 INSTALL_DEPS=false
 
@@ -174,12 +174,13 @@ say "Checking system dependencies..."
 MISSING_DEPS=()
 
 # Check for OpenGL library (required by opencv-python)
-if ! ldconfig -p | grep -q "libGL.so.1"; then
+# Note: use grep > /dev/null instead of grep -q to avoid SIGPIPE with pipefail
+if ! ldconfig -p | grep "libGL.so.1" > /dev/null; then
     MISSING_DEPS+=("libgl1-mesa-glx")
 fi
 
 # Check for GLib (required by opencv-python)
-if ! ldconfig -p | grep -q "libglib-2.0.so.0"; then
+if ! ldconfig -p | grep "libglib-2.0.so.0" > /dev/null; then
     MISSING_DEPS+=("libglib2.0-0")
 fi
 
