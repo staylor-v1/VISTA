@@ -34,8 +34,9 @@ RUN pip install --no-cache-dir --upgrade pip uv
 WORKDIR /app
 
 # Install Python dependencies (cached layer)
-COPY requirements.txt .
-RUN uv pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml uv.lock ./
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+RUN uv sync --frozen --no-install-project
 
 # Copy backend code (will be overridden by volume mount in development)
 COPY ./backend /app/backend
