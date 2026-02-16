@@ -36,16 +36,20 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
           return (image.content_type || '').toLowerCase().includes(searchLower);
         case 'uploaded_by':
           return (image.uploaded_by_user_id || '').toLowerCase().includes(searchLower);
-        case 'metadata':
+        case 'metadata': {
           // Search across all metadata values
-          if (!image.metadata_) return false;
-          return Object.values(image.metadata_).some(value => 
+          const meta = image.metadata || image.metadata_;
+          if (!meta) return false;
+          return Object.values(meta).some(value =>
             String(value).toLowerCase().includes(searchLower)
           );
-        default:
+        }
+        default: {
           // Search specific metadata key
-          if (!image.metadata_ || !image.metadata_[searchField]) return false;
-          return String(image.metadata_[searchField]).toLowerCase().includes(searchLower);
+          const meta = image.metadata || image.metadata_;
+          if (!meta || !meta[searchField]) return false;
+          return String(meta[searchField]).toLowerCase().includes(searchLower);
+        }
       }
     })
     .sort((a, b) => {
@@ -77,8 +81,9 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
   useEffect(() => {
     const keys = new Set();
     images.forEach(image => {
-      if (image.metadata_) {
-        Object.keys(image.metadata_).forEach(key => keys.add(key));
+      const meta = image.metadata || image.metadata_;
+      if (meta) {
+        Object.keys(meta).forEach(key => keys.add(key));
       }
     });
     setAvailableMetadataKeys(Array.from(keys).sort());
