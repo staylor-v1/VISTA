@@ -122,9 +122,7 @@ VISTA is a full-stack application for managing, classifying, and collaborating o
 4. **Install backend dependencies:**
    ```bash
    pip install uv
-   uv venv .venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   uv pip install -r requirements.txt
+   uv sync
    ```
 
 5. **Run database migrations:**
@@ -900,9 +898,8 @@ The API is self-documenting via OpenAPI/Swagger:
 
 **Running tests:**
 ```bash
-source .venv/bin/activate
 cd backend
-pytest                              # All tests
+uv run pytest                       # All tests
 pytest tests/test_projects.py       # Specific file
 pytest tests/test_projects.py::test_create_project  # Specific test
 pytest -v                           # Verbose

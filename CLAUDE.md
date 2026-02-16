@@ -11,7 +11,7 @@ VISTA is a full-stack application for image management, classification, and coll
 - **Frontend:** React 18 with React Router
 - **Database:** PostgreSQL 15 (with Alembic migrations)
 - **Storage:** MinIO/S3 for object storage
-- **Package Management:** `uv` for Python, `npm` for JavaScript
+- **Package Management:** `uv` for Python (via `pyproject.toml` + `uv.lock`), `npm` for JavaScript
 
 ## Code Style Guidelines
 
@@ -27,9 +27,7 @@ podman compose up -d postgres minio
 
 # Backend setup
 pip install uv
-uv venv .venv
-source .venv/bin/activate
-uv pip install -r requirements.txt
+uv sync
 
 # Run database migrations (REQUIRED - migrations are manual)
 cd backend
@@ -75,9 +73,8 @@ npm run dev
 
 Backend tests (run from project root):
 ```bash
-source .venv/bin/activate
 cd backend
-pytest
+uv run pytest
 pytest tests/test_specific_file.py              # Single test file
 pytest tests/test_file.py::test_function_name   # Single test
 pytest -v                                       # Verbose output
