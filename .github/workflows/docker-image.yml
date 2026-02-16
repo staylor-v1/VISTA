@@ -116,7 +116,7 @@ jobs:
 
     - name: Test container
       run: |
-        # Start the container
+        # Start the container (install dev deps for aiosqlite SQLite driver)
         docker run -d --name test-container \
           -e DATABASE_URL="sqlite+aiosqlite:///./test.db" \
           -e FAST_TEST_MODE=true \
@@ -127,7 +127,8 @@ jobs:
           -e POSTGRES_DB=postgres \
           -e POSTGRES_SERVER=localhost \
           -p 8000:8000 \
-          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+          bash -c "uv sync --frozen && cd backend && uvicorn main:app --host 0.0.0.0 --port 8000"
         
         # Wait for container to start and implement health checking with retry
         echo "Waiting for container to become healthy..."
@@ -165,7 +166,7 @@ jobs:
           -e POSTGRES_SERVER=localhost \
           --workdir /app \
           ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-          bash -c "bash test/run_tests.sh --backend"
+          bash -c "uv sync --frozen && bash test/run_tests.sh --backend"
 
     - name: Push Docker image
       if: github.event_name != 'pull_request'

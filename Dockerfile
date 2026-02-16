@@ -71,6 +71,10 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Install uv in the final stage for testing
 RUN pip install --no-cache-dir uv
 
+# Copy pyproject.toml and lockfile (needed for installing dev deps in CI)
+COPY pyproject.toml uv.lock ./
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+
 # Copy backend code
 COPY --from=builder /app/backend /app/backend
 # Copy frontend build files
