@@ -63,25 +63,17 @@ jobs:
         npm run build
     
     - name: Install uv
-      run: |
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        echo "$HOME/.local/bin" >> $GITHUB_PATH
-        
+      uses: astral-sh/setup-uv@v5
+
     - name: Install Python dependencies with uv
-      working-directory: ./backend
-      run: |
-        uv venv .venv
-        source .venv/bin/activate
-        uv pip install -r ../requirements.txt
+      run: uv sync --frozen
 
     - name: Set up test environment
       run: |
         cp .env.example backend/.env || echo "No .env.example found, using defaults"
 
     - name: Run tests
-      run: |
-        export PATH="${PWD}/backend/.venv/bin:$PATH"
-        bash test/run_tests.sh
+      run: uv run bash test/run_tests.sh
       env:
         DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
         POSTGRES_USER: postgres

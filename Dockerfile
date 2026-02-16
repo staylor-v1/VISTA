@@ -32,9 +32,9 @@ ENV PYTHONUNBUFFERED=1
 FROM base AS builder
 
 # Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    uv pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml uv.lock ./
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy backend code
 COPY ./backend /app/backend

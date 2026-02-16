@@ -1,0 +1,42 @@
+[project]
+name = "vista"
+version = "1.0.0"
+description = "Full-stack application for image management, classification, and collaboration"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi[all]",
+    "uvicorn[standard]",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg",
+    "psycopg2-binary",
+    "alembic",
+    "python-dotenv",
+    "pydantic-settings",
+    "minio",
+    "python-multipart",
+    "httpx",
+    "aiocache",
+    "Pillow",
+    "boto3==1.35.99",
+    "requests",
+    "diskcache",
+    "swagger-ui-bundle",
+    "fastmcp",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "aiosqlite",
+    "podman-compose",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+addopts = "--tb=short --show-capture=no"

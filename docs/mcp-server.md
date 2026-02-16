@@ -8,10 +8,10 @@ MCP (Model Context Protocol) is a protocol that allows AI assistants and other c
 
 ## Installation
 
-The MCP server requires the `fastmcp` package, which is included in the main `requirements.txt`:
+The MCP server requires the `fastmcp` package, which is included in `pyproject.toml`:
 
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
 ## Running the MCP Server
