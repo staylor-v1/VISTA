@@ -334,7 +334,19 @@ Single container deployment via `Dockerfile`:
 - Backend should only accept connections from trusted reverse proxy
 
 
-# style
+# Pull Request Checklist
+
+Before creating or approving a PR, always verify that relevant documentation has been updated to reflect the changes. Check these files and update as needed:
+
+- `CLAUDE.md` -- architecture, patterns, setup instructions
+- `.github/copilot-instructions.md` -- Copilot agent guidance
+- `README.md` -- user-facing overview and quick start
+- `docs/developer-guide.md`, `docs/api-ml-guide.md` -- detailed guides
+- `.env.example` -- new environment variables
+
+Add a short, helpful hint to `CLAUDE.md` and `.github/copilot-instructions.md` describing what the PR changes and how it affects the codebase, so future AI agents stay up to date.
+
+# Style
 
 * no emojis ever.
 * each file less than 400 lines of code.
@@ -342,7 +354,5 @@ Single container deployment via `Dockerfile`:
   - Show only essential pass/fail information
   - Suppress dependency installation and framework noise
   - Make it immediately obvious if things are working
-  - Provide --verbose flag for debugging when needed 
-
-
+  - Provide --verbose flag for debugging when needed
 
