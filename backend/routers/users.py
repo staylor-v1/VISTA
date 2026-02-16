@@ -6,7 +6,7 @@ import utils.crud as crud
 from core import schemas
 from core.database import get_db
 from core.group_auth_helper import is_user_in_group
-from utils.dependencies import get_current_user
+from utils.dependencies import get_current_user, require_proxy_user
 
 router = APIRouter(
     tags=["Users"],
@@ -52,7 +52,7 @@ async def read_current_user_groups(
 async def create_user(
     user_data: schemas.UserCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: schemas.User = Depends(get_current_user),
+    current_user: schemas.User = Depends(require_proxy_user),
 ):
     """
     Create a new user account.
@@ -83,7 +83,7 @@ async def create_user(
 async def read_user(
     user_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: schemas.User = Depends(get_current_user),
+    current_user: schemas.User = Depends(require_proxy_user),
 ):
     # Only allow admin users to read other users
     is_admin = is_user_in_group(current_user.email, "admin")
@@ -107,7 +107,7 @@ async def update_user(
     user_id: uuid.UUID,
     user_data: schemas.UserCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: schemas.User = Depends(get_current_user),
+    current_user: schemas.User = Depends(require_proxy_user),
 ):
     """
     Update an existing user's information.
