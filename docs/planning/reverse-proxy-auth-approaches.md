@@ -296,8 +296,10 @@ methods beyond API keys.
 
 ### Implementation effort
 
-- Update `docs/production/proxy-setup.md` -- describe both approaches
-- Update `docs/production/nginx-example.conf` -- add `/ext/` location block
-- Create `docs/production/apache-example.conf` -- add equivalent `<Location>`
-- No backend code changes
-- No migration, no database changes, no test changes
+- Update `docs/production/proxy-setup.md` to make Approach D the primary
+  reverse proxy configuration.
+- Update `docs/production/nginx-example.conf` with `/api/` + `/ext/` location
+  blocks implementing Approach D.
+- Create `docs/production/apache-example.conf` with equivalent `<Location>`
+  blocks for Approach D.
+- No backend code changes, no migrations, no database changes, no test changes.
