@@ -10,14 +10,14 @@ VISTA uses a **single `/api` prefix** for all backend endpoints. The backend
 credential is present, checked in this order:
 
 1. **Bearer token (API key)** -- `Authorization: Bearer <key>`.  The backend
-   hashes the key and looks it up in the database.  Used by scripts,
+   iterates active API keys and verifies each via PBKDF2.  Used by scripts,
    automation, and ML pipelines.
-2. **Proxy headers** -- `X-User-Email` + `X-Proxy-Secret`.  Set by a reverse
-   proxy that authenticates users via OAuth2, SAML, LDAP, etc.  Used by the
-   web UI.
-3. **Debug fallback** -- when `DEBUG=true` or `SKIP_HEADER_CHECK=true`, the
+2. **Debug fallback** -- when `DEBUG=true` or `SKIP_HEADER_CHECK=true`, the
    backend accepts `X-User-Email` without a secret, or falls back to
    `MOCK_USER_EMAIL`.  Never use in production.
+3. **Proxy headers** -- `X-User-Email` + `X-Proxy-Secret`.  Set by a reverse
+   proxy that authenticates users via OAuth2, SAML, LDAP, etc.  Used by the
+   web UI.
 
 ### The Dual-Prefix Strategy
 
@@ -94,13 +94,15 @@ location /api/ {
 
     proxy_set_header X-User-Email   $user_email;
     proxy_set_header X-Proxy-Secret "YOUR_SHARED_SECRET";
-    proxy_set_header Authorization  $http_authorization;
+    proxy_set_header Authorization  "";           # strip to prevent Bearer override
     proxy_pass http://backend;
 }
 
 # Scripts / automation -- no OAuth, backend validates Bearer token
 location /ext/ {
     proxy_set_header Authorization  $http_authorization;
+    proxy_set_header X-User-Email   "";           # prevent header injection
+    proxy_set_header X-Proxy-Secret "";           # prevent header injection
     proxy_set_header Host           $host;
     proxy_set_header X-Real-IP      $remote_addr;
     proxy_pass http://backend/;    # trailing slash strips /ext prefix
@@ -123,6 +125,7 @@ equivalent pattern uses two `<Location>` blocks with `ProxyPass` path mapping:
     Require valid-user
     RequestHeader set X-User-Email   "%{OIDC_CLAIM_email}e"
     RequestHeader set X-Proxy-Secret "YOUR_SHARED_SECRET"
+    RequestHeader unset Authorization
     ProxyPass        http://localhost:8000/api/
     ProxyPassReverse http://localhost:8000/api/
 </Location>
@@ -130,6 +133,8 @@ equivalent pattern uses two `<Location>` blocks with `ProxyPass` path mapping:
 # Scripts / automation -- no auth at proxy, backend validates Bearer token
 <Location /ext/>
     Require all granted
+    RequestHeader unset X-User-Email
+    RequestHeader unset X-Proxy-Secret
     ProxyPass        http://localhost:8000/
     ProxyPassReverse http://localhost:8000/
 </Location>
@@ -227,7 +232,7 @@ Membership checks are cached for 5 minutes by default (configurable in
    ```
 3. **HTTPS/TLS** -- always use HTTPS in production.  TLS 1.2+ with strong
    ciphers.  Enable HSTS.
-4. **Header validation** -- the backend validates email format (RFC 5322) and
+4. **Header validation** -- the backend validates email format via regex and
    uses constant-time comparison for the proxy secret.
 5. **Security headers** -- the backend sets `X-Content-Type-Options`,
    `X-Frame-Options`, `Referrer-Policy`, and `Content-Security-Policy` via

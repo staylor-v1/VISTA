@@ -121,7 +121,7 @@ async def get_current_user(
     headers = {k.lower(): v for k, v in request.headers.items()}
     if settings.PROXY_SHARED_SECRET:
         proxy_secret = headers.get(settings.X_PROXY_SECRET_HEADER.lower())
-        if proxy_secret != settings.PROXY_SHARED_SECRET:
+        if not secrets.compare_digest(proxy_secret or "", settings.PROXY_SHARED_SECRET):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid proxy authentication.",
