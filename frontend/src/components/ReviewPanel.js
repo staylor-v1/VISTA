@@ -14,7 +14,7 @@ const STATUS_COLORS = {
   reject_confirmed: '#dc2626',
 };
 
-function ReviewPanel({ imageId, projectId }) {
+function ReviewPanel({ imageId }) {
   const [reviews, setReviews] = useState([]);
   const [currentStatus, setCurrentStatus] = useState('unreviewed');
   const [loading, setLoading] = useState(true);
@@ -25,6 +25,7 @@ function ReviewPanel({ imageId, projectId }) {
   const loadReviews = useCallback(async () => {
     try {
       setLoading(true);
+      setError(null);
       const response = await fetch(`/api/images/${imageId}/reviews`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
@@ -138,6 +139,7 @@ function ReviewPanel({ imageId, projectId }) {
               fontSize: '0.9rem',
               color: '#dc2626',
             }}
+            aria-label="Dismiss error"
           >
             x
           </button>
@@ -205,11 +207,9 @@ function ReviewPanel({ imageId, projectId }) {
           }}>
             <input
               type="checkbox"
-              checked={currentStatus === 'reject_confirmed'}
-              onChange={(e) => {
-                if (e.target.checked) {
-                  submitReview('reject_confirmed');
-                }
+              checked={false}
+              onChange={() => {
+                submitReview('reject_confirmed');
               }}
               disabled={submitting}
               style={{ cursor: 'pointer' }}

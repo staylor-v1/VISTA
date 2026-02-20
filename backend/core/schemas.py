@@ -358,7 +358,7 @@ class ImageReviewBase(BaseModel):
 class ImageReviewCreate(ImageReviewBase):
     image_id: uuid.UUID
     project_id: uuid.UUID
-    reviewer_id: Optional[uuid.UUID] = None
+    reviewer_id: uuid.UUID
 
 class ImageReview(ImageReviewBase):
     id: uuid.UUID
