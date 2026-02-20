@@ -1,13 +1,12 @@
 import uuid
 import io
 import logging
-from datetime import datetime
+from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
 from core import models, schemas
 from core.database import get_db
@@ -61,45 +60,76 @@ async def export_project_excel(
         .order_by(models.DataInstance.created_at.asc())
     )
     images = result.scalars().all()
+    image_ids = [img.id for img in images]
 
     # Build a class_id -> class_name lookup
     project_classes = await crud.get_image_classes_for_project(db, project_id)
     class_lookup = {str(c.id): c.name for c in project_classes}
 
-    # Build a user_id -> email/username lookup for inspector names
-    user_cache: dict[str, models.User] = {}
+    # Bulk-fetch all classifications for project images (avoids N+1 queries)
+    classifications_by_image: dict[str, list] = defaultdict(list)
+    if image_ids:
+        cls_result = await db.execute(
+            select(models.ImageClassification)
+            .where(models.ImageClassification.image_id.in_(image_ids))
+        )
+        for c in cls_result.scalars().all():
+            classifications_by_image[str(c.image_id)].append(c)
 
-    async def get_user_display(user_id: uuid.UUID | None) -> str:
+    # Bulk-fetch all comments for project images (avoids N+1 queries)
+    comments_by_image: dict[str, list] = defaultdict(list)
+    if image_ids:
+        cmt_result = await db.execute(
+            select(models.ImageComment)
+            .where(models.ImageComment.image_id.in_(image_ids))
+            .order_by(models.ImageComment.created_at.asc())
+        )
+        for c in cmt_result.scalars().all():
+            comments_by_image[str(c.image_id)].append(c)
+
+    # Collect unique author IDs for batch user lookup
+    author_ids = set()
+    for comments in comments_by_image.values():
+        for c in comments:
+            if c.author_id:
+                author_ids.add(c.author_id)
+    for img in images:
+        if img.uploader_id:
+            author_ids.add(img.uploader_id)
+
+    # Batch-fetch all referenced users
+    user_cache: dict[str, models.User] = {}
+    if author_ids:
+        user_result = await db.execute(
+            select(models.User)
+            .where(models.User.id.in_(list(author_ids)))
+        )
+        for u in user_result.scalars().all():
+            user_cache[str(u.id)] = u
+
+    def get_user_display(user_id) -> str:
         if user_id is None:
             return ""
-        key = str(user_id)
-        if key not in user_cache:
-            user = await crud.get_user_by_id(db, user_id)
-            user_cache[key] = user
-        user = user_cache.get(key)
+        user = user_cache.get(str(user_id))
         if user is None:
             return ""
         return user.username or user.email or ""
 
-    # Collect rows: for each image, fetch classifications and comments
+    # Build rows from the bulk-fetched data
     rows = []
     for image in images:
         meta = image.metadata_json or {}
 
         # Classifications
-        classifications = await crud.get_classifications_for_image(db, image.id)
         class_names = []
-        for c in classifications:
-            name = class_lookup.get(str(c.class_id))
-            if name is None and c.image_class:
-                name = c.image_class.name
-            class_names.append(name or "Unknown")
+        for c in classifications_by_image.get(str(image.id), []):
+            name = class_lookup.get(str(c.class_id), "Unknown")
+            class_names.append(name)
 
-        # Comments (concatenate all comments for the image)
-        comments = await crud.get_comments_for_image(db, image.id)
+        # Comments
         comment_texts = []
-        for c in comments:
-            author = await get_user_display(c.author_id)
+        for c in comments_by_image.get(str(image.id), []):
+            author = get_user_display(c.author_id)
             prefix = f"[{author}] " if author else ""
             comment_texts.append(f"{prefix}{c.text}")
 
@@ -122,9 +152,11 @@ async def export_project_excel(
             "secondaryInspectorName", "secondary_reviewed_by",
         )
 
-        # Fallback: if no inspector in metadata, use the uploader
-        if not inspector_name and image.uploaded_by_user_id:
-            inspector_name = image.uploaded_by_user_id
+        # Fallback: if no inspector in metadata, use the uploader's display name
+        if not inspector_name:
+            inspector_name = get_user_display(image.uploader_id)
+            if not inspector_name and image.uploaded_by_user_id:
+                inspector_name = image.uploaded_by_user_id
 
         rows.append({
             "lot_number": lot_number,
@@ -152,9 +184,8 @@ async def export_project_excel(
     filename = f"{safe_name}_export.xlsx"
 
     logger.info(
-        "Excel export generated",
+        "Excel export generated for project",
         extra={
-            "project_id": str(project_id),
             "row_count": len(rows),
         },
     )
