@@ -248,7 +248,8 @@ def _build_workbook(project_name: str, rows: list[dict]):
 
     for row_idx, row_data in enumerate(rows, start=2):
         for col_idx, key in enumerate(row_keys, start=1):
-            cell = ws.cell(row=row_idx, column=col_idx, value=row_data.get(key, ""))
+            value = row_data.get(key, "") or ""
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
             cell.alignment = data_alignment
             cell.border = thin_border
 
