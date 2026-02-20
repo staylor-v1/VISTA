@@ -20,6 +20,7 @@ class User(Base):
     comments = relationship("ImageComment", back_populates="author")
     classifications = relationship("ImageClassification", back_populates="created_by")
     api_keys = relationship("ApiKey", back_populates="user")
+    reviews = relationship("ImageReview", back_populates="reviewer")
 
 class Project(Base):
     __tablename__ = "projects"
@@ -35,6 +36,7 @@ class Project(Base):
     images = relationship("DataInstance", back_populates="project", cascade="all, delete-orphan")
     image_classes = relationship("ImageClass", back_populates="project", cascade="all, delete-orphan")
     project_metadata = relationship("ProjectMetadata", back_populates="project", cascade="all, delete-orphan")
+    reviews = relationship("ImageReview", back_populates="project", cascade="all, delete-orphan")
 
 class DataInstance(Base):
     __tablename__ = "data_instances"
@@ -67,6 +69,7 @@ class DataInstance(Base):
     comments = relationship("ImageComment", back_populates="image", cascade="all, delete-orphan")
     classifications = relationship("ImageClassification", back_populates="image", cascade="all, delete-orphan")
     ml_analyses = relationship("MLAnalysis", back_populates="image", cascade="all, delete-orphan")
+    reviews = relationship("ImageReview", back_populates="image", cascade="all, delete-orphan")
 
 
 class ImageDeletionEvent(Base):
@@ -207,5 +210,31 @@ class MLAnnotation(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     analysis = relationship("MLAnalysis", back_populates="annotations")
+
+
+class ImageReview(Base):
+    """Tracks review verification status for images in inspection workflows.
+
+    Statuses:
+      - unreviewed: default, not yet inspected
+      - pass: inspector approved the image
+      - reject_pending: inspector rejected, awaiting senior confirmation
+      - reject_confirmed: rejection confirmed by senior reviewer
+    """
+    __tablename__ = "image_reviews"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    image_id = Column(UUID(as_uuid=True), ForeignKey("data_instances.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    reviewer_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    status = Column(String(50), nullable=False, index=True)  # pass, reject_pending, reject_confirmed
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    image = relationship("DataInstance", back_populates="reviews")
+    project = relationship("Project", back_populates="reviews")
+    reviewer = relationship("User", back_populates="reviews")
 
 

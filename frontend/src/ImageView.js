@@ -13,6 +13,7 @@ import OverlayControls from './components/OverlayControls';
 import MLDebugOutputs from './components/MLDebugOutputs';
 import CalibrationManager from './components/CalibrationManager';
 import MeasurementList from './components/MeasurementList';
+import ReviewPanel from './components/ReviewPanel';
 
 function ImageView() {
   const { imageId } = useParams();
@@ -517,7 +518,15 @@ function ImageView() {
               className="image-view-sidebar"
               style={{ width: `${sidebarWidth}px`, minWidth: `${sidebarWidth}px` }}
             >
-              {/* Classification controls at the top of sidebar */}
+              {/* Review verification panel */}
+              {image && (
+                <ReviewPanel
+                  imageId={imageId}
+                  projectId={projectId}
+                />
+              )}
+
+              {/* Classification controls */}
               <CompactImageClassifications
                 imageId={imageId}
                 classes={classes}
