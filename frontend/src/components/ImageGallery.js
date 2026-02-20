@@ -113,7 +113,7 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
 
   useEffect(() => {
     loadReviewStatuses();
-  }, [loadReviewStatuses, images]);
+  }, [loadReviewStatuses]);
 
   // Fetch images when search parameters change
   useEffect(() => {

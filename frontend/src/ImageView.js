@@ -522,7 +522,6 @@ function ImageView() {
               {image && (
                 <ReviewPanel
                   imageId={imageId}
-                  projectId={projectId}
                 />
               )}
 

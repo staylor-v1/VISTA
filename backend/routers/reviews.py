@@ -139,10 +139,23 @@ async def get_image_review_statuses(
     Returns a mapping of image_id -> status (or 'unreviewed').
     """
     await get_project_or_403(project_id, db, current_user)
-    images = await crud.get_data_instances_for_project(
-        db=db, project_id=project_id, limit=10000
-    )
-    image_ids = [img.id for img in images if img.deleted_at is None]
+
+    # Paginate through all images to avoid truncating at an arbitrary limit
+    page_size = 10000
+    offset = 0
+    all_images = []
+    while True:
+        page = await crud.get_data_instances_for_project(
+            db=db, project_id=project_id, limit=page_size, skip=offset
+        )
+        if not page:
+            break
+        all_images.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+
+    image_ids = [img.id for img in all_images if img.deleted_at is None]
     status_map = await crud.get_review_status_for_images(db=db, image_ids=image_ids)
     return {
         str(img_id): status_map.get(img_id, "unreviewed") for img_id in image_ids
