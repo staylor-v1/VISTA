@@ -791,7 +791,7 @@ async def get_review_status_for_project(db: AsyncSession, project_id: uuid.UUID)
     )
     total_images = total_result.scalar_one()
 
-    # Latest review status per image via a subquery
+    # Latest review status per image via a subquery, filtered to non-deleted images
     latest_review = (
         select(
             models.ImageReview.image_id,
@@ -801,7 +801,14 @@ async def get_review_status_for_project(db: AsyncSession, project_id: uuid.UUID)
                 order_by=models.ImageReview.created_at.desc()
             ).label("rn")
         )
-        .where(models.ImageReview.project_id == project_id)
+        .join(
+            models.DataInstance,
+            models.ImageReview.image_id == models.DataInstance.id,
+        )
+        .where(
+            models.ImageReview.project_id == project_id,
+            models.DataInstance.deleted_at.is_(None),
+        )
         .subquery()
     )
     latest = select(latest_review.c.image_id, latest_review.c.status).where(latest_review.c.rn == 1).subquery()
