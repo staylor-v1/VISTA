@@ -325,6 +325,23 @@ def test_export_excel_image_no_comments(client):
     assert comment_val in (None, "")
 
 
+def test_export_excel_forbidden_for_non_group_member(client):
+    """Verify 403 when user is not a member of the project's group."""
+    resp = client.post("/api/projects/", json={
+        "name": "Restricted Project",
+        "description": "Not for everyone",
+        "meta_group_id": "restricted-group",
+    })
+    assert resp.status_code == 201
+    project = resp.json()
+
+    with patch("routers.export.is_user_in_group", return_value=False):
+        resp = client.get(f"/api/projects/{project['id']}/export-excel")
+
+    assert resp.status_code == 403
+    assert "access" in resp.json()["detail"].lower()
+
+
 def test_export_excel_alternate_metadata_keys(client):
     """Verify the export recognizes alternate key names for metadata fields."""
     resp = client.post("/api/projects/", json={
