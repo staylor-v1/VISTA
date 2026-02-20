@@ -12,6 +12,7 @@ function ProjectReport() {
   const [currentUser, setCurrentUser] = useState(null);
   const [generating, setGenerating] = useState(false);
   const [fullWidthImages, setFullWidthImages] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const getClassLabels = (classifications, classes) => {
     if (!classifications || classifications.length === 0) return 'None';
@@ -226,6 +227,38 @@ function ProjectReport() {
     }
   };
 
+  // Generate Excel export via backend
+  const generateExcel = async () => {
+    setExporting(true);
+    try {
+      const response = await fetch(`/api/projects/${id}/export-excel`);
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || `Export failed (${response.status})`);
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const disposition = response.headers.get('Content-Disposition');
+      let filename = `${project?.name || 'project'}_export.xlsx`;
+      if (disposition) {
+        const match = disposition.match(/filename="?([^"]+)"?/);
+        if (match) filename = match[1];
+      }
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Excel export failed:', err);
+      setError(`Excel export failed: ${err.message}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   // Print report
   const printReport = () => {
     window.print();
@@ -312,6 +345,14 @@ function ProjectReport() {
               </label>
             </div>
             <div className="export-buttons-small">
+              <button
+                className="btn btn-primary btn-small"
+                onClick={generateExcel}
+                disabled={exporting}
+                title="Download data as Microsoft Excel (.xlsx) file"
+              >
+                {exporting ? 'Generating...' : 'Export to Excel'}
+              </button>
               <button
                 className="btn btn-secondary btn-small"
                 onClick={generateCSV}
