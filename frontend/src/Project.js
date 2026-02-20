@@ -7,6 +7,7 @@ import ImageUploader from './components/ImageUploader';
 import MetadataManager from './components/MetadataManager';
 import ClassManager from './components/ClassManager';
 import ImageGallery from './components/ImageGallery';
+import ReviewStatusSummary from './components/ReviewStatusSummary';
 
 function Project() {
   const { id } = useParams();
@@ -199,6 +200,9 @@ function Project() {
         
         {!loading && (
           <div className="project-content">
+            {/* Review Status Summary */}
+            <ReviewStatusSummary projectId={id} />
+
             {/* Main Gallery Section */}
             <div className="gallery-section">
               <ImageGallery 

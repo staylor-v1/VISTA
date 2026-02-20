@@ -112,7 +112,7 @@ The FastAPI backend follows a modular architecture:
   - `database.py`: Async database engine and session management
   - `config.py`: Centralized settings using Pydantic BaseSettings
   - `group_auth.py` / `group_auth_helper.py`: Group-based authorization system
-- **`routers/`**: API endpoint definitions organized by resource (projects, images, users, comments, image_classes, ml_analyses, etc.)
+- **`routers/`**: API endpoint definitions organized by resource (projects, images, users, comments, image_classes, ml_analyses, reviews, etc.)
 - **`middleware/`**: Request/response processing
   - `cors_debug.py`: CORS configuration
   - `security_headers.py`: Security headers (CSP, X-Frame-Options, etc.)
@@ -141,6 +141,7 @@ Key models and their relationships:
 - **MLAnalysis**: Machine learning analysis metadata
   - **MLAnnotation**: Individual annotations (bounding boxes, heatmaps, etc.)
   - **MLArtifact**: Binary outputs stored in S3 (visualizations, processed images)
+- **ImageReview**: Review verification records for images (statuses: pass, reject_pending, reject_confirmed)
 - **ProjectMetadata**: Key-value metadata for projects
 - **ApiKey**: API key authentication for programmatic access
 
@@ -157,6 +158,9 @@ React application with component-based architecture:
   - `ImageDisplay.js`: Main image display with ML overlays
   - `ImageClassifications.js`: Classification management
   - `ImageComments.js`: Comment threads
+  - `ReviewPanel.js`: Review verification panel (pass/reject/confirm)
+  - `ReviewStatusBadge.js`: Review status badge for gallery thumbnails
+  - `ReviewStatusSummary.js`: Project-level review progress bar
   - `ImageMetadata.js`: Metadata viewer/editor
   - `MLAnalysisPanel.js`: ML analysis selection and controls
   - `BoundingBoxOverlay.js` / `HeatmapOverlay.js`: ML visualization overlays
@@ -234,6 +238,32 @@ Configuration:
 - `ML_ALLOWED_MODELS`: Comma-separated list of permitted model names
 
 Test script: `scripts/test_ml_pipeline.py`
+
+## Review Verification Workflow
+
+Images can be reviewed through a four-status workflow that tracks inspection decisions:
+
+**Statuses:**
+- `unreviewed` -- default, no review recorded yet
+- `pass` -- inspector approved the image
+- `reject_pending` -- inspector rejected, awaiting senior confirmation
+- `reject_confirmed` -- rejection confirmed by senior reviewer
+
+**API Endpoints:**
+- `POST /api/images/{image_id}/reviews` -- create a review (pass/reject_pending/reject_confirmed)
+- `GET /api/images/{image_id}/reviews` -- get review history for an image
+- `GET /api/images/{image_id}/review-status` -- get current review status summary
+- `DELETE /api/reviews/{review_id}` -- revoke/delete a review
+- `GET /api/projects/{project_id}/review-status` -- aggregate project review stats
+- `GET /api/projects/{project_id}/image-review-statuses` -- bulk status map for all images
+
+**Frontend Components:**
+- `ReviewPanel` in image viewer sidebar: pass/reject buttons, secondary review checkbox, history
+- `ReviewStatusBadge` on gallery thumbnails: color-coded status indicators
+- `ReviewStatusSummary` on project page: progress bar and aggregate counts
+- Gallery filter dropdown to filter by review status
+
+**Database:** `image_reviews` table with `id`, `image_id`, `project_id`, `reviewer_id`, `status`, `notes`, `created_at`, `updated_at`. Migration: `20260220_0003_add_image_reviews.py`.
 
 ## Environment Configuration
 
