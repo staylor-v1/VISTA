@@ -30,6 +30,9 @@ function ImageDisplay({
   visibleMeasurementIds
 }) {
   const [zoomLevel, setZoomLevel] = useState(1);
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [reason, setReason] = useState("");
   const [force, setForce] = useState(false);
@@ -38,19 +41,28 @@ function ImageDisplay({
   const [deleteError, setDeleteError] = useState(null);
   const MIN_REASON = 5;
 
-  // Apply zoom
+  // Refs for stable event-handler access to latest state
+  const zoomRef = useRef(zoomLevel);
+  const panRef = useRef(panOffset);
+  useEffect(() => { zoomRef.current = zoomLevel; }, [zoomLevel]);
+  useEffect(() => { panRef.current = panOffset; }, [panOffset]);
+
+  // Apply zoom (kept for keyboard shortcuts)
   const handleZoomIn = () => {
-    setZoomLevel(prev => prev + 0.25);
+    setZoomLevel(prev => Math.min(10, prev + 0.25));
   };
 
-  // Handle zoom out
+  // Handle zoom out (kept for keyboard shortcuts)
   const handleZoomOut = () => {
     setZoomLevel(prev => Math.max(0.25, prev - 0.25));
   };
 
-  // Handle reset zoom
+  // Handle reset zoom and pan
   const handleResetZoom = () => {
     setZoomLevel(1);
+    setPanOffset({ x: 0, y: 0 });
+    zoomRef.current = 1;
+    panRef.current = { x: 0, y: 0 };
   };
 
   // Handle delete
@@ -214,6 +226,67 @@ function ImageDisplay({
   }, []);
 
   const containerRef = useRef(null);
+
+  // Wheel zoom toward cursor
+  const handleWheel = useCallback((e) => {
+    e.preventDefault();
+    const container = containerRef.current;
+    if (!container) return;
+
+    const rect = container.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    const prevZoom = zoomRef.current;
+    const newZoom = Math.max(0.25, Math.min(10, prevZoom * zoomFactor));
+    const scale = newZoom / prevZoom;
+
+    const prevPan = panRef.current;
+    const newPan = {
+      x: mouseX - scale * (mouseX - prevPan.x),
+      y: mouseY - scale * (mouseY - prevPan.y)
+    };
+
+    zoomRef.current = newZoom;
+    panRef.current = newPan;
+    setZoomLevel(newZoom);
+    setPanOffset(newPan);
+  }, []);
+
+  // Attach wheel listener (passive: false allows preventDefault)
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, [handleWheel]);
+
+  // Pan: start on left-click (without Ctrl)
+  const handlePanMouseDown = useCallback((e) => {
+    if (e.button !== 0 || e.ctrlKey) return;
+    e.preventDefault();
+    const start = { x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y };
+    setPanStart(start);
+    setIsPanning(true);
+  }, []);
+
+  // Pan: global mousemove/mouseup for dragging
+  useEffect(() => {
+    if (!isPanning) return;
+    const handleMouseMove = (e) => {
+      const newPan = { x: e.clientX - panStart.x, y: e.clientY - panStart.y };
+      panRef.current = newPan;
+      setPanOffset(newPan);
+    };
+    const handleMouseUp = () => setIsPanning(false);
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isPanning, panStart]);
   const imgRef = useRef(null);
   const [displaySize, setDisplaySize] = useState({ width: 0, height: 0 });
   const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
@@ -253,10 +326,14 @@ function ImageDisplay({
     }
   }, [zoomLevel, imageId]);
 
-  // Reset display size when imageId changes to prevent stale dimensions
+  // Reset display size, zoom, and pan when imageId changes to prevent stale dimensions
   useEffect(() => {
     setDisplaySize({ width: 0, height: 0 });
     setNaturalSize({ width: 0, height: 0 });
+    setZoomLevel(1);
+    setPanOffset({ x: 0, y: 0 });
+    zoomRef.current = 1;
+    panRef.current = { x: 0, y: 0 };
   }, [imageId]);
 
   useLayoutEffect(() => { measure(); }, [image, measure, annotations]);
@@ -269,7 +346,8 @@ function ImageDisplay({
   const isSideBySide = overlayOptions?.viewMode === 'side-by-side' && overlayOptions?.bitmapAvailable;
 
   const renderImageView = (showOverlays = true, containerStyle = {}, attachRef = true) => (
-    <div style={{ position: 'relative', ...containerStyle }}>
+    <div style={{ position: 'relative', overflow: 'hidden', ...containerStyle }}>
+      <div style={{ transform: `translate(${panOffset.x}px, ${panOffset.y}px)`, position: 'relative' }}>
       {!image ? (
         <div className="loading-container">
           <div className="loading"></div>
@@ -281,7 +359,6 @@ function ImageDisplay({
           alt="Deleted"
           className="view-image deleted-image"
           style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'top left' }}
-          onClick={handleZoomIn}
           ref={attachRef ? imgRef : null}
         />
       ) : (
@@ -290,7 +367,6 @@ function ImageDisplay({
           alt={image.filename || ''}
           className="view-image"
           style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'top left' }}
-          onClick={handleZoomIn}
           onLoad={measure}
           onError={(e) => {
             console.error('Failed to load image with ID: %s', imageId, e);
@@ -352,12 +428,13 @@ function ImageDisplay({
           existingMeasurementCount={measurements ? measurements.length : 0}
         />
       )}
+      </div>
     </div>
   );
 
   return (
     <>
-      <div id="image-display" className={isTransitioning ? 'transitioning' : ''} ref={containerRef} style={{ position: 'relative' }}>
+      <div id="image-display" className={isTransitioning ? 'transitioning' : ''} ref={containerRef} style={{ position: 'relative', cursor: isPanning ? 'grabbing' : 'grab' }} onMouseDown={handlePanMouseDown} onContextMenu={(e) => e.preventDefault()}>
         {isSideBySide ? (
           <div style={{ display: 'flex', gap: '1rem', width: '100%' }}>
             <div style={{ flex: 1, position: 'relative' }}>
@@ -396,18 +473,6 @@ function ImageDisplay({
         )}
 
         {/* Zoom controls */}
-        <button
-          className="btn btn-secondary control-btn"
-          onClick={handleZoomIn}
-        >
-          Zoom In
-        </button>
-        <button
-          className="btn btn-secondary control-btn"
-          onClick={handleZoomOut}
-        >
-          Zoom Out
-        </button>
         <button
           className="btn btn-secondary control-btn"
           onClick={handleResetZoom}

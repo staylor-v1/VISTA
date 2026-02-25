@@ -35,7 +35,10 @@ export default function MeasurementTool({
   };
 
   const handleMouseDown = (e) => {
+    // Only draw with right-click or Ctrl+left-click (trackpad support)
+    if (e.button !== 2 && !(e.button === 0 && e.ctrlKey)) return;
     if (showSaveDialog) return;
+    e.stopPropagation();
 
     const coords = getAdjustedCoordinates(e);
     setDrawingLine({
@@ -236,6 +239,7 @@ export default function MeasurementTool({
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
+        onContextMenu={(e) => e.preventDefault()}
         style={{
           position: 'absolute',
           top: 0,
