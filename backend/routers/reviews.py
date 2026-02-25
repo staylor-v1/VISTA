@@ -47,7 +47,7 @@ async def create_review(
 
 @router.get(
     "/images/{image_id}/reviews",
-    response_model=List[schemas.ImageReview],
+    response_model=List[schemas.ImageReviewWithUser],
 )
 async def list_reviews(
     image_id: uuid.UUID,

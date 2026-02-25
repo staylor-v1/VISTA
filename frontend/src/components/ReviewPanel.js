@@ -291,6 +291,9 @@ function ReviewPanel({ imageId }) {
                       {new Date(review.created_at).toLocaleString()}
                     </span>
                   </div>
+                  <div style={{ color: 'var(--gray-500, #64748b)', marginTop: '2px' }}>
+                    By: {review.reviewer_email?.split('@')[0] || 'Unknown User'}
+                  </div>
                   {review.notes && (
                     <div style={{ color: 'var(--gray-600, #475569)', marginTop: '2px' }}>
                       {review.notes}
