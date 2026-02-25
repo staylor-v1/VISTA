@@ -247,7 +247,7 @@ function ReviewPanel({ imageId }) {
           }}
           title="Reset review status to unreviewed"
         >
-          Reset to Unreviewed
+          Revert
         </button>
       )}
 
