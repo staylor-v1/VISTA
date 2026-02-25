@@ -3,7 +3,7 @@ import React from 'react';
 const STATUS_CONFIG = {
   unreviewed: { label: '--', color: '#94a3b8', bg: '#f1f5f9' },
   pass: { label: 'Pass', color: '#fff', bg: '#16a34a' },
-  reject_pending: { label: 'Reject', color: '#fff', bg: '#f59e0b' },
+  reject_pending: { label: 'Reject Pending', color: '#fff', bg: '#f59e0b' },
   reject_confirmed: { label: 'Rejected', color: '#fff', bg: '#dc2626' },
 };
 
