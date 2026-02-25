@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import ReviewStatusBadge from './ReviewStatusBadge';
 
 // Fallback SVG for failed image loads
 const FALLBACK_IMAGE_SVG = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgZmlsbD0iI2YzZjRmNiIgc3Ryb2tlPSIjZTVlN2ViIiBzdHJva2Utd2lkdGg9IjIiLz48dGV4dCB4PSI1MCUiIHk9IjQ1JSIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjE2IiBmb250LXdlaWdodD0iNTAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSIgZmlsbD0iIzlmYTZiMiI+SW1hZ2UgVW5hdmFpbGFibGU8L3RleHQ+PHRleHQgeD0iNTAlIiB5PSI1NSUiIGZvbnQtZmFtaWx5PSJBcmlhbCwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIyNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iIGZpbGw9IiNkMWQ1ZGIiPvCfk7c8L3RleHQ+PC9zdmc+';
@@ -19,14 +20,21 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
   const [availableMetadataKeys, setAvailableMetadataKeys] = useState([]);
   const [selectedImages, setSelectedImages] = useState(new Set());
   const [actionError, setActionError] = useState(null);
-  
+  const [reviewStatuses, setReviewStatuses] = useState({});
+  const [reviewFilter, setReviewFilter] = useState('all'); // all, unreviewed, pass, reject_pending, reject_confirmed
+
   const imagesPerPage = viewMode === 'small' ? 100 : viewMode === 'medium' ? 50 : 25;
   
   // Filter and sort images
   const filteredImages = images
     .filter(image => {
+      // Review status filter
+      if (reviewFilter !== 'all') {
+        const imgStatus = reviewStatuses[image.id] || 'unreviewed';
+        if (imgStatus !== reviewFilter) return false;
+      }
       if (!searchValue) return true;
-      
+
       const searchLower = searchValue.toLowerCase();
       
       switch (searchField) {
@@ -89,6 +97,24 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
     setAvailableMetadataKeys(Array.from(keys).sort());
   }, [images]);
   
+  // Fetch review statuses for all images in the project
+  const loadReviewStatuses = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      const response = await fetch(`/api/projects/${projectId}/image-review-statuses`);
+      if (response.ok) {
+        const data = await response.json();
+        setReviewStatuses(data);
+      }
+    } catch (err) {
+      console.error('Failed to load review statuses:', err);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    loadReviewStatuses();
+  }, [loadReviewStatuses]);
+
   // Fetch images when search parameters change
   useEffect(() => {
     if (refreshProjectImages) {
@@ -194,8 +220,21 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
           </div>
           
           <div className="view-controls">
-            <select 
-              value={sortBy} 
+            <select
+              value={reviewFilter}
+              onChange={(e) => setReviewFilter(e.target.value)}
+              className="sort-select"
+              title="Filter by review status"
+            >
+              <option value="all">All Statuses</option>
+              <option value="unreviewed">Unreviewed</option>
+              <option value="pass">Pass</option>
+              <option value="reject_pending">Reject (Pending)</option>
+              <option value="reject_confirmed">Reject (Confirmed)</option>
+            </select>
+
+            <select
+              value={sortBy}
               onChange={(e) => setSortBy(e.target.value)}
               className="sort-select"
             >
@@ -357,6 +396,7 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
                     </div>
                     <div className="item-meta">
                       <span className="item-size">{formatFileSize(image.size_bytes)}</span>
+                      <ReviewStatusBadge status={reviewStatuses[image.id] || 'unreviewed'} />
                       {image.deleted_at && (
                         <span className="item-status" style={{ color: '#c0392b', fontWeight: '600', marginLeft: '6px' }}>Deleted</span>
                       )}

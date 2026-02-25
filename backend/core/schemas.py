@@ -341,3 +341,54 @@ class MLAnnotationList(BaseModel):
     total: int
 
 
+# ImageReview schemas
+VALID_REVIEW_STATUSES = {"pass", "reject_pending", "reject_confirmed"}
+
+class ImageReviewBase(BaseModel):
+    status: str = Field(..., description="Review status: pass, reject_pending, reject_confirmed")
+    notes: Optional[str] = None
+
+    @field_validator('status')
+    @classmethod
+    def validate_status(cls, v):
+        if v not in VALID_REVIEW_STATUSES:
+            raise ValueError(f"status must be one of: {', '.join(sorted(VALID_REVIEW_STATUSES))}")
+        return v
+
+class ImageReviewCreate(ImageReviewBase):
+    image_id: uuid.UUID
+    project_id: uuid.UUID
+    reviewer_id: uuid.UUID
+
+class ImageReview(ImageReviewBase):
+    id: uuid.UUID
+    image_id: uuid.UUID
+    project_id: uuid.UUID
+    reviewer_id: uuid.UUID
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = {
+        "from_attributes": True,
+        "populate_by_name": True
+    }
+
+class ImageReviewWithUser(ImageReview):
+    reviewer_email: Optional[str] = None
+
+class ImageReviewSummary(BaseModel):
+    image_id: uuid.UUID
+    status: str  # unreviewed, pass, reject_pending, reject_confirmed
+    review_count: int
+    latest_review: Optional[ImageReview] = None
+
+class ProjectReviewStatus(BaseModel):
+    project_id: uuid.UUID
+    total_images: int
+    reviewed: int
+    unreviewed: int
+    passed: int
+    reject_pending: int
+    reject_confirmed: int
+
+
