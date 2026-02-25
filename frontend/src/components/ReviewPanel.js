@@ -245,9 +245,9 @@ function ReviewPanel({ imageId }) {
             cursor: submitting ? 'wait' : 'pointer',
             marginBottom: '0.5rem',
           }}
-          title="Reset review status to unreviewed"
+          title="Revert review status to unreviewed"
         >
-          Reset to Unreviewed
+          Revert
         </button>
       )}
 
