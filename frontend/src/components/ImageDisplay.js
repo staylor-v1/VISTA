@@ -434,7 +434,7 @@ function ImageDisplay({
 
   return (
     <>
-      <div id="image-display" className={isTransitioning ? 'transitioning' : ''} ref={containerRef} style={{ position: 'relative', cursor: isPanning ? 'grabbing' : 'grab' }} onMouseDown={handlePanMouseDown} onContextMenu={(e) => e.preventDefault()}>
+      <div id="image-display" className={isTransitioning ? 'transitioning' : ''} ref={containerRef} style={{ position: 'relative', cursor: isPanning ? 'grabbing' : 'grab' }} onMouseDown={handlePanMouseDown}>
         {isSideBySide ? (
           <div style={{ display: 'flex', gap: '1rem', width: '100%' }}>
             <div style={{ flex: 1, position: 'relative' }}>
