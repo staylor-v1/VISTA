@@ -89,7 +89,7 @@ describe('MeasurementTool', () => {
       }));
 
       // Draw a very short line (2 pixels)
-      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100 });
+      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100, button: 2 });
       fireEvent.mouseMove(overlay, { clientX: 102, clientY: 100 });
       fireEvent.mouseUp(overlay, { clientX: 102, clientY: 100 });
 
@@ -110,7 +110,7 @@ describe('MeasurementTool', () => {
       }));
 
       // Draw a line longer than 5 pixels
-      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100 });
+      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100, button: 2 });
       fireEvent.mouseMove(overlay, { clientX: 200, clientY: 100 });
       fireEvent.mouseUp(overlay, { clientX: 200, clientY: 100 });
 
@@ -131,7 +131,7 @@ describe('MeasurementTool', () => {
         height: 600
       }));
 
-      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100 });
+      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100, button: 2 });
       fireEvent.mouseUp(overlay, { clientX: 200, clientY: 100 });
 
       const input = screen.getByRole('textbox');
@@ -150,7 +150,7 @@ describe('MeasurementTool', () => {
         height: 600
       }));
 
-      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100 });
+      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100, button: 2 });
       fireEvent.mouseUp(overlay, { clientX: 200, clientY: 100 });
     };
 
@@ -266,7 +266,7 @@ describe('MeasurementTool', () => {
       }));
 
       // Draw at container coords (100, 100) to (200, 200)
-      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100 });
+      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100, button: 2 });
       fireEvent.mouseUp(overlay, { clientX: 200, clientY: 200 });
 
       const input = screen.getByRole('textbox');
