@@ -84,6 +84,7 @@ class TestReviewAPI:
         assert len(data) == 2
         statuses = {r["status"] for r in data}
         assert statuses == {"pass", "reject_pending"}
+        assert all("reviewer_email" in r for r in data)
 
     def test_get_image_review_status(self, client, _setup_project_and_image):
         _project_id, image_id = _setup_project_and_image

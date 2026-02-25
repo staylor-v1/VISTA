@@ -746,13 +746,28 @@ async def get_image_review(db: AsyncSession, review_id: uuid.UUID) -> Optional[m
     return result.scalars().first()
 
 
-async def get_reviews_for_image(db: AsyncSession, image_id: uuid.UUID) -> List[models.ImageReview]:
+async def get_reviews_for_image(db: AsyncSession, image_id: uuid.UUID) -> List[schemas.ImageReviewWithUser]:
     result = await db.execute(
-        select(models.ImageReview)
+        select(models.ImageReview, models.User.email)
+        .outerjoin(models.User, models.ImageReview.reviewer_id == models.User.id)
         .where(models.ImageReview.image_id == image_id)
         .order_by(models.ImageReview.created_at.desc(), models.ImageReview.id.desc())
     )
-    return result.scalars().all()
+
+    return [
+        schemas.ImageReviewWithUser(
+            id=review.id,
+            image_id=review.image_id,
+            project_id=review.project_id,
+            reviewer_id=review.reviewer_id,
+            status=review.status,
+            notes=review.notes,
+            created_at=review.created_at,
+            updated_at=review.updated_at,
+            reviewer_email=email,
+        )
+        for review, email in result.all()
+    ]
 
 
 async def get_latest_review_for_image(db: AsyncSession, image_id: uuid.UUID) -> Optional[models.ImageReview]:
