@@ -60,11 +60,11 @@ describe('ImageDisplay Component - Basic Tests', () => {
     expect(screen.getByText('Next →')).toBeInTheDocument();
   });
 
-  // Test 5: Renders zoom controls
-  test('5. renders zoom controls', () => {
+  // Test 5: Renders zoom reset control (Zoom In/Out removed in favor of scroll wheel)
+  test('5. renders zoom reset control', () => {
     render(<ImageDisplay {...defaultProps} />);
-    expect(screen.getByText('Zoom In')).toBeInTheDocument();
-    expect(screen.getByText('Zoom Out')).toBeInTheDocument();
+    expect(screen.queryByText('Zoom In')).not.toBeInTheDocument();
+    expect(screen.queryByText('Zoom Out')).not.toBeInTheDocument();
     expect(screen.getByText('Reset')).toBeInTheDocument();
   });
 

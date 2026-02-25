@@ -63,23 +63,19 @@ describe('ImageDisplay', () => {
     test('shows all control buttons for regular images', () => {
       renderImageDisplay();
       
-      expect(screen.getByText('Zoom In')).toBeInTheDocument();
-      expect(screen.getByText('Zoom Out')).toBeInTheDocument();
+      expect(screen.queryByText('Zoom In')).not.toBeInTheDocument();
+      expect(screen.queryByText('Zoom Out')).not.toBeInTheDocument();
       expect(screen.getByText('Reset')).toBeInTheDocument();
       expect(screen.getByText('Download')).toBeInTheDocument();
       expect(screen.getByText('Delete')).toBeInTheDocument();
     });
 
-    test('zoom functionality works correctly', () => {
+    test('zoom reset functionality works correctly', () => {
       renderImageDisplay();
       
       const image = screen.getByAltText('test-image.jpg');
-      const zoomInButton = screen.getByText('Zoom In');
       
       expect(image.style.transform).toBe('scale(1)');
-      
-      fireEvent.click(zoomInButton);
-      expect(image.style.transform).toBe('scale(1.25)');
       
       const resetButton = screen.getByText('Reset');
       fireEvent.click(resetButton);
@@ -115,25 +111,21 @@ describe('ImageDisplay', () => {
         image: mockDeletedImage
       });
       
-      expect(screen.getByText('Zoom In')).toBeInTheDocument();
-      expect(screen.getByText('Zoom Out')).toBeInTheDocument();
+      expect(screen.queryByText('Zoom In')).not.toBeInTheDocument();
+      expect(screen.queryByText('Zoom Out')).not.toBeInTheDocument();
       expect(screen.getByText('Reset')).toBeInTheDocument();
       expect(screen.getByText('Download')).toBeInTheDocument();
     });
 
-    test('zoom works on deleted image placeholder', () => {
+    test('zoom reset works on deleted image placeholder', () => {
       renderImageDisplay({
         imageId: 'img-2',
         image: mockDeletedImage
       });
 
       const image = screen.getByAltText('Deleted');
-      const zoomInButton = screen.getByText('Zoom In');
 
       expect(image.style.transform).toBe('scale(1)');
-
-      fireEvent.click(zoomInButton);
-      expect(image.style.transform).toBe('scale(1.25)');
     });
   });
 
