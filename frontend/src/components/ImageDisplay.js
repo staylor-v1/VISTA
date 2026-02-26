@@ -7,6 +7,12 @@ import MeasurementOverlay from './MeasurementOverlay';
 // Deleted image placeholder SVG for larger display
 const DELETED_IMAGE_DISPLAY_SVG = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgZmlsbD0iI2ZiZjVmNSIgc3Ryb2tlPSIjZjU5ZTBiIiBzdHJva2Utd2lkdGg9IjQiIHN0cm9rZS1kYXNoYXJyYXk9IjE1LDgiLz48dGV4dCB4PSI1MCUiIHk9IjM1JSIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjM2IiBmb250LXdlaWdodD0iNjAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSIgZmlsbD0iI2M0MzAyYiI+SW1hZ2UgRGVsZXRlZDwvdGV4dD48dGV4dCB4PSI1MCUiIHk9IjUwJSIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjY0IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSIgZmlsbD0iI2Y1OWUwYiI+8J+XkeKcgO+4jzwvdGV4dD48dGV4dCB4PSI1MCUiIHk9IjY1JSIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjE4IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSIgZmlsbD0iIzk3OWNhMSI+VGhpcyBpbWFnZSBoYXMgYmVlbiBkZWxldGVkPC90ZXh0Pjx0ZXh0IHg9IjUwJSIgeT0iNzAlIiBmb250LWZhbWlseT0iQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIiBmaWxsPSIjOTc5Y2ExIj5DaGVjayB0aGUgZGVsZXRpb24gY29udHJvbHMgYmVsb3cgZm9yIG1vcmUgaW5mbzwvdGV4dD48L3N2Zz4=';
 
+// Minimum pixels of image that must remain visible when panning
+const MIN_VISIBLE_IMAGE_MARGIN = 50;
+
+// Interactive elements that should not trigger pan on click
+const PAN_EXCLUDE_SELECTOR = 'button, a, input, select, textarea';
+
 function ImageDisplay({
   imageId,
   image,
@@ -57,7 +63,7 @@ function ImageDisplay({
     setZoomLevel(prev => Math.max(0.25, prev - 0.25));
   }, []);
 
-  // Clamp pan so at least 50px of the image remains visible in the container
+  // Clamp pan so at least MIN_VISIBLE_IMAGE_MARGIN px of the image remains visible in the container
   const clampPan = useCallback((pan, zoom) => {
     const container = containerRef.current;
     const img = imgRef.current;
@@ -66,7 +72,7 @@ function ImageDisplay({
     const cH = container.offsetHeight;
     const scaledW = img.offsetWidth * zoom;
     const scaledH = img.offsetHeight * zoom;
-    const margin = 50;
+    const margin = MIN_VISIBLE_IMAGE_MARGIN;
     return {
       x: Math.max(margin - scaledW, Math.min(cW - margin, pan.x)),
       y: Math.max(margin - scaledH, Math.min(cH - margin, pan.y))
@@ -282,7 +288,7 @@ function ImageDisplay({
   // Pan: start on plain left-click (not on interactive elements, not in measure mode)
   const handlePanMouseDown = useCallback((e) => {
     if (e.button !== 0 || e.ctrlKey) return;
-    if (e.target.closest('button, a, input, select, textarea')) return;
+    if (e.target.closest(PAN_EXCLUDE_SELECTOR)) return;
     e.preventDefault();
     const start = { x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y };
     panStartRef.current = start;
@@ -510,7 +516,7 @@ function ImageDisplay({
           </button>
         )}
         {measurementActive && (
-          <span style={{ fontSize: '12px', color: '#6b7280', alignSelf: 'center' }}>
+          <span className="measure-hint">
             Left-click to draw. Right-click also works.
           </span>
         )}
