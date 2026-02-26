@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import ReactDOM from 'react-dom';
 import MeasurementSaveDialog from './MeasurementSaveDialog';
 
 export default function MeasurementTool({
@@ -313,7 +314,7 @@ export default function MeasurementTool({
         </svg>
       </div>
 
-      {showSaveDialog && (
+      {showSaveDialog && ReactDOM.createPortal(
         <MeasurementSaveDialog
           measurementName={measurementName}
           setMeasurementName={setMeasurementName}
@@ -322,7 +323,8 @@ export default function MeasurementTool({
           formattedDistance={drawingLine ? formatDistance(drawingLine) : ''}
           onSave={handleSave}
           onCancel={handleCancelSave}
-        />
+        />,
+        document.body
       )}
     </>
   );
