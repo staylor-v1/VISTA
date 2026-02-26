@@ -22,20 +22,26 @@ describe('MeasurementTool', () => {
   });
 
   describe('when no calibration is set', () => {
-    it('shows "No Calibration Set" message', () => {
-      render(<MeasurementTool {...defaultProps} calibration={null} />);
+    it('shows "No Calibration Set" message when measure mode is active', () => {
+      render(<MeasurementTool {...defaultProps} calibration={null} leftClickEnabled={true} />);
 
       expect(screen.getByText('No Calibration Set')).toBeInTheDocument();
       expect(screen.getByText(/Please set calibration/)).toBeInTheDocument();
     });
 
-    it('shows Close button that calls onCancel', () => {
-      render(<MeasurementTool {...defaultProps} calibration={null} />);
+    it('shows Close button that calls onCancel when measure mode is active', () => {
+      render(<MeasurementTool {...defaultProps} calibration={null} leftClickEnabled={true} />);
 
       const closeButton = screen.getByRole('button', { name: 'Close' });
       fireEvent.click(closeButton);
 
       expect(defaultProps.onCancel).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not show calibration error on render when not in measure mode', () => {
+      render(<MeasurementTool {...defaultProps} calibration={null} />);
+
+      expect(screen.queryByText('No Calibration Set')).not.toBeInTheDocument();
     });
   });
 
@@ -49,10 +55,17 @@ describe('MeasurementTool', () => {
       expect(svg).toHaveAttribute('height', '600');
     });
 
-    it('has crosshair cursor on the overlay', () => {
-      const { container } = render(<MeasurementTool {...defaultProps} />);
+    it('has crosshair cursor on the overlay when in measure mode', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} leftClickEnabled={true} />);
 
       const overlay = container.querySelector('div[style*="cursor: crosshair"]');
+      expect(overlay).toBeInTheDocument();
+    });
+
+    it('uses inherit cursor when not in measure mode (pan cursor shows through)', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} />);
+
+      const overlay = container.querySelector('div[style*="cursor: inherit"]');
       expect(overlay).toBeInTheDocument();
     });
   });
@@ -284,6 +297,56 @@ describe('MeasurementTool', () => {
       expect(savedMeasurement.y1).toBe(200);
       expect(savedMeasurement.x2).toBe(400);
       expect(savedMeasurement.y2).toBe(400);
+    });
+  });
+
+  describe('left-click vs right-click interaction modes', () => {
+    const getOverlay = (container) => {
+      const overlay = container.querySelector('div[style*="cursor"]');
+      overlay.getBoundingClientRect = jest.fn(() => ({
+        left: 0, top: 0, width: 800, height: 600
+      }));
+      return overlay;
+    };
+
+    it('right-click draws measurement without measure mode active', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} leftClickEnabled={false} />);
+      const overlay = getOverlay(container);
+
+      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100, button: 2 });
+      fireEvent.mouseUp(overlay, { clientX: 200, clientY: 100 });
+
+      expect(screen.getByText('Save Measurement')).toBeInTheDocument();
+    });
+
+    it('left-click does NOT draw measurement when measure mode is inactive', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} leftClickEnabled={false} />);
+      const overlay = getOverlay(container);
+
+      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100, button: 0 });
+      fireEvent.mouseUp(overlay, { clientX: 200, clientY: 100 });
+
+      expect(screen.queryByText('Save Measurement')).not.toBeInTheDocument();
+    });
+
+    it('left-click draws measurement when measure mode is active (leftClickEnabled)', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} leftClickEnabled={true} />);
+      const overlay = getOverlay(container);
+
+      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100, button: 0 });
+      fireEvent.mouseUp(overlay, { clientX: 200, clientY: 100 });
+
+      expect(screen.getByText('Save Measurement')).toBeInTheDocument();
+    });
+
+    it('ctrl+left-click draws measurement (trackpad support)', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} leftClickEnabled={false} />);
+      const overlay = getOverlay(container);
+
+      fireEvent.mouseDown(overlay, { clientX: 100, clientY: 100, button: 0, ctrlKey: true });
+      fireEvent.mouseUp(overlay, { clientX: 200, clientY: 100 });
+
+      expect(screen.getByText('Save Measurement')).toBeInTheDocument();
     });
   });
 });
