@@ -1,5 +1,5 @@
 ---
-name: final-checklist-reviewer
+name: pr-review
 model: sonnet
 color: red
 ---

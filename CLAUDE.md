@@ -338,9 +338,9 @@ Single container deployment via `Dockerfile`:
 
 Custom subagents are defined in `.claude/agents/` for specialized workflows:
 
-- **`final-checklist-reviewer`** -- Comprehensive PR/branch review. Runs tests, checks
-  linting, verifies documentation, validates migrations, and performs visual verification
-  with Playwright when available. Use before merging any branch.
+- **`pr-review`** -- Comprehensive PR/branch review. Runs tests, checks linting, verifies
+  documentation, validates migrations, and performs visual verification with Playwright
+  when available. Use before merging any branch.
 - **`test-report-runner`** -- Executes the full test suite and reports results factually.
   Also performs visual verification via Playwright if the app is running. Does not suggest
   fixes -- just reports what passed and what failed.
