@@ -271,7 +271,7 @@ Images can be reviewed through a four-status workflow that tracks inspection dec
 
 The export endpoint (`GET /api/projects/{project_id}/export-excel`) generates an Excel (.xlsx) file with one row per non-deleted image. Requires `openpyxl`.
 
-**Columns (dynamic):** Filename (always first), one column per unique metadata key found across all project images (in order of first appearance), Image Classes, Comment. No columns are hardcoded -- the sheet structure adapts to whatever metadata users store on their images.
+**Columns (dynamic):** Filename (always first), one column per unique metadata key found across all project images (in order of first appearance), Review Status / Reviewer / Review Date (most recent review for the image), Image Classes, Comment. No columns are hardcoded -- the sheet structure adapts to whatever metadata users store on their images.
 
 **Key implementation details:**
 - Backend: `routers/export.py` -- uses bulk IN-clause queries to avoid N+1; metadata keys are collected dynamically from `metadata_json` and passed to `_build_workbook(project_name, rows, meta_keys)`
