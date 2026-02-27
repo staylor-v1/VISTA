@@ -167,6 +167,8 @@ React application with component-based architecture:
   - `ClassManager.js`: Project-level class management
   - `MetadataManager.js`: Project metadata editor
   - `ImageDeletionControls.js`: Soft/hard deletion UI
+  - `FilenameMetadataExtractor.js`: Extracts key-value metadata from filenames during upload (simple delimiter or regex mode)
+  - `ImageUploader.js`: File upload with drag-and-drop, metadata entry, and filename metadata extraction
 
 ### Authentication & Authorization
 
