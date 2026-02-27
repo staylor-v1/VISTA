@@ -7,6 +7,12 @@ import MeasurementOverlay from './MeasurementOverlay';
 // Deleted image placeholder SVG for larger display
 const DELETED_IMAGE_DISPLAY_SVG = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgZmlsbD0iI2ZiZjVmNSIgc3Ryb2tlPSIjZjU5ZTBiIiBzdHJva2Utd2lkdGg9IjQiIHN0cm9rZS1kYXNoYXJyYXk9IjE1LDgiLz48dGV4dCB4PSI1MCUiIHk9IjM1JSIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjM2IiBmb250LXdlaWdodD0iNjAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSIgZmlsbD0iI2M0MzAyYiI+SW1hZ2UgRGVsZXRlZDwvdGV4dD48dGV4dCB4PSI1MCUiIHk9IjUwJSIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjY0IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSIgZmlsbD0iI2Y1OWUwYiI+8J+XkeKcgO+4jzwvdGV4dD48dGV4dCB4PSI1MCUiIHk9IjY1JSIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjE4IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSIgZmlsbD0iIzk3OWNhMSI+VGhpcyBpbWFnZSBoYXMgYmVlbiBkZWxldGVkPC90ZXh0Pjx0ZXh0IHg9IjUwJSIgeT0iNzAlIiBmb250LWZhbWlseT0iQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIiBmaWxsPSIjOTc5Y2ExIj5DaGVjayB0aGUgZGVsZXRpb24gY29udHJvbHMgYmVsb3cgZm9yIG1vcmUgaW5mbzwvdGV4dD48L3N2Zz4=';
 
+// Minimum pixels of image that must remain visible when panning
+const MIN_VISIBLE_IMAGE_MARGIN = 50;
+
+// Interactive elements that should not trigger pan on click
+const PAN_EXCLUDE_SELECTOR = 'button, a, input, select, textarea';
+
 function ImageDisplay({
   imageId,
   image,
@@ -30,6 +36,9 @@ function ImageDisplay({
   visibleMeasurementIds
 }) {
   const [zoomLevel, setZoomLevel] = useState(1);
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const panStartRef = useRef({ x: 0, y: 0 });
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [reason, setReason] = useState("");
   const [force, setForce] = useState(false);
@@ -38,20 +47,45 @@ function ImageDisplay({
   const [deleteError, setDeleteError] = useState(null);
   const MIN_REASON = 5;
 
-  // Apply zoom
-  const handleZoomIn = () => {
-    setZoomLevel(prev => prev + 0.25);
-  };
+  // Refs for stable event-handler access to latest state
+  const zoomRef = useRef(zoomLevel);
+  const panRef = useRef(panOffset);
+  useEffect(() => { zoomRef.current = zoomLevel; }, [zoomLevel]);
+  useEffect(() => { panRef.current = panOffset; }, [panOffset]);
 
-  // Handle zoom out
-  const handleZoomOut = () => {
+  // Apply zoom (kept for keyboard shortcuts)
+  const handleZoomIn = useCallback(() => {
+    setZoomLevel(prev => Math.min(10, prev + 0.25));
+  }, []);
+
+  // Handle zoom out (kept for keyboard shortcuts)
+  const handleZoomOut = useCallback(() => {
     setZoomLevel(prev => Math.max(0.25, prev - 0.25));
-  };
+  }, []);
 
-  // Handle reset zoom
-  const handleResetZoom = () => {
+  // Clamp pan so at least MIN_VISIBLE_IMAGE_MARGIN px of the image remains visible in the container
+  const clampPan = useCallback((pan, zoom) => {
+    const container = containerRef.current;
+    const img = imgRef.current;
+    if (!container || !img) return pan;
+    const cW = container.offsetWidth;
+    const cH = container.offsetHeight;
+    const scaledW = img.offsetWidth * zoom;
+    const scaledH = img.offsetHeight * zoom;
+    const margin = MIN_VISIBLE_IMAGE_MARGIN;
+    return {
+      x: Math.max(margin - scaledW, Math.min(cW - margin, pan.x)),
+      y: Math.max(margin - scaledH, Math.min(cH - margin, pan.y))
+    };
+  }, []);
+
+  // Handle reset zoom and pan
+  const handleResetZoom = useCallback(() => {
     setZoomLevel(1);
-  };
+    setPanOffset({ x: 0, y: 0 });
+    zoomRef.current = 1;
+    panRef.current = { x: 0, y: 0 };
+  }, []);
 
   // Handle delete
   const handleDelete = async () => {
@@ -211,9 +245,73 @@ function ImageDisplay({
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, []);
+  }, [handleZoomIn, handleZoomOut, handleResetZoom]);
 
   const containerRef = useRef(null);
+
+  // Wheel zoom toward cursor
+  const handleWheel = useCallback((e) => {
+    e.preventDefault();
+    const container = containerRef.current;
+    if (!container) return;
+
+    const rect = container.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    const prevZoom = zoomRef.current;
+    const newZoom = Math.max(0.25, Math.min(10, prevZoom * zoomFactor));
+    const scale = newZoom / prevZoom;
+
+    const prevPan = panRef.current;
+    const rawPan = {
+      x: mouseX - scale * (mouseX - prevPan.x),
+      y: mouseY - scale * (mouseY - prevPan.y)
+    };
+    const newPan = clampPan(rawPan, newZoom);
+
+    zoomRef.current = newZoom;
+    panRef.current = newPan;
+    setZoomLevel(newZoom);
+    setPanOffset(newPan);
+  }, [clampPan]);
+
+  // Attach wheel listener (passive: false allows preventDefault)
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, [handleWheel]);
+
+  // Pan: start on plain left-click (not on interactive elements, not in measure mode)
+  const handlePanMouseDown = useCallback((e) => {
+    if (e.button !== 0 || e.ctrlKey) return;
+    if (e.target.closest(PAN_EXCLUDE_SELECTOR)) return;
+    e.preventDefault();
+    const start = { x: e.clientX - panRef.current.x, y: e.clientY - panRef.current.y };
+    panStartRef.current = start;
+    setIsPanning(true);
+  }, []);
+
+  // Pan: global mousemove/mouseup for dragging
+  useEffect(() => {
+    if (!isPanning) return;
+    const handleMouseMove = (e) => {
+      const rawPan = { x: e.clientX - panStartRef.current.x, y: e.clientY - panStartRef.current.y };
+      const newPan = clampPan(rawPan, zoomRef.current);
+      panRef.current = newPan;
+      setPanOffset(newPan);
+    };
+    const handleMouseUp = () => setIsPanning(false);
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isPanning, clampPan]);
   const imgRef = useRef(null);
   const [displaySize, setDisplaySize] = useState({ width: 0, height: 0 });
   const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
@@ -253,10 +351,14 @@ function ImageDisplay({
     }
   }, [zoomLevel, imageId]);
 
-  // Reset display size when imageId changes to prevent stale dimensions
+  // Reset display size, zoom, and pan when imageId changes to prevent stale dimensions
   useEffect(() => {
     setDisplaySize({ width: 0, height: 0 });
     setNaturalSize({ width: 0, height: 0 });
+    setZoomLevel(1);
+    setPanOffset({ x: 0, y: 0 });
+    zoomRef.current = 1;
+    panRef.current = { x: 0, y: 0 };
   }, [imageId]);
 
   useLayoutEffect(() => { measure(); }, [image, measure, annotations]);
@@ -269,7 +371,8 @@ function ImageDisplay({
   const isSideBySide = overlayOptions?.viewMode === 'side-by-side' && overlayOptions?.bitmapAvailable;
 
   const renderImageView = (showOverlays = true, containerStyle = {}, attachRef = true) => (
-    <div style={{ position: 'relative', ...containerStyle }}>
+    <div style={{ position: 'relative', overflow: 'hidden', ...containerStyle }}>
+      <div style={{ transform: `translate(${panOffset.x}px, ${panOffset.y}px)`, position: 'relative' }}>
       {!image ? (
         <div className="loading-container">
           <div className="loading"></div>
@@ -281,7 +384,6 @@ function ImageDisplay({
           alt="Deleted"
           className="view-image deleted-image"
           style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'top left' }}
-          onClick={handleZoomIn}
           ref={attachRef ? imgRef : null}
         />
       ) : (
@@ -290,7 +392,6 @@ function ImageDisplay({
           alt={image.filename || ''}
           className="view-image"
           style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'top left' }}
-          onClick={handleZoomIn}
           onLoad={measure}
           onError={(e) => {
             console.error('Failed to load image with ID: %s', imageId, e);
@@ -341,7 +442,7 @@ function ImageDisplay({
           />
         </div>
       )}
-      {measurementActive && image && displaySize.width > 0 && naturalSize.width > 0 && (
+      {image && displaySize.width > 0 && naturalSize.width > 0 && (
         <MeasurementTool
           containerSize={displaySize}
           naturalSize={naturalSize}
@@ -350,14 +451,16 @@ function ImageDisplay({
           onSaveMeasurement={onSaveMeasurement}
           onCancel={() => setMeasurementActive && setMeasurementActive(false)}
           existingMeasurementCount={measurements ? measurements.length : 0}
+          leftClickEnabled={!!measurementActive}
         />
       )}
+      </div>
     </div>
   );
 
   return (
     <>
-      <div id="image-display" className={isTransitioning ? 'transitioning' : ''} ref={containerRef} style={{ position: 'relative' }}>
+      <div id="image-display" className={isTransitioning ? 'transitioning' : ''} ref={containerRef} style={{ position: 'relative', cursor: isPanning ? 'grabbing' : 'crosshair' }} onMouseDown={handlePanMouseDown}>
         {isSideBySide ? (
           <div style={{ display: 'flex', gap: '1rem', width: '100%' }}>
             <div style={{ flex: 1, position: 'relative' }}>
@@ -398,18 +501,6 @@ function ImageDisplay({
         {/* Zoom controls */}
         <button
           className="btn btn-secondary control-btn"
-          onClick={handleZoomIn}
-        >
-          Zoom In
-        </button>
-        <button
-          className="btn btn-secondary control-btn"
-          onClick={handleZoomOut}
-        >
-          Zoom Out
-        </button>
-        <button
-          className="btn btn-secondary control-btn"
           onClick={handleResetZoom}
         >
           Reset
@@ -423,6 +514,11 @@ function ImageDisplay({
           >
             {measurementActive ? 'Done Measuring' : 'Measure'}
           </button>
+        )}
+        {measurementActive && (
+          <span className="measure-hint">
+            Left-click to draw. Right-click also works.
+          </span>
         )}
         <button
           className="btn btn-success control-btn"

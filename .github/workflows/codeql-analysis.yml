@@ -57,7 +57,7 @@ jobs:
       if: matrix.language == 'javascript-typescript'
       working-directory: ./frontend
       run: |
-        npm ci
+        npm ci --legacy-peer-deps
 
     - name: Autobuild
       if: matrix.language == 'python'
