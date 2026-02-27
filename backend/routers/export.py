@@ -7,7 +7,7 @@ from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func as _func
 
 from core import models, schemas
 from core.database import get_db
@@ -32,6 +32,7 @@ async def export_project_excel(
     Each image corresponds to one row. Columns are dynamic:
     - Filename (always first)
     - One column per unique metadata key found across all project images
+    - Review Status, Reviewer, Review Date (most recent review for the image)
     - Image Classes (derived from classifications)
     - Comment (derived from comments)
     """
@@ -94,6 +95,36 @@ async def export_project_excel(
         if img.uploader_id:
             author_ids.add(img.uploader_id)
 
+    # Bulk-fetch the most recent review per image (status, reviewer_id, created_at)
+    latest_review_by_image: dict[str, models.ImageReview] = {}
+    if image_ids:
+        latest_review_subq = (
+            select(
+                models.ImageReview.image_id,
+                models.ImageReview.status,
+                models.ImageReview.reviewer_id,
+                models.ImageReview.created_at,
+                _func.row_number().over(
+                    partition_by=models.ImageReview.image_id,
+                    order_by=models.ImageReview.created_at.desc(),
+                ).label("rn"),
+            )
+            .where(models.ImageReview.image_id.in_(image_ids))
+            .subquery()
+        )
+        rev_result = await db.execute(
+            select(
+                latest_review_subq.c.image_id,
+                latest_review_subq.c.status,
+                latest_review_subq.c.reviewer_id,
+                latest_review_subq.c.created_at,
+            ).where(latest_review_subq.c.rn == 1)
+        )
+        for row in rev_result:
+            latest_review_by_image[str(row.image_id)] = row
+            if row.reviewer_id:
+                author_ids.add(row.reviewer_id)
+
     # Batch-fetch all referenced users
     user_cache: dict[str, models.User] = {}
     if author_ids:
@@ -148,6 +179,22 @@ async def export_project_excel(
                 row[key] = json.dumps(val)
             else:
                 row[key] = str(val).strip()
+
+        # Review fields from the most recent review
+        review = latest_review_by_image.get(str(image.id))
+        if review:
+            row["review_status"] = review.status or ""
+            row["reviewer"] = get_user_display(review.reviewer_id)
+            if review.created_at:
+                dt = review.created_at
+                row["review_date"] = dt.strftime("%Y-%m-%d %H:%M UTC")
+            else:
+                row["review_date"] = ""
+        else:
+            row["review_status"] = ""
+            row["reviewer"] = ""
+            row["review_date"] = ""
+
         row["image_classes"] = ", ".join(class_names) if class_names else ""
         row["comment"] = " | ".join(comment_texts) if comment_texts else ""
         rows.append(row)
@@ -188,6 +235,7 @@ def _build_workbook(project_name: str, rows: list[dict], meta_keys: list[str]):
     Columns are dynamic:
     - Filename (always first)
     - One column per unique metadata key
+    - Review Status, Reviewer, Review Date
     - Image Classes
     - Comment
     """
@@ -203,11 +251,18 @@ def _build_workbook(project_name: str, rows: list[dict], meta_keys: list[str]):
     columns = [("Filename", 35)]
     for key in meta_keys:
         columns.append((key, 20))
+    columns.append(("Review Status", 20))
+    columns.append(("Reviewer", 25))
+    columns.append(("Review Date", 22))
     columns.append(("Image Classes", 30))
     columns.append(("Comment", 50))
 
     # The dict keys used to retrieve values from each row
-    row_keys = ["filename"] + list(meta_keys) + ["image_classes", "comment"]
+    row_keys = (
+        ["filename"]
+        + list(meta_keys)
+        + ["review_status", "reviewer", "review_date", "image_classes", "comment"]
+    )
 
     # Header styling
     header_font = Font(bold=True, color="FFFFFF", size=11)
