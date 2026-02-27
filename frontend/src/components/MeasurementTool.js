@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import ReactDOM from 'react-dom';
 import MeasurementSaveDialog from './MeasurementSaveDialog';
 
 export default function MeasurementTool({
@@ -8,7 +9,8 @@ export default function MeasurementTool({
   calibration,
   onSaveMeasurement,
   onCancel,
-  existingMeasurementCount
+  existingMeasurementCount,
+  leftClickEnabled = false
 }) {
   const [drawingLine, setDrawingLine] = useState(null);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
@@ -35,7 +37,15 @@ export default function MeasurementTool({
   };
 
   const handleMouseDown = (e) => {
+    const isRightOrCtrl = e.button === 2 || (e.button === 0 && e.ctrlKey);
+    const isLeftClick = e.button === 0 && !e.ctrlKey;
+
+    // Right-click / ctrl+click always draws; left-click only when measure mode is active
+    if (!isRightOrCtrl && !(isLeftClick && leftClickEnabled)) return;
     if (showSaveDialog) return;
+
+    e.stopPropagation(); // Prevent pan from starting
+    e.preventDefault();
 
     const coords = getAdjustedCoordinates(e);
     setDrawingLine({
@@ -192,7 +202,8 @@ export default function MeasurementTool({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleKeyDown]);
 
-  if (!calibration) {
+  // Show calibration error immediately when measure mode is active without calibration
+  if (!calibration && leftClickEnabled) {
     return (
       <div style={{
         position: 'fixed',
@@ -229,6 +240,9 @@ export default function MeasurementTool({
     );
   }
 
+  // Cursor: crosshair when in measure mode or actively drawing, inherit otherwise (shows container grab cursor)
+  const cursor = showSaveDialog ? 'default' : (leftClickEnabled || isDrawing) ? 'crosshair' : 'inherit';
+
   return (
     <>
       <div
@@ -236,6 +250,7 @@ export default function MeasurementTool({
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
+        onContextMenu={(e) => e.preventDefault()}
         style={{
           position: 'absolute',
           top: 0,
@@ -244,7 +259,7 @@ export default function MeasurementTool({
           height: containerSize.height,
           transform: `scale(${zoomLevel})`,
           transformOrigin: 'top left',
-          cursor: showSaveDialog ? 'default' : 'crosshair',
+          cursor,
           zIndex: 1000,
           pointerEvents: 'auto'
         }}
@@ -299,7 +314,7 @@ export default function MeasurementTool({
         </svg>
       </div>
 
-      {showSaveDialog && (
+      {showSaveDialog && ReactDOM.createPortal(
         <MeasurementSaveDialog
           measurementName={measurementName}
           setMeasurementName={setMeasurementName}
@@ -308,7 +323,8 @@ export default function MeasurementTool({
           formattedDistance={drawingLine ? formatDistance(drawingLine) : ''}
           onSave={handleSave}
           onCancel={handleCancelSave}
-        />
+        />,
+        document.body
       )}
     </>
   );
