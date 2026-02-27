@@ -143,12 +143,14 @@ async def export_project_excel(
             return ""
         return user.username or user.email or ""
 
-    # Collect all unique metadata keys across all images (in order of first appearance)
+    # Collect all unique metadata keys across all images (in order of first appearance).
+    # The "measurements" key stores internal pixel-measurement overlays and is excluded.
+    _EXCLUDED_META_KEYS = {"measurements"}
     all_meta_keys: list[str] = []
     seen_keys: set[str] = set()
     for image in images:
         for key in (image.metadata_json or {}).keys():
-            if key not in seen_keys:
+            if key not in seen_keys and key not in _EXCLUDED_META_KEYS:
                 seen_keys.add(key)
                 all_meta_keys.append(key)
 
