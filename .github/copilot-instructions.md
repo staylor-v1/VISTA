@@ -69,6 +69,7 @@ These guidelines are for AI coding agents (like GitHub Copilot Chat) working in 
 - Follow existing data‑fetching and state patterns:
   - Use the same API paths and payload shapes defined by backend routers/schemas.
   - Reuse helper components instead of duplicating UI logic for images, classes, and analyses.
+  - `FilenameMetadataExtractor.js` provides optional metadata extraction from filenames during upload (simple delimiter or regex mode). It is integrated into `ImageUploader.js` and merges extracted metadata with manually entered JSON (manual values take precedence).
 
 ## Conventions & Constraints
 
