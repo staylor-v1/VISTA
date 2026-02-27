@@ -143,8 +143,9 @@ Use cases:
 1. Navigate to the project
 2. Click "Upload Image" or drag-and-drop
 3. Select an image file (JPG, PNG, GIF supported)
-4. Optionally add metadata
-5. Click "Upload"
+4. Optionally configure filename metadata extraction (see below)
+5. Optionally add metadata
+6. Click "Upload"
 
 **Bulk Upload:**
 1. Click "Upload Multiple"
@@ -158,6 +159,134 @@ Use cases:
 
 **Size Limits:**
 - Maximum file size: 10 MB (configurable by administrator)
+
+### Extracting Metadata from Filenames
+
+When images follow a consistent naming convention, VISTA can automatically
+extract metadata key-value pairs from each filename at upload time.
+
+The extractor panel appears above the **Metadata (Optional JSON)** field.  It
+is entirely optional: if no pattern is entered, upload behaves exactly as
+before.
+
+#### Simple Mode (delimiter-based split)
+
+Choose **Simple** mode and enter a delimiter character (or string).  The
+filename stem (without extension) is split on that delimiter and the resulting
+values are mapped to the keys you supply.
+
+**Example**
+
+Filenames follow the pattern `lot-id_serial-number_side_modality.png`.
+
+| Setting | Value |
+|---------|-------|
+| Mode | Simple |
+| Delimiter | `_` |
+| Keys | `lot, serial_number, side_identifier, modality` |
+
+For the file `123abc_001_front_optical.png` this produces:
+
+```json
+{
+  "lot": "123abc",
+  "serial_number": "001",
+  "side_identifier": "front",
+  "modality": "optical"
+}
+```
+
+#### Advanced Mode (regular expression)
+
+Choose **Advanced (Regex)** mode and enter a regular expression with capture
+groups.  Each capture group becomes one value, mapped in order to the keys you
+supply.
+
+**Example 1 – same naming convention as above**
+
+| Setting | Value |
+|---------|-------|
+| Mode | Advanced (Regex) |
+| Pattern | `(.+)_(.+)_(.+)_(.+)` |
+| Keys | `lot, serial_number, side_identifier, modality` |
+
+For `123abc_001_front_optical.png` this produces the same JSON as the Simple
+example.
+
+**Example 2 – mixed delimiters**
+
+Files are named like `lot123-SN001_front_optical.png`.
+
+| Setting | Value |
+|---------|-------|
+| Mode | Advanced (Regex) |
+| Pattern | `lot(\w+)-SN(\d+)_(\w+)_(\w+)` |
+| Keys | `lot, serial_number, side_identifier, modality` |
+
+For `lot123-SN001_front_optical.png` this produces:
+
+```json
+{
+  "lot": "123",
+  "serial_number": "001",
+  "side_identifier": "front",
+  "modality": "optical"
+}
+```
+
+**Example 3 – extracting a date from the filename**
+
+Files are named `2024-06-15_sample-42.png`.
+
+| Setting | Value |
+|---------|-------|
+| Mode | Advanced (Regex) |
+| Pattern | `(\d{4}-\d{2}-\d{2})_sample-(\d+)` |
+| Keys | `capture_date, sample_id` |
+
+For `2024-06-15_sample-42.png` this produces:
+
+```json
+{
+  "capture_date": "2024-06-15",
+  "sample_id": "42"
+}
+```
+
+#### Live Preview
+
+As you type, the panel shows:
+
+1. **Extracted Values** – the raw array of values split from the first selected
+   filename.
+2. **Key-Value Preview** – the resulting JSON that will be stored with each
+   image.
+
+The preview is always based on the first selected file.  When no files are
+selected yet the preview area is hidden.
+
+#### Warnings and Upload Blocking
+
+- If the number of extracted values does not match the number of keys, a
+  warning is displayed and the **Upload Images** button is disabled.
+- If the regex pattern is syntactically invalid, an error is shown and
+  uploading is blocked.
+- If no pattern is entered, uploading is always allowed (the extractor is
+  simply ignored).
+
+#### Combining with Manual Metadata
+
+You can use both filename extraction and the **Metadata (Optional JSON)** field
+at the same time.  The two sets of key-value pairs are merged before upload,
+with manually entered values taking precedence over extracted values when the
+same key appears in both.
+
+#### Tips
+
+- All filenames in a batch must follow the same naming convention.  If your
+  files use different patterns, upload them in separate batches.
+- The file extension is automatically stripped before the pattern is applied,
+  so you do not need to account for `.png` / `.jpg` in your delimiter or regex.
 
 ### Viewing Images
 
