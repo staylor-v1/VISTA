@@ -84,8 +84,6 @@ function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setEr
       }
       
       try {
-        // log the url being called for upload. 
-        console.log(`Uploading ${file.name} to /api/projects/${projectId}/images`);
         const response = await fetch(`/api/projects/${projectId}/images`, {
           method: 'POST',
           body: formData
