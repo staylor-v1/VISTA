@@ -60,7 +60,7 @@ jobs:
     - name: Build frontend
       run: |
         cd frontend
-        npm ci
+        npm ci --legacy-peer-deps
         npm run build
     
     - name: Install uv
