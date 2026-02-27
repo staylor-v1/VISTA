@@ -51,13 +51,21 @@ function FilenameMetadataExtractor({ files, onConfigChange }) {
   const previewStem = files.length > 0 ? stripExtension(files[0].name) : '';
 
   // Live-preview results for the first selected filename.
-  const { values: previewValues, error: extractError } = useMemo(
-    () =>
-      previewStem
-        ? extractValues(previewStem, mode, pattern)
-        : { values: [], error: null },
-    [mode, pattern, previewStem]
-  );
+  // Also validates the regex pattern even when no file is selected.
+  const { values: previewValues, error: extractError } = useMemo(() => {
+    if (!previewStem) {
+      // Validate regex pattern even without a file to preview.
+      if (mode === 'advanced' && pattern) {
+        try {
+          new RegExp(pattern); // eslint-disable-line no-new
+        } catch (e) {
+          return { values: [], error: `Invalid regex: ${e.message}` };
+        }
+      }
+      return { values: [], error: null };
+    }
+    return extractValues(previewStem, mode, pattern);
+  }, [mode, pattern, previewStem]);
 
   // Parse the comma-separated key list.
   const keys = useMemo(() => {
