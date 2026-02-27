@@ -462,6 +462,42 @@ def test_export_excel_no_review_shows_empty(client):
     assert ws.cell(row=2, column=headers["Review Date"]).value in (None, "")
 
 
+def test_export_excel_excludes_measurements_metadata(client):
+    """Verify the 'measurements' metadata key is not exported as a column."""
+    import json as _json
+
+    proj_resp = client.post("/api/projects/", json={
+        "name": "Measurements Excluded",
+        "description": "Test that measurements key is excluded",
+        "meta_group_id": "test-group",
+    })
+    assert proj_resp.status_code == 201
+    project = proj_resp.json()
+
+    metadata = {
+        "lot_number": "LOT-1",
+        "measurements": [{"id": "m1", "distance_pixels": 42.5}],
+    }
+    files = {"file": ("img.png", b"data", "image/png")}
+    data = {"metadata": _json.dumps(metadata)}
+    img_resp = client.post(
+        f"/api/projects/{project['id']}/images",
+        files=files,
+        data=data,
+    )
+    assert img_resp.status_code == 201
+
+    resp = client.get(f"/api/projects/{project['id']}/export-excel")
+    assert resp.status_code == 200
+
+    from openpyxl import load_workbook
+    ws = load_workbook(io.BytesIO(resp.content)).active
+    headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+
+    assert "measurements" not in headers
+    assert "lot_number" in headers
+
+
 # ---------------------------------------------------------------------------
 # Unit tests for _build_workbook helper
 # ---------------------------------------------------------------------------
