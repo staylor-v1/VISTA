@@ -1,9 +1,19 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
+import FilenameMetadataExtractor from './FilenameMetadataExtractor';
 
 function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setError }) {
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [uploadMetadata, setUploadMetadata] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
+  const [extractorConfig, setExtractorConfig] = useState({
+    isValid: true,
+    hasPattern: false,
+    extractMetadata: () => null,
+  });
+
+  const handleExtractorChange = useCallback((config) => {
+    setExtractorConfig(config);
+  }, []);
 
   // Handle file input change
   const handleFileChange = (e) => {
@@ -39,11 +49,18 @@ function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setEr
       setError('Please select at least one file to upload.');
       return;
     }
+
+    // Block upload when the extractor configuration is invalid.
+    if (!extractorConfig.isValid) {
+      setError('Filename metadata extractor has errors. Please fix them before uploading.');
+      return;
+    }
     
-    // Validate metadata if provided
+    // Validate manual metadata JSON if provided
+    let manualMetadata = null;
     if (uploadMetadata.trim()) {
       try {
-        JSON.parse(uploadMetadata);
+        manualMetadata = JSON.parse(uploadMetadata);
       } catch (err) {
         setError('Invalid JSON format for metadata.');
         return;
@@ -55,14 +72,18 @@ function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setEr
     const uploadPromises = selectedFiles.map(async (file) => {
       const formData = new FormData();
       formData.append('file', file);
-      
-      if (uploadMetadata.trim()) {
-        formData.append('metadata', uploadMetadata);
+
+      // Merge filename-extracted metadata with manually entered metadata.
+      const extractedMetadata = extractorConfig.extractMetadata(file.name);
+      const mergedMetadata = (extractedMetadata || manualMetadata)
+        ? { ...(extractedMetadata || {}), ...(manualMetadata || {}) }
+        : null;
+
+      if (mergedMetadata) {
+        formData.append('metadata', JSON.stringify(mergedMetadata));
       }
       
       try {
-        // log the url being called for upload. 
-        console.log(`Uploading ${file.name} to /api/projects/${projectId}/images`);
         const response = await fetch(`/api/projects/${projectId}/images`, {
           method: 'POST',
           body: formData
@@ -131,6 +152,11 @@ function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setEr
               onChange={handleFileChange}
             />
           </div>
+
+          <FilenameMetadataExtractor
+            files={selectedFiles}
+            onConfigChange={handleExtractorChange}
+          />
           
           <div className="form-group">
             <label htmlFor="metadata-input">Metadata (Optional JSON)</label>
@@ -147,7 +173,7 @@ function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setEr
             <button 
               type="submit" 
               className="btn btn-success"
-              disabled={loading}
+              disabled={loading || !extractorConfig.isValid}
             >
               {loading ? 'Uploading...' : 'Upload Images'}
             </button>
