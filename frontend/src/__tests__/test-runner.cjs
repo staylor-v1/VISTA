@@ -11,7 +11,7 @@ function testImageGalleryPlaceholder() {
 
   const hasDeletedImageSVG = gridContent.includes('DELETED_IMAGE_SVG');
   const hasConditionalRendering = gridContent.includes('image.deleted_at ? DELETED_IMAGE_SVG');
-  const hasDeletedClass = galleryContent.includes('deleted') || gridContent.includes('${image.deleted_at ? \'deleted\' : \'\'}');
+  const hasDeletedClass = gridContent.includes('image.deleted_at ? \'deleted\' : \'\'');
   const noDeleteButton = !galleryContent.includes('Delete</button>') && !galleryContent.includes('>Delete<')
     && !gridContent.includes('Delete</button>') && !gridContent.includes('>Delete<');
 
