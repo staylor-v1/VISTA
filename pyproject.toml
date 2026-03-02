@@ -23,6 +23,7 @@ dependencies = [
     "diskcache",
     "swagger-ui-bundle",
     "fastmcp",
+    "openpyxl",
 ]
 
 [dependency-groups]
