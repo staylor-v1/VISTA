@@ -35,7 +35,7 @@ These guidelines are for AI coding agents (like GitHub Copilot Chat) working in 
   - `database.py` — async engine + session utilities.
   - `config.py` — settings via Pydantic `BaseSettings`; do not hardcode env vars.
   - `security.py`, `group_auth.py`, `group_auth_helper.py` — header‑based auth and group membership checks.
-- **Routers (`backend/routers/`):** Resource‑oriented FastAPI routers: `projects.py`, `images.py`, `image_classes.py`, `ml_analyses.py`, `api_keys.py`, etc.
+- **Routers (`backend/routers/`):** Resource‑oriented FastAPI routers: `projects.py`, `images.py`, `image_classes.py`, `ml_analyses.py`, `api_keys.py`, `export.py`, etc.
   - When adding an endpoint, follow this pattern:
     - Add/extend schemas in `core/schemas.py`.
     - Add DB logic in `backend/crud.py` or a nearby helper.
@@ -70,6 +70,14 @@ These guidelines are for AI coding agents (like GitHub Copilot Chat) working in 
   - Use the same API paths and payload shapes defined by backend routers/schemas.
   - Reuse helper components instead of duplicating UI logic for images, classes, and analyses.
   - `FilenameMetadataExtractor.js` provides optional metadata extraction from filenames during upload (simple delimiter or regex mode). It is integrated into `ImageUploader.js` and merges extracted metadata with manually entered JSON (manual values take precedence).
+
+## Excel Export
+
+- `GET /api/projects/{project_id}/export-excel` returns a styled `.xlsx` file (one row per non-deleted image).
+- Backend: `routers/export.py` (uses `openpyxl`); bulk-fetches classifications, comments, and users to avoid N+1 queries.
+- Frontend: shared download helper in `src/utils/downloadExcel.js`, used by both `Project.js` and `ProjectReport.js`.
+- Columns are fully dynamic: Filename (always), then one column per unique `metadata_json` key found across all project images, then Review Status / Reviewer / Review Date (most recent review), then Image Classes, then Comment. No hardcoded field names.
+- Tests: `backend/tests/test_export.py`.
 
 ## Conventions & Constraints
 
