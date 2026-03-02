@@ -14,6 +14,7 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
   const [searchValue, setSearchValue] = useState('');
   const [availableMetadataKeys, setAvailableMetadataKeys] = useState([]);
   const [selectedImages, setSelectedImages] = useState(new Set());
+  const [lastSelectedId, setLastSelectedId] = useState(null);
   const [actionError, setActionError] = useState(null);
   const [reviewStatuses, setReviewStatuses] = useState({});
   const [reviewFilter, setReviewFilter] = useState('all'); // all, unreviewed, pass, reject_pending, reject_confirmed
@@ -131,7 +132,21 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
   };
   
   // Image selection handlers
-  const toggleImageSelection = (imageId) => {
+  const handleImageSelection = (imageId, event) => {
+    if (event && event.shiftKey && lastSelectedId !== null) {
+      const lastIndex = currentImages.findIndex(img => img.id === lastSelectedId);
+      const currentIndex = currentImages.findIndex(img => img.id === imageId);
+      if (lastIndex >= 0 && currentIndex >= 0) {
+        const start = Math.min(lastIndex, currentIndex);
+        const end = Math.max(lastIndex, currentIndex);
+        const newSelected = new Set(selectedImages);
+        for (let i = start; i <= end; i++) {
+          newSelected.add(currentImages[i].id);
+        }
+        setSelectedImages(newSelected);
+        return;
+      }
+    }
     const newSelected = new Set(selectedImages);
     if (newSelected.has(imageId)) {
       newSelected.delete(imageId);
@@ -139,14 +154,16 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
       newSelected.add(imageId);
     }
     setSelectedImages(newSelected);
+    setLastSelectedId(imageId);
   };
-  
+
   const selectAllImages = () => {
     setSelectedImages(new Set(currentImages.map(img => img.id)));
   };
-  
+
   const clearSelection = () => {
     setSelectedImages(new Set());
+    setLastSelectedId(null);
   };
 
   const handleRestore = async (image) => {
@@ -350,7 +367,7 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
                 selectedImages={selectedImages}
                 reviewStatuses={reviewStatuses}
                 onImageClick={(imageId) => navigate(`/view/${imageId}?project=${projectId}`)}
-                onToggleSelection={toggleImageSelection}
+                onToggleSelection={handleImageSelection}
               />
             ) : (
               <GalleryGridView
@@ -359,7 +376,7 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
                 selectedImages={selectedImages}
                 reviewStatuses={reviewStatuses}
                 onImageClick={(imageId) => navigate(`/view/${imageId}?project=${projectId}`)}
-                onToggleSelection={toggleImageSelection}
+                onToggleSelection={handleImageSelection}
                 onRestore={handleRestore}
                 onImageLoadStatusChange={(imageId, status) => {
                   setImageLoadStatus(prev => ({ ...prev, [imageId]: status }));

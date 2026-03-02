@@ -347,6 +347,95 @@ describe('ImageGallery', () => {
     });
   });
 
+  describe('Multi-selection (Shift+Click and Ctrl+Click)', () => {
+    const threeImages = [
+      { id: 'img-a', filename: 'a.jpg', size_bytes: 100, created_at: '2023-01-01T00:00:00Z', deleted_at: null, storage_deleted: false },
+      { id: 'img-b', filename: 'b.jpg', size_bytes: 200, created_at: '2023-01-02T00:00:00Z', deleted_at: null, storage_deleted: false },
+      { id: 'img-c', filename: 'c.jpg', size_bytes: 300, created_at: '2023-01-03T00:00:00Z', deleted_at: null, storage_deleted: false },
+    ];
+
+    test('ctrl+click on image toggles selection without navigating', () => {
+      renderImageGallery({ images: threeImages });
+
+      const firstImage = screen.getByAltText('a.jpg').closest('.gallery-item-image');
+      fireEvent.click(firstImage, { ctrlKey: true });
+
+      expect(mockNavigate).not.toHaveBeenCalled();
+      const item = screen.getByAltText('a.jpg').closest('.gallery-item');
+      expect(item).toHaveClass('selected');
+    });
+
+    test('shift+click selects a range of images', () => {
+      renderImageGallery({ images: threeImages });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      // Select first image
+      fireEvent.click(checkboxes[0]);
+      // Shift+click third image to select range
+      fireEvent.click(checkboxes[2], { shiftKey: true });
+
+      const items = document.querySelectorAll('.gallery-item');
+      expect(items[0]).toHaveClass('selected');
+      expect(items[1]).toHaveClass('selected');
+      expect(items[2]).toHaveClass('selected');
+    });
+
+    test('ctrl+click on image area deselects already-selected image', () => {
+      renderImageGallery({ images: threeImages });
+
+      const firstImage = screen.getByAltText('a.jpg').closest('.gallery-item-image');
+      fireEvent.click(firstImage, { ctrlKey: true });
+      fireEvent.click(firstImage, { ctrlKey: true });
+
+      const item = screen.getByAltText('a.jpg').closest('.gallery-item');
+      expect(item).not.toHaveClass('selected');
+    });
+
+    test('shift+click on same page uses checkbox as anchor too', () => {
+      renderImageGallery({ images: threeImages });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      // Select second image via checkbox
+      fireEvent.click(checkboxes[1]);
+      // Shift+click third image checkbox
+      fireEvent.click(checkboxes[2], { shiftKey: true });
+
+      const items = document.querySelectorAll('.gallery-item');
+      expect(items[1]).toHaveClass('selected');
+      expect(items[2]).toHaveClass('selected');
+      expect(items[0]).not.toHaveClass('selected');
+    });
+
+    test('list view: ctrl+click on row selects without navigating', () => {
+      renderImageGallery({ images: threeImages });
+
+      fireEvent.click(screen.getByTitle('List view'));
+
+      const rows = document.querySelectorAll('.gallery-list-row');
+      fireEvent.click(rows[0], { ctrlKey: true });
+
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(rows[0]).toHaveClass('selected');
+    });
+
+    test('list view: shift+click selects a range of rows', () => {
+      renderImageGallery({ images: threeImages });
+
+      fireEvent.click(screen.getByTitle('List view'));
+
+      const rows = document.querySelectorAll('.gallery-list-row');
+      // Select first row via checkbox
+      const checkboxes = document.querySelectorAll('.gallery-list-cell-check input[type="checkbox"]');
+      fireEvent.click(checkboxes[0]);
+      // Shift+click third row
+      fireEvent.click(rows[2], { shiftKey: true });
+
+      expect(rows[0]).toHaveClass('selected');
+      expect(rows[1]).toHaveClass('selected');
+      expect(rows[2]).toHaveClass('selected');
+    });
+  });
+
   describe('Restore Functionality', () => {
     test('calls handleRestore when restore button is clicked', async () => {
       global.fetch = jest.fn(() =>
