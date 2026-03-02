@@ -616,3 +616,29 @@ class TestBuildWorkbook:
         assert ws.cell(row=2, column=2).value == "Pass"
         assert ws.cell(row=2, column=3).value == "P-001"
 
+    def test_formula_injection_cells_have_quote_prefix(self):
+        """Cells whose values start with formula characters must have quotePrefix set."""
+        meta_keys = ["formula_field"]
+        rows = [
+            {"filename": "=CMD", "formula_field": "=SUM(A1)"},
+            {"filename": "+safe", "formula_field": "-value"},
+            {"filename": "@user", "formula_field": "normal"},
+        ]
+        wb = _build_workbook("Test", rows, meta_keys)
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        from openpyxl import load_workbook
+        ws = load_workbook(buf).active
+        # Values starting with formula chars are stored as text via quotePrefix
+        assert ws.cell(row=2, column=1).quotePrefix is True   # "=CMD"
+        assert ws.cell(row=2, column=2).quotePrefix is True   # "=SUM(A1)"
+        assert ws.cell(row=3, column=1).quotePrefix is True   # "+safe"
+        assert ws.cell(row=3, column=2).quotePrefix is True   # "-value"
+        assert ws.cell(row=4, column=1).quotePrefix is True   # "@user"
+        # Normal values must not have quotePrefix set
+        assert ws.cell(row=4, column=2).quotePrefix is False  # "normal"
+        # Values are preserved verbatim
+        assert ws.cell(row=2, column=1).value == "=CMD"
+        assert ws.cell(row=2, column=2).value == "=SUM(A1)"
+
