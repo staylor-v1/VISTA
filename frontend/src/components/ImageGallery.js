@@ -13,7 +13,7 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
   const [imageLoadStatus, setImageLoadStatus] = useState({});
   const [currentPage, setCurrentPage] = useState(1);
   const [debugExpanded, setDebugExpanded] = useState(false);
-  const [viewMode, setViewMode] = useState('medium'); // small, medium, large
+  const [viewMode, setViewMode] = useState('medium'); // small, medium, large, list
   const [sortBy, setSortBy] = useState('date'); // date, name, size
   const [searchField, setSearchField] = useState('filename'); // 'filename', 'content_type', 'uploaded_by', 'metadata', or specific key
   const [searchValue, setSearchValue] = useState('');
@@ -23,7 +23,7 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
   const [reviewStatuses, setReviewStatuses] = useState({});
   const [reviewFilter, setReviewFilter] = useState('all'); // all, unreviewed, pass, reject_pending, reject_confirmed
 
-  const imagesPerPage = viewMode === 'small' ? 100 : viewMode === 'medium' ? 50 : 25;
+  const imagesPerPage = viewMode === 'small' ? 100 : viewMode === 'medium' ? 50 : viewMode === 'large' ? 25 : 200;
   
   // Filter and sort images
   const filteredImages = images
@@ -129,7 +129,8 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
   // Page change handler
   const handlePageChange = (pageNumber) => {
     setCurrentPage(pageNumber);
-    document.querySelector('.gallery-grid')?.scrollIntoView({ behavior: 'smooth' });
+    const selector = viewMode === 'list' ? '.gallery-list' : '.gallery-grid';
+    document.querySelector(selector)?.scrollIntoView({ behavior: 'smooth' });
   };
   
   // Image selection handlers
@@ -265,6 +266,20 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
               >
                 L
               </button>
+              <button
+                className={`view-mode-btn ${viewMode === 'list' ? 'active' : ''}`}
+                onClick={() => setViewMode('list')}
+                title="List view"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <line x1="8" y1="6" x2="21" y2="6"/>
+                  <line x1="8" y1="12" x2="21" y2="12"/>
+                  <line x1="8" y1="18" x2="21" y2="18"/>
+                  <line x1="3" y1="6" x2="3.01" y2="6"/>
+                  <line x1="3" y1="12" x2="3.01" y2="12"/>
+                  <line x1="3" y1="18" x2="3.01" y2="18"/>
+                </svg>
+              </button>
             </div>
           </div>
           
@@ -333,78 +348,124 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
               )}
             </div>
             
-            <div className={`gallery-grid view-${viewMode}`}>
-        {currentImages.map(image => (
-                <div 
-                  key={image.id} 
-          className={`gallery-item ${selectedImages.has(image.id) ? 'selected' : ''} ${image.deleted_at ? 'deleted' : ''}`}
-                >
-                  <div className="gallery-item-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={selectedImages.has(image.id)}
-                      onChange={() => toggleImageSelection(image.id)}
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  </div>
-                  
+            {viewMode === 'list' ? (
+              <div className="gallery-list">
+                <div className="gallery-list-header">
+                  <div className="gallery-list-cell gallery-list-cell-check"></div>
+                  <div className="gallery-list-cell gallery-list-cell-filename">Filename</div>
+                  {availableMetadataKeys.map(key => (
+                    <div key={key} className="gallery-list-cell gallery-list-cell-meta">{key}</div>
+                  ))}
+                  <div className="gallery-list-cell gallery-list-cell-status">Review Status</div>
+                </div>
+                {currentImages.map(image => {
+                  const meta = image.metadata || image.metadata_ || {};
+                  return (
+                    <div
+                      key={image.id}
+                      className={`gallery-list-row ${selectedImages.has(image.id) ? 'selected' : ''} ${image.deleted_at ? 'deleted' : ''}`}
+                      onClick={() => navigate(`/view/${image.id}?project=${projectId}`)}
+                    >
+                      <div className="gallery-list-cell gallery-list-cell-check">
+                        <input
+                          type="checkbox"
+                          checked={selectedImages.has(image.id)}
+                          onChange={() => toggleImageSelection(image.id)}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                      <div className="gallery-list-cell gallery-list-cell-filename">
+                        {image.filename || 'Unnamed image'}
+                        {image.deleted_at && (
+                          <span className="item-status" style={{ color: '#c0392b', fontWeight: '600', marginLeft: '6px' }}>Deleted</span>
+                        )}
+                      </div>
+                      {availableMetadataKeys.map(key => (
+                        <div key={key} className="gallery-list-cell gallery-list-cell-meta">
+                          {meta[key] !== undefined ? String(meta[key]) : ''}
+                        </div>
+                      ))}
+                      <div className="gallery-list-cell gallery-list-cell-status">
+                        <ReviewStatusBadge status={reviewStatuses[image.id] || 'unreviewed'} size="small" />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className={`gallery-grid view-${viewMode}`}>
+                {currentImages.map(image => (
                   <div 
-                    className="gallery-item-image"
-                    onClick={() => navigate(`/view/${image.id}?project=${projectId}`)}
+                    key={image.id} 
+                    className={`gallery-item ${selectedImages.has(image.id) ? 'selected' : ''} ${image.deleted_at ? 'deleted' : ''}`}
                   >
-                    <img 
-                      src={image.deleted_at ? DELETED_IMAGE_SVG : `/api/images/${image.id}/thumbnail?width=400&height=400`} 
-                      alt={image.filename || 'Image'} 
-                      loading="lazy"
-                      onLoad={() => {
-                        setImageLoadStatus(prev => ({
-                          ...prev,
-                          [image.id]: { status: 'loaded', timestamp: new Date().toISOString() }
-                        }));
-                      }}
-                      onError={(e) => {
-                        setImageLoadStatus(prev => ({
-                          ...prev,
-                          [image.id]: { status: 'error', timestamp: new Date().toISOString(), error: e.message }
-                        }));
-                        e.target.onerror = null;
-                        e.target.src = image.deleted_at ? DELETED_IMAGE_SVG : FALLBACK_IMAGE_SVG;
-                      }}
-                    />
-                    <div className="gallery-item-overlay">
-                      <div className="overlay-actions">
-                        <button 
-                          className="overlay-btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            navigate(`/view/${image.id}?project=${projectId}`);
-                          }}
-                        >View</button>
-                        {image.deleted_at && !image.storage_deleted && (
+                    <div className="gallery-item-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={selectedImages.has(image.id)}
+                        onChange={() => toggleImageSelection(image.id)}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </div>
+                    
+                    <div 
+                      className="gallery-item-image"
+                      onClick={() => navigate(`/view/${image.id}?project=${projectId}`)}
+                    >
+                      <img 
+                        src={image.deleted_at ? DELETED_IMAGE_SVG : `/api/images/${image.id}/thumbnail?width=400&height=400`} 
+                        alt={image.filename || 'Image'} 
+                        loading="lazy"
+                        onLoad={() => {
+                          setImageLoadStatus(prev => ({
+                            ...prev,
+                            [image.id]: { status: 'loaded', timestamp: new Date().toISOString() }
+                          }));
+                        }}
+                        onError={(e) => {
+                          setImageLoadStatus(prev => ({
+                            ...prev,
+                            [image.id]: { status: 'error', timestamp: new Date().toISOString(), error: e.message }
+                          }));
+                          e.target.onerror = null;
+                          e.target.src = image.deleted_at ? DELETED_IMAGE_SVG : FALLBACK_IMAGE_SVG;
+                        }}
+                      />
+                      <div className="gallery-item-overlay">
+                        <div className="overlay-actions">
                           <button 
                             className="overlay-btn"
-                            onClick={(e) => { e.stopPropagation(); handleRestore(image); }}
-                          >Restore</button>
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigate(`/view/${image.id}?project=${projectId}`);
+                            }}
+                          >View</button>
+                          {image.deleted_at && !image.storage_deleted && (
+                            <button 
+                              className="overlay-btn"
+                              onClick={(e) => { e.stopPropagation(); handleRestore(image); }}
+                            >Restore</button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="gallery-item-info">
+                      <div className="item-filename">
+                        {image.filename || 'Unnamed image'}
+                      </div>
+                      <div className="item-meta">
+                        <span className="item-size">{formatFileSize(image.size_bytes)}</span>
+                        <ReviewStatusBadge status={reviewStatuses[image.id] || 'unreviewed'} />
+                        {image.deleted_at && (
+                          <span className="item-status" style={{ color: '#c0392b', fontWeight: '600', marginLeft: '6px' }}>Deleted</span>
                         )}
                       </div>
                     </div>
                   </div>
-                  
-                  <div className="gallery-item-info">
-                    <div className="item-filename">
-                      {image.filename || 'Unnamed image'}
-                    </div>
-                    <div className="item-meta">
-                      <span className="item-size">{formatFileSize(image.size_bytes)}</span>
-                      <ReviewStatusBadge status={reviewStatuses[image.id] || 'unreviewed'} />
-                      {image.deleted_at && (
-                        <span className="item-status" style={{ color: '#c0392b', fontWeight: '600', marginLeft: '6px' }}>Deleted</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
             
             {totalPages > 1 && (
               <div className="gallery-pagination">
