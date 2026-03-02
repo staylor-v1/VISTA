@@ -454,5 +454,25 @@ describe('ImageGallery', () => {
       const row = document.querySelector('.gallery-list-row');
       expect(row).toHaveClass('selected');
     });
+
+    test('list view excludes measurements key from metadata columns', () => {
+      const imageWithMeasurements = {
+        id: 'img-meas',
+        filename: 'measured.jpg',
+        size_bytes: 1024,
+        created_at: '2023-01-01T00:00:00Z',
+        deleted_at: null,
+        storage_deleted: false,
+        metadata: { color: 'blue', measurements: [{ id: 1, length: 42 }] }
+      };
+      renderImageGallery({ images: [imageWithMeasurements] });
+
+      fireEvent.click(screen.getByTitle('List view'));
+
+      const headers = document.querySelectorAll('.gallery-list-header .gallery-list-cell');
+      const headerTexts = Array.from(headers).map(h => h.textContent);
+      expect(headerTexts).toContain('color');
+      expect(headerTexts).not.toContain('measurements');
+    });
   });
 });
