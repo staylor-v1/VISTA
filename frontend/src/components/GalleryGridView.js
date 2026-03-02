@@ -36,14 +36,24 @@ function GalleryGridView({
             <input
               type="checkbox"
               checked={selectedImages.has(image.id)}
-              onChange={() => onToggleSelection(image.id)}
-              onClick={(e) => e.stopPropagation()}
+              readOnly
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleSelection(image.id, e);
+              }}
             />
           </div>
 
           <div
             className="gallery-item-image"
-            onClick={() => onImageClick(image.id)}
+            onClick={(e) => {
+              if (e.ctrlKey || e.metaKey || e.shiftKey) {
+                e.preventDefault();
+                onToggleSelection(image.id, e);
+              } else {
+                onImageClick(image.id);
+              }
+            }}
           >
             <img
               src={image.deleted_at ? DELETED_IMAGE_SVG : `/api/images/${image.id}/thumbnail?width=400&height=400`}
