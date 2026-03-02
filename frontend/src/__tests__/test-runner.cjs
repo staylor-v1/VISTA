@@ -2,15 +2,18 @@
 const fs = require('fs');
 const path = require('path');
 
-// Test 1: Check if ImageGallery has deleted image placeholder
+// Test 1: Check if gallery grid view has deleted image placeholder
 function testImageGalleryPlaceholder() {
-  const filePath = path.join(__dirname, '..', 'components', 'ImageGallery.js');
-  const content = fs.readFileSync(filePath, 'utf8');
+  const gridPath = path.join(__dirname, '..', 'components', 'GalleryGridView.js');
+  const gridContent = fs.readFileSync(gridPath, 'utf8');
+  const galleryPath = path.join(__dirname, '..', 'components', 'ImageGallery.js');
+  const galleryContent = fs.readFileSync(galleryPath, 'utf8');
 
-  const hasDeletedImageSVG = content.includes('DELETED_IMAGE_SVG');
-  const hasConditionalRendering = content.includes('image.deleted_at ? DELETED_IMAGE_SVG');
-  const hasDeletedClass = content.includes('${image.deleted_at ? \'deleted\' : \'\'}');
-  const noDeleteButton = !content.includes('Delete</button>') && !content.includes('>Delete<');
+  const hasDeletedImageSVG = gridContent.includes('DELETED_IMAGE_SVG');
+  const hasConditionalRendering = gridContent.includes('image.deleted_at ? DELETED_IMAGE_SVG');
+  const hasDeletedClass = galleryContent.includes('deleted') || gridContent.includes('${image.deleted_at ? \'deleted\' : \'\'}');
+  const noDeleteButton = !galleryContent.includes('Delete</button>') && !galleryContent.includes('>Delete<')
+    && !gridContent.includes('Delete</button>') && !gridContent.includes('>Delete<');
 
   return hasDeletedImageSVG && hasConditionalRendering && hasDeletedClass && noDeleteButton;
 }
