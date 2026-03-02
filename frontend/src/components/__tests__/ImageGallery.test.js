@@ -436,6 +436,144 @@ describe('ImageGallery', () => {
     });
   });
 
+  describe('Bulk Actions', () => {
+    const twoImages = [
+      { id: 'ba-1', filename: 'bulk-a.jpg', size_bytes: 100, created_at: '2023-01-01T00:00:00Z', deleted_at: null, storage_deleted: false },
+      { id: 'ba-2', filename: 'bulk-b.jpg', size_bytes: 200, created_at: '2023-01-02T00:00:00Z', deleted_at: null, storage_deleted: false },
+    ];
+
+    test('shows bulk action buttons when images are selected', () => {
+      renderImageGallery({ images: twoImages });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      fireEvent.click(checkboxes[0]);
+
+      expect(screen.getByText(/Delete Selected/)).toBeInTheDocument();
+      expect(screen.getByText('Add Metadata to Selected')).toBeInTheDocument();
+      expect(screen.getByText('Clear Selection')).toBeInTheDocument();
+    });
+
+    test('opens bulk delete modal when Delete Selected is clicked', () => {
+      renderImageGallery({ images: twoImages });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      fireEvent.click(checkboxes[0]);
+
+      fireEvent.click(screen.getByText(/Delete Selected/));
+
+      expect(screen.getByText('Delete Selected Images')).toBeInTheDocument();
+      expect(screen.getByLabelText('Reason (required)')).toBeInTheDocument();
+    });
+
+    test('bulk delete validates reason length', async () => {
+      renderImageGallery({ images: twoImages });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      fireEvent.click(checkboxes[0]);
+      fireEvent.click(screen.getByText(/Delete Selected/));
+
+      fireEvent.click(screen.getByText('Delete'));
+
+      await waitFor(() => {
+        expect(screen.getByText(/Reason must be at least/)).toBeInTheDocument();
+      });
+    });
+
+    test('bulk delete calls API for each selected image', async () => {
+      global.fetch = jest.fn(() =>
+        Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ ...twoImages[0], deleted_at: '2023-06-01T00:00:00Z' })
+        })
+      );
+
+      const mockRefresh = jest.fn();
+      renderImageGallery({ images: twoImages, refreshProjectImages: mockRefresh });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      fireEvent.click(checkboxes[0]);
+      fireEvent.click(checkboxes[1]);
+      fireEvent.click(screen.getByText(/Delete Selected/));
+
+      const reasonBox = screen.getByLabelText('Reason (required)');
+      fireEvent.change(reasonBox, { target: { value: 'test bulk deletion reason' } });
+      fireEvent.click(screen.getByText('Delete'));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          '/api/projects/test-project-id/images/ba-1',
+          expect.objectContaining({ method: 'DELETE' })
+        );
+        expect(global.fetch).toHaveBeenCalledWith(
+          '/api/projects/test-project-id/images/ba-2',
+          expect.objectContaining({ method: 'DELETE' })
+        );
+      });
+
+      global.fetch.mockRestore();
+    });
+
+    test('opens bulk metadata modal when Add Metadata to Selected is clicked', () => {
+      renderImageGallery({ images: twoImages });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      fireEvent.click(checkboxes[0]);
+
+      fireEvent.click(screen.getByText('Add Metadata to Selected'));
+
+      expect(screen.getByText('Add Metadata to Selected Images')).toBeInTheDocument();
+      expect(screen.getByLabelText('Key')).toBeInTheDocument();
+    });
+
+    test('bulk metadata validates key is not empty', async () => {
+      renderImageGallery({ images: twoImages });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      fireEvent.click(checkboxes[0]);
+      fireEvent.click(screen.getByText('Add Metadata to Selected'));
+
+      fireEvent.click(screen.getByText('Apply to All Selected'));
+
+      await waitFor(() => {
+        expect(screen.getByText(/Metadata key cannot be empty/)).toBeInTheDocument();
+      });
+    });
+
+    test('bulk metadata calls API for each selected image', async () => {
+      global.fetch = jest.fn(() =>
+        Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ ...twoImages[0], metadata_: { inspector: 'alice' } })
+        })
+      );
+
+      const mockRefresh = jest.fn();
+      renderImageGallery({ images: twoImages, refreshProjectImages: mockRefresh });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      fireEvent.click(checkboxes[0]);
+      fireEvent.click(checkboxes[1]);
+      fireEvent.click(screen.getByText('Add Metadata to Selected'));
+
+      fireEvent.change(screen.getByLabelText('Key'), { target: { value: 'inspector' } });
+      fireEvent.change(screen.getByLabelText('Value'), { target: { value: 'alice' } });
+      fireEvent.click(screen.getByText('Apply to All Selected'));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          '/api/images/ba-1/metadata',
+          expect.objectContaining({ method: 'PUT' })
+        );
+        expect(global.fetch).toHaveBeenCalledWith(
+          '/api/images/ba-2/metadata',
+          expect.objectContaining({ method: 'PUT' })
+        );
+      });
+
+      global.fetch.mockRestore();
+    });
+  });
+
   describe('Restore Functionality', () => {
     test('calls handleRestore when restore button is clicked', async () => {
       global.fetch = jest.fn(() =>
