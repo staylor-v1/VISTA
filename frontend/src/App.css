@@ -1302,7 +1302,8 @@ ul li:hover {
   margin-bottom: var(--space-6);
   border: 1px solid var(--border-medium);
   border-radius: var(--radius-lg);
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   font-size: 0.875rem;
 }
 

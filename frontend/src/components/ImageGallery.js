@@ -80,18 +80,20 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
   const indexOfFirstImage = indexOfLastImage - imagesPerPage;
   const currentImages = filteredImages.slice(indexOfFirstImage, indexOfLastImage);
   
-  // Reset to first page when images or filters change
+  // Reset to first page when images, filters, or view mode changes
   useEffect(() => {
     setCurrentPage(1);
-  }, [images.length, searchValue, searchField, sortBy]);
+  }, [images.length, searchValue, searchField, sortBy, viewMode]);
   
-  // Collect available metadata keys
+  // Collect available metadata keys (excluding internal 'measurements' key)
   useEffect(() => {
     const keys = new Set();
     images.forEach(image => {
       const meta = image.metadata || image.metadata_;
       if (meta) {
-        Object.keys(meta).forEach(key => keys.add(key));
+        Object.keys(meta).forEach(key => {
+          if (key !== 'measurements') keys.add(key);
+        });
       }
     });
     setAvailableMetadataKeys(Array.from(keys).sort());
@@ -270,6 +272,8 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
                 className={`view-mode-btn ${viewMode === 'list' ? 'active' : ''}`}
                 onClick={() => setViewMode('list')}
                 title="List view"
+                aria-label="List view"
+                aria-pressed={viewMode === 'list'}
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <line x1="8" y1="6" x2="21" y2="6"/>
@@ -364,7 +368,15 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
                     <div
                       key={image.id}
                       className={`gallery-list-row ${selectedImages.has(image.id) ? 'selected' : ''} ${image.deleted_at ? 'deleted' : ''}`}
+                      role="button"
+                      tabIndex={0}
                       onClick={() => navigate(`/view/${image.id}?project=${projectId}`)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          navigate(`/view/${image.id}?project=${projectId}`);
+                        }
+                      }}
                     >
                       <div className="gallery-list-cell gallery-list-cell-check">
                         <input
@@ -382,7 +394,9 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
                       </div>
                       {availableMetadataKeys.map(key => (
                         <div key={key} className="gallery-list-cell gallery-list-cell-meta">
-                          {meta[key] !== undefined ? String(meta[key]) : ''}
+                          {meta[key] !== undefined
+                            ? (typeof meta[key] === 'object' ? JSON.stringify(meta[key]) : String(meta[key]))
+                            : ''}
                         </div>
                       ))}
                       <div className="gallery-list-cell gallery-list-cell-status">
