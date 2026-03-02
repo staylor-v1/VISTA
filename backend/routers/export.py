@@ -289,12 +289,17 @@ def _build_workbook(project_name: str, rows: list[dict], meta_keys: list[str]):
     # Data styling
     data_alignment = Alignment(vertical="top", wrap_text=True)
     alt_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+    _FORMULA_CHARS = frozenset("=+-@")
 
     for row_idx, row_data in enumerate(rows, start=2):
         for col_idx, key in enumerate(row_keys, start=1):
             value = row_data.get(key, "") or ""
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
             cell.alignment = data_alignment
+            # Prevent formula injection: values starting with formula characters
+            # are marked as text-prefixed so Excel does not evaluate them.
+            if isinstance(value, str) and value and value[0] in _FORMULA_CHARS:
+                cell.quotePrefix = True
             cell.border = thin_border
 
             # Alternate row shading
