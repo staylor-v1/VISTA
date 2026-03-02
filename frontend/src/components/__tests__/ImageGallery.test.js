@@ -368,7 +368,7 @@ describe('ImageGallery', () => {
     test('shift+click selects a range of images', () => {
       renderImageGallery({ images: threeImages });
 
-      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
       // Select first image
       fireEvent.click(checkboxes[0]);
       // Shift+click third image to select range
@@ -394,7 +394,7 @@ describe('ImageGallery', () => {
     test('shift+click on same page uses checkbox as anchor too', () => {
       renderImageGallery({ images: threeImages });
 
-      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
       // Select second image via checkbox
       fireEvent.click(checkboxes[1]);
       // Shift+click third image checkbox
@@ -425,7 +425,7 @@ describe('ImageGallery', () => {
 
       const rows = document.querySelectorAll('.gallery-list-row');
       // Select first row via checkbox
-      const checkboxes = document.querySelectorAll('.gallery-list-cell-check input[type="checkbox"]');
+      const checkboxes = document.querySelectorAll('.gallery-list-cell-check .custom-check');
       fireEvent.click(checkboxes[0]);
       // Shift+click third row
       fireEvent.click(rows[2], { shiftKey: true });
@@ -445,7 +445,7 @@ describe('ImageGallery', () => {
     test('shows bulk action buttons when images are selected', () => {
       renderImageGallery({ images: twoImages });
 
-      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
       fireEvent.click(checkboxes[0]);
 
       expect(screen.getByText(/Delete Selected/)).toBeInTheDocument();
@@ -456,7 +456,7 @@ describe('ImageGallery', () => {
     test('opens bulk delete modal when Delete Selected is clicked', () => {
       renderImageGallery({ images: twoImages });
 
-      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
       fireEvent.click(checkboxes[0]);
 
       fireEvent.click(screen.getByText(/Delete Selected/));
@@ -468,7 +468,7 @@ describe('ImageGallery', () => {
     test('bulk delete validates reason length', async () => {
       renderImageGallery({ images: twoImages });
 
-      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
       fireEvent.click(checkboxes[0]);
       fireEvent.click(screen.getByText(/Delete Selected/));
 
@@ -490,7 +490,7 @@ describe('ImageGallery', () => {
       const mockRefresh = jest.fn();
       renderImageGallery({ images: twoImages, refreshProjectImages: mockRefresh });
 
-      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
       fireEvent.click(checkboxes[0]);
       fireEvent.click(checkboxes[1]);
       fireEvent.click(screen.getByText(/Delete Selected/));
@@ -516,7 +516,7 @@ describe('ImageGallery', () => {
     test('opens bulk metadata modal when Add Metadata to Selected is clicked', () => {
       renderImageGallery({ images: twoImages });
 
-      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
       fireEvent.click(checkboxes[0]);
 
       fireEvent.click(screen.getByText('Add Metadata to Selected'));
@@ -528,7 +528,7 @@ describe('ImageGallery', () => {
     test('bulk metadata validates key is not empty', async () => {
       renderImageGallery({ images: twoImages });
 
-      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
       fireEvent.click(checkboxes[0]);
       fireEvent.click(screen.getByText('Add Metadata to Selected'));
 
@@ -550,7 +550,7 @@ describe('ImageGallery', () => {
       const mockRefresh = jest.fn();
       renderImageGallery({ images: twoImages, refreshProjectImages: mockRefresh });
 
-      const checkboxes = document.querySelectorAll('.gallery-item-checkbox input[type="checkbox"]');
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
       fireEvent.click(checkboxes[0]);
       fireEvent.click(checkboxes[1]);
       fireEvent.click(screen.getByText('Add Metadata to Selected'));
@@ -674,7 +674,7 @@ describe('ImageGallery', () => {
 
       fireEvent.click(screen.getByTitle('List view'));
 
-      const checkbox = document.querySelector('.gallery-list-row input[type="checkbox"]');
+      const checkbox = document.querySelector('.gallery-list-cell-check .custom-check');
       expect(checkbox).toBeInTheDocument();
       fireEvent.click(checkbox);
 

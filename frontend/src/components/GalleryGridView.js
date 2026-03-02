@@ -31,17 +31,21 @@ function GalleryGridView({
         <div
           key={image.id}
           className={`gallery-item ${selectedImages.has(image.id) ? 'selected' : ''} ${image.deleted_at ? 'deleted' : ''}`}
+          onMouseDown={(e) => {
+            if (e.shiftKey) e.preventDefault();
+          }}
         >
-          <div className="gallery-item-checkbox">
-            <input
-              type="checkbox"
-              checked={selectedImages.has(image.id)}
-              readOnly
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleSelection(image.id, e);
-              }}
-            />
+          <div
+            className="gallery-item-checkbox"
+            role="checkbox"
+            aria-checked={selectedImages.has(image.id)}
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onToggleSelection(image.id, e);
+            }}
+          >
+            <span className={`custom-check ${selectedImages.has(image.id) ? 'checked' : ''}`} />
           </div>
 
           <div
