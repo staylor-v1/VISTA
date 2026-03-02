@@ -1,12 +1,13 @@
 import uuid
 import io
+import json
 import logging
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func as _func
 
 from core import models, schemas
 from core.database import get_db
@@ -28,15 +29,12 @@ async def export_project_excel(
     """
     Export all project image data as a Microsoft Excel (.xlsx) file.
 
-    Each image corresponds to one row. Columns:
-    - Lot Number
-    - Part Serial Number
-    - Image Identifier (filename)
-    - Image Inspection Status
-    - Inspector Name
-    - Secondary Inspector Name
-    - Image Classes
-    - Comment
+    Each image corresponds to one row. Columns are dynamic:
+    - Filename (always first)
+    - One column per unique metadata key found across all project images
+    - Review Status, Reviewer, Review Date (most recent review for the image)
+    - Image Classes (derived from classifications)
+    - Comment (derived from comments)
     """
     # Verify project exists and user has access
     db_project = await crud.get_project(db=db, project_id=project_id)
@@ -97,6 +95,36 @@ async def export_project_excel(
         if img.uploader_id:
             author_ids.add(img.uploader_id)
 
+    # Bulk-fetch the most recent review per image (status, reviewer_id, created_at)
+    latest_review_by_image: dict[str, models.ImageReview] = {}
+    if image_ids:
+        latest_review_subq = (
+            select(
+                models.ImageReview.image_id,
+                models.ImageReview.status,
+                models.ImageReview.reviewer_id,
+                models.ImageReview.created_at,
+                _func.row_number().over(
+                    partition_by=models.ImageReview.image_id,
+                    order_by=models.ImageReview.created_at.desc(),
+                ).label("rn"),
+            )
+            .where(models.ImageReview.image_id.in_(image_ids))
+            .subquery()
+        )
+        rev_result = await db.execute(
+            select(
+                latest_review_subq.c.image_id,
+                latest_review_subq.c.status,
+                latest_review_subq.c.reviewer_id,
+                latest_review_subq.c.created_at,
+            ).where(latest_review_subq.c.rn == 1)
+        )
+        for row in rev_result:
+            latest_review_by_image[str(row.image_id)] = row
+            if row.reviewer_id:
+                author_ids.add(row.reviewer_id)
+
     # Batch-fetch all referenced users
     user_cache: dict[str, models.User] = {}
     if author_ids:
@@ -114,6 +142,17 @@ async def export_project_excel(
         if user is None:
             return ""
         return user.username or user.email or ""
+
+    # Collect all unique metadata keys across all images (in order of first appearance).
+    # The "measurements" key stores internal pixel-measurement overlays and is excluded.
+    _EXCLUDED_META_KEYS = {"measurements"}
+    all_meta_keys: list[str] = []
+    seen_keys: set[str] = set()
+    for image in images:
+        for key in (image.metadata_json or {}).keys():
+            if key not in seen_keys and key not in _EXCLUDED_META_KEYS:
+                seen_keys.add(key)
+                all_meta_keys.append(key)
 
     # Build rows from the bulk-fetched data
     rows = []
@@ -133,44 +172,37 @@ async def export_project_excel(
             prefix = f"[{author}] " if author else ""
             comment_texts.append(f"{prefix}{c.text}")
 
-        # Extract metadata fields - try common key variations
-        lot_number = _extract_meta(meta, "lot_number", "lot", "lotNumber")
-        part_serial = _extract_meta(
-            meta, "part_serial_number", "serial_number", "serial",
-            "partSerialNumber", "part_serial",
-        )
-        inspection_status = _extract_meta(
-            meta, "inspection_status", "status", "inspectionStatus",
-            "review_status",
-        )
-        inspector_name = _extract_meta(
-            meta, "inspector_name", "inspector", "inspectorName",
-            "reviewed_by",
-        )
-        secondary_inspector = _extract_meta(
-            meta, "secondary_inspector_name", "secondary_inspector",
-            "secondaryInspectorName", "secondary_reviewed_by",
-        )
+        row: dict[str, str] = {"filename": image.filename or ""}
+        for key in all_meta_keys:
+            val = meta.get(key)
+            if val is None:
+                row[key] = ""
+            elif isinstance(val, (dict, list)):
+                row[key] = json.dumps(val)
+            else:
+                row[key] = str(val).strip()
 
-        # Fallback: if no inspector in metadata, use the uploader's display name
-        if not inspector_name:
-            inspector_name = get_user_display(image.uploader_id)
-            if not inspector_name and image.uploaded_by_user_id:
-                inspector_name = image.uploaded_by_user_id
+        # Review fields from the most recent review
+        review = latest_review_by_image.get(str(image.id))
+        if review:
+            row["review_status"] = review.status or ""
+            row["reviewer"] = get_user_display(review.reviewer_id)
+            if review.created_at:
+                dt = review.created_at
+                row["review_date"] = dt.strftime("%Y-%m-%d %H:%M UTC")
+            else:
+                row["review_date"] = ""
+        else:
+            row["review_status"] = ""
+            row["reviewer"] = ""
+            row["review_date"] = ""
 
-        rows.append({
-            "lot_number": lot_number,
-            "part_serial_number": part_serial,
-            "image_identifier": image.filename or "",
-            "inspection_status": inspection_status or "Not Reviewed",
-            "inspector_name": inspector_name,
-            "secondary_inspector_name": secondary_inspector,
-            "image_classes": ", ".join(class_names) if class_names else "",
-            "comment": " | ".join(comment_texts) if comment_texts else "",
-        })
+        row["image_classes"] = ", ".join(class_names) if class_names else ""
+        row["comment"] = " | ".join(comment_texts) if comment_texts else ""
+        rows.append(row)
 
     # Generate Excel workbook
-    wb = _build_workbook(db_project.name, rows)
+    wb = _build_workbook(db_project.name, rows, all_meta_keys)
 
     # Stream response
     buffer = io.BytesIO()
@@ -199,35 +231,40 @@ async def export_project_excel(
     )
 
 
-def _extract_meta(meta: dict, *keys: str) -> str:
-    """Try multiple key names to extract a value from the metadata dict."""
-    for key in keys:
-        val = meta.get(key)
-        if val is not None and str(val).strip():
-            return str(val).strip()
-    return ""
+def _build_workbook(project_name: str, rows: list[dict], meta_keys: list[str]):
+    """Build an openpyxl Workbook from the collected row data.
 
-
-def _build_workbook(project_name: str, rows: list[dict]):
-    """Build an openpyxl Workbook from the collected row data."""
+    Columns are dynamic:
+    - Filename (always first)
+    - One column per unique metadata key
+    - Review Status, Reviewer, Review Date
+    - Image Classes
+    - Comment
+    """
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
 
     wb = Workbook()
     ws = wb.active
     ws.title = "Image Data"
 
-    # Define columns matching the issue requirements
-    columns = [
-        ("Lot Number", 20),
-        ("Part Serial Number", 25),
-        ("Image Identifier", 35),
-        ("Image Inspection Status", 25),
-        ("Inspector Name", 25),
-        ("Secondary Inspector Name", 25),
-        ("Image Classes", 30),
-        ("Comment", 50),
-    ]
+    # Dynamic column definitions: (header_label, width)
+    columns = [("Filename", 35)]
+    for key in meta_keys:
+        columns.append((key, 20))
+    columns.append(("Review Status", 20))
+    columns.append(("Reviewer", 25))
+    columns.append(("Review Date", 22))
+    columns.append(("Image Classes", 30))
+    columns.append(("Comment", 50))
+
+    # The dict keys used to retrieve values from each row
+    row_keys = (
+        ["filename"]
+        + list(meta_keys)
+        + ["review_status", "reviewer", "review_date", "image_classes", "comment"]
+    )
 
     # Header styling
     header_font = Font(bold=True, color="FFFFFF", size=11)
@@ -251,54 +288,29 @@ def _build_workbook(project_name: str, rows: list[dict]):
 
     # Data styling
     data_alignment = Alignment(vertical="top", wrap_text=True)
-    row_keys = [
-        "lot_number",
-        "part_serial_number",
-        "image_identifier",
-        "inspection_status",
-        "inspector_name",
-        "secondary_inspector_name",
-        "image_classes",
-        "comment",
-    ]
-
-    # Status colors for conditional formatting
-    status_fills = {
-        "pass": PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid"),
-        "reject": PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"),
-        "reject but not confirmed": PatternFill(
-            start_color="FFEB9C", end_color="FFEB9C", fill_type="solid"
-        ),
-        "not reviewed": PatternFill(
-            start_color="D9E2F3", end_color="D9E2F3", fill_type="solid"
-        ),
-    }
-
-    # Alternate row fill for readability
     alt_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+    _FORMULA_CHARS = frozenset("=+-@")
 
     for row_idx, row_data in enumerate(rows, start=2):
         for col_idx, key in enumerate(row_keys, start=1):
             value = row_data.get(key, "") or ""
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
             cell.alignment = data_alignment
+            # Prevent formula injection: values starting with formula characters
+            # are marked as text-prefixed so Excel does not evaluate them.
+            if isinstance(value, str) and value and value[0] in _FORMULA_CHARS:
+                cell.quotePrefix = True
             cell.border = thin_border
 
             # Alternate row shading
             if row_idx % 2 == 0:
                 cell.fill = alt_fill
 
-        # Apply status-based coloring to the inspection status cell (column 4)
-        status_cell = ws.cell(row=row_idx, column=4)
-        status_lower = (status_cell.value or "").lower().strip()
-        if status_lower in status_fills:
-            status_cell.fill = status_fills[status_lower]
-
     # Freeze the header row
     ws.freeze_panes = "A2"
 
     # Add autofilter
-    if rows:
-        ws.auto_filter.ref = f"A1:{chr(64 + len(columns))}{len(rows) + 1}"
+    if rows and columns:
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(columns))}{len(rows) + 1}"
 
     return wb
