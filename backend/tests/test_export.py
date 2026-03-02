@@ -642,3 +642,25 @@ class TestBuildWorkbook:
         assert ws.cell(row=2, column=1).value == "=CMD"
         assert ws.cell(row=2, column=2).value == "=SUM(A1)"
 
+    def test_formula_injection_header_cells_have_quote_prefix(self):
+        """Header cells from metadata keys starting with formula chars must have quotePrefix."""
+        meta_keys = ["=evil_key", "+tricky", "@mention", "normal_key"]
+        wb = _build_workbook("Test", [], meta_keys)
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        from openpyxl import load_workbook
+        ws = load_workbook(buf).active
+        # Metadata key headers are columns 2-5 (column 1 is Filename)
+        assert ws.cell(row=1, column=2).value == "=evil_key"
+        assert ws.cell(row=1, column=2).quotePrefix is True
+        assert ws.cell(row=1, column=3).value == "+tricky"
+        assert ws.cell(row=1, column=3).quotePrefix is True
+        assert ws.cell(row=1, column=4).value == "@mention"
+        assert ws.cell(row=1, column=4).quotePrefix is True
+        # Normal header should not have quotePrefix
+        assert ws.cell(row=1, column=5).value == "normal_key"
+        assert ws.cell(row=1, column=5).quotePrefix is False
+        # Fixed headers (Filename, etc.) should not have quotePrefix
+        assert ws.cell(row=1, column=1).quotePrefix is False
+
