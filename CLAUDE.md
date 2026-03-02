@@ -112,7 +112,7 @@ The FastAPI backend follows a modular architecture:
   - `database.py`: Async database engine and session management
   - `config.py`: Centralized settings using Pydantic BaseSettings
   - `group_auth.py` / `group_auth_helper.py`: Group-based authorization system
-- **`routers/`**: API endpoint definitions organized by resource (projects, images, users, comments, image_classes, ml_analyses, reviews, etc.)
+- **`routers/`**: API endpoint definitions organized by resource (projects, images, users, comments, image_classes, ml_analyses, reviews, export, etc.)
 - **`middleware/`**: Request/response processing
   - `cors_debug.py`: CORS configuration
   - `security_headers.py`: Security headers (CSP, X-Frame-Options, etc.)
@@ -266,6 +266,17 @@ Images can be reviewed through a four-status workflow that tracks inspection dec
 - Gallery filter dropdown to filter by review status
 
 **Database:** `image_reviews` table with `id`, `image_id`, `project_id`, `reviewer_id`, `status`, `notes`, `created_at`, `updated_at`. Migration: `20260220_0003_add_image_reviews.py`.
+
+## Excel Export Feature
+
+The export endpoint (`GET /api/projects/{project_id}/export-excel`) generates an Excel (.xlsx) file with one row per non-deleted image. Requires `openpyxl`.
+
+**Columns (dynamic):** Filename (always first), one column per unique metadata key found across all project images (in order of first appearance), Review Status / Reviewer / Review Date (most recent review for the image), Image Classes, Comment. No columns are hardcoded -- the sheet structure adapts to whatever metadata users store on their images.
+
+**Key implementation details:**
+- Backend: `routers/export.py` -- uses bulk IN-clause queries to avoid N+1; metadata keys are collected dynamically from `metadata_json` and passed to `_build_workbook(project_name, rows, meta_keys)`
+- Frontend: `src/utils/downloadExcel.js` -- shared download utility used by both `Project.js` and `ProjectReport.js`
+- Tests: `tests/test_export.py` -- integration and unit tests for the endpoint and `_build_workbook`
 
 ## Environment Configuration
 

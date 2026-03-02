@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { downloadExcel } from '../utils/downloadExcel';
 
 function ProjectReport() {
   const { id } = useParams();
@@ -12,6 +13,7 @@ function ProjectReport() {
   const [currentUser, setCurrentUser] = useState(null);
   const [generating, setGenerating] = useState(false);
   const [fullWidthImages, setFullWidthImages] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const getClassLabels = (classifications, classes) => {
     if (!classifications || classifications.length === 0) return 'None';
@@ -226,6 +228,19 @@ function ProjectReport() {
     }
   };
 
+  // Generate Excel export via backend
+  const generateExcel = async () => {
+    setExporting(true);
+    try {
+      await downloadExcel(id, project?.name);
+    } catch (err) {
+      console.error('Excel export failed:', err);
+      setError(`Excel export failed: ${err.message}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   // Print report
   const printReport = () => {
     window.print();
@@ -312,6 +327,14 @@ function ProjectReport() {
               </label>
             </div>
             <div className="export-buttons-small">
+              <button
+                className="btn btn-primary btn-small"
+                onClick={generateExcel}
+                disabled={exporting}
+                title="Download data as Microsoft Excel (.xlsx) file"
+              >
+                {exporting ? 'Generating...' : 'Export to Excel'}
+              </button>
               <button
                 className="btn btn-secondary btn-small"
                 onClick={generateCSV}

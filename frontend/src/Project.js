@@ -8,6 +8,7 @@ import MetadataManager from './components/MetadataManager';
 import ClassManager from './components/ClassManager';
 import ImageGallery from './components/ImageGallery';
 import ReviewStatusSummary from './components/ReviewStatusSummary';
+import { downloadExcel } from './utils/downloadExcel';
 
 function Project() {
   const { id } = useParams();
@@ -21,6 +22,7 @@ function Project() {
   const [currentUser, setCurrentUser] = useState(null);
   const [includeDeleted, setIncludeDeleted] = useState(false);
   const [deletedOnly, setDeletedOnly] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const fetchImages = useCallback(async (projId, opts = {}) => {
     const inc = opts.includeDeleted ?? includeDeleted;
@@ -140,13 +142,26 @@ function Project() {
     });
   };
 
+  const handleExportExcel = async () => {
+    setExporting(true);
+    setError(null);
+    try {
+      await downloadExcel(id, project?.name);
+    } catch (err) {
+      console.error('Excel export failed:', err);
+      setError(`Export failed: ${err.message}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="App">
       <header className="project-header">
         <div className="project-header-content">
           <div className="project-nav">
-            <button 
-              className="back-btn" 
+            <button
+              className="back-btn"
               onClick={() => navigate('/')}
             >
               <span className="back-icon">←</span>
@@ -178,6 +193,39 @@ function Project() {
               </span>
               <span className="project-group">Group: {project?.meta_group_id}</span>
               {currentUser && <span className="project-user">{currentUser.email}</span>}
+            </div>
+            <div className="project-actions" style={{ marginTop: '12px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <button
+                className="btn btn-primary"
+                onClick={handleExportExcel}
+                disabled={exporting || loading}
+                title="Export all project image data to Microsoft Excel"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '8px 16px',
+                  fontSize: '0.9rem',
+                  fontWeight: '600',
+                }}
+              >
+                {exporting ? 'Exporting...' : 'Export Data'}
+              </button>
+              <button
+                className="btn btn-secondary"
+                onClick={() => navigate(`/project/${id}/report`)}
+                disabled={loading}
+                title="View detailed project report"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '8px 16px',
+                  fontSize: '0.9rem',
+                }}
+              >
+                View Report
+              </button>
             </div>
           </div>
         </div>
