@@ -277,6 +277,9 @@ def _build_workbook(project_name: str, rows: list[dict], meta_keys: list[str]):
         bottom=Side(style="thin"),
     )
 
+    # Characters that trigger formula evaluation in Excel
+    _FORMULA_CHARS = frozenset("=+-@")
+
     # Write headers
     for col_idx, (header, width) in enumerate(columns, start=1):
         cell = ws.cell(row=1, column=col_idx, value=header)
@@ -284,12 +287,13 @@ def _build_workbook(project_name: str, rows: list[dict], meta_keys: list[str]):
         cell.fill = header_fill
         cell.alignment = header_alignment
         cell.border = thin_border
+        if isinstance(header, str) and header and header[0] in _FORMULA_CHARS:
+            cell.quotePrefix = True
         ws.column_dimensions[cell.column_letter].width = width
 
     # Data styling
     data_alignment = Alignment(vertical="top", wrap_text=True)
     alt_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
-    _FORMULA_CHARS = frozenset("=+-@")
 
     for row_idx, row_data in enumerate(rows, start=2):
         for col_idx, key in enumerate(row_keys, start=1):
