@@ -5,7 +5,7 @@ import json as _json
 import pytest
 from unittest.mock import patch
 
-from routers.export import _extract_meta, _build_workbook
+from routers.export import _build_workbook
 
 
 # ---------------------------------------------------------------------------
@@ -103,17 +103,19 @@ def test_export_excel_returns_xlsx(client, _seed_project_with_images):
     ws = wb.active
     assert ws.title == "Image Data"
 
-    headers = [ws.cell(row=1, column=c).value for c in range(1, 9)]
-    assert headers == [
-        "Lot Number",
-        "Part Serial Number",
-        "Image Identifier",
-        "Image Inspection Status",
-        "Inspector Name",
-        "Secondary Inspector Name",
-        "Image Classes",
-        "Comment",
-    ]
+    # Verify the total and check all expected headers are present
+    headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+    assert headers[0] == "Filename"
+    assert "lot_number" in headers
+    assert "part_serial_number" in headers
+    assert "inspection_status" in headers
+    assert "inspector_name" in headers
+    assert "secondary_inspector_name" in headers
+    assert "Review Status" in headers
+    assert "Reviewer" in headers
+    assert "Review Date" in headers
+    assert "Image Classes" in headers
+    assert "Comment" in headers
 
     assert ws.max_row == 4  # 1 header + 3 data rows
 
@@ -128,21 +130,24 @@ def test_export_excel_data_content(client, _seed_project_with_images):
     wb = load_workbook(io.BytesIO(resp.content))
     ws = wb.active
 
+    # Build a header -> column index map for robust lookups
+    headers = {ws.cell(row=1, column=c).value: c for c in range(1, ws.max_column + 1)}
+
     # Row 2 = first image
-    assert ws.cell(row=2, column=1).value == "LOT-100"
-    assert ws.cell(row=2, column=2).value == "SN-2000"
-    assert ws.cell(row=2, column=3).value == "test_image_0.png"
-    assert ws.cell(row=2, column=4).value == "Not Reviewed"
-    assert ws.cell(row=2, column=5).value == "Inspector 1"
+    assert ws.cell(row=2, column=headers["Filename"]).value == "test_image_0.png"
+    assert ws.cell(row=2, column=headers["lot_number"]).value == "LOT-100"
+    assert ws.cell(row=2, column=headers["part_serial_number"]).value == "SN-2000"
+    assert ws.cell(row=2, column=headers["inspection_status"]).value == "Not Reviewed"
+    assert ws.cell(row=2, column=headers["inspector_name"]).value == "Inspector 1"
 
     # Row 3 = second image (has two classifications)
-    assert ws.cell(row=3, column=1).value == "LOT-101"
-    classes_val = ws.cell(row=3, column=7).value
+    assert ws.cell(row=3, column=headers["lot_number"]).value == "LOT-101"
+    classes_val = ws.cell(row=3, column=headers["Image Classes"]).value
     assert "Defect" in classes_val
     assert "Scratch" in classes_val
 
     # Row 4 = third image (Reject status)
-    assert ws.cell(row=4, column=4).value == "Reject"
+    assert ws.cell(row=4, column=headers["inspection_status"]).value == "Reject"
 
 
 def test_export_excel_project_not_found(client):
@@ -189,7 +194,8 @@ def test_export_excel_comments_concatenated(client, _seed_project_with_images):
     from openpyxl import load_workbook
     ws = load_workbook(io.BytesIO(resp.content)).active
 
-    comment_cell = ws.cell(row=2, column=8).value
+    headers = {ws.cell(row=1, column=c).value: c for c in range(1, ws.max_column + 1)}
+    comment_cell = ws.cell(row=2, column=headers["Comment"]).value
     assert "|" in comment_cell
     assert "Test comment for image 0" in comment_cell
     assert "Second comment on image 0" in comment_cell
@@ -232,7 +238,7 @@ def test_export_excel_deleted_images_excluded(client):
 
 
 def test_export_excel_no_metadata_defaults(client):
-    """Verify images with no metadata get sensible defaults."""
+    """Verify images with no metadata export only fixed columns."""
     resp = client.post("/api/projects/", json={
         "name": "No Metadata",
         "description": "Images without metadata",
@@ -249,20 +255,19 @@ def test_export_excel_no_metadata_defaults(client):
     from openpyxl import load_workbook
     ws = load_workbook(io.BytesIO(resp.content)).active
 
-    # Lot number, serial number, secondary inspector should be empty
-    assert ws.cell(row=2, column=1).value in (None, "")  # lot_number
-    assert ws.cell(row=2, column=2).value in (None, "")  # part_serial_number
-    assert ws.cell(row=2, column=6).value in (None, "")  # secondary_inspector
+    # With no metadata, 6 columns: Filename, Review Status, Reviewer, Review Date,
+    # Image Classes, Comment
+    assert ws.max_column == 6
+    headers = [ws.cell(row=1, column=c).value for c in range(1, 7)]
+    assert headers[0] == "Filename"
+    assert "Review Status" in headers
+    assert "Reviewer" in headers
+    assert "Review Date" in headers
+    assert "Image Classes" in headers
+    assert "Comment" in headers
 
-    # Filename should still be present
-    assert ws.cell(row=2, column=3).value == "bare_image.png"
-
-    # Inspection status should default to "Not Reviewed"
-    assert ws.cell(row=2, column=4).value == "Not Reviewed"
-
-    # Inspector should fall back to uploaded_by_user_id
-    inspector = ws.cell(row=2, column=5).value
-    assert inspector is not None and inspector != ""
+    # Filename should be present
+    assert ws.cell(row=2, column=1).value == "bare_image.png"
 
 
 def test_export_excel_filename_sanitization(client):
@@ -286,7 +291,7 @@ def test_export_excel_filename_sanitization(client):
 
 
 def test_export_excel_image_no_classifications(client):
-    """Verify images with no classifications have empty class column."""
+    """Verify images with no classifications have empty Image Classes column."""
     resp = client.post("/api/projects/", json={
         "name": "No Classes Assigned",
         "description": "Test",
@@ -301,12 +306,13 @@ def test_export_excel_image_no_classifications(client):
 
     from openpyxl import load_workbook
     ws = load_workbook(io.BytesIO(resp.content)).active
-    classes_val = ws.cell(row=2, column=7).value
+    headers = {ws.cell(row=1, column=c).value: c for c in range(1, ws.max_column + 1)}
+    classes_val = ws.cell(row=2, column=headers["Image Classes"]).value
     assert classes_val in (None, "")
 
 
 def test_export_excel_image_no_comments(client):
-    """Verify images with no comments have empty comment column."""
+    """Verify images with no comments have empty Comment column."""
     resp = client.post("/api/projects/", json={
         "name": "No Comments",
         "description": "Test",
@@ -321,7 +327,8 @@ def test_export_excel_image_no_comments(client):
 
     from openpyxl import load_workbook
     ws = load_workbook(io.BytesIO(resp.content)).active
-    comment_val = ws.cell(row=2, column=8).value
+    headers = {ws.cell(row=1, column=c).value: c for c in range(1, ws.max_column + 1)}
+    comment_val = ws.cell(row=2, column=headers["Comment"]).value
     assert comment_val in (None, "")
 
 
@@ -343,7 +350,7 @@ def test_export_excel_forbidden_for_non_group_member(client):
 
 
 def test_export_excel_alternate_metadata_keys(client):
-    """Verify the export recognizes alternate key names for metadata fields."""
+    """Verify that all metadata keys become their own columns in the export."""
     resp = client.post("/api/projects/", json={
         "name": "Alternate Keys",
         "description": "Test alternate metadata key names",
@@ -351,7 +358,7 @@ def test_export_excel_alternate_metadata_keys(client):
     })
     project = resp.json()
 
-    # Use alternate key names (lotNumber, serial, inspectionStatus, etc.)
+    # Use arbitrary key names - each should become its own column
     metadata = {
         "lotNumber": "ALT-LOT-1",
         "serial": "ALT-SN-1",
@@ -369,58 +376,126 @@ def test_export_excel_alternate_metadata_keys(client):
     from openpyxl import load_workbook
     ws = load_workbook(io.BytesIO(resp.content)).active
 
-    assert ws.cell(row=2, column=1).value == "ALT-LOT-1"
-    assert ws.cell(row=2, column=2).value == "ALT-SN-1"
-    assert ws.cell(row=2, column=4).value == "Pass"
-    assert ws.cell(row=2, column=5).value == "Alt Inspector"
-    assert ws.cell(row=2, column=6).value == "Alt Secondary"
+    # Build a header -> column map
+    headers = {ws.cell(row=1, column=c).value: c for c in range(1, ws.max_column + 1)}
+
+    # Each metadata key should appear as its own column header
+    assert "lotNumber" in headers
+    assert "serial" in headers
+    assert "inspectionStatus" in headers
+    assert "inspectorName" in headers
+    assert "secondaryInspectorName" in headers
+
+    # Values should be present in the correct columns
+    assert ws.cell(row=2, column=headers["lotNumber"]).value == "ALT-LOT-1"
+    assert ws.cell(row=2, column=headers["serial"]).value == "ALT-SN-1"
+    assert ws.cell(row=2, column=headers["inspectionStatus"]).value == "Pass"
+    assert ws.cell(row=2, column=headers["inspectorName"]).value == "Alt Inspector"
+    assert ws.cell(row=2, column=headers["secondaryInspectorName"]).value == "Alt Secondary"
 
 
-# ---------------------------------------------------------------------------
-# Unit tests for _extract_meta helper
-# ---------------------------------------------------------------------------
+def test_export_excel_includes_review_data(client):
+    """Verify review status, reviewer, and review date appear in the export."""
+    # Create a project and image
+    proj_resp = client.post("/api/projects/", json={
+        "name": "Review Data Test",
+        "description": "Test review columns in export",
+        "meta_group_id": "test-group",
+    })
+    assert proj_resp.status_code == 201
+    project = proj_resp.json()
 
-class TestExtractMeta:
-    """Tests for the _extract_meta helper function."""
+    img_resp = client.post(
+        f"/api/projects/{project['id']}/images",
+        files={"file": ("reviewed.png", b"data", "image/png")},
+    )
+    assert img_resp.status_code == 201
+    image_id = img_resp.json()["id"]
 
-    def test_returns_first_matching_key(self):
-        meta = {"lot_number": "LOT-1", "lot": "LOT-2"}
-        assert _extract_meta(meta, "lot_number", "lot") == "LOT-1"
+    # Create a review for the image
+    rev_resp = client.post(f"/api/images/{image_id}/reviews", json={"status": "pass"})
+    assert rev_resp.status_code == 201
 
-    def test_falls_through_to_second_key(self):
-        meta = {"lot": "LOT-2"}
-        assert _extract_meta(meta, "lot_number", "lot") == "LOT-2"
+    # Export and check
+    resp = client.get(f"/api/projects/{project['id']}/export-excel")
+    assert resp.status_code == 200
 
-    def test_returns_empty_for_no_match(self):
-        meta = {"other_key": "value"}
-        assert _extract_meta(meta, "lot_number", "lot") == ""
+    from openpyxl import load_workbook
+    ws = load_workbook(io.BytesIO(resp.content)).active
+    headers = {ws.cell(row=1, column=c).value: c for c in range(1, ws.max_column + 1)}
 
-    def test_returns_empty_for_empty_dict(self):
-        assert _extract_meta({}, "lot_number") == ""
+    assert "Review Status" in headers
+    assert "Reviewer" in headers
+    assert "Review Date" in headers
 
-    def test_skips_none_values(self):
-        meta = {"lot_number": None, "lot": "LOT-2"}
-        assert _extract_meta(meta, "lot_number", "lot") == "LOT-2"
+    assert ws.cell(row=2, column=headers["Review Status"]).value == "pass"
+    reviewer_val = ws.cell(row=2, column=headers["Reviewer"]).value
+    assert reviewer_val is not None and reviewer_val != ""
+    review_date_val = ws.cell(row=2, column=headers["Review Date"]).value
+    assert review_date_val is not None and review_date_val != ""
 
-    def test_skips_whitespace_only_values(self):
-        meta = {"lot_number": "   ", "lot": "LOT-2"}
-        assert _extract_meta(meta, "lot_number", "lot") == "LOT-2"
 
-    def test_strips_whitespace(self):
-        meta = {"lot_number": "  LOT-1  "}
-        assert _extract_meta(meta, "lot_number") == "LOT-1"
+def test_export_excel_no_review_shows_empty(client):
+    """Verify images with no review have empty review columns."""
+    proj_resp = client.post("/api/projects/", json={
+        "name": "No Review Test",
+        "description": "Test empty review columns",
+        "meta_group_id": "test-group",
+    })
+    assert proj_resp.status_code == 201
+    project = proj_resp.json()
 
-    def test_converts_non_string_values(self):
-        meta = {"lot_number": 12345}
-        assert _extract_meta(meta, "lot_number") == "12345"
+    client.post(
+        f"/api/projects/{project['id']}/images",
+        files={"file": ("unreviewed.png", b"data", "image/png")},
+    )
 
-    def test_skips_empty_string(self):
-        meta = {"lot_number": "", "lot": "LOT-2"}
-        assert _extract_meta(meta, "lot_number", "lot") == "LOT-2"
+    resp = client.get(f"/api/projects/{project['id']}/export-excel")
+    assert resp.status_code == 200
 
-    def test_all_keys_empty_returns_empty(self):
-        meta = {"lot_number": "", "lot": None, "lotNumber": "  "}
-        assert _extract_meta(meta, "lot_number", "lot", "lotNumber") == ""
+    from openpyxl import load_workbook
+    ws = load_workbook(io.BytesIO(resp.content)).active
+    headers = {ws.cell(row=1, column=c).value: c for c in range(1, ws.max_column + 1)}
+
+    assert ws.cell(row=2, column=headers["Review Status"]).value in (None, "")
+    assert ws.cell(row=2, column=headers["Reviewer"]).value in (None, "")
+    assert ws.cell(row=2, column=headers["Review Date"]).value in (None, "")
+
+
+def test_export_excel_excludes_measurements_metadata(client):
+    """Verify the 'measurements' metadata key is not exported as a column."""
+    import json as _json
+
+    proj_resp = client.post("/api/projects/", json={
+        "name": "Measurements Excluded",
+        "description": "Test that measurements key is excluded",
+        "meta_group_id": "test-group",
+    })
+    assert proj_resp.status_code == 201
+    project = proj_resp.json()
+
+    metadata = {
+        "lot_number": "LOT-1",
+        "measurements": [{"id": "m1", "distance_pixels": 42.5}],
+    }
+    files = {"file": ("img.png", b"data", "image/png")}
+    data = {"metadata": _json.dumps(metadata)}
+    img_resp = client.post(
+        f"/api/projects/{project['id']}/images",
+        files=files,
+        data=data,
+    )
+    assert img_resp.status_code == 201
+
+    resp = client.get(f"/api/projects/{project['id']}/export-excel")
+    assert resp.status_code == 200
+
+    from openpyxl import load_workbook
+    ws = load_workbook(io.BytesIO(resp.content)).active
+    headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+
+    assert "measurements" not in headers
+    assert "lot_number" in headers
 
 
 # ---------------------------------------------------------------------------
@@ -437,112 +512,133 @@ class TestBuildWorkbook:
         from openpyxl import load_workbook
         return load_workbook(buf)
 
-    def test_empty_rows_produces_header_only(self):
-        wb = _build_workbook("Test", [])
+    def test_empty_rows_no_meta_keys_produces_six_columns(self):
+        wb = _build_workbook("Test", [], [])
         ws = self._load(wb).active
         assert ws.max_row == 1
-        assert ws.cell(row=1, column=1).value == "Lot Number"
+        # Columns: Filename, Review Status, Reviewer, Review Date, Image Classes, Comment
+        assert ws.cell(row=1, column=1).value == "Filename"
+        assert ws.cell(row=1, column=2).value == "Review Status"
+        assert ws.cell(row=1, column=3).value == "Reviewer"
+        assert ws.cell(row=1, column=4).value == "Review Date"
+        assert ws.cell(row=1, column=5).value == "Image Classes"
+        assert ws.cell(row=1, column=6).value == "Comment"
+        assert ws.max_column == 6
+
+    def test_meta_keys_become_columns(self):
+        meta_keys = ["lot_number", "serial"]
+        wb = _build_workbook("Test", [], meta_keys)
+        ws = self._load(wb).active
+        # Columns: Filename, lot_number, serial, Review Status, Reviewer, Review Date,
+        #          Image Classes, Comment
+        assert ws.cell(row=1, column=1).value == "Filename"
+        assert ws.cell(row=1, column=2).value == "lot_number"
+        assert ws.cell(row=1, column=3).value == "serial"
+        assert ws.cell(row=1, column=4).value == "Review Status"
+        assert ws.cell(row=1, column=5).value == "Reviewer"
+        assert ws.cell(row=1, column=6).value == "Review Date"
+        assert ws.cell(row=1, column=7).value == "Image Classes"
+        assert ws.cell(row=1, column=8).value == "Comment"
+        assert ws.max_column == 8
 
     def test_freeze_panes_set(self):
-        wb = _build_workbook("Test", [{"lot_number": "L1"}])
+        wb = _build_workbook("Test", [{"filename": "a.png"}], [])
         ws = self._load(wb).active
         assert ws.freeze_panes == "A2"
 
     def test_autofilter_set_with_data(self):
-        rows = [{"lot_number": f"L{i}"} for i in range(3)]
-        wb = _build_workbook("Test", rows)
+        rows = [{"filename": f"img{i}.png"} for i in range(3)]
+        wb = _build_workbook("Test", rows, [])
         ws = self._load(wb).active
         assert ws.auto_filter.ref is not None
         assert "A1" in ws.auto_filter.ref
-        assert "H4" in ws.auto_filter.ref  # 8 columns, 3 data rows + 1 header
+        # 6 columns (Filename, Review Status, Reviewer, Review Date, Image Classes, Comment),
+        # 3 data rows + 1 header
+        assert "F4" in ws.auto_filter.ref
 
     def test_autofilter_not_set_for_empty(self):
-        wb = _build_workbook("Test", [])
+        wb = _build_workbook("Test", [], [])
         ws = self._load(wb).active
         assert ws.auto_filter.ref is None
 
     def test_header_styling(self):
-        wb = _build_workbook("Test", [])
+        wb = _build_workbook("Test", [], [])
         ws = self._load(wb).active
         header_cell = ws.cell(row=1, column=1)
         assert header_cell.font.bold is True
         assert header_cell.fill.start_color.rgb is not None
 
-    def test_status_coloring_pass(self):
-        rows = [{"inspection_status": "Pass"}]
-        wb = _build_workbook("Test", rows)
+    def test_column_count_no_meta_keys(self):
+        wb = _build_workbook("Test", [], [])
         ws = self._load(wb).active
-        status_cell = ws.cell(row=2, column=4)
-        # Pass = green fill (C6EFCE)
-        assert status_cell.fill.start_color.rgb == "00C6EFCE"
+        assert ws.max_column == 6  # Filename + Review Status + Reviewer + Review Date + Image Classes + Comment
 
-    def test_status_coloring_reject(self):
-        rows = [{"inspection_status": "Reject"}]
-        wb = _build_workbook("Test", rows)
+    def test_column_count_with_meta_keys(self):
+        meta_keys = ["a", "b", "c"]
+        wb = _build_workbook("Test", [], meta_keys)
         ws = self._load(wb).active
-        status_cell = ws.cell(row=2, column=4)
-        # Reject = red fill (FFC7CE)
-        assert status_cell.fill.start_color.rgb == "00FFC7CE"
-
-    def test_status_coloring_not_reviewed(self):
-        rows = [{"inspection_status": "Not Reviewed"}]
-        wb = _build_workbook("Test", rows)
-        ws = self._load(wb).active
-        status_cell = ws.cell(row=2, column=4)
-        # Not Reviewed = blue fill (D9E2F3)
-        assert status_cell.fill.start_color.rgb == "00D9E2F3"
-
-    def test_status_coloring_reject_not_confirmed(self):
-        rows = [{"inspection_status": "Reject but not confirmed"}]
-        wb = _build_workbook("Test", rows)
-        ws = self._load(wb).active
-        status_cell = ws.cell(row=2, column=4)
-        # Reject but not confirmed = yellow fill (FFEB9C)
-        assert status_cell.fill.start_color.rgb == "00FFEB9C"
-
-    def test_status_coloring_case_insensitive(self):
-        rows = [{"inspection_status": "PASS"}]
-        wb = _build_workbook("Test", rows)
-        ws = self._load(wb).active
-        status_cell = ws.cell(row=2, column=4)
-        assert status_cell.fill.start_color.rgb == "00C6EFCE"
-
-    def test_unknown_status_no_special_coloring(self):
-        rows = [{"inspection_status": "In Progress"}]
-        wb = _build_workbook("Test", rows)
-        ws = self._load(wb).active
-        status_cell = ws.cell(row=2, column=4)
-        # No special fill applied (default or alt-row fill only)
-        rgb = status_cell.fill.start_color.rgb
-        assert rgb not in ("00C6EFCE", "00FFC7CE", "00FFEB9C", "00D9E2F3")
-
-    def test_column_count(self):
-        wb = _build_workbook("Test", [])
-        ws = self._load(wb).active
-        assert ws.max_column == 8
+        assert ws.max_column == 9  # Filename + 3 keys + Review Status + Reviewer + Review Date + Image Classes + Comment
 
     def test_sheet_title(self):
-        wb = _build_workbook("My Project", [])
+        wb = _build_workbook("My Project", [], [])
         ws = self._load(wb).active
         assert ws.title == "Image Data"
 
     def test_multiple_rows_written(self):
+        meta_keys = ["lot_number"]
         rows = [
-            {"lot_number": "L1", "image_identifier": "img1.png"},
-            {"lot_number": "L2", "image_identifier": "img2.png"},
-            {"lot_number": "L3", "image_identifier": "img3.png"},
+            {"filename": "img1.png", "lot_number": "L1"},
+            {"filename": "img2.png", "lot_number": "L2"},
+            {"filename": "img3.png", "lot_number": "L3"},
         ]
-        wb = _build_workbook("Test", rows)
+        wb = _build_workbook("Test", rows, meta_keys)
         ws = self._load(wb).active
         assert ws.max_row == 4
-        assert ws.cell(row=2, column=1).value == "L1"
-        assert ws.cell(row=3, column=1).value == "L2"
-        assert ws.cell(row=4, column=1).value == "L3"
+        assert ws.cell(row=2, column=1).value == "img1.png"
+        assert ws.cell(row=3, column=1).value == "img2.png"
+        assert ws.cell(row=4, column=1).value == "img3.png"
 
     def test_missing_keys_default_to_empty(self):
         """Row dicts missing some keys should produce empty cells."""
-        rows = [{"lot_number": "L1"}]  # missing all other keys
-        wb = _build_workbook("Test", rows)
+        meta_keys = ["lot_number", "serial"]
+        rows = [{"filename": "img.png", "lot_number": "L1"}]  # missing "serial"
+        wb = _build_workbook("Test", rows, meta_keys)
         ws = self._load(wb).active
-        # image_identifier (col 3) should be empty
+        # serial (col 3) should be empty
         assert ws.cell(row=2, column=3).value in (None, "")
+
+    def test_metadata_values_written_correctly(self):
+        meta_keys = ["status", "part"]
+        rows = [{"filename": "x.png", "status": "Pass", "part": "P-001"}]
+        wb = _build_workbook("Test", rows, meta_keys)
+        ws = self._load(wb).active
+        assert ws.cell(row=2, column=1).value == "x.png"
+        assert ws.cell(row=2, column=2).value == "Pass"
+        assert ws.cell(row=2, column=3).value == "P-001"
+
+    def test_formula_injection_cells_have_quote_prefix(self):
+        """Cells whose values start with formula characters must have quotePrefix set."""
+        meta_keys = ["formula_field"]
+        rows = [
+            {"filename": "=CMD", "formula_field": "=SUM(A1)"},
+            {"filename": "+safe", "formula_field": "-value"},
+            {"filename": "@user", "formula_field": "normal"},
+        ]
+        wb = _build_workbook("Test", rows, meta_keys)
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        from openpyxl import load_workbook
+        ws = load_workbook(buf).active
+        # Values starting with formula chars are stored as text via quotePrefix
+        assert ws.cell(row=2, column=1).quotePrefix is True   # "=CMD"
+        assert ws.cell(row=2, column=2).quotePrefix is True   # "=SUM(A1)"
+        assert ws.cell(row=3, column=1).quotePrefix is True   # "+safe"
+        assert ws.cell(row=3, column=2).quotePrefix is True   # "-value"
+        assert ws.cell(row=4, column=1).quotePrefix is True   # "@user"
+        # Normal values must not have quotePrefix set
+        assert ws.cell(row=4, column=2).quotePrefix is False  # "normal"
+        # Values are preserved verbatim
+        assert ws.cell(row=2, column=1).value == "=CMD"
+        assert ws.cell(row=2, column=2).value == "=SUM(A1)"
+

@@ -271,14 +271,12 @@ Images can be reviewed through a four-status workflow that tracks inspection dec
 
 The export endpoint (`GET /api/projects/{project_id}/export-excel`) generates an Excel (.xlsx) file with one row per non-deleted image. Requires `openpyxl`.
 
-**Columns:** Lot Number, Part Serial Number, Image Identifier, Image Inspection Status, Inspector Name, Secondary Inspector Name, Image Classes, Comment.
+**Columns (dynamic):** Filename (always first), one column per unique metadata key found across all project images (in order of first appearance), Review Status / Reviewer / Review Date (most recent review for the image), Image Classes, Comment. No columns are hardcoded -- the sheet structure adapts to whatever metadata users store on their images.
 
 **Key implementation details:**
-- Backend: `routers/export.py` -- uses bulk IN-clause queries to avoid N+1; metadata fields are extracted via `_extract_meta()` which tries multiple key name conventions (snake_case, camelCase, etc.)
+- Backend: `routers/export.py` -- uses bulk IN-clause queries to avoid N+1; metadata keys are collected dynamically from `metadata_json` and passed to `_build_workbook(project_name, rows, meta_keys)`
 - Frontend: `src/utils/downloadExcel.js` -- shared download utility used by both `Project.js` and `ProjectReport.js`
-- Inspector name falls back to the uploader's display name when not present in metadata
-- Status-based conditional coloring: Pass (green), Reject (red), Reject but not confirmed (yellow), Not Reviewed (blue)
-- Tests: `tests/test_export.py` -- integration and unit tests for the endpoint, `_extract_meta`, and `_build_workbook`
+- Tests: `tests/test_export.py` -- integration and unit tests for the endpoint and `_build_workbook`
 
 ## Environment Configuration
 

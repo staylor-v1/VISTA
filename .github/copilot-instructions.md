@@ -76,7 +76,7 @@ These guidelines are for AI coding agents (like GitHub Copilot Chat) working in 
 - `GET /api/projects/{project_id}/export-excel` returns a styled `.xlsx` file (one row per non-deleted image).
 - Backend: `routers/export.py` (uses `openpyxl`); bulk-fetches classifications, comments, and users to avoid N+1 queries.
 - Frontend: shared download helper in `src/utils/downloadExcel.js`, used by both `Project.js` and `ProjectReport.js`.
-- Metadata extraction tries multiple key conventions (snake_case, camelCase) via `_extract_meta()`.
+- Columns are fully dynamic: Filename (always), then one column per unique `metadata_json` key found across all project images, then Review Status / Reviewer / Review Date (most recent review), then Image Classes, then Comment. No hardcoded field names.
 - Tests: `backend/tests/test_export.py`.
 
 ## Conventions & Constraints
