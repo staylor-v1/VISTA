@@ -1,19 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import ReviewStatusBadge from './ReviewStatusBadge';
-
-// Fallback SVG for failed image loads
-const FALLBACK_IMAGE_SVG = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgZmlsbD0iI2YzZjRmNiIgc3Ryb2tlPSIjZTVlN2ViIiBzdHJva2Utd2lkdGg9IjIiLz48dGV4dCB4PSI1MCUiIHk9IjQ1JSIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjE2IiBmb250LXdlaWdodD0iNTAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSIgZmlsbD0iIzlmYTZiMiI+SW1hZ2UgVW5hdmFpbGFibGU8L3RleHQ+PHRleHQgeD0iNTAlIiB5PSI1NSUiIGZvbnQtZmFtaWx5PSJBcmlhbCwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIyNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iIGZpbGw9IiNkMWQ1ZGIiPvCfk7c8L3RleHQ+PC9zdmc+';
-
-// Deleted image placeholder SVG
-const DELETED_IMAGE_SVG = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iNDAwIiBoZWlnaHQ9IjQwMCIgZmlsbD0iI2ZiZjVmNSIgc3Ryb2tlPSIjZjU5ZTBiIiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1kYXNoYXJyYXk9IjEwLDUiLz48dGV4dCB4PSI1MCUiIHk9IjQwJSIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjE4IiBmb250LXdlaWdodD0iNjAwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSIgZmlsbD0iI2M0MzAyYiI+SW1hZ2UgRGVsZXRlZDwvdGV4dD48dGV4dCB4PSI1MCUiIHk9IjU1JSIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjMyIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSIgZmlsbD0iI2Y1OWUwYiI+8J+XkeKcgO+4jzwvdGV4dD48dGV4dCB4PSI1MCUiIHk9IjY4JSIgZm9udC1mYW1pbHk9IkFyaWFsLCBzYW5zLXNlcmlmIiBmb250LXNpemU9IjEyIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSIgZmlsbD0iIzk3OWNhMSI+Q2xpY2sgdG8gdmlldyBkZXRhaWxzPC90ZXh0Pjwvc3ZnPg==';
+import GalleryListView from './GalleryListView';
+import GalleryGridView from './GalleryGridView';
+import GalleryDebugPanel from './GalleryDebugPanel';
 
 function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProjectImages }) {
   const navigate = useNavigate();
   const [imageLoadStatus, setImageLoadStatus] = useState({});
   const [currentPage, setCurrentPage] = useState(1);
-  const [debugExpanded, setDebugExpanded] = useState(false);
-  const [viewMode, setViewMode] = useState('medium'); // small, medium, large
+  const [viewMode, setViewMode] = useState('medium'); // small, medium, large, list
   const [sortBy, setSortBy] = useState('date'); // date, name, size
   const [searchField, setSearchField] = useState('filename'); // 'filename', 'content_type', 'uploaded_by', 'metadata', or specific key
   const [searchValue, setSearchValue] = useState('');
@@ -23,7 +18,7 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
   const [reviewStatuses, setReviewStatuses] = useState({});
   const [reviewFilter, setReviewFilter] = useState('all'); // all, unreviewed, pass, reject_pending, reject_confirmed
 
-  const imagesPerPage = viewMode === 'small' ? 100 : viewMode === 'medium' ? 50 : 25;
+  const imagesPerPage = viewMode === 'small' ? 100 : viewMode === 'medium' ? 50 : viewMode === 'large' ? 25 : 200;
   
   // Filter and sort images
   const filteredImages = images
@@ -80,18 +75,20 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
   const indexOfFirstImage = indexOfLastImage - imagesPerPage;
   const currentImages = filteredImages.slice(indexOfFirstImage, indexOfLastImage);
   
-  // Reset to first page when images or filters change
+  // Reset to first page when images, filters, or view mode changes
   useEffect(() => {
     setCurrentPage(1);
-  }, [images.length, searchValue, searchField, sortBy]);
+  }, [images.length, searchValue, searchField, sortBy, viewMode]);
   
-  // Collect available metadata keys
+  // Collect available metadata keys (excluding internal 'measurements' key)
   useEffect(() => {
     const keys = new Set();
     images.forEach(image => {
       const meta = image.metadata || image.metadata_;
       if (meta) {
-        Object.keys(meta).forEach(key => keys.add(key));
+        Object.keys(meta).forEach(key => {
+          if (key !== 'measurements') keys.add(key);
+        });
       }
     });
     setAvailableMetadataKeys(Array.from(keys).sort());
@@ -129,7 +126,8 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
   // Page change handler
   const handlePageChange = (pageNumber) => {
     setCurrentPage(pageNumber);
-    document.querySelector('.gallery-grid')?.scrollIntoView({ behavior: 'smooth' });
+    const selector = viewMode === 'list' ? '.gallery-list' : '.gallery-grid';
+    document.querySelector(selector)?.scrollIntoView({ behavior: 'smooth' });
   };
   
   // Image selection handlers
@@ -150,16 +148,6 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
   const clearSelection = () => {
     setSelectedImages(new Set());
   };
-
-  // Helper function to format file size
-  const formatFileSize = (bytes) => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
-
 
   const handleRestore = async (image) => {
     try {
@@ -244,26 +232,48 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
             </select>
             
             <div className="view-mode-buttons">
-              <button 
+              <button
                 className={`view-mode-btn ${viewMode === 'small' ? 'active' : ''}`}
                 onClick={() => setViewMode('small')}
                 title="Small thumbnails"
+                aria-label="Small thumbnails"
+                aria-pressed={viewMode === 'small'}
               >
                 S
               </button>
-              <button 
+              <button
                 className={`view-mode-btn ${viewMode === 'medium' ? 'active' : ''}`}
                 onClick={() => setViewMode('medium')}
                 title="Medium thumbnails"
+                aria-label="Medium thumbnails"
+                aria-pressed={viewMode === 'medium'}
               >
                 M
               </button>
-              <button 
+              <button
                 className={`view-mode-btn ${viewMode === 'large' ? 'active' : ''}`}
                 onClick={() => setViewMode('large')}
                 title="Large thumbnails"
+                aria-label="Large thumbnails"
+                aria-pressed={viewMode === 'large'}
               >
                 L
+              </button>
+              <button
+                className={`view-mode-btn ${viewMode === 'list' ? 'active' : ''}`}
+                onClick={() => setViewMode('list')}
+                title="List view"
+                aria-label="List view"
+                aria-pressed={viewMode === 'list'}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <line x1="8" y1="6" x2="21" y2="6"/>
+                  <line x1="8" y1="12" x2="21" y2="12"/>
+                  <line x1="8" y1="18" x2="21" y2="18"/>
+                  <line x1="3" y1="6" x2="3.01" y2="6"/>
+                  <line x1="3" y1="12" x2="3.01" y2="12"/>
+                  <line x1="3" y1="18" x2="3.01" y2="18"/>
+                </svg>
               </button>
             </div>
           </div>
@@ -333,114 +343,43 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
               )}
             </div>
             
-            <div className={`gallery-grid view-${viewMode}`}>
-        {currentImages.map(image => (
-                <div 
-                  key={image.id} 
-          className={`gallery-item ${selectedImages.has(image.id) ? 'selected' : ''} ${image.deleted_at ? 'deleted' : ''}`}
-                >
-                  <div className="gallery-item-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={selectedImages.has(image.id)}
-                      onChange={() => toggleImageSelection(image.id)}
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  </div>
-                  
-                  <div 
-                    className="gallery-item-image"
-                    onClick={() => navigate(`/view/${image.id}?project=${projectId}`)}
-                  >
-                    <img 
-                      src={image.deleted_at ? DELETED_IMAGE_SVG : `/api/images/${image.id}/thumbnail?width=400&height=400`} 
-                      alt={image.filename || 'Image'} 
-                      loading="lazy"
-                      onLoad={() => {
-                        setImageLoadStatus(prev => ({
-                          ...prev,
-                          [image.id]: { status: 'loaded', timestamp: new Date().toISOString() }
-                        }));
-                      }}
-                      onError={(e) => {
-                        setImageLoadStatus(prev => ({
-                          ...prev,
-                          [image.id]: { status: 'error', timestamp: new Date().toISOString(), error: e.message }
-                        }));
-                        e.target.onerror = null;
-                        e.target.src = image.deleted_at ? DELETED_IMAGE_SVG : FALLBACK_IMAGE_SVG;
-                      }}
-                    />
-                    <div className="gallery-item-overlay">
-                      <div className="overlay-actions">
-                        <button 
-                          className="overlay-btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            navigate(`/view/${image.id}?project=${projectId}`);
-                          }}
-                        >View</button>
-                        {image.deleted_at && !image.storage_deleted && (
-                          <button 
-                            className="overlay-btn"
-                            onClick={(e) => { e.stopPropagation(); handleRestore(image); }}
-                          >Restore</button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                  
-                  <div className="gallery-item-info">
-                    <div className="item-filename">
-                      {image.filename || 'Unnamed image'}
-                    </div>
-                    <div className="item-meta">
-                      <span className="item-size">{formatFileSize(image.size_bytes)}</span>
-                      <ReviewStatusBadge status={reviewStatuses[image.id] || 'unreviewed'} />
-                      {image.deleted_at && (
-                        <span className="item-status" style={{ color: '#c0392b', fontWeight: '600', marginLeft: '6px' }}>Deleted</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
+            {viewMode === 'list' ? (
+              <GalleryListView
+                images={currentImages}
+                metadataKeys={availableMetadataKeys}
+                selectedImages={selectedImages}
+                reviewStatuses={reviewStatuses}
+                onImageClick={(imageId) => navigate(`/view/${imageId}?project=${projectId}`)}
+                onToggleSelection={toggleImageSelection}
+              />
+            ) : (
+              <GalleryGridView
+                images={currentImages}
+                viewMode={viewMode}
+                selectedImages={selectedImages}
+                reviewStatuses={reviewStatuses}
+                onImageClick={(imageId) => navigate(`/view/${imageId}?project=${projectId}`)}
+                onToggleSelection={toggleImageSelection}
+                onRestore={handleRestore}
+                onImageLoadStatusChange={(imageId, status) => {
+                  setImageLoadStatus(prev => ({ ...prev, [imageId]: status }));
+                }}
+              />
+            )}
             
             {totalPages > 1 && (
               <div className="gallery-pagination">
-                <button 
-                  onClick={() => handlePageChange(1)} 
-                  disabled={currentPage === 1}
-                  className="pagination-btn"
-                >
+                <button onClick={() => handlePageChange(1)} disabled={currentPage === 1} className="pagination-btn">
                   ‹‹
                 </button>
-                
-                <button 
-                  onClick={() => handlePageChange(currentPage - 1)} 
-                  disabled={currentPage === 1}
-                  className="pagination-btn"
-                >
+                <button onClick={() => handlePageChange(currentPage - 1)} disabled={currentPage === 1} className="pagination-btn">
                   ‹
                 </button>
-                
-                <span className="pagination-info">
-                  Page {currentPage} of {totalPages}
-                </span>
-                
-                <button 
-                  onClick={() => handlePageChange(currentPage + 1)} 
-                  disabled={currentPage === totalPages}
-                  className="pagination-btn"
-                >
+                <span className="pagination-info">Page {currentPage} of {totalPages}</span>
+                <button onClick={() => handlePageChange(currentPage + 1)} disabled={currentPage === totalPages} className="pagination-btn">
                   ›
                 </button>
-                
-                <button 
-                  onClick={() => handlePageChange(totalPages)} 
-                  disabled={currentPage === totalPages}
-                  className="pagination-btn"
-                >
+                <button onClick={() => handlePageChange(totalPages)} disabled={currentPage === totalPages} className="pagination-btn">
                   ››
                 </button>
               </div>
@@ -449,69 +388,7 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
         )}
       </div>
 
-      
-      {/* Debug section moved to bottom */}
-      <div className="debug-section">
-        <div className="debug-header" onClick={() => setDebugExpanded(!debugExpanded)}>
-          <h4>Debug Information</h4>
-          <span className="debug-toggle">{debugExpanded ? '▲' : '▼'}</span>
-        </div>
-        
-        {debugExpanded && (
-          <div className="debug-content">
-            <div className="debug-stats">
-              <p>Image loading status: {Object.keys(imageLoadStatus).length} / {images.length} images tracked</p>
-            </div>
-            
-            <div className="debug-log">
-              <h5>Loading Status Log:</h5>
-              <div className="debug-log-list">
-                {Object.entries(imageLoadStatus).map(([imageId, status]) => (
-                  <div key={imageId} className={`debug-log-item ${status.status}`}>
-                    <span className="log-id">{imageId}</span>
-                    <span className="log-status">{status.status}</span>
-                    <span className="log-time">{new Date(status.timestamp).toLocaleTimeString()}</span>
-                    {status.error && <div className="log-error">Error: {status.error}</div>}
-                  </div>
-                ))}
-              </div>
-            </div>
-            
-            <div className="debug-actions">
-              <button 
-                className="debug-btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  console.log('Current image load status:', imageLoadStatus);
-                  console.log('Images data:', images);
-                }}
-              >
-                Log to Console
-              </button>
-              
-              <button 
-                className="debug-btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (images.length === 0) {
-                    console.log('No images to test');
-                    return;
-                  }
-                  const testImage = images[0];
-                  console.log(`Testing image loading for ${testImage.id}...`);
-                  
-                  fetch(`/api/images/${testImage.id}/download`)
-                    .then(response => response.json())
-                    .then(data => console.log('Download URL data:', data))
-                    .catch(err => console.error('Error testing image URLs:', err));
-                }}
-              >
-                Test Image URLs
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+      <GalleryDebugPanel images={images} imageLoadStatus={imageLoadStatus} />
   </div>
   );
 }
