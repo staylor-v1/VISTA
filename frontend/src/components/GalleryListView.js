@@ -27,7 +27,14 @@ function GalleryListView({
             className={`gallery-list-row ${selectedImages.has(image.id) ? 'selected' : ''} ${image.deleted_at ? 'deleted' : ''}`}
             role="button"
             tabIndex={0}
-            onClick={() => onImageClick(image.id)}
+            onClick={(e) => {
+              if (e.ctrlKey || e.metaKey || e.shiftKey) {
+                e.preventDefault();
+                onToggleSelection(image.id, e);
+              } else {
+                onImageClick(image.id);
+              }
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
@@ -39,8 +46,11 @@ function GalleryListView({
               <input
                 type="checkbox"
                 checked={selectedImages.has(image.id)}
-                onChange={() => onToggleSelection(image.id)}
-                onClick={(e) => e.stopPropagation()}
+                readOnly
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleSelection(image.id, e);
+                }}
               />
             </div>
             <div className="gallery-list-cell gallery-list-cell-filename">
