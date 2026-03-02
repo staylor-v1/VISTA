@@ -378,4 +378,101 @@ describe('ImageGallery', () => {
       global.fetch.mockRestore();
     });
   });
+
+  describe('List View', () => {
+    test('switches to list view when list button is clicked', () => {
+      renderImageGallery({ images: [mockRegularImage] });
+
+      const listButton = screen.getByTitle('List view');
+      fireEvent.click(listButton);
+
+      expect(document.querySelector('.gallery-list')).toBeInTheDocument();
+      expect(document.querySelector('.gallery-grid')).not.toBeInTheDocument();
+    });
+
+    test('list view shows filename column header and filename', () => {
+      renderImageGallery({ images: [mockRegularImage] });
+
+      fireEvent.click(screen.getByTitle('List view'));
+
+      const headers = document.querySelectorAll('.gallery-list-header .gallery-list-cell');
+      const headerTexts = Array.from(headers).map(h => h.textContent);
+      expect(headerTexts).toContain('Filename');
+      expect(headerTexts).toContain('Review Status');
+
+      expect(screen.getAllByText('test-image.jpg').length).toBeGreaterThan(0);
+    });
+
+    test('list view shows metadata columns from image metadata', () => {
+      renderImageGallery({ images: [mockImageWithMetadata] });
+
+      fireEvent.click(screen.getByTitle('List view'));
+
+      const headers = document.querySelectorAll('.gallery-list-header .gallery-list-cell');
+      const headerTexts = Array.from(headers).map(h => h.textContent);
+      expect(headerTexts).toContain('color');
+      expect(headerTexts).toContain('location');
+    });
+
+    test('list view navigates to image on row click', () => {
+      renderImageGallery({ images: [mockRegularImage] });
+
+      fireEvent.click(screen.getByTitle('List view'));
+
+      const row = document.querySelector('.gallery-list-row');
+      fireEvent.click(row);
+
+      expect(mockNavigate).toHaveBeenCalledWith('/view/img-1?project=test-project-id');
+    });
+
+    test('list view shows deleted badge for deleted images', () => {
+      renderImageGallery({ images: [mockDeletedImage] });
+
+      fireEvent.click(screen.getByTitle('List view'));
+
+      expect(screen.getByText('Deleted')).toBeInTheDocument();
+    });
+
+    test('list view row has deleted class for deleted images', () => {
+      renderImageGallery({ images: [mockDeletedImage] });
+
+      fireEvent.click(screen.getByTitle('List view'));
+
+      const row = document.querySelector('.gallery-list-row');
+      expect(row).toHaveClass('deleted');
+    });
+
+    test('list view supports checkbox selection', () => {
+      renderImageGallery({ images: [mockRegularImage] });
+
+      fireEvent.click(screen.getByTitle('List view'));
+
+      const checkbox = document.querySelector('.gallery-list-row input[type="checkbox"]');
+      expect(checkbox).toBeInTheDocument();
+      fireEvent.click(checkbox);
+
+      const row = document.querySelector('.gallery-list-row');
+      expect(row).toHaveClass('selected');
+    });
+
+    test('list view excludes measurements key from metadata columns', () => {
+      const imageWithMeasurements = {
+        id: 'img-meas',
+        filename: 'measured.jpg',
+        size_bytes: 1024,
+        created_at: '2023-01-01T00:00:00Z',
+        deleted_at: null,
+        storage_deleted: false,
+        metadata: { color: 'blue', measurements: [{ id: 1, length: 42 }] }
+      };
+      renderImageGallery({ images: [imageWithMeasurements] });
+
+      fireEvent.click(screen.getByTitle('List view'));
+
+      const headers = document.querySelectorAll('.gallery-list-header .gallery-list-cell');
+      const headerTexts = Array.from(headers).map(h => h.textContent);
+      expect(headerTexts).toContain('color');
+      expect(headerTexts).not.toContain('measurements');
+    });
+  });
 });
