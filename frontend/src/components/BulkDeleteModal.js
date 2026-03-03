@@ -58,7 +58,7 @@ function BulkDeleteModal({ projectId, selectedImages, onClose, onImageUpdated, r
       <div className="modal-content">
         <div className="modal-header">
           <h3>{force ? 'Force Delete Selected Images' : 'Delete Selected Images'}</h3>
-          <button className="modal-close-btn" onClick={onClose} aria-label="Close">&times;</button>
+          <button className="modal-close-btn" onClick={onClose} disabled={submitting} aria-label="Close">&times;</button>
         </div>
         <div className="modal-body">
           <p>
