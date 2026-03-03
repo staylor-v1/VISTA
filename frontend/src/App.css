@@ -1208,7 +1208,7 @@ ul li:hover {
 
 .gallery-item.selected .gallery-item-checkbox {
   opacity: 1;
-  background: var(--primary-color);
+  background: transparent;
 }
 
 /* Custom CSS checkbox used in grid and list views */
@@ -1239,10 +1239,6 @@ ul li:hover {
   border: solid #fff;
   border-width: 0 2px 2px 0;
   transform: rotate(45deg);
-}
-
-.gallery-item.selected .gallery-item-checkbox {
-  background: transparent;
 }
 
 .gallery-item-image {
