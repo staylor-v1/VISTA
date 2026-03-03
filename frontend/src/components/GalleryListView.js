@@ -47,6 +47,8 @@ function GalleryListView({
           >
             <div
               className="gallery-list-cell gallery-list-cell-check"
+              role="checkbox"
+              aria-checked={selectedImages.has(image.id)}
               onClick={(e) => {
                 e.stopPropagation();
                 onToggleSelection(image.id, e);
