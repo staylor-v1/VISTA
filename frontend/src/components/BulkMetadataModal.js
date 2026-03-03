@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 
 const BATCH_SIZE = 15;
 
@@ -7,6 +7,17 @@ function BulkMetadataModal({ selectedImages, onClose, onImageUpdated, refreshPro
   const [metaValue, setMetaValue] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+
+  const parsedPreview = useMemo(() => {
+    if (!metaValue) return { value: '', type: 'string (empty)' };
+    try {
+      const parsed = JSON.parse(metaValue);
+      const type = Array.isArray(parsed) ? 'array' : (parsed === null ? 'null' : typeof parsed);
+      return { value: JSON.stringify(parsed, null, 2), type: `JSON ${type}` };
+    } catch {
+      return { value: metaValue, type: 'string' };
+    }
+  }, [metaValue]);
 
   const updateMetadata = (imageId, key, value) =>
     fetch(`/api/images/${imageId}/metadata`, {
@@ -95,6 +106,24 @@ function BulkMetadataModal({ selectedImages, onClose, onImageUpdated, refreshPro
             />
             <small>You can enter a simple text value or valid JSON (arrays, objects, numbers, booleans, null).</small>
           </div>
+          {metaKey.trim() && (
+            <div className="form-group">
+              <label>Preview</label>
+              <div style={{
+                background: '#f8f9fa', border: '1px solid #dee2e6', borderRadius: '4px',
+                padding: '10px', fontFamily: 'monospace', fontSize: '13px', whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word', maxHeight: '120px', overflowY: 'auto',
+              }}>
+                <div style={{ marginBottom: '4px', color: '#6c757d', fontSize: '11px' }}>
+                  Type: {parsedPreview.type}
+                </div>
+                <div>
+                  <strong>{metaKey.trim()}</strong>: {parsedPreview.value || <em style={{ color: '#999' }}>empty</em>}
+                </div>
+              </div>
+              <small>This will be set on {selectedImages.size} image(s).</small>
+            </div>
+          )}
           {error && <div className="alert alert-error">{error}</div>}
         </div>
         <div className="modal-footer">
