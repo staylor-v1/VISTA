@@ -78,7 +78,7 @@ function BulkMetadataModal({ selectedImages, onClose, onImageUpdated, refreshPro
       <div className="modal-content">
         <div className="modal-header">
           <h3>Add Metadata to Selected Images</h3>
-          <button className="modal-close-btn" onClick={onClose} aria-label="Close">&times;</button>
+          <button className="modal-close-btn" onClick={onClose} disabled={submitting} aria-label="Close">&times;</button>
         </div>
         <div className="modal-body">
           <p>The key-value pair will be applied to all {selectedImages.size} selected image(s).</p>
