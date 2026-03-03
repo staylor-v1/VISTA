@@ -1208,11 +1208,37 @@ ul li:hover {
 
 .gallery-item.selected .gallery-item-checkbox {
   opacity: 1;
-  background: var(--primary-color);
+  background: transparent;
 }
 
-.gallery-item.selected .gallery-item-checkbox input {
-  filter: brightness(0) invert(1);
+/* Custom CSS checkbox used in grid and list views */
+.custom-check {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #9ca3af;
+  border-radius: 3px;
+  background: #fff;
+  cursor: pointer;
+  position: relative;
+  vertical-align: middle;
+}
+
+.custom-check.checked {
+  background: var(--primary-color);
+  border-color: var(--primary-color);
+}
+
+.custom-check.checked::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 5px;
+  height: 9px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
 }
 
 .gallery-item-image {
