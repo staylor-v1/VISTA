@@ -31,19 +31,33 @@ function GalleryGridView({
         <div
           key={image.id}
           className={`gallery-item ${selectedImages.has(image.id) ? 'selected' : ''} ${image.deleted_at ? 'deleted' : ''}`}
+          onMouseDown={(e) => {
+            if (e.shiftKey) e.preventDefault();
+          }}
         >
-          <div className="gallery-item-checkbox">
-            <input
-              type="checkbox"
-              checked={selectedImages.has(image.id)}
-              onChange={() => onToggleSelection(image.id)}
-              onClick={(e) => e.stopPropagation()}
-            />
+          <div
+            className="gallery-item-checkbox"
+            role="checkbox"
+            aria-checked={selectedImages.has(image.id)}
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              onToggleSelection(image.id, e);
+            }}
+          >
+            <span className={`custom-check ${selectedImages.has(image.id) ? 'checked' : ''}`} />
           </div>
 
           <div
             className="gallery-item-image"
-            onClick={() => onImageClick(image.id)}
+            onClick={(e) => {
+              if (e.ctrlKey || e.metaKey || e.shiftKey) {
+                e.preventDefault();
+                onToggleSelection(image.id, e);
+              } else {
+                onImageClick(image.id);
+              }
+            }}
           >
             <img
               src={image.deleted_at ? DELETED_IMAGE_SVG : `/api/images/${image.id}/thumbnail?width=400&height=400`}

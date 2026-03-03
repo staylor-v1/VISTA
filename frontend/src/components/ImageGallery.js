@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import GalleryListView from './GalleryListView';
 import GalleryGridView from './GalleryGridView';
 import GalleryDebugPanel from './GalleryDebugPanel';
+import BulkDeleteModal from './BulkDeleteModal';
+import BulkMetadataModal from './BulkMetadataModal';
 
 function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProjectImages }) {
   const navigate = useNavigate();
@@ -14,16 +16,17 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
   const [searchValue, setSearchValue] = useState('');
   const [availableMetadataKeys, setAvailableMetadataKeys] = useState([]);
   const [selectedImages, setSelectedImages] = useState(new Set());
+  const [lastSelectedId, setLastSelectedId] = useState(null);
   const [actionError, setActionError] = useState(null);
   const [reviewStatuses, setReviewStatuses] = useState({});
   const [reviewFilter, setReviewFilter] = useState('all'); // all, unreviewed, pass, reject_pending, reject_confirmed
+  const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
+  const [showBulkMetaModal, setShowBulkMetaModal] = useState(false);
 
   const imagesPerPage = viewMode === 'small' ? 100 : viewMode === 'medium' ? 50 : viewMode === 'large' ? 25 : 200;
-  
-  // Filter and sort images
+
   const filteredImages = images
     .filter(image => {
-      // Review status filter
       if (reviewFilter !== 'all') {
         const imgStatus = reviewStatuses[image.id] || 'unreviewed';
         if (imgStatus !== reviewFilter) return false;
@@ -31,7 +34,6 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
       if (!searchValue) return true;
 
       const searchLower = searchValue.toLowerCase();
-      
       switch (searchField) {
         case 'filename':
           return (image.filename || '').toLowerCase().includes(searchLower);
@@ -40,7 +42,6 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
         case 'uploaded_by':
           return (image.uploaded_by_user_id || '').toLowerCase().includes(searchLower);
         case 'metadata': {
-          // Search across all metadata values
           const meta = image.metadata || image.metadata_;
           if (!meta) return false;
           return Object.values(meta).some(value =>
@@ -48,7 +49,6 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
           );
         }
         default: {
-          // Search specific metadata key
           const meta = image.metadata || image.metadata_;
           if (!meta || !meta[searchField]) return false;
           return String(meta[searchField]).toLowerCase().includes(searchLower);
@@ -66,21 +66,16 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
           return new Date(b.created_at || 0) - new Date(a.created_at || 0);
       }
     });
-  
-  // Calculate total pages
+
   const totalPages = Math.ceil(filteredImages.length / imagesPerPage);
-  
-  // Get current images for the page
   const indexOfLastImage = currentPage * imagesPerPage;
   const indexOfFirstImage = indexOfLastImage - imagesPerPage;
   const currentImages = filteredImages.slice(indexOfFirstImage, indexOfLastImage);
-  
-  // Reset to first page when images, filters, or view mode changes
+
   useEffect(() => {
     setCurrentPage(1);
   }, [images.length, searchValue, searchField, sortBy, viewMode]);
-  
-  // Collect available metadata keys (excluding internal 'measurements' key)
+
   useEffect(() => {
     const keys = new Set();
     images.forEach(image => {
@@ -93,8 +88,7 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
     });
     setAvailableMetadataKeys(Array.from(keys).sort());
   }, [images]);
-  
-  // Fetch review statuses for all images in the project
+
   const loadReviewStatuses = useCallback(async () => {
     if (!projectId) return;
     try {
@@ -112,7 +106,6 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
     loadReviewStatuses();
   }, [loadReviewStatuses]);
 
-  // Fetch images when search parameters change
   useEffect(() => {
     if (refreshProjectImages) {
       refreshProjectImages({
@@ -122,16 +115,28 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchField, searchValue]);
-  
-  // Page change handler
+
   const handlePageChange = (pageNumber) => {
     setCurrentPage(pageNumber);
     const selector = viewMode === 'list' ? '.gallery-list' : '.gallery-grid';
     document.querySelector(selector)?.scrollIntoView({ behavior: 'smooth' });
   };
-  
-  // Image selection handlers
-  const toggleImageSelection = (imageId) => {
+
+  const handleImageSelection = (imageId, event) => {
+    if (event && event.shiftKey && lastSelectedId !== null) {
+      const lastIndex = currentImages.findIndex(img => img.id === lastSelectedId);
+      const currentIndex = currentImages.findIndex(img => img.id === imageId);
+      if (lastIndex >= 0 && currentIndex >= 0) {
+        const start = Math.min(lastIndex, currentIndex);
+        const end = Math.max(lastIndex, currentIndex);
+        const newSelected = new Set(selectedImages);
+        for (let i = start; i <= end; i++) {
+          newSelected.add(currentImages[i].id);
+        }
+        setSelectedImages(newSelected);
+        return;
+      }
+    }
     const newSelected = new Set(selectedImages);
     if (newSelected.has(imageId)) {
       newSelected.delete(imageId);
@@ -139,14 +144,16 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
       newSelected.add(imageId);
     }
     setSelectedImages(newSelected);
+    setLastSelectedId(imageId);
   };
-  
+
   const selectAllImages = () => {
     setSelectedImages(new Set(currentImages.map(img => img.id)));
   };
-  
+
   const clearSelection = () => {
     setSelectedImages(new Set());
+    setLastSelectedId(null);
   };
 
   const handleRestore = async (image) => {
@@ -166,7 +173,6 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
 
   return (
     <div className="modern-gallery">
-      {/* Gallery Header with Controls */}
       <div className="gallery-header">
         <div className="gallery-title-section">
           <h1 className="gallery-title">Images</h1>
@@ -182,11 +188,10 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
             )}
           </div>
         </div>
-        
         <div className="gallery-controls">
           <div className="search-control">
-            <select 
-              value={searchField} 
+            <select
+              value={searchField}
               onChange={(e) => setSearchField(e.target.value)}
               className="search-field-select"
             >
@@ -206,7 +211,6 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
               className="search-input"
             />
           </div>
-          
           <div className="view-controls">
             <select
               value={reviewFilter}
@@ -232,33 +236,20 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
             </select>
             
             <div className="view-mode-buttons">
-              <button
-                className={`view-mode-btn ${viewMode === 'small' ? 'active' : ''}`}
-                onClick={() => setViewMode('small')}
-                title="Small thumbnails"
-                aria-label="Small thumbnails"
-                aria-pressed={viewMode === 'small'}
-              >
-                S
-              </button>
-              <button
-                className={`view-mode-btn ${viewMode === 'medium' ? 'active' : ''}`}
-                onClick={() => setViewMode('medium')}
-                title="Medium thumbnails"
-                aria-label="Medium thumbnails"
-                aria-pressed={viewMode === 'medium'}
-              >
-                M
-              </button>
-              <button
-                className={`view-mode-btn ${viewMode === 'large' ? 'active' : ''}`}
-                onClick={() => setViewMode('large')}
-                title="Large thumbnails"
-                aria-label="Large thumbnails"
-                aria-pressed={viewMode === 'large'}
-              >
-                L
-              </button>
+              {[
+                { mode: 'small', label: 'Small thumbnails', content: 'S' },
+                { mode: 'medium', label: 'Medium thumbnails', content: 'M' },
+                { mode: 'large', label: 'Large thumbnails', content: 'L' },
+              ].map(({ mode, label, content }) => (
+                <button
+                  key={mode}
+                  className={`view-mode-btn ${viewMode === mode ? 'active' : ''}`}
+                  onClick={() => setViewMode(mode)}
+                  title={label}
+                  aria-label={label}
+                  aria-pressed={viewMode === mode}
+                >{content}</button>
+              ))}
               <button
                 className={`view-mode-btn ${viewMode === 'list' ? 'active' : ''}`}
                 onClick={() => setViewMode('list')}
@@ -267,12 +258,8 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
                 aria-pressed={viewMode === 'list'}
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <line x1="8" y1="6" x2="21" y2="6"/>
-                  <line x1="8" y1="12" x2="21" y2="12"/>
-                  <line x1="8" y1="18" x2="21" y2="18"/>
-                  <line x1="3" y1="6" x2="3.01" y2="6"/>
-                  <line x1="3" y1="12" x2="3.01" y2="12"/>
-                  <line x1="3" y1="18" x2="3.01" y2="18"/>
+                  <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+                  <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
                 </svg>
               </button>
             </div>
@@ -280,6 +267,18 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
           
           {selectedImages.size > 0 && (
             <div className="selection-controls">
+              <button
+                onClick={() => setShowBulkDeleteModal(true)}
+                className="btn btn-danger btn-small"
+              >
+                Delete Selected ({selectedImages.size})
+              </button>
+              <button
+                onClick={() => setShowBulkMetaModal(true)}
+                className="btn btn-secondary btn-small"
+              >
+                Add Metadata to Selected
+              </button>
               <button onClick={clearSelection} className="btn btn-secondary btn-small">
                 Clear Selection
               </button>
@@ -288,7 +287,6 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
         </div>
       </div>
 
-      {/* Error Display */}
       {actionError && (
         <div className="error-banner">
           <span className="error-message">{actionError}</span>
@@ -296,7 +294,6 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
         </div>
       )}
 
-      {/* Gallery Content */}
       <div className="gallery-content">
         {loading && (
           <div className="gallery-loading">
@@ -318,13 +315,7 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
             <div className="empty-icon">?</div>
             <h3>No images found</h3>
             <p>Try adjusting your search terms</p>
-            <button 
-              onClick={() => {
-                setSearchValue('');
-                setSearchField('filename');
-              }} 
-              className="btn btn-primary btn-small"
-            >
+            <button onClick={() => { setSearchValue(''); setSearchField('filename'); }} className="btn btn-primary btn-small">
               Clear Search
             </button>
           </div>
@@ -350,7 +341,7 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
                 selectedImages={selectedImages}
                 reviewStatuses={reviewStatuses}
                 onImageClick={(imageId) => navigate(`/view/${imageId}?project=${projectId}`)}
-                onToggleSelection={toggleImageSelection}
+                onToggleSelection={handleImageSelection}
               />
             ) : (
               <GalleryGridView
@@ -359,7 +350,7 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
                 selectedImages={selectedImages}
                 reviewStatuses={reviewStatuses}
                 onImageClick={(imageId) => navigate(`/view/${imageId}?project=${projectId}`)}
-                onToggleSelection={toggleImageSelection}
+                onToggleSelection={handleImageSelection}
                 onRestore={handleRestore}
                 onImageLoadStatusChange={(imageId, status) => {
                   setImageLoadStatus(prev => ({ ...prev, [imageId]: status }));
@@ -369,19 +360,11 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
             
             {totalPages > 1 && (
               <div className="gallery-pagination">
-                <button onClick={() => handlePageChange(1)} disabled={currentPage === 1} className="pagination-btn">
-                  ‹‹
-                </button>
-                <button onClick={() => handlePageChange(currentPage - 1)} disabled={currentPage === 1} className="pagination-btn">
-                  ‹
-                </button>
+                <button onClick={() => handlePageChange(1)} disabled={currentPage === 1} className="pagination-btn">‹‹</button>
+                <button onClick={() => handlePageChange(currentPage - 1)} disabled={currentPage === 1} className="pagination-btn">‹</button>
                 <span className="pagination-info">Page {currentPage} of {totalPages}</span>
-                <button onClick={() => handlePageChange(currentPage + 1)} disabled={currentPage === totalPages} className="pagination-btn">
-                  ›
-                </button>
-                <button onClick={() => handlePageChange(totalPages)} disabled={currentPage === totalPages} className="pagination-btn">
-                  ››
-                </button>
+                <button onClick={() => handlePageChange(currentPage + 1)} disabled={currentPage === totalPages} className="pagination-btn">›</button>
+                <button onClick={() => handlePageChange(totalPages)} disabled={currentPage === totalPages} className="pagination-btn">››</button>
               </div>
             )}
           </>
@@ -389,6 +372,27 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
       </div>
 
       <GalleryDebugPanel images={images} imageLoadStatus={imageLoadStatus} />
+
+      {showBulkDeleteModal && (
+        <BulkDeleteModal
+          projectId={projectId}
+          selectedImages={selectedImages}
+          onClose={() => setShowBulkDeleteModal(false)}
+          onImageUpdated={onImageUpdated}
+          refreshProjectImages={refreshProjectImages}
+          onClearSelection={clearSelection}
+        />
+      )}
+
+      {showBulkMetaModal && (
+        <BulkMetadataModal
+          selectedImages={selectedImages}
+          onClose={() => setShowBulkMetaModal(false)}
+          onImageUpdated={onImageUpdated}
+          refreshProjectImages={refreshProjectImages}
+          onClearSelection={clearSelection}
+        />
+      )}
   </div>
   );
 }
