@@ -347,6 +347,233 @@ describe('ImageGallery', () => {
     });
   });
 
+  describe('Multi-selection (Shift+Click and Ctrl+Click)', () => {
+    const threeImages = [
+      { id: 'img-a', filename: 'a.jpg', size_bytes: 100, created_at: '2023-01-01T00:00:00Z', deleted_at: null, storage_deleted: false },
+      { id: 'img-b', filename: 'b.jpg', size_bytes: 200, created_at: '2023-01-02T00:00:00Z', deleted_at: null, storage_deleted: false },
+      { id: 'img-c', filename: 'c.jpg', size_bytes: 300, created_at: '2023-01-03T00:00:00Z', deleted_at: null, storage_deleted: false },
+    ];
+
+    test('ctrl+click on image toggles selection without navigating', () => {
+      renderImageGallery({ images: threeImages });
+
+      const firstImage = screen.getByAltText('a.jpg').closest('.gallery-item-image');
+      fireEvent.click(firstImage, { ctrlKey: true });
+
+      expect(mockNavigate).not.toHaveBeenCalled();
+      const item = screen.getByAltText('a.jpg').closest('.gallery-item');
+      expect(item).toHaveClass('selected');
+    });
+
+    test('shift+click selects a range of images', () => {
+      renderImageGallery({ images: threeImages });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
+      // Select first image
+      fireEvent.click(checkboxes[0]);
+      // Shift+click third image to select range
+      fireEvent.click(checkboxes[2], { shiftKey: true });
+
+      const items = document.querySelectorAll('.gallery-item');
+      expect(items[0]).toHaveClass('selected');
+      expect(items[1]).toHaveClass('selected');
+      expect(items[2]).toHaveClass('selected');
+    });
+
+    test('ctrl+click on image area deselects already-selected image', () => {
+      renderImageGallery({ images: threeImages });
+
+      const firstImage = screen.getByAltText('a.jpg').closest('.gallery-item-image');
+      fireEvent.click(firstImage, { ctrlKey: true });
+      fireEvent.click(firstImage, { ctrlKey: true });
+
+      const item = screen.getByAltText('a.jpg').closest('.gallery-item');
+      expect(item).not.toHaveClass('selected');
+    });
+
+    test('shift+click on same page uses checkbox as anchor too', () => {
+      renderImageGallery({ images: threeImages });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
+      // Select second image via checkbox
+      fireEvent.click(checkboxes[1]);
+      // Shift+click third image checkbox
+      fireEvent.click(checkboxes[2], { shiftKey: true });
+
+      const items = document.querySelectorAll('.gallery-item');
+      expect(items[1]).toHaveClass('selected');
+      expect(items[2]).toHaveClass('selected');
+      expect(items[0]).not.toHaveClass('selected');
+    });
+
+    test('list view: ctrl+click on row selects without navigating', () => {
+      renderImageGallery({ images: threeImages });
+
+      fireEvent.click(screen.getByTitle('List view'));
+
+      const rows = document.querySelectorAll('.gallery-list-row');
+      fireEvent.click(rows[0], { ctrlKey: true });
+
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(rows[0]).toHaveClass('selected');
+    });
+
+    test('list view: shift+click selects a range of rows', () => {
+      renderImageGallery({ images: threeImages });
+
+      fireEvent.click(screen.getByTitle('List view'));
+
+      const rows = document.querySelectorAll('.gallery-list-row');
+      // Select first row via checkbox
+      const checkboxes = document.querySelectorAll('.gallery-list-cell-check .custom-check');
+      fireEvent.click(checkboxes[0]);
+      // Shift+click third row
+      fireEvent.click(rows[2], { shiftKey: true });
+
+      expect(rows[0]).toHaveClass('selected');
+      expect(rows[1]).toHaveClass('selected');
+      expect(rows[2]).toHaveClass('selected');
+    });
+  });
+
+  describe('Bulk Actions', () => {
+    const twoImages = [
+      { id: 'ba-1', filename: 'bulk-a.jpg', size_bytes: 100, created_at: '2023-01-01T00:00:00Z', deleted_at: null, storage_deleted: false },
+      { id: 'ba-2', filename: 'bulk-b.jpg', size_bytes: 200, created_at: '2023-01-02T00:00:00Z', deleted_at: null, storage_deleted: false },
+    ];
+
+    test('shows bulk action buttons when images are selected', () => {
+      renderImageGallery({ images: twoImages });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
+      fireEvent.click(checkboxes[0]);
+
+      expect(screen.getByText(/Delete Selected/)).toBeInTheDocument();
+      expect(screen.getByText('Add Metadata to Selected')).toBeInTheDocument();
+      expect(screen.getByText('Clear Selection')).toBeInTheDocument();
+    });
+
+    test('opens bulk delete modal when Delete Selected is clicked', () => {
+      renderImageGallery({ images: twoImages });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
+      fireEvent.click(checkboxes[0]);
+
+      fireEvent.click(screen.getByText(/Delete Selected/));
+
+      expect(screen.getByText('Delete Selected Images')).toBeInTheDocument();
+      expect(screen.getByLabelText('Reason (required)')).toBeInTheDocument();
+    });
+
+    test('bulk delete validates reason length', async () => {
+      renderImageGallery({ images: twoImages });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
+      fireEvent.click(checkboxes[0]);
+      fireEvent.click(screen.getByText(/Delete Selected/));
+
+      fireEvent.click(screen.getByText('Delete'));
+
+      await waitFor(() => {
+        expect(screen.getByText(/Reason must be at least/)).toBeInTheDocument();
+      });
+    });
+
+    test('bulk delete calls API for each selected image', async () => {
+      global.fetch = jest.fn(() =>
+        Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ ...twoImages[0], deleted_at: '2023-06-01T00:00:00Z' })
+        })
+      );
+
+      const mockRefresh = jest.fn();
+      renderImageGallery({ images: twoImages, refreshProjectImages: mockRefresh });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
+      fireEvent.click(checkboxes[0]);
+      fireEvent.click(checkboxes[1]);
+      fireEvent.click(screen.getByText(/Delete Selected/));
+
+      const reasonBox = screen.getByLabelText('Reason (required)');
+      fireEvent.change(reasonBox, { target: { value: 'test bulk deletion reason' } });
+      fireEvent.click(screen.getByText('Delete'));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          '/api/projects/test-project-id/images/ba-1',
+          expect.objectContaining({ method: 'DELETE' })
+        );
+        expect(global.fetch).toHaveBeenCalledWith(
+          '/api/projects/test-project-id/images/ba-2',
+          expect.objectContaining({ method: 'DELETE' })
+        );
+      });
+
+      global.fetch.mockRestore();
+    });
+
+    test('opens bulk metadata modal when Add Metadata to Selected is clicked', () => {
+      renderImageGallery({ images: twoImages });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
+      fireEvent.click(checkboxes[0]);
+
+      fireEvent.click(screen.getByText('Add Metadata to Selected'));
+
+      expect(screen.getByText('Add Metadata to Selected Images')).toBeInTheDocument();
+      expect(screen.getByLabelText('Key')).toBeInTheDocument();
+    });
+
+    test('bulk metadata validates key is not empty', async () => {
+      renderImageGallery({ images: twoImages });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
+      fireEvent.click(checkboxes[0]);
+      fireEvent.click(screen.getByText('Add Metadata to Selected'));
+
+      fireEvent.click(screen.getByText('Apply to All Selected'));
+
+      await waitFor(() => {
+        expect(screen.getByText(/Metadata key cannot be empty/)).toBeInTheDocument();
+      });
+    });
+
+    test('bulk metadata calls API for each selected image', async () => {
+      global.fetch = jest.fn(() =>
+        Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ ...twoImages[0], metadata_: { inspector: 'alice' } })
+        })
+      );
+
+      const mockRefresh = jest.fn();
+      renderImageGallery({ images: twoImages, refreshProjectImages: mockRefresh });
+
+      const checkboxes = document.querySelectorAll('.gallery-item-checkbox .custom-check');
+      fireEvent.click(checkboxes[0]);
+      fireEvent.click(checkboxes[1]);
+      fireEvent.click(screen.getByText('Add Metadata to Selected'));
+
+      fireEvent.change(screen.getByLabelText('Key'), { target: { value: 'inspector' } });
+      fireEvent.change(screen.getByLabelText('Value'), { target: { value: 'alice' } });
+      fireEvent.click(screen.getByText('Apply to All Selected'));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          '/api/images/ba-1/metadata',
+          expect.objectContaining({ method: 'PUT' })
+        );
+        expect(global.fetch).toHaveBeenCalledWith(
+          '/api/images/ba-2/metadata',
+          expect.objectContaining({ method: 'PUT' })
+        );
+      });
+
+      global.fetch.mockRestore();
+    });
+  });
+
   describe('Restore Functionality', () => {
     test('calls handleRestore when restore button is clicked', async () => {
       global.fetch = jest.fn(() =>
@@ -447,7 +674,7 @@ describe('ImageGallery', () => {
 
       fireEvent.click(screen.getByTitle('List view'));
 
-      const checkbox = document.querySelector('.gallery-list-row input[type="checkbox"]');
+      const checkbox = document.querySelector('.gallery-list-cell-check .custom-check');
       expect(checkbox).toBeInTheDocument();
       fireEvent.click(checkbox);
 
