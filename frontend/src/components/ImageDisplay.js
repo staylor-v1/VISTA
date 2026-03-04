@@ -371,7 +371,7 @@ function ImageDisplay({
   const isSideBySide = overlayOptions?.viewMode === 'side-by-side' && overlayOptions?.bitmapAvailable;
 
   const renderImageView = (showOverlays = true, containerStyle = {}, attachRef = true) => (
-    <div style={{ position: 'relative', overflow: 'hidden', ...containerStyle }}>
+    <div style={{ position: 'relative', ...containerStyle }}>
       <div style={{ transform: `translate(${panOffset.x}px, ${panOffset.y}px)`, position: 'relative' }}>
       {!image ? (
         <div className="loading-container">
