@@ -371,7 +371,7 @@ function ImageDisplay({
   const isSideBySide = overlayOptions?.viewMode === 'side-by-side' && overlayOptions?.bitmapAvailable;
 
   const renderImageView = (showOverlays = true, containerStyle = {}, attachRef = true) => (
-    <div style={{ position: 'relative', overflow: 'hidden', ...containerStyle }}>
+    <div style={{ position: 'relative', ...containerStyle }}>
       <div style={{ transform: `translate(${panOffset.x}px, ${panOffset.y}px)`, position: 'relative' }}>
       {!image ? (
         <div className="loading-container">
@@ -463,11 +463,11 @@ function ImageDisplay({
       <div id="image-display" className={isTransitioning ? 'transitioning' : ''} ref={containerRef} style={{ position: 'relative', cursor: isPanning ? 'grabbing' : 'crosshair' }} onMouseDown={handlePanMouseDown}>
         {isSideBySide ? (
           <div style={{ display: 'flex', gap: '1rem', width: '100%' }}>
-            <div style={{ flex: 1, position: 'relative' }}>
+            <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
               <div style={{ fontSize: 12, fontWeight: 600, marginBottom: '0.25rem', color: '#666' }}>Original</div>
               {renderImageView(false, {}, true)}
             </div>
-            <div style={{ flex: 1, position: 'relative' }}>
+            <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
               <div style={{ fontSize: 12, fontWeight: 600, marginBottom: '0.25rem', color: '#666' }}>ML Overlay</div>
               {renderImageView(true, {}, false)}
             </div>
