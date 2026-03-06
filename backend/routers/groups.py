@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 
 import utils.crud as crud
-from core import schemas
+from core import schemas, models
 from core.database import get_db
 from utils.dependencies import get_current_user, get_project_or_403
 from utils.boto3_client import get_presigned_download_url
@@ -20,7 +20,7 @@ async def _get_group_or_403(
     group_id: uuid.UUID,
     db: AsyncSession,
     current_user: schemas.User,
-) -> "crud.models.ImageGroup":
+) -> models.ImageGroup:
     group = await crud.get_image_group(db, group_id)
     if group is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
@@ -30,7 +30,7 @@ async def _get_group_or_403(
 
 
 async def _enrich_group(
-    group: "crud.models.ImageGroup",
+    group: models.ImageGroup,
     db: AsyncSession,
 ) -> schemas.ImageGroup:
     """Add image_count and aggregate_review_status to a group schema."""

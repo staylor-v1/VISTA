@@ -1074,6 +1074,9 @@ async def get_aggregate_review_status_for_group(db: AsyncSession, group_id: uuid
     if "reject_pending" in status_values:
         return "reject_pending"
     # All must be "pass" (non-None) for the group to be pass
+    # All images must be explicitly reviewed as 'pass' (no unreviewed images) for the
+    # group aggregate to show 'pass'. Partially reviewed groups (mix of pass and
+    # unreviewed) return None rather than 'pass' to avoid false positives.
     non_none = [s for s in status_values if s is not None]
     if non_none and all(s == "pass" for s in non_none) and len(non_none) == len(image_ids):
         return "pass"
