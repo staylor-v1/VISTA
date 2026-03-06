@@ -9,11 +9,17 @@ function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setEr
     isValid: true,
     hasPattern: false,
     extractMetadata: () => null,
+    keys: [],
   });
+  const [groupKey, setGroupKey] = useState('');
 
   const handleExtractorChange = useCallback((config) => {
     setExtractorConfig(config);
-  }, []);
+    // If selected group key is no longer in the keys list, clear it
+    if (groupKey && config.keys && !config.keys.includes(groupKey)) {
+      setGroupKey('');
+    }
+  }, [groupKey]);
 
   // Handle file input change
   const handleFileChange = (e) => {
@@ -81,6 +87,11 @@ function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setEr
 
       if (mergedMetadata) {
         formData.append('metadata', JSON.stringify(mergedMetadata));
+      }
+
+      // Append group_identifier if a group key is configured
+      if (groupKey && extractedMetadata && extractedMetadata[groupKey]) {
+        formData.append('group_identifier', extractedMetadata[groupKey]);
       }
       
       try {
@@ -157,6 +168,26 @@ function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setEr
             files={selectedFiles}
             onConfigChange={handleExtractorChange}
           />
+
+          {extractorConfig.keys && extractorConfig.keys.length > 0 && (
+            <div className="form-group">
+              <label htmlFor="group-key-select">Use as Group Identifier (Optional)</label>
+              <select
+                id="group-key-select"
+                value={groupKey}
+                onChange={(e) => setGroupKey(e.target.value)}
+                className="form-control"
+              >
+                <option value="">-- None --</option>
+                {extractorConfig.keys.map((k) => (
+                  <option key={k} value={k}>{k}</option>
+                ))}
+              </select>
+              <small className="form-text">
+                Select which extracted key to use as the group identifier for each uploaded image.
+              </small>
+            </div>
+          )}
           
           <div className="form-group">
             <label htmlFor="metadata-input">Metadata (Optional JSON)</label>

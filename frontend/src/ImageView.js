@@ -14,6 +14,7 @@ import MLDebugOutputs from './components/MLDebugOutputs';
 import CalibrationManager from './components/CalibrationManager';
 import MeasurementList from './components/MeasurementList';
 import ReviewPanel from './components/ReviewPanel';
+import ImageGroupPanel from './components/ImageGroupPanel';
 
 function ImageView() {
   const { imageId } = useParams();
@@ -522,6 +523,18 @@ function ImageView() {
               {image && (
                 <ReviewPanel
                   imageId={imageId}
+                />
+              )}
+
+              {/* Group assignment panel */}
+              {image && projectId && (
+                <ImageGroupPanel
+                  imageId={imageId}
+                  projectId={projectId}
+                  groupId={image.group_id || null}
+                  onGroupChanged={(newGroupId) => {
+                    setImage(prev => prev ? { ...prev, group_id: newGroupId } : prev);
+                  }}
                 />
               )}
 
