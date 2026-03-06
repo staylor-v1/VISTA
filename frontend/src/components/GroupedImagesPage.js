@@ -67,9 +67,8 @@ function GroupedImagesPage({ projectId, projectName, onBack }) {
 
   const fetchUngroupedCount = useCallback(async () => {
     try {
-      const resp = await fetch(`/api/projects/${projectId}/images?ungrouped=true&limit=1`);
-      if (!resp.ok) return;
-      // Count comes from total items - approximate by fetching a large batch
+      // Fetch ungrouped images to get count. We use a large limit as a proxy;
+      // a dedicated count endpoint would be more efficient for very large projects.
       const countResp = await fetch(`/api/projects/${projectId}/images?ungrouped=true&limit=10000`);
       if (countResp.ok) {
         const data = await countResp.json();

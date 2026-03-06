@@ -17,7 +17,9 @@ function ImageGroupPanel({ imageId, projectId, groupId, onGroupChanged }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
-  // Fetch available groups for the project
+  // Fetch available groups for the project.
+  // Limit is set to 500 which covers most practical cases; projects with
+  // hundreds of groups should consider adding server-side search/pagination here.
   useEffect(() => {
     if (!projectId) return;
     fetch(`/api/projects/${projectId}/groups?limit=500`)

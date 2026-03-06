@@ -278,6 +278,38 @@ The export endpoint (`GET /api/projects/{project_id}/export-excel`) generates an
 - Frontend: `src/utils/downloadExcel.js` -- shared download utility used by both `Project.js` and `ProjectReport.js`
 - Tests: `tests/test_export.py` -- integration and unit tests for the endpoint and `_build_workbook`
 
+## Image Grouping Feature
+
+Images within a project can be organized into named groups (by part number, serial number, specimen ID, etc.) using the `image_groups` table.
+
+**Database:** `image_groups` table with `id`, `project_id`, `identifier`, `display_name`, `created_at`, `updated_at`. Unique constraint on `(project_id, identifier)`. `data_instances` has a nullable `group_id` FK. Migration: `20260306_0004_add_image_groups.py`.
+
+**API Endpoints:**
+- `GET /api/projects/{project_id}/groups` -- list groups (paginated, searchable, with image counts and aggregate review status)
+- `POST /api/projects/{project_id}/groups` -- create a group
+- `GET /api/projects/{project_id}/has-groups` -- check if project has any groups
+- `GET /api/groups/{group_id}` -- get group detail
+- `PATCH /api/groups/{group_id}` -- update group
+- `DELETE /api/groups/{group_id}` -- delete group (optionally soft-deletes images via `?delete_images=true`)
+- `POST /api/groups/{group_id}/images` -- assign images to group (body: list of image IDs)
+- `DELETE /api/groups/{group_id}/images` -- remove images from group
+- `GET /api/groups/{group_id}/thumbnail` -- presigned URL for first image in group
+- `GET /api/projects/{project_id}/images?group_id=...` -- filter images by group
+- `GET /api/projects/{project_id}/images?ungrouped=true` -- filter to ungrouped images
+- `POST /api/projects/{project_id}/images` -- accepts optional `group_identifier` form field (find-or-create)
+
+**Frontend Components:**
+- `GroupedImagesPage.js` -- shown in `Project.js` when the project has groups; grid of group cards with thumbnail, image count, and aggregate review status badge
+- `GroupGalleryView.js` -- gallery page filtered to a single group or all ungrouped images
+- `ImageGroupPanel.js` -- sidebar panel in `ImageView.js` for viewing/changing group assignment
+- Routes: `/project/:id/group/:groupId` and `/project/:id/ungrouped`
+
+**Upload flow:** `ImageUploader.js` exposes a "Use as Group Identifier" dropdown when `FilenameMetadataExtractor` has keys configured. The selected key's extracted value is sent as `group_identifier` in the upload form, causing the backend to find-or-create the group and assign the image.
+
+**CRUD:** `utils/crud.py` contains all group CRUD functions including `get_or_create_image_group`, `get_aggregate_review_status_for_group`, and `has_image_groups`.
+
+**Tests:** `backend/tests/test_groups.py`
+
 ## Environment Configuration
 
 Copy `.env.example` to `.env` and configure:
