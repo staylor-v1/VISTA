@@ -3455,3 +3455,148 @@ ul li:hover {
   max-height: 80vh;
   object-fit: contain;
 }
+
+/* ---- Image Groups ---- */
+.grouped-images-page {
+  padding: var(--space-4);
+}
+
+.grouped-images-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.grouped-images-stats {
+  color: var(--gray-500);
+  font-size: 0.9rem;
+}
+
+.group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--space-4);
+}
+
+.group-card {
+  background: var(--white);
+  border-radius: var(--border-radius);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--gray-200);
+  cursor: pointer;
+  transition: box-shadow 0.2s, transform 0.1s;
+  overflow: hidden;
+}
+
+.group-card:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+.group-card:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.group-card-ungrouped {
+  border-style: dashed;
+  border-color: var(--gray-400);
+}
+
+.group-card-thumbnail {
+  width: 100%;
+  height: 140px;
+  overflow: hidden;
+  background: var(--gray-100);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.group-thumbnail {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.group-thumbnail-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--gray-100);
+  color: var(--gray-400);
+}
+
+.group-thumbnail-icon {
+  font-size: 2.5rem;
+  color: var(--gray-400);
+}
+
+.group-thumbnail-img {
+  object-fit: cover;
+}
+
+.group-card-body {
+  padding: var(--space-3);
+}
+
+.group-card-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--gray-800);
+  margin-bottom: var(--space-1);
+  word-break: break-word;
+}
+
+.group-card-identifier {
+  font-size: 0.8rem;
+  color: var(--gray-500);
+  margin-bottom: var(--space-1);
+}
+
+.group-card-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.group-card-count {
+  font-size: 0.8rem;
+  color: var(--gray-500);
+}
+
+.group-status-badge {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.group-status-pass {
+  background: #d4edda;
+  color: #155724;
+}
+
+.group-status-reject_confirmed {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.group-status-reject_pending {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.group-badge {
+  display: inline-block;
+  background: var(--primary-light, #e8f0fe);
+  color: var(--primary-dark, #1a56db);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.85rem;
+  font-weight: 500;
+}

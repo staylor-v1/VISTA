@@ -29,6 +29,7 @@ async def upload_image_to_project(
     project_id: uuid.UUID,
     file: UploadFile = File(...),
     metadata_json: Optional[str] = Form(None, alias="metadata"),
+    group_identifier: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
 ):
@@ -36,6 +37,7 @@ async def upload_image_to_project(
     Uploads an image file to a specified project.
     It handles file validation, metadata parsing, and storage.
     The image is associated with the project and the uploading user.
+    Optionally accepts group_identifier to assign the image to a group (find-or-create).
     """
     db_project = await get_project_or_403(project_id, db, current_user)
     image_id = uuid.uuid4()
@@ -68,6 +70,15 @@ async def upload_image_to_project(
     )
     if not success:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to upload file to object storage")
+
+    # Resolve group_id if a group_identifier was supplied
+    resolved_group_id: Optional[uuid.UUID] = None
+    if group_identifier and group_identifier.strip():
+        group = await crud.get_or_create_image_group(
+            db, project_id, group_identifier.strip(), created_by=current_user.email
+        )
+        resolved_group_id = group.id
+
     data_instance_create = schemas.DataInstanceCreate(
         project_id=db_project.id,
         filename=file.filename,
@@ -76,6 +87,7 @@ async def upload_image_to_project(
         size_bytes=file_size,
         metadata=parsed_metadata,
         uploaded_by_user_id=current_user.email,
+        group_id=resolved_group_id,
     )
     db_data_instance = await crud.create_data_instance(db=db, data_instance=data_instance_create)
     
@@ -95,6 +107,8 @@ async def list_images_in_project(
     deleted_only: bool = Query(False),
     search_field: Optional[str] = Query(None),
     search_value: Optional[str] = Query(None),
+    group_id: Optional[uuid.UUID] = Query(None),
+    ungrouped: bool = Query(False),
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
 ):
@@ -102,6 +116,7 @@ async def list_images_in_project(
     Retrieves a list of images for a given project.
     It first verifies project existence and user access, then uses a per-user
     cache for performance before falling back to the database.
+    Optionally filter by group_id, or pass ungrouped=true to get images with no group.
     """
     # Check project access BEFORE cache lookup to prevent cross-user data leakage
     try:
@@ -115,7 +130,7 @@ async def list_images_in_project(
 
     # Check cache (keyed per-user to prevent cross-user leakage)
     cache = get_cache()
-    cache_key = f"project_images:{project_id}:user:{current_user.email}:skip:{skip}:limit:{limit}:include_deleted:{include_deleted}:deleted_only:{deleted_only}:search_field:{search_field}:search_value:{search_value}"
+    cache_key = f"project_images:{project_id}:user:{current_user.email}:skip:{skip}:limit:{limit}:include_deleted:{include_deleted}:deleted_only:{deleted_only}:search_field:{search_field}:search_value:{search_value}:group_id:{group_id}:ungrouped:{ungrouped}"
     cached_images = cache.get(cache_key)
 
     if cached_images is not None:
@@ -125,7 +140,16 @@ async def list_images_in_project(
     if deleted_only:
         images = await crud.get_deleted_images_for_project(db=db, project_id=project_id, skip=skip, limit=limit)
     else:
-        images = await crud.get_data_instances_for_project(db=db, project_id=project_id, skip=skip, limit=limit, search_field=search_field, search_value=search_value)
+        images = await crud.get_data_instances_for_project(
+            db=db,
+            project_id=project_id,
+            skip=skip,
+            limit=limit,
+            search_field=search_field,
+            search_value=search_value,
+            group_id=group_id,
+            ungrouped=ungrouped,
+        )
     
     # Process images using utility function for consistent serialization
     response_images = []
@@ -156,6 +180,8 @@ async def list_images_in_project_with_slash(
     deleted_only: bool = Query(False),
     search_field: Optional[str] = Query(None),
     search_value: Optional[str] = Query(None),
+    group_id: Optional[uuid.UUID] = Query(None),
+    ungrouped: bool = Query(False),
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
 ):
@@ -165,7 +191,7 @@ async def list_images_in_project_with_slash(
     It ensures compatibility with various frontend routing configurations.
     """
     # Just call the main function to avoid code duplication
-    return await list_images_in_project(project_id, skip, limit, include_deleted, deleted_only, search_field, search_value, db, current_user)
+    return await list_images_in_project(project_id, skip, limit, include_deleted, deleted_only, search_field, search_value, group_id, ungrouped, db, current_user)
 
 
 @router.get("/images/{image_id}", response_model=schemas.DataInstance)

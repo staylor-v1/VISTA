@@ -48,7 +48,7 @@ class TestImageListCaching:
             assert ur.status_code == 201
         
         cache = get_cache()
-        cache_key = f"project_images:{pid}:user:test@example.com:skip:0:limit:100:include_deleted:False:deleted_only:False:search_field:None:search_value:None"
+        cache_key = f"project_images:{pid}:user:test@example.com:skip:0:limit:100:include_deleted:False:deleted_only:False:search_field:None:search_value:None:group_id:None:ungrouped:False"
         
         # Ensure cache is empty initially
         assert cache.get(cache_key) is None
@@ -104,9 +104,9 @@ class TestImageListCaching:
         assert len(r3.json()) == 5
         
         # Verify separate cache entries
-        cache_key_1 = f"project_images:{pid}:user:test@example.com:skip:0:limit:2:include_deleted:False:deleted_only:False:search_field:None:search_value:None"
-        cache_key_2 = f"project_images:{pid}:user:test@example.com:skip:2:limit:2:include_deleted:False:deleted_only:False:search_field:None:search_value:None"
-        cache_key_3 = f"project_images:{pid}:user:test@example.com:skip:0:limit:100:include_deleted:False:deleted_only:False:search_field:None:search_value:None"
+        cache_key_1 = f"project_images:{pid}:user:test@example.com:skip:0:limit:2:include_deleted:False:deleted_only:False:search_field:None:search_value:None:group_id:None:ungrouped:False"
+        cache_key_2 = f"project_images:{pid}:user:test@example.com:skip:2:limit:2:include_deleted:False:deleted_only:False:search_field:None:search_value:None:group_id:None:ungrouped:False"
+        cache_key_3 = f"project_images:{pid}:user:test@example.com:skip:0:limit:100:include_deleted:False:deleted_only:False:search_field:None:search_value:None:group_id:None:ungrouped:False"
         
         # Debug info in case of failure
         cached_1 = cache.get(cache_key_1)
@@ -139,7 +139,7 @@ class TestImageListCaching:
         assert ur1.status_code == 201
         
         cache = get_cache()
-        cache_key = f"project_images:{pid}:user:test@example.com:skip:0:limit:100:include_deleted:False:deleted_only:False:search_field:None:search_value:None"
+        cache_key = f"project_images:{pid}:user:test@example.com:skip:0:limit:100:include_deleted:False:deleted_only:False:search_field:None:search_value:None:group_id:None:ungrouped:False"
         
         # Get image list - should cache it
         r1 = client.get(f"/api/projects/{pid}/images")

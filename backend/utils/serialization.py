@@ -40,6 +40,7 @@ def to_data_instance_schema(db_image: models.DataInstance) -> schemas.DataInstan
     return schemas.DataInstance(
         id=db_image.id,
         project_id=db_image.project_id,
+        group_id=getattr(db_image, "group_id", None),
         filename=db_image.filename,
         object_storage_key=db_image.object_storage_key,
         content_type=getattr(db_image, "content_type", None),

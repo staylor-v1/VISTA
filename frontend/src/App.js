@@ -8,6 +8,7 @@ const Project = lazy(() => import('./Project'));
 const ImageView = lazy(() => import('./ImageView'));
 const ApiKeys = lazy(() => import('./ApiKeys'));
 const ProjectReport = lazy(() => import('./components/ProjectReport'));
+const GroupGalleryView = lazy(() => import('./components/GroupGalleryView'));
 
 // Debug counter to track renders
 let renderCount = 0;
@@ -406,6 +407,22 @@ function App() {
         element={
           <Suspense fallback={<div className="loading-container">Loading report...</div>}>
             <ProjectReport />
+          </Suspense>
+        }
+      />
+      <Route
+        path="/project/:id/group/:groupId"
+        element={
+          <Suspense fallback={<div className="loading-container">Loading group...</div>}>
+            <GroupGalleryView />
+          </Suspense>
+        }
+      />
+      <Route
+        path="/project/:id/ungrouped"
+        element={
+          <Suspense fallback={<div className="loading-container">Loading ungrouped images...</div>}>
+            <GroupGalleryView />
           </Suspense>
         }
       />
