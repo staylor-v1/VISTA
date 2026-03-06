@@ -7,6 +7,7 @@ import ImageUploader from './components/ImageUploader';
 import MetadataManager from './components/MetadataManager';
 import ClassManager from './components/ClassManager';
 import ImageGallery from './components/ImageGallery';
+import GroupedImagesPage from './components/GroupedImagesPage';
 import ReviewStatusSummary from './components/ReviewStatusSummary';
 import { downloadExcel } from './utils/downloadExcel';
 
@@ -23,6 +24,7 @@ function Project() {
   const [includeDeleted, setIncludeDeleted] = useState(false);
   const [deletedOnly, setDeletedOnly] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [hasGroups, setHasGroups] = useState(false);
 
   const fetchImages = useCallback(async (projId, opts = {}) => {
     const inc = opts.includeDeleted ?? includeDeleted;
@@ -98,7 +100,14 @@ function Project() {
           const classesData = await classesResponse.json();
           setClasses(classesData);
         }
-        
+
+        // Check if project has groups
+        const hasGroupsResponse = await fetch(`/api/projects/${id}/has-groups`);
+        if (hasGroupsResponse.ok) {
+          const hasGroupsData = await hasGroupsResponse.json();
+          setHasGroups(hasGroupsData.has_groups);
+        }
+
   await fetchImages(id);
         
         setLoading(false);
@@ -251,16 +260,26 @@ function Project() {
             {/* Review Status Summary */}
             <ReviewStatusSummary projectId={id} />
 
-            {/* Main Gallery Section */}
-            <div className="gallery-section">
-              <ImageGallery 
-                projectId={id} 
-                images={images} 
-                loading={loading} 
-                onImageUpdated={handleImageStateUpdate}
-                refreshProjectImages={(searchOpts) => fetchImages(id, searchOpts)}
-              />
-            </div>
+            {/* Main Gallery Section - grouped or flat */}
+            {hasGroups ? (
+              <div className="gallery-section">
+                <GroupedImagesPage
+                  projectId={id}
+                  projectName={project?.name}
+                  onBack={() => navigate('/')}
+                />
+              </div>
+            ) : (
+              <div className="gallery-section">
+                <ImageGallery
+                  projectId={id}
+                  images={images}
+                  loading={loading}
+                  onImageUpdated={handleImageStateUpdate}
+                  refreshProjectImages={(searchOpts) => fetchImages(id, searchOpts)}
+                />
+              </div>
+            )}
             
             {/* Quick Upload Section */}
             <div className="upload-section">
