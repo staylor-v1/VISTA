@@ -124,9 +124,10 @@ function FilenameMetadataExtractor({ files, onConfigChange }) {
         isValid,
         hasPattern: pattern.length > 0,
         extractMetadata,
+        keys,
       });
     }
-  }, [isValid, pattern, extractMetadata, onConfigChange]);
+  }, [isValid, pattern, extractMetadata, onConfigChange, keys]);
 
   return (
     <div className="filename-extractor">

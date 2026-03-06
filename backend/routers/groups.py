@@ -1,0 +1,213 @@
+"""Router for image group management."""
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
+from typing import List, Optional
+
+import utils.crud as crud
+from core import schemas
+from core.database import get_db
+from utils.dependencies import get_current_user, get_project_or_403
+from utils.boto3_client import get_presigned_download_url
+from core.config import settings
+
+router = APIRouter(tags=["Groups"])
+
+
+# ---- helpers ----
+
+async def _get_group_or_403(
+    group_id: uuid.UUID,
+    db: AsyncSession,
+    current_user: schemas.User,
+) -> "crud.models.ImageGroup":
+    group = await crud.get_image_group(db, group_id)
+    if group is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
+    # Verify project access
+    await get_project_or_403(group.project_id, db, current_user)
+    return group
+
+
+async def _enrich_group(
+    group: "crud.models.ImageGroup",
+    db: AsyncSession,
+) -> schemas.ImageGroup:
+    """Add image_count and aggregate_review_status to a group schema."""
+    image_count = await crud.count_images_for_group(db, group.id)
+    agg_status = await crud.get_aggregate_review_status_for_group(db, group.id)
+    schema = schemas.ImageGroup.model_validate(group)
+    schema.image_count = image_count
+    schema.aggregate_review_status = agg_status
+    return schema
+
+
+# ---- endpoints ----
+
+@router.get(
+    "/projects/{project_id}/groups",
+    response_model=schemas.ImageGroupList,
+)
+async def list_groups(
+    project_id: uuid.UUID,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    search: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """List all groups in a project with image counts and aggregate review status."""
+    await get_project_or_403(project_id, db, current_user)
+    groups = await crud.list_image_groups(db, project_id, skip=skip, limit=limit, search=search)
+    total = await crud.count_image_groups(db, project_id, search=search)
+    enriched = [await _enrich_group(g, db) for g in groups]
+    return schemas.ImageGroupList(groups=enriched, total=total)
+
+
+@router.post(
+    "/projects/{project_id}/groups",
+    response_model=schemas.ImageGroup,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_group(
+    project_id: uuid.UUID,
+    body: schemas.ImageGroupBase,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """Create a new image group in a project."""
+    await get_project_or_403(project_id, db, current_user)
+    existing = await crud.get_image_group_by_identifier(db, project_id, body.identifier)
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Group with identifier '{body.identifier}' already exists in this project",
+        )
+    create_data = schemas.ImageGroupCreate(
+        project_id=project_id,
+        identifier=body.identifier,
+        display_name=body.display_name,
+    )
+    group = await crud.create_image_group(db, create_data, created_by=current_user.email)
+    return await _enrich_group(group, db)
+
+
+@router.get(
+    "/groups/{group_id}",
+    response_model=schemas.ImageGroup,
+)
+async def get_group(
+    group_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """Get details of a specific group."""
+    group = await _get_group_or_403(group_id, db, current_user)
+    return await _enrich_group(group, db)
+
+
+@router.patch(
+    "/groups/{group_id}",
+    response_model=schemas.ImageGroup,
+)
+async def update_group(
+    group_id: uuid.UUID,
+    body: schemas.ImageGroupUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """Update a group's identifier or display_name."""
+    group = await _get_group_or_403(group_id, db, current_user)
+    if body.identifier and body.identifier != group.identifier:
+        existing = await crud.get_image_group_by_identifier(db, group.project_id, body.identifier)
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Group with identifier '{body.identifier}' already exists in this project",
+            )
+    updated = await crud.update_image_group(db, group, body, updated_by=current_user.email)
+    return await _enrich_group(updated, db)
+
+
+@router.delete(
+    "/groups/{group_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_group(
+    group_id: uuid.UUID,
+    delete_images: bool = Query(False, description="Also soft-delete member images"),
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """Delete a group. Optionally also soft-deletes its images."""
+    group = await _get_group_or_403(group_id, db, current_user)
+    await crud.delete_image_group(db, group, delete_images=delete_images, deleted_by=current_user.email)
+
+
+@router.post(
+    "/groups/{group_id}/images",
+    status_code=status.HTTP_200_OK,
+)
+async def assign_images_to_group(
+    group_id: uuid.UUID,
+    image_ids: List[uuid.UUID],
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """Assign a list of images to this group."""
+    group = await _get_group_or_403(group_id, db, current_user)
+    count = await crud.assign_images_to_group(db, group.id, image_ids, assigned_by=current_user.email)
+    return {"assigned": count}
+
+
+@router.delete(
+    "/groups/{group_id}/images",
+    status_code=status.HTTP_200_OK,
+)
+async def remove_images_from_group(
+    group_id: uuid.UUID,
+    image_ids: List[uuid.UUID],
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """Remove a list of images from this group (sets group_id to NULL)."""
+    group = await _get_group_or_403(group_id, db, current_user)
+    count = await crud.remove_images_from_group(db, group.id, image_ids, removed_by=current_user.email)
+    return {"removed": count}
+
+
+@router.get(
+    "/projects/{project_id}/has-groups",
+)
+async def project_has_groups(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """Return whether the project has any image groups."""
+    await get_project_or_403(project_id, db, current_user)
+    has_groups = await crud.has_image_groups(db, project_id)
+    return {"has_groups": has_groups}
+
+
+@router.get(
+    "/groups/{group_id}/thumbnail",
+)
+async def get_group_thumbnail(
+    group_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """Return a presigned URL for the first image in the group (thumbnail)."""
+    group = await _get_group_or_403(group_id, db, current_user)
+    first_image = await crud.get_first_image_for_group(db, group.id)
+    if not first_image:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No images in group")
+    url = get_presigned_download_url(
+        bucket_name=settings.S3_BUCKET,
+        object_name=first_image.object_storage_key,
+    )
+    if not url:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not generate thumbnail URL")
+    proxy_url = f"/images/{first_image.id}/content"
+    return {"url": proxy_url, "image_id": str(first_image.id)}

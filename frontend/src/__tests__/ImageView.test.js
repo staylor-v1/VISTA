@@ -52,6 +52,12 @@ jest.mock('../components/ImageDeletionControls', () => {
   };
 });
 
+jest.mock('../components/ImageGroupPanel', () => {
+  return function MockImageGroupPanel() {
+    return <div data-testid="image-group-panel">ImageGroupPanel</div>;
+  };
+});
+
 // Mock data
 const mockRegularImage = {
   id: 'test-image-id',

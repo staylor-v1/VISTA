@@ -37,12 +37,33 @@ class Project(Base):
     image_classes = relationship("ImageClass", back_populates="project", cascade="all, delete-orphan")
     project_metadata = relationship("ProjectMetadata", back_populates="project", cascade="all, delete-orphan")
     reviews = relationship("ImageReview", back_populates="project", cascade="all, delete-orphan")
+    image_groups = relationship("ImageGroup", back_populates="project", cascade="all, delete-orphan")
+
+
+class ImageGroup(Base):
+    __tablename__ = "image_groups"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False, index=True)
+    identifier = Column(String(255), nullable=False)
+    display_name = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    project = relationship("Project", back_populates="image_groups")
+    images = relationship("DataInstance", back_populates="group")
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "identifier", name="uix_image_groups_project_identifier"),
+    )
 
 class DataInstance(Base):
     __tablename__ = "data_instances"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
+    group_id = Column(UUID(as_uuid=True), ForeignKey("image_groups.id"), nullable=True, index=True)
     filename = Column(String(255), nullable=False)
     object_storage_key = Column(String(1024), nullable=False, unique=True)
     content_type = Column(String(100), nullable=True)
@@ -65,6 +86,7 @@ class DataInstance(Base):
 
     # Relationships
     project = relationship("Project", back_populates="images")
+    group = relationship("ImageGroup", back_populates="images")
     uploader = relationship("User", back_populates="uploaded_images", foreign_keys=[uploader_id])
     comments = relationship("ImageComment", back_populates="image", cascade="all, delete-orphan")
     classifications = relationship("ImageClassification", back_populates="image", cascade="all, delete-orphan")

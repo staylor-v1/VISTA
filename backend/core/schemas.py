@@ -45,6 +45,36 @@ class Project(ProjectBase):
         "populate_by_name": True
     }
 
+# ImageGroup schemas
+class ImageGroupBase(BaseModel):
+    identifier: str = Field(..., min_length=1, max_length=255)
+    display_name: Optional[str] = Field(None, max_length=255)
+
+class ImageGroupCreate(ImageGroupBase):
+    project_id: uuid.UUID
+
+class ImageGroupUpdate(BaseModel):
+    identifier: Optional[str] = Field(None, min_length=1, max_length=255)
+    display_name: Optional[str] = Field(None, max_length=255)
+
+class ImageGroup(ImageGroupBase):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    image_count: Optional[int] = None
+    aggregate_review_status: Optional[str] = None  # pass, reject_confirmed, reject_pending, unreviewed, or None
+
+    model_config = {
+        "from_attributes": True,
+        "populate_by_name": True
+    }
+
+class ImageGroupList(BaseModel):
+    groups: List["ImageGroup"]
+    total: int
+
+
 # DataInstance schemas
 class DataInstanceBase(BaseModel):
     filename: str
@@ -57,10 +87,12 @@ class DataInstanceCreate(DataInstanceBase):
     object_storage_key: str
     uploaded_by_user_id: str
     uploader_id: Optional[uuid.UUID] = None
+    group_id: Optional[uuid.UUID] = None
 
 class DataInstance(DataInstanceBase):
     id: uuid.UUID
     project_id: uuid.UUID
+    group_id: Optional[uuid.UUID] = None
     object_storage_key: str
     uploaded_by_user_id: str
     uploader_id: Optional[uuid.UUID] = None
