@@ -8,8 +8,7 @@ import utils.crud as crud
 from core import schemas, models
 from core.database import get_db
 from utils.dependencies import get_current_user, get_project_or_403
-from utils.boto3_client import get_presigned_download_url
-from core.config import settings
+from utils.cache_manager import get_cache
 
 router = APIRouter(tags=["Groups"])
 
@@ -42,6 +41,31 @@ async def _enrich_group(
     return schema
 
 
+async def _enrich_groups_batch(
+    groups: list,
+    db: AsyncSession,
+) -> list:
+    """Batch-enrich a list of groups with image counts and aggregate review status."""
+    if not groups:
+        return []
+    group_ids = [g.id for g in groups]
+    counts = await crud.get_image_counts_for_groups(db, group_ids)
+    agg_statuses = await crud.get_aggregate_review_statuses_for_groups(db, group_ids)
+    enriched = []
+    for g in groups:
+        schema = schemas.ImageGroup.model_validate(g)
+        schema.image_count = counts.get(g.id, 0)
+        schema.aggregate_review_status = agg_statuses.get(g.id)
+        enriched.append(schema)
+    return enriched
+
+
+def _invalidate_project_image_cache(project_id: uuid.UUID) -> None:
+    """Clear cached image lists for a project after group membership changes."""
+    cache = get_cache()
+    cache.clear_pattern(f"project_images:{project_id}")
+
+
 # ---- endpoints ----
 
 @router.get(
@@ -60,7 +84,7 @@ async def list_groups(
     await get_project_or_403(project_id, db, current_user)
     groups = await crud.list_image_groups(db, project_id, skip=skip, limit=limit, search=search)
     total = await crud.count_image_groups(db, project_id, search=search)
-    enriched = [await _enrich_group(g, db) for g in groups]
+    enriched = await _enrich_groups_batch(groups, db)
     return schemas.ImageGroupList(groups=enriched, total=total)
 
 
@@ -141,7 +165,9 @@ async def delete_group(
 ):
     """Delete a group. Optionally also soft-deletes its images."""
     group = await _get_group_or_403(group_id, db, current_user)
+    project_id = group.project_id
     await crud.delete_image_group(db, group, delete_images=delete_images, deleted_by=current_user.email)
+    _invalidate_project_image_cache(project_id)
 
 
 @router.post(
@@ -156,7 +182,8 @@ async def assign_images_to_group(
 ):
     """Assign a list of images to this group."""
     group = await _get_group_or_403(group_id, db, current_user)
-    count = await crud.assign_images_to_group(db, group.id, image_ids, assigned_by=current_user.email)
+    count = await crud.assign_images_to_group(db, group.id, image_ids, project_id=group.project_id, assigned_by=current_user.email)
+    _invalidate_project_image_cache(group.project_id)
     return {"assigned": count}
 
 
@@ -172,7 +199,8 @@ async def remove_images_from_group(
 ):
     """Remove a list of images from this group (sets group_id to NULL)."""
     group = await _get_group_or_403(group_id, db, current_user)
-    count = await crud.remove_images_from_group(db, group.id, image_ids, removed_by=current_user.email)
+    count = await crud.remove_images_from_group(db, group.id, image_ids, project_id=group.project_id, removed_by=current_user.email)
+    _invalidate_project_image_cache(group.project_id)
     return {"removed": count}
 
 
@@ -191,6 +219,20 @@ async def project_has_groups(
 
 
 @router.get(
+    "/projects/{project_id}/ungrouped-count",
+)
+async def get_ungrouped_count(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """Return the count of ungrouped (non-deleted) images in a project."""
+    await get_project_or_403(project_id, db, current_user)
+    count = await crud.count_ungrouped_images(db, project_id)
+    return {"count": count}
+
+
+@router.get(
     "/groups/{group_id}/thumbnail",
 )
 async def get_group_thumbnail(
@@ -198,16 +240,10 @@ async def get_group_thumbnail(
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
 ):
-    """Return a presigned URL for the first image in the group (thumbnail)."""
+    """Return a proxy URL for the first image in the group (thumbnail)."""
     group = await _get_group_or_403(group_id, db, current_user)
     first_image = await crud.get_first_image_for_group(db, group.id)
     if not first_image:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No images in group")
-    url = get_presigned_download_url(
-        bucket_name=settings.S3_BUCKET,
-        object_name=first_image.object_storage_key,
-    )
-    if not url:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not generate thumbnail URL")
     proxy_url = f"/images/{first_image.id}/content"
     return {"url": proxy_url, "image_id": str(first_image.id)}
