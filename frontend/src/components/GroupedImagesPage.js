@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import ReviewStatusBadge from './ReviewStatusBadge';
 
 function GroupThumbnail({ groupId }) {
   const [thumbnailUrl, setThumbnailUrl] = useState(null);
@@ -67,12 +66,10 @@ function GroupedImagesPage({ projectId, projectName, onBack }) {
 
   const fetchUngroupedCount = useCallback(async () => {
     try {
-      // Fetch ungrouped images to get count. We use a large limit as a proxy;
-      // a dedicated count endpoint would be more efficient for very large projects.
-      const countResp = await fetch(`/api/projects/${projectId}/images?ungrouped=true&limit=10000`);
+      const countResp = await fetch(`/api/projects/${projectId}/ungrouped-count`);
       if (countResp.ok) {
         const data = await countResp.json();
-        setUngroupedCount(data.filter(img => !img.deleted_at).length);
+        setUngroupedCount(data.count || 0);
       }
     } catch (_) {}
   }, [projectId]);
