@@ -131,9 +131,16 @@ function Project() {
   }, [includeDeleted, deletedOnly, project?.id]);
 
   // Handle image upload completion
-  const handleUploadComplete = (newImages) => {
-    // If not showing deleted, just append
+  const handleUploadComplete = async (newImages) => {
     setImages(prevImages => [...prevImages, ...newImages]);
+    // Re-check whether the project now has groups (upload may have created one)
+    try {
+      const resp = await fetch(`/api/projects/${id}/has-groups`);
+      if (resp.ok) {
+        const data = await resp.json();
+        setHasGroups(data.has_groups);
+      }
+    } catch (_) {}
   };
 
   const handleImageStateUpdate = (updatedImage) => {
