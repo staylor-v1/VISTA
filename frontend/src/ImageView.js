@@ -231,7 +231,7 @@ function ImageView() {
     if (image && projectId) {
       loadProjectImages(image.group_id || null);
     }
-  }, [image?.group_id, projectId, loadProjectImages]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [image?.id, image?.group_id, projectId, loadProjectImages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Navigate to previous image with transition
   const navigateToPreviousImage = useCallback(() => {
