@@ -40,8 +40,11 @@ async def upload_image_to_project(
     Optionally accepts group_identifier to assign the image to a group (find-or-create).
     """
     db_project = await get_project_or_403(project_id, db, current_user)
+    # Capture scalar values before any blocking IO to avoid MissingGreenlet
+    # errors when SQLAlchemy tries to lazy-load expired attributes.
+    db_project_id = db_project.id
     image_id = uuid.uuid4()
-    object_storage_key = f"{db_project.id}/{image_id}/{file.filename}"
+    object_storage_key = f"{db_project_id}/{image_id}/{file.filename}"
     parsed_metadata: Optional[Dict[str, Any]] = None
     if metadata_json:
         try:
@@ -80,7 +83,7 @@ async def upload_image_to_project(
         resolved_group_id = group.id
 
     data_instance_create = schemas.DataInstanceCreate(
-        project_id=db_project.id,
+        project_id=db_project_id,
         filename=file.filename,
         object_storage_key=object_storage_key,
         content_type=file.content_type,
