@@ -103,12 +103,18 @@ function Project() {
 
         // Check if project has groups
         const hasGroupsResponse = await fetch(`/api/projects/${id}/has-groups`);
+        let projectHasGroups = false;
         if (hasGroupsResponse.ok) {
           const hasGroupsData = await hasGroupsResponse.json();
-          setHasGroups(hasGroupsData.has_groups);
+          projectHasGroups = hasGroupsData.has_groups;
+          setHasGroups(projectHasGroups);
         }
 
-  await fetchImages(id);
+        // Only fetch the flat image list when the grouped view is not active.
+        // When hasGroups is true, the GroupedImagesPage fetches its own data.
+        if (!projectHasGroups) {
+          await fetchImages(id);
+        }
         
         setLoading(false);
       } catch (err) {
@@ -122,13 +128,13 @@ function Project() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  // Refetch when deletion visibility changes
+  // Refetch when deletion visibility changes, but only in the flat (non-grouped) view
   useEffect(() => {
-    if (project) {
+    if (project && !hasGroups) {
       fetchImages(project.id, { includeDeleted, deletedOnly });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [includeDeleted, deletedOnly, project?.id]);
+  }, [includeDeleted, deletedOnly, project?.id, hasGroups]);
 
   // Handle image upload completion
   const handleUploadComplete = async (newImages) => {
@@ -324,7 +330,8 @@ function Project() {
               </div>
             </div>
             
-            {/* Image Deletion Controls - moved to bottom */}
+            {/* Image Deletion Controls - only relevant for the flat gallery view */}
+            {!hasGroups && (
             <div className="deletion-controls-section" style={{ marginTop: '24px', padding: '16px', backgroundColor: '#f8f9fa', borderRadius: '8px', border: '1px solid #e9ecef' }}>
               <h3 style={{ margin: '0 0 12px 0', fontSize: '1.1rem', fontWeight: '600', color: '#333' }}>Image View Options</h3>
               <div style={{ display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -354,6 +361,7 @@ function Project() {
                 </span>
               </div>
             </div>
+            )}
           </div>
         )}
       </div>
