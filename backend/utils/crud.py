@@ -1,5 +1,6 @@
 import uuid
 from sqlalchemy import select, update, delete, and_, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from core import models, schemas
@@ -924,7 +925,14 @@ async def get_or_create_image_group(
         return existing
     group = models.ImageGroup(project_id=project_id, identifier=identifier)
     db.add(group)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        existing = await get_image_group_by_identifier(db, project_id, identifier)
+        if existing:
+            return existing
+        raise
     await db.refresh(group)
     log_db_operation("CREATE", "image_groups", group.id, created_by or "system", {"project_id": str(project_id), "identifier": identifier})
     return group
