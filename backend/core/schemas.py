@@ -63,7 +63,7 @@ class ImageGroup(ImageGroupBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
     image_count: Optional[int] = None
-    aggregate_review_status: Optional[str] = None  # pass, reject_confirmed, reject_pending, unreviewed, or None
+    aggregate_review_status: Optional[str] = None  # pass, reject_confirmed, reject_pending, or None (for unreviewed/partially reviewed)
 
     model_config = {
         "from_attributes": True,
