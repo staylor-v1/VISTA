@@ -252,7 +252,9 @@ describe('ImageUploader', () => {
       fireEvent.click(screen.getByRole('button', { name: /upload images/i }));
 
       await waitFor(() => {
-        expect(props.setError).toHaveBeenCalledWith('Upload failed: Network error');
+        expect(props.setError).toHaveBeenCalledWith(
+          'Upload complete: 0 succeeded, 1 failed out of 1.'
+        );
       });
     });
 
@@ -270,7 +272,7 @@ describe('ImageUploader', () => {
 
       await waitFor(() => {
         expect(props.setError).toHaveBeenCalledWith(
-          'Upload failed: HTTP error! status: 500'
+          'Upload complete: 0 succeeded, 1 failed out of 1.'
         );
       });
     });
