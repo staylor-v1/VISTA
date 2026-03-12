@@ -18,22 +18,32 @@ function GroupGalleryView() {
   const fetchImages = useCallback(async (opts = {}) => {
     setLoading(true);
     try {
-      const params = new URLSearchParams();
+      const baseParams = new URLSearchParams();
       if (isUngrouped) {
-        params.set('ungrouped', 'true');
+        baseParams.set('ungrouped', 'true');
       } else {
-        params.set('group_id', groupId);
+        baseParams.set('group_id', groupId);
       }
       if (opts.searchField && opts.searchValue) {
-        params.set('search_field', opts.searchField);
-        params.set('search_value', opts.searchValue);
+        baseParams.set('search_field', opts.searchField);
+        baseParams.set('search_value', opts.searchValue);
       }
-      params.set('limit', '1000');
-      const resp = await fetch(`/api/projects/${projectId}/images?${params}`);
-      if (resp.ok) {
-        const data = await resp.json();
-        setImages(data.filter(img => !img.deleted_at));
+      const PAGE_SIZE = 200;
+      let skip = 0;
+      let allImages = [];
+      let hasMore = true;
+      while (hasMore) {
+        const params = new URLSearchParams(baseParams);
+        params.set('skip', String(skip));
+        params.set('limit', String(PAGE_SIZE));
+        const resp = await fetch(`/api/projects/${projectId}/images?${params}`);
+        if (!resp.ok) break;
+        const batch = await resp.json();
+        allImages = allImages.concat(batch);
+        hasMore = batch.length === PAGE_SIZE;
+        skip += PAGE_SIZE;
       }
+      setImages(allImages.filter(img => !img.deleted_at));
     } catch (err) {
       setError(err.message);
     } finally {
