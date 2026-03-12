@@ -293,13 +293,12 @@ Images within a project can be organized into named groups (by part number, seri
 - `DELETE /api/groups/{group_id}` -- delete group (optionally soft-deletes images via `?delete_images=true`)
 - `POST /api/groups/{group_id}/images` -- assign images to group (body: list of image IDs)
 - `DELETE /api/groups/{group_id}/images` -- remove images from group
-- `GET /api/groups/{group_id}/thumbnail` -- presigned URL for first image in group
 - `GET /api/projects/{project_id}/images?group_id=...` -- filter images by group
 - `GET /api/projects/{project_id}/images?ungrouped=true` -- filter to ungrouped images
 - `POST /api/projects/{project_id}/images` -- accepts optional `group_identifier` form field (find-or-create)
 
 **Frontend Components:**
-- `GroupedImagesPage.js` -- shown in `Project.js` when the project has groups; grid of group cards with thumbnail, image count, and aggregate review status badge
+- `GroupedImagesPage.js` -- shown in `Project.js` when the project has groups; list view with group name, image count, and aggregate review status badge
 - `GroupGalleryView.js` -- gallery page filtered to a single group or all ungrouped images
 - `ImageGroupPanel.js` -- sidebar panel in `ImageView.js` for viewing/changing group assignment
 - Routes: `/project/:id/group/:groupId` and `/project/:id/ungrouped`
