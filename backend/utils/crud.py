@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import select, update, delete, and_, text, func, exists, case, distinct
+from sqlalchemy import select, update, delete, and_, text, func, exists
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
