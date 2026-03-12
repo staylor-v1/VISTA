@@ -1,5 +1,5 @@
 import React, { useState, useEffect, lazy, Suspense, memo, useRef, useCallback } from 'react';
-import { Route, Routes, Link } from 'react-router-dom';
+import { Route, Routes, Link, useLocation } from 'react-router-dom';
 import './App.css';
 import Toast from './components/Toast';
 
@@ -171,6 +171,14 @@ const ProjectItem = memo(function ProjectItem({ project }) {
     </div>
   );
 });
+
+function ScrollToTop() {
+  const { pathname } = useLocation();
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [pathname]);
+  return null;
+}
 
 function App() {
   // const navigate = useNavigate(); // Commented out - not currently used
@@ -392,6 +400,8 @@ function App() {
   );
 
   return (
+    <>
+    <ScrollToTop />
     <Routes>
       <Route path="/" element={<HomePage />} />
       <Route
@@ -443,6 +453,7 @@ function App() {
         } 
       />
     </Routes>
+    </>
   );
 }
 

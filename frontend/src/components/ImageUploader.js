@@ -3,7 +3,7 @@ import FilenameMetadataExtractor from './FilenameMetadataExtractor';
 
 const CONCURRENT_UPLOADS = 6;
 
-function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setError }) {
+function ImageUploader({ projectId, onUploadComplete, setError }) {
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [uploadMetadata, setUploadMetadata] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
@@ -14,6 +14,7 @@ function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setEr
     keys: [],
   });
   const [groupKey, setGroupKey] = useState('');
+  const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null);
   const cancelledRef = useRef(false);
 
@@ -77,7 +78,7 @@ function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setEr
       }
     }
     
-    setLoading(true);
+    setUploading(true);
     cancelledRef.current = false;
     const total = selectedFiles.length;
     setUploadProgress({ completed: 0, failed: 0, total });
@@ -145,7 +146,7 @@ function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setEr
     setSelectedFiles([]);
     setUploadMetadata('');
     setUploadProgress(null);
-    setLoading(false);
+    setUploading(false);
   };
 
   return (
@@ -228,11 +229,11 @@ function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setEr
             <button
               type="submit"
               className="btn btn-success"
-              disabled={loading || !extractorConfig.isValid}
+              disabled={uploading || !extractorConfig.isValid}
             >
-              {loading ? 'Uploading...' : 'Upload Images'}
+              {uploading ? 'Uploading...' : 'Upload Images'}
             </button>
-            {loading && (
+            {uploading && (
               <button
                 type="button"
                 className="btn btn-secondary"
