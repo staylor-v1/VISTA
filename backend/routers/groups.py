@@ -230,20 +230,3 @@ async def get_ungrouped_count(
     await get_project_or_403(project_id, db, current_user)
     count = await crud.count_ungrouped_images(db, project_id)
     return {"count": count}
-
-
-@router.get(
-    "/groups/{group_id}/thumbnail",
-)
-async def get_group_thumbnail(
-    group_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user: schemas.User = Depends(get_current_user),
-):
-    """Return a proxy URL for the first image in the group (thumbnail)."""
-    group = await _get_group_or_403(group_id, db, current_user)
-    first_image = await crud.get_first_image_for_group(db, group.id)
-    if not first_image:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No images in group")
-    proxy_url = f"/images/{first_image.id}/content"
-    return {"url": proxy_url, "image_id": str(first_image.id)}
