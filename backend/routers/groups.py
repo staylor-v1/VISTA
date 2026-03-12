@@ -7,6 +7,7 @@ from typing import List, Optional
 
 import utils.crud as crud
 from core import schemas, models
+from core.config import settings
 from core.database import get_db
 from utils.dependencies import get_current_user, get_project_or_403
 from utils.cache_manager import get_cache
@@ -173,7 +174,13 @@ async def delete_group(
     """Delete a group. Optionally also soft-deletes its images."""
     group = await _get_group_or_403(group_id, db, current_user)
     project_id = group.project_id
-    await crud.delete_image_group(db, group, delete_images=delete_images, deleted_by=current_user.email)
+    await crud.delete_image_group(
+        db, group,
+        delete_images=delete_images,
+        deleted_by=current_user.email,
+        actor_user_id=current_user.id,
+        retention_days=settings.IMAGE_DELETE_RETENTION_DAYS,
+    )
     _invalidate_project_image_cache(project_id)
 
 
