@@ -116,6 +116,21 @@ class TestGroupCRUD:
         assert data["identifier"] == "NEW"
         assert data["display_name"] == "Updated"
 
+    def test_clear_display_name_to_null(self, client, _setup_project):
+        project_id = _setup_project
+        create_resp = client.post(
+            f"/api/projects/{project_id}/groups",
+            json={"identifier": "DN-TEST", "display_name": "Has Name"},
+        )
+        group_id = create_resp.json()["id"]
+        assert create_resp.json()["display_name"] == "Has Name"
+        resp = client.patch(
+            f"/api/groups/{group_id}",
+            json={"display_name": None},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["display_name"] is None
+
     def test_delete_group_unlinks_images(self, client, _setup_project_and_images):
         project_id, img1, img2 = _setup_project_and_images
         # Create group and assign images
