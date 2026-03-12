@@ -142,7 +142,7 @@ async def update_group(
 ):
     """Update a group's identifier or display_name."""
     group = await _get_group_or_403(group_id, db, current_user)
-    if body.identifier and body.identifier != group.identifier:
+    if body.identifier is not None and body.identifier != group.identifier:
         existing = await crud.get_image_group_by_identifier(db, group.project_id, body.identifier)
         if existing:
             raise HTTPException(
