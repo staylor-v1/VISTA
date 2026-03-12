@@ -1171,19 +1171,6 @@ async def get_aggregate_review_status_for_group(db: AsyncSession, group_id: uuid
     return None
 
 
-async def get_first_image_for_group(db: AsyncSession, group_id: uuid.UUID) -> Optional[models.DataInstance]:
-    result = await db.execute(
-        select(models.DataInstance)
-        .where(
-            models.DataInstance.group_id == group_id,
-            models.DataInstance.deleted_at.is_(None),
-        )
-        .order_by(models.DataInstance.created_at)
-        .limit(1)
-    )
-    return result.scalars().first()
-
-
 async def count_ungrouped_images(db: AsyncSession, project_id: uuid.UUID) -> int:
     """Return the count of non-deleted images with no group assignment."""
     from sqlalchemy import func as _func
