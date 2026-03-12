@@ -970,15 +970,34 @@ async def update_image_group(
 
 
 async def delete_image_group(
-    db: AsyncSession, group: models.ImageGroup, delete_images: bool = False, deleted_by: Optional[str] = None
+    db: AsyncSession, group: models.ImageGroup, delete_images: bool = False, deleted_by: Optional[str] = None,
+    actor_user_id: Optional[uuid.UUID] = None, retention_days: int = 60,
 ) -> None:
     if delete_images:
-        # Soft-delete images that belong to this group (set deleted_at = now)
-        await db.execute(
-            update(models.DataInstance)
-            .where(models.DataInstance.group_id == group.id)
-            .values(deleted_at=func.now(), deletion_reason="Group deleted")
+        # Fetch non-deleted images belonging to this group
+        result = await db.execute(
+            select(models.DataInstance).where(
+                models.DataInstance.group_id == group.id,
+                models.DataInstance.deleted_at.is_(None),
+            )
         )
+        affected_images = list(result.scalars().all())
+        for img in affected_images:
+            prev_state = {"deleted_at": None, "group_id": str(group.id)}
+            await soft_delete_image(
+                db, img,
+                actor_user_id=actor_user_id,
+                reason="Group deleted",
+                retention_days=retention_days,
+            )
+            await create_image_deletion_event(
+                db,
+                image=img,
+                actor_user_id=actor_user_id,
+                action="soft_delete",
+                reason="Group deleted",
+                previous_state=prev_state,
+            )
     else:
         # Nullify group_id on member images so they become ungrouped
         await db.execute(
