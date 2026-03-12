@@ -229,9 +229,21 @@ class TestGroupCRUD:
         client.post(f"/api/groups/{group_id}/images", json=[img1])
         resp = client.delete(f"/api/groups/{group_id}?delete_images=true")
         assert resp.status_code == 204
-        # Image should be soft-deleted
+        # Image should be soft-deleted with full retention fields
         img_resp = client.get(f"/api/images/{img1}", params={"include_deleted": "true"})
-        assert img_resp.json()["deleted_at"] is not None
+        img_data = img_resp.json()
+        assert img_data["deleted_at"] is not None
+        assert img_data["pending_hard_delete_at"] is not None
+        assert img_data["deletion_reason"] == "Group deleted"
+        # Audit event should exist
+        events_resp = client.get(
+            f"/api/projects/{project_id}/images/deletion-events",
+            params={"image_id": img1},
+        )
+        assert events_resp.status_code == 200
+        events = events_resp.json()["events"]
+        assert len(events) >= 1
+        assert events[0]["action"] == "soft_delete"
 
 
 class TestGroupImageAssignment:
