@@ -1137,40 +1137,12 @@ async def remove_images_from_group(
 
 
 async def get_aggregate_review_status_for_group(db: AsyncSession, group_id: uuid.UUID) -> Optional[str]:
-    """Compute aggregate review status for a group based on member image statuses.
+    """Compute aggregate review status for a single group.
 
-    Priority:
-      1. Any reject_confirmed  -> 'reject_confirmed'
-      2. Any reject_pending    -> 'reject_pending'
-      3. All pass              -> 'pass'
-      4. Otherwise             -> None (mix of pass/unreviewed or all unreviewed)
+    Delegates to the batch version to avoid duplicating priority logic.
     """
-    image_ids_result = await db.execute(
-        select(models.DataInstance.id)
-        .where(
-            models.DataInstance.group_id == group_id,
-            models.DataInstance.deleted_at.is_(None),
-        )
-    )
-    image_ids = [row[0] for row in image_ids_result.all()]
-    if not image_ids:
-        return None
-
-    statuses = await get_review_status_for_images(db, image_ids)
-    status_values = list(statuses.values())
-
-    if "reject_confirmed" in status_values:
-        return "reject_confirmed"
-    if "reject_pending" in status_values:
-        return "reject_pending"
-    # All must be "pass" (non-None) for the group to be pass
-    # All images must be explicitly reviewed as 'pass' (no unreviewed images) for the
-    # group aggregate to show 'pass'. Partially reviewed groups (mix of pass and
-    # unreviewed) return None rather than 'pass' to avoid false positives.
-    non_none = [s for s in status_values if s is not None]
-    if non_none and all(s == "pass" for s in non_none) and len(non_none) == len(image_ids):
-        return "pass"
-    return None
+    result = await get_aggregate_review_statuses_for_groups(db, [group_id])
+    return result.get(group_id)
 
 
 async def count_ungrouped_images(db: AsyncSession, project_id: uuid.UUID) -> int:
@@ -1190,10 +1162,8 @@ async def count_ungrouped_images(db: AsyncSession, project_id: uuid.UUID) -> int
 
 async def has_image_groups(db: AsyncSession, project_id: uuid.UUID) -> bool:
     """Return True if the project has at least one image group."""
-    from sqlalchemy import func as _func
+    from sqlalchemy import exists as _exists
     result = await db.execute(
-        select(_func.count())
-        .select_from(models.ImageGroup)
-        .where(models.ImageGroup.project_id == project_id)
+        select(_exists().where(models.ImageGroup.project_id == project_id))
     )
-    return (result.scalar() or 0) > 0
+    return result.scalar()
