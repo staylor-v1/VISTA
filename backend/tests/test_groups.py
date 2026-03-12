@@ -85,6 +85,24 @@ class TestGroupCRUD:
         assert data["total"] == 1
         assert data["groups"][0]["identifier"] == "ABC"
 
+    def test_search_escapes_like_wildcards(self, client, _setup_project):
+        project_id = _setup_project
+        client.post(f"/api/projects/{project_id}/groups", json={"identifier": "100%_done"})
+        client.post(f"/api/projects/{project_id}/groups", json={"identifier": "100X done"})
+        client.post(f"/api/projects/{project_id}/groups", json={"identifier": "1005 done"})
+        # Searching for literal "100%" should only match the first group
+        resp = client.get(f"/api/projects/{project_id}/groups", params={"search": "100%"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["groups"][0]["identifier"] == "100%_done"
+        # Searching for literal "_done" should only match the first group
+        resp = client.get(f"/api/projects/{project_id}/groups?search=_done")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["groups"][0]["identifier"] == "100%_done"
+
     def test_get_group(self, client, _setup_project):
         project_id = _setup_project
         create_resp = client.post(
