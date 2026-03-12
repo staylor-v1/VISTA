@@ -1,6 +1,7 @@
 """Router for image group management."""
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 
@@ -112,7 +113,13 @@ async def create_group(
         identifier=body.identifier,
         display_name=body.display_name,
     )
-    group = await crud.create_image_group(db, create_data, created_by=current_user.email)
+    try:
+        group = await crud.create_image_group(db, create_data, created_by=current_user.email)
+    except IntegrityError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Group with identifier '{body.identifier}' already exists in this project",
+        )
     return await _enrich_group(group, db)
 
 
