@@ -314,6 +314,22 @@ class TestGroupImageFilter:
         assert img1 not in ids
         assert img2 in ids
 
+    def test_deleted_only_with_group_id_returns_400(self, client, _setup_project):
+        project_id = _setup_project
+        resp = client.get(
+            f"/api/projects/{project_id}/images",
+            params={"deleted_only": "true", "group_id": str(uuid.uuid4())},
+        )
+        assert resp.status_code == 400
+
+    def test_deleted_only_with_ungrouped_returns_400(self, client, _setup_project):
+        project_id = _setup_project
+        resp = client.get(
+            f"/api/projects/{project_id}/images",
+            params={"deleted_only": "true", "ungrouped": "true"},
+        )
+        assert resp.status_code == 400
+
 
 class TestHasGroups:
     """Test the has-groups endpoint."""
