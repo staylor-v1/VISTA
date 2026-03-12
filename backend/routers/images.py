@@ -124,6 +124,8 @@ async def list_images_in_project(
     """
     if group_id is not None and ungrouped:
         raise HTTPException(status_code=400, detail="group_id and ungrouped=true are mutually exclusive")
+    if deleted_only and (group_id is not None or ungrouped):
+        raise HTTPException(status_code=400, detail="group_id and ungrouped filters cannot be combined with deleted_only")
 
     # Check project access BEFORE cache lookup to prevent cross-user data leakage
     try:
