@@ -89,6 +89,19 @@ const renderImageGallery = (props = {}) => {
 describe('ImageGallery', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
+    global.fetch = jest.fn(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({}),
+      })
+    );
+  });
+
+  afterEach(() => {
+    if (global.fetch && global.fetch.mockRestore) {
+      global.fetch.mockRestore();
+    }
+    delete global.fetch;
   });
 
   describe('Regular Images', () => {
