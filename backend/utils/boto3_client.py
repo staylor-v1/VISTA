@@ -209,7 +209,7 @@ async def upload_file_to_s3(
             })
 
         # Run blocking boto3 call in a thread to avoid blocking the event loop
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None,
             lambda: boto3_client.upload_fileobj(

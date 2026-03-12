@@ -409,7 +409,6 @@ async def restore_image(db: AsyncSession, image: models.DataInstance):
     return image
 
 async def mark_image_storage_deleted(db: AsyncSession, image: models.DataInstance, *, actor_user_id: Optional[uuid.UUID], hard: bool):
-    from sqlalchemy.sql import func as _func
     await db.execute(
         update(models.DataInstance)
         .where(models.DataInstance.id == image.id)
@@ -968,7 +967,6 @@ async def delete_image_group(
 ) -> None:
     if delete_images:
         # Soft-delete images that belong to this group (set deleted_at = now)
-        from sqlalchemy.sql import func as _func
         await db.execute(
             update(models.DataInstance)
             .where(models.DataInstance.group_id == group.id)
