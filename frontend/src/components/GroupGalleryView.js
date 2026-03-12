@@ -17,6 +17,7 @@ function GroupGalleryView() {
 
   const fetchImages = useCallback(async (opts = {}) => {
     setLoading(true);
+    setError(null);
     try {
       const baseParams = new URLSearchParams();
       if (isUngrouped) {
