@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-const MIN_DELETE_REASON = 10;
+const MIN_DELETE_REASON = 5;
 const BATCH_SIZE = 15;
 
 function BulkDeleteModal({ projectId, selectedImages, onClose, onImageUpdated, refreshProjectImages, onClearSelection }) {
