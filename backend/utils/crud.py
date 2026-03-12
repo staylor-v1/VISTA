@@ -942,7 +942,11 @@ async def create_image_group(
 ) -> models.ImageGroup:
     db_group = models.ImageGroup(**group.model_dump())
     db.add(db_group)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise
     await db.refresh(db_group)
     log_db_operation("CREATE", "image_groups", db_group.id, created_by or "system", {"project_id": str(group.project_id), "identifier": group.identifier})
     return db_group
