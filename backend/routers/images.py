@@ -120,7 +120,11 @@ async def list_images_in_project(
     It first verifies project existence and user access, then uses a per-user
     cache for performance before falling back to the database.
     Optionally filter by group_id, or pass ungrouped=true to get images with no group.
+    These two filters are mutually exclusive.
     """
+    if group_id is not None and ungrouped:
+        raise HTTPException(status_code=400, detail="group_id and ungrouped=true are mutually exclusive")
+
     # Check project access BEFORE cache lookup to prevent cross-user data leakage
     try:
         await get_project_or_403(project_id, db, current_user)
