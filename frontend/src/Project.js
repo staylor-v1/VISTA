@@ -146,6 +146,9 @@ function Project() {
       if (resp.ok) {
         const data = await resp.json();
         setHasGroups(data.has_groups);
+        if (data.has_groups) {
+          window.scrollTo(0, 0);
+        }
       }
     } catch (_) {}
   };
@@ -309,12 +312,10 @@ function Project() {
             
             {/* Quick Upload Section */}
             <div className="upload-section">
-              <ImageUploader 
-                projectId={id} 
-                onUploadComplete={handleUploadComplete} 
-                loading={loading} 
-                setLoading={setLoading} 
-                setError={setError} 
+              <ImageUploader
+                projectId={id}
+                onUploadComplete={handleUploadComplete}
+                setError={setError}
               />
             </div>
             
