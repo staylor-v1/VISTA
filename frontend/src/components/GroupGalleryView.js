@@ -37,7 +37,7 @@ function GroupGalleryView() {
         params.set('skip', String(skip));
         params.set('limit', String(PAGE_SIZE));
         const resp = await fetch(`/api/projects/${projectId}/images?${params}`);
-        if (!resp.ok) break;
+        if (!resp.ok) throw new Error(`Failed to load images (HTTP ${resp.status})`);
         const batch = await resp.json();
         allImages = allImages.concat(batch);
         hasMore = batch.length === PAGE_SIZE;
