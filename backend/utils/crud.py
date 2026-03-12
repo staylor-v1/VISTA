@@ -952,7 +952,7 @@ async def create_image_group(
 async def update_image_group(
     db: AsyncSession, group: models.ImageGroup, update_data: schemas.ImageGroupUpdate, updated_by: Optional[str] = None
 ) -> models.ImageGroup:
-    values = {k: v for k, v in update_data.model_dump().items() if v is not None}
+    values = update_data.model_dump(exclude_unset=True)
     if values:
         await db.execute(
             update(models.ImageGroup).where(models.ImageGroup.id == group.id).values(**values)
