@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import select, update, delete, and_, text
+from sqlalchemy import select, update, delete, and_, text, func, exists, case, distinct
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -86,7 +86,7 @@ async def list_ml_analyses_for_image(db: AsyncSession, image_id: uuid.UUID, skip
 
 async def count_ml_analyses_for_image(db: AsyncSession, image_id: uuid.UUID) -> int:
     """Count total ML analyses for an image."""
-    from sqlalchemy import func
+
     result = await db.execute(
         select(func.count()).select_from(models.MLAnalysis).where(models.MLAnalysis.image_id == image_id)
     )
@@ -119,7 +119,7 @@ async def list_ml_annotations(db: AsyncSession, analysis_id: uuid.UUID, skip: in
 
 async def count_ml_annotations(db: AsyncSession, analysis_id: uuid.UUID) -> int:
     """Count total annotations for an analysis."""
-    from sqlalchemy import func
+
     result = await db.execute(
         select(func.count()).select_from(models.MLAnnotation).where(models.MLAnnotation.analysis_id == analysis_id)
     )
@@ -321,9 +321,9 @@ async def get_deleted_images_for_project(db: AsyncSession, project_id: uuid.UUID
     return result.scalars().all()
 
 async def count_deleted_images_for_project(db: AsyncSession, project_id: uuid.UUID) -> int:
-    from sqlalchemy import func as _func
+
     result = await db.execute(
-        select(_func.count())
+        select(func.count())
         .select_from(models.DataInstance)
         .where(models.DataInstance.project_id == project_id)
         .where(models.DataInstance.deleted_at.isnot(None))
@@ -353,8 +353,8 @@ async def list_image_deletion_events(db: AsyncSession, project_id: uuid.UUID, im
     return result.scalars().all()
 
 async def count_image_deletion_events(db: AsyncSession, project_id: uuid.UUID, image_id: Optional[uuid.UUID] = None) -> int:
-    from sqlalchemy import func as _func
-    stmt = select(_func.count()).select_from(models.ImageDeletionEvent).where(models.ImageDeletionEvent.project_id == project_id)
+
+    stmt = select(func.count()).select_from(models.ImageDeletionEvent).where(models.ImageDeletionEvent.project_id == project_id)
     if image_id:
         stmt = stmt.where(models.ImageDeletionEvent.image_id == image_id)
     result = await db.execute(stmt)
@@ -415,7 +415,7 @@ async def mark_image_storage_deleted(db: AsyncSession, image: models.DataInstanc
         .where(models.DataInstance.id == image.id)
         .values(
             storage_deleted=True,
-            hard_deleted_at=_func.coalesce(models.DataInstance.hard_deleted_at, _func.now()),
+            hard_deleted_at=func.coalesce(models.DataInstance.hard_deleted_at, func.now()),
             hard_deleted_by_user_id=actor_user_id if hard else models.DataInstance.hard_deleted_by_user_id
         )
     )
@@ -799,11 +799,11 @@ async def delete_image_review(db: AsyncSession, review_id: uuid.UUID, deleted_by
 
 async def get_review_status_for_project(db: AsyncSession, project_id: uuid.UUID) -> Dict[str, Any]:
     """Return aggregate review statistics for a project."""
-    from sqlalchemy import func as _func, case, distinct
+
 
     # Total images (non-deleted)
     total_result = await db.execute(
-        select(_func.count())
+        select(func.count())
         .select_from(models.DataInstance)
         .where(
             models.DataInstance.project_id == project_id,
@@ -817,7 +817,7 @@ async def get_review_status_for_project(db: AsyncSession, project_id: uuid.UUID)
         select(
             models.ImageReview.image_id,
             models.ImageReview.status,
-            _func.row_number().over(
+            func.row_number().over(
                 partition_by=models.ImageReview.image_id,
                 order_by=models.ImageReview.created_at.desc()
             ).label("rn")
@@ -837,7 +837,7 @@ async def get_review_status_for_project(db: AsyncSession, project_id: uuid.UUID)
     counts_result = await db.execute(
         select(
             latest.c.status,
-            _func.count().label("cnt"),
+            func.count().label("cnt"),
         ).group_by(latest.c.status)
     )
     status_counts = {row.status: row.cnt for row in counts_result}
@@ -858,13 +858,13 @@ async def get_review_status_for_images(db: AsyncSession, image_ids: List[uuid.UU
     """Return the latest review status for each image id."""
     if not image_ids:
         return {}
-    from sqlalchemy import func as _func
+
 
     latest_review = (
         select(
             models.ImageReview.image_id,
             models.ImageReview.status,
-            _func.row_number().over(
+            func.row_number().over(
                 partition_by=models.ImageReview.image_id,
                 order_by=models.ImageReview.created_at.desc()
             ).label("rn")
@@ -972,7 +972,7 @@ async def delete_image_group(
         await db.execute(
             update(models.DataInstance)
             .where(models.DataInstance.group_id == group.id)
-            .values(deleted_at=_func.now(), deletion_reason="Group deleted")
+            .values(deleted_at=func.now(), deletion_reason="Group deleted")
         )
     else:
         # Nullify group_id on member images so they become ungrouped
@@ -1005,8 +1005,8 @@ async def list_image_groups(
 async def count_image_groups(
     db: AsyncSession, project_id: uuid.UUID, search: Optional[str] = None
 ) -> int:
-    from sqlalchemy import func as _func
-    q = select(_func.count()).select_from(models.ImageGroup).where(models.ImageGroup.project_id == project_id)
+
+    q = select(func.count()).select_from(models.ImageGroup).where(models.ImageGroup.project_id == project_id)
     if search:
         escaped = search.replace('/', '//').replace('%', '/%').replace('_', '/_')
         q = q.where(models.ImageGroup.identifier.ilike(f"%{escaped}%", escape='/'))
@@ -1018,11 +1018,11 @@ async def get_image_counts_for_groups(db: AsyncSession, group_ids: List[uuid.UUI
     """Return image counts for multiple groups in a single query."""
     if not group_ids:
         return {}
-    from sqlalchemy import func as _func
+
     result = await db.execute(
         select(
             models.DataInstance.group_id,
-            _func.count(models.DataInstance.id),
+            func.count(models.DataInstance.id),
         )
         .where(
             models.DataInstance.group_id.in_(group_ids),
@@ -1046,7 +1046,7 @@ async def get_aggregate_review_statuses_for_groups(
     """
     if not group_ids:
         return {}
-    from sqlalchemy import func as _func
+
 
     # Get all non-deleted images with their group_id for the requested groups
     image_rows = await db.execute(
@@ -1091,9 +1091,9 @@ async def get_aggregate_review_statuses_for_groups(
 
 
 async def count_images_for_group(db: AsyncSession, group_id: uuid.UUID) -> int:
-    from sqlalchemy import func as _func
+
     result = await db.execute(
-        select(_func.count())
+        select(func.count())
         .select_from(models.DataInstance)
         .where(
             models.DataInstance.group_id == group_id,
@@ -1147,9 +1147,9 @@ async def get_aggregate_review_status_for_group(db: AsyncSession, group_id: uuid
 
 async def count_ungrouped_images(db: AsyncSession, project_id: uuid.UUID) -> int:
     """Return the count of non-deleted images with no group assignment."""
-    from sqlalchemy import func as _func
+
     result = await db.execute(
-        select(_func.count())
+        select(func.count())
         .select_from(models.DataInstance)
         .where(
             models.DataInstance.project_id == project_id,
@@ -1162,8 +1162,8 @@ async def count_ungrouped_images(db: AsyncSession, project_id: uuid.UUID) -> int
 
 async def has_image_groups(db: AsyncSession, project_id: uuid.UUID) -> bool:
     """Return True if the project has at least one image group."""
-    from sqlalchemy import exists as _exists
+
     result = await db.execute(
-        select(_exists().where(models.ImageGroup.project_id == project_id))
+        select(exists().where(models.ImageGroup.project_id == project_id))
     )
     return result.scalar()
