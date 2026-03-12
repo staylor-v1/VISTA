@@ -25,6 +25,7 @@ function Project() {
   const [deletedOnly, setDeletedOnly] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [hasGroups, setHasGroups] = useState(false);
+  const [groupSearch, setGroupSearch] = useState('');
 
   const fetchImages = useCallback(async (projId, opts = {}) => {
     const inc = opts.includeDeleted ?? includeDeleted;
@@ -270,8 +271,19 @@ function Project() {
         
         {!loading && (
           <div className="project-content">
-            {/* Review Status Summary */}
-            <ReviewStatusSummary projectId={id} />
+            {/* Review Status Summary + group search */}
+            <div className="review-summary-row">
+              <ReviewStatusSummary projectId={id} />
+              {hasGroups && (
+                <input
+                  type="text"
+                  className="search-input group-search-inline"
+                  placeholder="Search groups..."
+                  value={groupSearch}
+                  onChange={(e) => setGroupSearch(e.target.value)}
+                />
+              )}
+            </div>
 
             {/* Main Gallery Section - grouped or flat */}
             {hasGroups ? (
@@ -280,6 +292,7 @@ function Project() {
                   projectId={id}
                   projectName={project?.name}
                   onBack={() => navigate('/')}
+                  search={groupSearch}
                 />
               </div>
             ) : (
