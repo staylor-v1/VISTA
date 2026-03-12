@@ -65,6 +65,21 @@ class TestGroupCRUD:
         resp = client.post(f"/api/projects/{project_id}/groups", json={"identifier": "DUP"})
         assert resp.status_code == 409
 
+    def test_create_group_strips_whitespace(self, client, _setup_project):
+        project_id = _setup_project
+        resp = client.post(
+            f"/api/projects/{project_id}/groups",
+            json={"identifier": "  SN001  "},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["identifier"] == "SN001"
+        # Creating with the stripped version should conflict
+        resp2 = client.post(
+            f"/api/projects/{project_id}/groups",
+            json={"identifier": "SN001"},
+        )
+        assert resp2.status_code == 409
+
     def test_list_groups_with_data(self, client, _setup_project):
         project_id = _setup_project
         client.post(f"/api/projects/{project_id}/groups", json={"identifier": "A"})
