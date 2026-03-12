@@ -4,7 +4,6 @@ import { useNavigate } from 'react-router-dom';
 function GroupedImagesPage({ projectId, projectName, onBack, search }) {
   const navigate = useNavigate();
   const [groups, setGroups] = useState([]);
-  const [total, setTotal] = useState(0);
   const [ungroupedCount, setUngroupedCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -26,7 +25,6 @@ function GroupedImagesPage({ projectId, projectName, onBack, search }) {
       if (!resp.ok) throw new Error(`HTTP error ${resp.status}`);
       const data = await resp.json();
       setGroups(data.groups || []);
-      setTotal(data.total || 0);
     } catch (err) {
       setError(err.message);
     } finally {
