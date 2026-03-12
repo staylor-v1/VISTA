@@ -149,6 +149,44 @@ class TestGroupCRUD:
         assert resp.status_code == 200
         assert resp.json()["display_name"] is None
 
+    def test_update_with_null_identifier_preserves_original(self, client, _setup_project):
+        """Sending identifier=null should not bypass the duplicate check or clear the identifier."""
+        project_id = _setup_project
+        # Create two groups
+        client.post(f"/api/projects/{project_id}/groups", json={"identifier": "KEEP"})
+        g2 = client.post(f"/api/projects/{project_id}/groups", json={"identifier": "OTHER"}).json()
+        # PATCH with identifier=null should leave identifier unchanged
+        resp = client.patch(
+            f"/api/groups/{g2['id']}",
+            json={"identifier": None, "display_name": "Updated"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["identifier"] == "OTHER"
+        assert resp.json()["display_name"] == "Updated"
+
+    def test_update_duplicate_identifier_returns_409(self, client, _setup_project):
+        """Changing identifier to one that already exists should return 409."""
+        project_id = _setup_project
+        client.post(f"/api/projects/{project_id}/groups", json={"identifier": "TAKEN"})
+        g2 = client.post(f"/api/projects/{project_id}/groups", json={"identifier": "FREE"}).json()
+        resp = client.patch(
+            f"/api/groups/{g2['id']}",
+            json={"identifier": "TAKEN"},
+        )
+        assert resp.status_code == 409
+
+    def test_empty_patch_is_noop(self, client, _setup_project):
+        """An empty PATCH body should succeed without modifying the group."""
+        project_id = _setup_project
+        created = client.post(
+            f"/api/projects/{project_id}/groups",
+            json={"identifier": "STABLE", "display_name": "Original"},
+        ).json()
+        resp = client.patch(f"/api/groups/{created['id']}", json={})
+        assert resp.status_code == 200
+        assert resp.json()["identifier"] == "STABLE"
+        assert resp.json()["display_name"] == "Original"
+
     def test_delete_group_unlinks_images(self, client, _setup_project_and_images):
         project_id, img1, img2 = _setup_project_and_images
         # Create group and assign images
