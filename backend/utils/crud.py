@@ -995,7 +995,8 @@ async def list_image_groups(
 ) -> List[models.ImageGroup]:
     q = select(models.ImageGroup).where(models.ImageGroup.project_id == project_id)
     if search:
-        q = q.where(models.ImageGroup.identifier.ilike(f"%{search}%"))
+        escaped = search.replace('/', '//').replace('%', '/%').replace('_', '/_')
+        q = q.where(models.ImageGroup.identifier.ilike(f"%{escaped}%", escape='/'))
     q = q.order_by(models.ImageGroup.identifier).offset(skip).limit(limit)
     result = await db.execute(q)
     return list(result.scalars().all())
@@ -1007,7 +1008,8 @@ async def count_image_groups(
     from sqlalchemy import func as _func
     q = select(_func.count()).select_from(models.ImageGroup).where(models.ImageGroup.project_id == project_id)
     if search:
-        q = q.where(models.ImageGroup.identifier.ilike(f"%{search}%"))
+        escaped = search.replace('/', '//').replace('%', '/%').replace('_', '/_')
+        q = q.where(models.ImageGroup.identifier.ilike(f"%{escaped}%", escape='/'))
     result = await db.execute(q)
     return result.scalar() or 0
 
