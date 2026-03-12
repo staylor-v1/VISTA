@@ -952,13 +952,16 @@ async def update_image_group(
     db: AsyncSession, group: models.ImageGroup, update_data: schemas.ImageGroupUpdate, updated_by: Optional[str] = None
 ) -> models.ImageGroup:
     values = update_data.model_dump(exclude_unset=True)
+    # identifier is NOT NULL in the schema; drop it if explicitly set to None
+    if "identifier" in values and values["identifier"] is None:
+        del values["identifier"]
     if values:
         await db.execute(
             update(models.ImageGroup).where(models.ImageGroup.id == group.id).values(**values)
         )
         await db.commit()
         await db.refresh(group)
-    log_db_operation("UPDATE", "image_groups", group.id, updated_by or "system", values)
+        log_db_operation("UPDATE", "image_groups", group.id, updated_by or "system", values)
     return group
 
 
