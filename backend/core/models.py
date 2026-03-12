@@ -44,7 +44,7 @@ class ImageGroup(Base):
     __tablename__ = "image_groups"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False, index=True)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     identifier = Column(String(255), nullable=False)
     display_name = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -63,7 +63,7 @@ class DataInstance(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False)
-    group_id = Column(UUID(as_uuid=True), ForeignKey("image_groups.id"), nullable=True, index=True)
+    group_id = Column(UUID(as_uuid=True), ForeignKey("image_groups.id", ondelete="SET NULL"), nullable=True, index=True)
     filename = Column(String(255), nullable=False)
     object_storage_key = Column(String(1024), nullable=False, unique=True)
     content_type = Column(String(100), nullable=True)
