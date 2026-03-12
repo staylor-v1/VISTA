@@ -177,7 +177,7 @@ class TestGroupCRUD:
         resp = client.delete(f"/api/groups/{group_id}?delete_images=true")
         assert resp.status_code == 204
         # Image should be soft-deleted
-        img_resp = client.get(f"/api/images/{img1}?include_deleted=true")
+        img_resp = client.get(f"/api/images/{img1}", params={"include_deleted": "true"})
         assert img_resp.json()["deleted_at"] is not None
 
 
@@ -271,6 +271,36 @@ class TestHasGroups:
         resp = client.get(f"/api/projects/{project_id}/has-groups")
         assert resp.status_code == 200
         assert resp.json()["has_groups"] is True
+
+
+class TestUngroupedCount:
+    """Test the ungrouped-count endpoint."""
+
+    def test_all_ungrouped(self, client, _setup_project_and_images):
+        project_id, img1, img2 = _setup_project_and_images
+        resp = client.get(f"/api/projects/{project_id}/ungrouped-count")
+        assert resp.status_code == 200
+        assert resp.json()["count"] == 2
+
+    def test_some_grouped(self, client, _setup_project_and_images):
+        project_id, img1, img2 = _setup_project_and_images
+        group = client.post(
+            f"/api/projects/{project_id}/groups", json={"identifier": "G1"}
+        ).json()
+        client.post(f"/api/groups/{group['id']}/images", json=[img1])
+        resp = client.get(f"/api/projects/{project_id}/ungrouped-count")
+        assert resp.status_code == 200
+        assert resp.json()["count"] == 1
+
+    def test_all_grouped(self, client, _setup_project_and_images):
+        project_id, img1, img2 = _setup_project_and_images
+        group = client.post(
+            f"/api/projects/{project_id}/groups", json={"identifier": "G1"}
+        ).json()
+        client.post(f"/api/groups/{group['id']}/images", json=[img1, img2])
+        resp = client.get(f"/api/projects/{project_id}/ungrouped-count")
+        assert resp.status_code == 200
+        assert resp.json()["count"] == 0
 
 
 class TestUploadWithGroupIdentifier:
