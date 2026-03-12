@@ -261,6 +261,27 @@ class TestGroupImageAssignment:
         detail = client.get(f"/api/groups/{group_id}").json()
         assert detail["image_count"] == 2
 
+    def test_assign_skips_soft_deleted_images(self, client, _setup_project_and_images):
+        """Soft-deleted images should not be assignable to a group."""
+        project_id, img1, img2 = _setup_project_and_images
+        # Soft-delete img1
+        client.request(
+            "DELETE",
+            f"/api/projects/{project_id}/images/{img1}",
+            json={"reason": "test soft-delete for group assignment"},
+        )
+        group = client.post(
+            f"/api/projects/{project_id}/groups",
+            json={"identifier": "G-DEL"},
+        ).json()
+        group_id = group["id"]
+        resp = client.post(f"/api/groups/{group_id}/images", json=[img1, img2])
+        assert resp.status_code == 200
+        # Only the live image should have been assigned
+        assert resp.json()["assigned"] == 1
+        detail = client.get(f"/api/groups/{group_id}").json()
+        assert detail["image_count"] == 1
+
 
 class TestGroupImageFilter:
     """Test filtering images by group in the images list endpoint."""

@@ -1112,6 +1112,7 @@ async def assign_images_to_group(
         .where(
             models.DataInstance.id.in_(image_ids),
             models.DataInstance.project_id == project_id,
+            models.DataInstance.deleted_at.is_(None),
         )
         .values(group_id=group_id)
     )
