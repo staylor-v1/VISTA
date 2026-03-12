@@ -50,12 +50,22 @@ class ImageGroupBase(BaseModel):
     identifier: str = Field(..., min_length=1, max_length=255)
     display_name: Optional[str] = Field(None, max_length=255)
 
+    @field_validator("identifier")
+    @classmethod
+    def strip_identifier(cls, v: str) -> str:
+        return v.strip()
+
 class ImageGroupCreate(ImageGroupBase):
     project_id: uuid.UUID
 
 class ImageGroupUpdate(BaseModel):
     identifier: Optional[str] = Field(None, min_length=1, max_length=255)
     display_name: Optional[str] = Field(None, max_length=255)
+
+    @field_validator("identifier")
+    @classmethod
+    def strip_identifier(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v is not None else v
 
 class ImageGroup(ImageGroupBase):
     id: uuid.UUID
