@@ -1,11 +1,15 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+const PAGE_SIZE = 200;
+
 function GroupedImagesPage({ projectId, projectName, onBack, search }) {
   const navigate = useNavigate();
   const [groups, setGroups] = useState([]);
+  const [total, setTotal] = useState(0);
   const [ungroupedCount, setUngroupedCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(null);
   const [debouncedSearch, setDebouncedSearch] = useState(search || '');
 
@@ -19,18 +23,38 @@ function GroupedImagesPage({ projectId, projectName, onBack, search }) {
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams({ limit: '200' });
+      const params = new URLSearchParams({ limit: String(PAGE_SIZE), skip: '0' });
       if (searchVal) params.set('search', searchVal);
       const resp = await fetch(`/api/projects/${projectId}/groups?${params}`);
       if (!resp.ok) throw new Error(`HTTP error ${resp.status}`);
       const data = await resp.json();
       setGroups(data.groups || []);
+      setTotal(data.total || 0);
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
   }, [projectId]);
+
+  const loadMore = useCallback(async () => {
+    setLoadingMore(true);
+    try {
+      const params = new URLSearchParams({
+        limit: String(PAGE_SIZE),
+        skip: String(groups.length),
+      });
+      if (debouncedSearch) params.set('search', debouncedSearch);
+      const resp = await fetch(`/api/projects/${projectId}/groups?${params}`);
+      if (!resp.ok) throw new Error(`HTTP error ${resp.status}`);
+      const data = await resp.json();
+      setGroups(prev => [...prev, ...(data.groups || [])]);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [projectId, groups.length, debouncedSearch]);
 
   const fetchUngroupedCount = useCallback(async () => {
     try {
@@ -110,6 +134,18 @@ function GroupedImagesPage({ projectId, projectName, onBack, search }) {
               </div>
             </div>
           ))}
+
+          {groups.length < total && (
+            <div style={{ textAlign: 'center', padding: '12px 0' }}>
+              <button
+                className="btn btn-secondary"
+                onClick={loadMore}
+                disabled={loadingMore}
+              >
+                {loadingMore ? 'Loading...' : `Load more (${groups.length} of ${total})`}
+              </button>
+            </div>
+          )}
 
           {ungroupedCount > 0 && (
             <div
