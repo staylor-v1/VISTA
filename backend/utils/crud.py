@@ -1115,7 +1115,7 @@ async def assign_images_to_group(
         .values(group_id=group_id)
     )
     await db.commit()
-    log_db_operation("UPDATE", "data_instances", group_id, assigned_by or "system", {"assigned_count": result.rowcount})
+    log_db_operation("UPDATE", "image_groups", group_id, assigned_by or "system", {"action": "assign_images", "image_ids": [str(i) for i in image_ids], "assigned_count": result.rowcount})
     return result.rowcount
 
 
@@ -1132,7 +1132,7 @@ async def remove_images_from_group(
         .values(group_id=None)
     )
     await db.commit()
-    log_db_operation("UPDATE", "data_instances", group_id, removed_by or "system", {"removed_count": result.rowcount})
+    log_db_operation("UPDATE", "image_groups", group_id, removed_by or "system", {"action": "remove_images", "image_ids": [str(i) for i in image_ids], "removed_count": result.rowcount})
     return result.rowcount
 
 
