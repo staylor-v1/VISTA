@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import ImageView from '../ImageView';
 
@@ -432,286 +432,329 @@ describe('ImageView', () => {
   });
 
   describe('Gallery State Navigation', () => {
-    const setupNavFetch = (projectImages = mockNavImages) => {
-      // Set current image to img-b so we can verify index positioning
-      mockParams = { imageId: 'img-b' };
+    // Navigation uses a 300ms setTimeout for transitions
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.runOnlyPendingTimers();
+      jest.useRealTimers();
+    });
+
+    const setupNavFetch = ({ currentImage = mockImageB, projectImages = mockNavImages, reviewStatuses = null } = {}) => {
+      mockParams = { imageId: currentImage.id };
 
       fetch.mockImplementation((url) => {
         if (url === '/api/users/me') return Promise.resolve({ ok: false, status: 401 });
-        if (url === '/api/images/img-b') return Promise.resolve({ ok: true, json: async () => mockImageB });
+        if (url === `/api/images/${currentImage.id}`) return Promise.resolve({ ok: true, json: async () => currentImage });
         if (url.startsWith('/api/projects/test-project-id/images')) return Promise.resolve({ ok: true, json: async () => projectImages });
         if (url.startsWith('/api/projects/test-project-id/classes')) return Promise.resolve({ ok: true, json: async () => [] });
         if (url.startsWith('/api/projects/test-project-id/image-review-statuses')) {
-          return Promise.resolve({
-            ok: true,
-            json: async () => ({ 'img-a': 'pass', 'img-b': 'unreviewed', 'img-c': 'pass' }),
-          });
+          if (reviewStatuses) {
+            return Promise.resolve({ ok: true, json: async () => reviewStatuses });
+          }
+          return Promise.resolve({ ok: false, status: 500 });
         }
         return Promise.resolve({ ok: true, json: async () => [] });
       });
     };
 
-    test('sorts navigation images by name when gallery state has sortBy=name', async () => {
+    // Wait for the component to finish loading and rendering the image
+    const waitForImageLoad = async (filename) => {
+      await waitFor(() => {
+        expect(screen.getByTestId('image-display')).toHaveTextContent(filename);
+      });
+    };
+
+    // Fire an arrow key and advance the 300ms transition timer
+    const pressArrowAndAdvance = (direction) => {
+      fireEvent.keyDown(document, { key: direction });
+      act(() => {
+        jest.advanceTimersByTime(300);
+      });
+    };
+
+    test('ArrowRight navigates to next image in name-sorted order', async () => {
+      // Sort by name: [alpha, bravo, charlie]. img-b at index 1. Next = charlie (img-c).
       localStorage.setItem('gallery_state_test-project-id', JSON.stringify({
-        sortBy: 'name',
-        searchField: 'filename',
-        searchValue: '',
-        reviewFilter: 'all',
+        sortBy: 'name', searchField: 'filename', searchValue: '', reviewFilter: 'all',
       }));
       setupNavFetch();
-
       renderImageView();
+      await waitForImageLoad('bravo.png');
 
-      await waitFor(() => {
-        expect(screen.getByTestId('image-display')).toHaveTextContent('bravo.png');
-      });
+      pressArrowAndAdvance('ArrowRight');
 
-      // With sort by name: alpha, bravo, charlie -- img-b (bravo) should be index 1
-      // Verify the image loaded (navigation was set up correctly)
-      expect(fetch).toHaveBeenCalledWith('/api/images/img-b');
+      expect(mockNavigate).toHaveBeenCalledWith(
+        expect.stringContaining('/view/img-c?')
+      );
     });
 
-    test('sorts navigation images by size when gallery state has sortBy=size', async () => {
+    test('ArrowLeft navigates to previous image in name-sorted order', async () => {
+      // Sort by name: [alpha, bravo, charlie]. img-b at index 1. Prev = alpha (img-a).
       localStorage.setItem('gallery_state_test-project-id', JSON.stringify({
-        sortBy: 'size',
-        searchField: 'filename',
-        searchValue: '',
-        reviewFilter: 'all',
+        sortBy: 'name', searchField: 'filename', searchValue: '', reviewFilter: 'all',
       }));
       setupNavFetch();
-
       renderImageView();
+      await waitForImageLoad('bravo.png');
 
-      await waitFor(() => {
-        expect(screen.getByTestId('image-display')).toHaveTextContent('bravo.png');
-      });
+      pressArrowAndAdvance('ArrowLeft');
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        expect.stringContaining('/view/img-a?')
+      );
     });
 
-    test('applies search filter from saved gallery state', async () => {
+    test('ArrowRight navigates to next image in date-sorted order (default)', async () => {
+      // Default date sort (descending): [charlie(Jan3), bravo(Jan2), alpha(Jan1)].
+      // img-b at index 1. Next = alpha (img-a).
+      setupNavFetch();
+      renderImageView();
+      await waitForImageLoad('bravo.png');
+
+      pressArrowAndAdvance('ArrowRight');
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        expect.stringContaining('/view/img-a?')
+      );
+    });
+
+    test('ArrowLeft navigates to previous image in date-sorted order (default)', async () => {
+      // Default date sort (descending): [charlie(Jan3), bravo(Jan2), alpha(Jan1)].
+      // img-b at index 1. Prev = charlie (img-c).
+      setupNavFetch();
+      renderImageView();
+      await waitForImageLoad('bravo.png');
+
+      pressArrowAndAdvance('ArrowLeft');
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        expect.stringContaining('/view/img-c?')
+      );
+    });
+
+    test('ArrowRight navigates correctly in size-sorted order', async () => {
+      // Sort by size (descending): [bravo(2M), charlie(1M), alpha(500K)].
+      // img-b at index 0. Next = charlie (img-c).
       localStorage.setItem('gallery_state_test-project-id', JSON.stringify({
-        sortBy: 'date',
-        searchField: 'filename',
-        searchValue: 'bravo',
-        reviewFilter: 'all',
+        sortBy: 'size', searchField: 'filename', searchValue: '', reviewFilter: 'all',
       }));
       setupNavFetch();
-
       renderImageView();
+      await waitForImageLoad('bravo.png');
 
-      await waitFor(() => {
-        expect(screen.getByTestId('image-display')).toHaveTextContent('bravo.png');
-      });
+      pressArrowAndAdvance('ArrowRight');
 
-      // The search filter should have narrowed the set to only bravo.png
-      // so navigation only includes that one image
+      expect(mockNavigate).toHaveBeenCalledWith(
+        expect.stringContaining('/view/img-c?')
+      );
     });
 
-    test('applies review filter from saved gallery state', async () => {
+    test('ArrowLeft does not navigate when at start of size-sorted list', async () => {
+      // Sort by size (descending): [bravo(2M), charlie(1M), alpha(500K)].
+      // img-b at index 0. No previous image.
       localStorage.setItem('gallery_state_test-project-id', JSON.stringify({
-        sortBy: 'date',
-        searchField: 'filename',
-        searchValue: '',
-        reviewFilter: 'pass',
+        sortBy: 'size', searchField: 'filename', searchValue: '', reviewFilter: 'all',
       }));
       setupNavFetch();
-
       renderImageView();
+      await waitForImageLoad('bravo.png');
 
-      // Wait for the component to load and apply the filter
-      await waitFor(() => {
-        // The review status endpoint should be fetched for the filter
-        const reviewCalls = fetch.mock.calls.filter(
-          c => c[0].includes('image-review-statuses')
-        );
-        expect(reviewCalls.length).toBeGreaterThan(0);
-      });
+      pressArrowAndAdvance('ArrowLeft');
+
+      expect(mockNavigate).not.toHaveBeenCalled();
     });
 
-    test('falls back to default date sort when no gallery state is saved', async () => {
-      // No localStorage set -- should use default date sort
+    test('search filter restricts navigation to matching images only', async () => {
+      // Search for "bravo" -> only [img-b]. img-b at index 0.
+      // Neither ArrowRight nor ArrowLeft should navigate.
+      localStorage.setItem('gallery_state_test-project-id', JSON.stringify({
+        sortBy: 'date', searchField: 'filename', searchValue: 'bravo', reviewFilter: 'all',
+      }));
       setupNavFetch();
-
       renderImageView();
+      await waitForImageLoad('bravo.png');
 
-      await waitFor(() => {
-        expect(screen.getByTestId('image-display')).toHaveTextContent('bravo.png');
-      });
+      pressArrowAndAdvance('ArrowRight');
+      expect(mockNavigate).not.toHaveBeenCalled();
 
-      // Default sort is date descending: charlie (Jan 3), bravo (Jan 2), alpha (Jan 1)
-      // img-b (bravo) is at index 1
+      pressArrowAndAdvance('ArrowLeft');
+      expect(mockNavigate).not.toHaveBeenCalled();
     });
 
-    test('falls back to default sort when localStorage contains invalid JSON', async () => {
+    test('content_type search filter restricts navigation correctly', async () => {
+      // Search content_type for "png" -> only bravo.png matches.
+      // No prev or next available.
+      localStorage.setItem('gallery_state_test-project-id', JSON.stringify({
+        sortBy: 'date', searchField: 'content_type', searchValue: 'png', reviewFilter: 'all',
+      }));
+      setupNavFetch();
+      renderImageView();
+      await waitForImageLoad('bravo.png');
+
+      pressArrowAndAdvance('ArrowRight');
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
+
+    test('review filter restricts navigation to images with matching status', async () => {
+      // Review filter "pass". Statuses: img-a=pass, img-b=unreviewed, img-c=pass.
+      // Filtered+date-sorted: [img-c(Jan3), img-a(Jan1)]. img-a is current, at index 1.
+      // ArrowLeft should go to img-c.
+      localStorage.setItem('gallery_state_test-project-id', JSON.stringify({
+        sortBy: 'date', searchField: 'filename', searchValue: '', reviewFilter: 'pass',
+      }));
+      setupNavFetch({
+        currentImage: mockImageA,
+        reviewStatuses: { 'img-a': 'pass', 'img-b': 'unreviewed', 'img-c': 'pass' },
+      });
+      renderImageView();
+      await waitForImageLoad('alpha.jpg');
+
+      pressArrowAndAdvance('ArrowLeft');
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        expect.stringContaining('/view/img-c?')
+      );
+    });
+
+    test('review filter prevents navigation to non-matching images', async () => {
+      // Review filter "pass". Current=img-a at index 1 in [img-c, img-a].
+      // ArrowRight should not navigate (img-a is at the end).
+      localStorage.setItem('gallery_state_test-project-id', JSON.stringify({
+        sortBy: 'date', searchField: 'filename', searchValue: '', reviewFilter: 'pass',
+      }));
+      setupNavFetch({
+        currentImage: mockImageA,
+        reviewStatuses: { 'img-a': 'pass', 'img-b': 'unreviewed', 'img-c': 'pass' },
+      });
+      renderImageView();
+      await waitForImageLoad('alpha.jpg');
+
+      pressArrowAndAdvance('ArrowRight');
+
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
+
+    test('falls back to default date sort when localStorage contains invalid JSON', async () => {
       localStorage.setItem('gallery_state_test-project-id', 'not-valid-json');
       setupNavFetch();
-
       renderImageView();
+      await waitForImageLoad('bravo.png');
 
-      // Should not crash, should render the image
-      await waitFor(() => {
-        expect(screen.getByTestId('image-display')).toHaveTextContent('bravo.png');
-      });
+      // Fallback date sort: [charlie, bravo, alpha]. img-b at index 1. Next = alpha.
+      pressArrowAndAdvance('ArrowRight');
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        expect.stringContaining('/view/img-a?')
+      );
     });
 
     test('uses group-scoped gallery state key when viewing grouped image', async () => {
       const mockImageBGrouped = { ...mockImageB, group_id: 'grp-1' };
 
-      // Save state under the group key with sort by name
+      // Save sort by name under the group key
       localStorage.setItem('gallery_state_test-project-id_group_grp-1', JSON.stringify({
-        sortBy: 'name',
-        searchField: 'filename',
-        searchValue: '',
-        reviewFilter: 'all',
+        sortBy: 'name', searchField: 'filename', searchValue: '', reviewFilter: 'all',
       }));
 
-      mockParams = { imageId: 'img-b' };
-      fetch.mockImplementation((url) => {
-        if (url === '/api/users/me') return Promise.resolve({ ok: false, status: 401 });
-        if (url === '/api/images/img-b') return Promise.resolve({ ok: true, json: async () => mockImageBGrouped });
-        if (url.startsWith('/api/projects/test-project-id/images')) return Promise.resolve({ ok: true, json: async () => mockNavImages });
-        if (url.startsWith('/api/projects/test-project-id/classes')) return Promise.resolve({ ok: true, json: async () => [] });
-        return Promise.resolve({ ok: true, json: async () => [] });
-      });
-
+      setupNavFetch({ currentImage: mockImageBGrouped });
       renderImageView();
+      await waitForImageLoad('bravo.png');
 
-      await waitFor(() => {
-        expect(screen.getByTestId('image-display')).toHaveTextContent('bravo.png');
-      });
+      // Name sort: [alpha, bravo, charlie]. Next = charlie.
+      pressArrowAndAdvance('ArrowRight');
 
-      // Verify the grouped images endpoint was called with group_id
+      expect(mockNavigate).toHaveBeenCalledWith(
+        expect.stringContaining('/view/img-c?')
+      );
+      // Verify the grouped images endpoint was called
       const imageCalls = fetch.mock.calls.filter(c => c[0].includes('group_id=grp-1'));
       expect(imageCalls.length).toBeGreaterThan(0);
     });
 
-    test('applies content_type search filter from saved state', async () => {
-      localStorage.setItem('gallery_state_test-project-id', JSON.stringify({
-        sortBy: 'date',
-        searchField: 'content_type',
-        searchValue: 'png',
-        reviewFilter: 'all',
-      }));
-      setupNavFetch();
-
-      renderImageView();
-
-      await waitFor(() => {
-        expect(screen.getByTestId('image-display')).toHaveTextContent('bravo.png');
-      });
-    });
-
-    test('reads galleryKey from URL param instead of sniffing localStorage', async () => {
-      // Save state under an ungrouped key
+    test('reads galleryKey from URL param to select correct saved state', async () => {
+      // Save name-sort under ungrouped key, size-sort under project key
       localStorage.setItem('gallery_state_test-project-id_ungrouped', JSON.stringify({
-        sortBy: 'name',
-        searchField: 'filename',
-        searchValue: '',
-        reviewFilter: 'all',
+        sortBy: 'name', searchField: 'filename', searchValue: '', reviewFilter: 'all',
       }));
-      // Also save different state under the project key
       localStorage.setItem('gallery_state_test-project-id', JSON.stringify({
-        sortBy: 'size',
-        searchField: 'filename',
-        searchValue: '',
-        reviewFilter: 'all',
+        sortBy: 'size', searchField: 'filename', searchValue: '', reviewFilter: 'all',
       }));
 
-      // Set galleryKey in URL to the ungrouped key
       mockSearchParams = new URLSearchParams(
         'project=test-project-id&galleryKey=test-project-id_ungrouped'
       );
       setupNavFetch();
-
       renderImageView();
+      await waitForImageLoad('bravo.png');
 
-      await waitFor(() => {
-        expect(screen.getByTestId('image-display')).toHaveTextContent('bravo.png');
-      });
+      // Name sort (from ungrouped key): [alpha, bravo, charlie]. Next = charlie.
+      // If size sort were used instead: [bravo, charlie, alpha]. Next = charlie too -- but prev differs.
+      // Name sort prev = alpha. Size sort prev = nothing (bravo is first).
+      pressArrowAndAdvance('ArrowLeft');
 
-      // With sortBy=name (from ungrouped key): alpha, bravo, charlie
-      // img-b (bravo) at index 1 -- confirms ungrouped key was used, not project key
+      // alpha confirms name-sort from the ungrouped key was used
+      expect(mockNavigate).toHaveBeenCalledWith(
+        expect.stringContaining('/view/img-a?')
+      );
     });
 
     test('falls back to project key when galleryKey is not in URL', async () => {
       localStorage.setItem('gallery_state_test-project-id', JSON.stringify({
-        sortBy: 'name',
-        searchField: 'filename',
-        searchValue: '',
-        reviewFilter: 'all',
+        sortBy: 'name', searchField: 'filename', searchValue: '', reviewFilter: 'all',
       }));
-
-      // No galleryKey in URL
       mockSearchParams = new URLSearchParams('project=test-project-id');
       setupNavFetch();
-
       renderImageView();
+      await waitForImageLoad('bravo.png');
 
-      await waitFor(() => {
-        expect(screen.getByTestId('image-display')).toHaveTextContent('bravo.png');
-      });
+      // Name sort: [alpha, bravo, charlie]. Next = charlie.
+      pressArrowAndAdvance('ArrowRight');
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        expect.stringContaining('/view/img-c?')
+      );
     });
 
-    test('preserves galleryKey in prev/next navigation URLs', async () => {
+    test('preserves galleryKey in navigation URLs', async () => {
       mockSearchParams = new URLSearchParams(
         'project=test-project-id&galleryKey=test-project-id_ungrouped'
       );
       localStorage.setItem('gallery_state_test-project-id_ungrouped', JSON.stringify({
-        sortBy: 'date',
-        searchField: 'filename',
-        searchValue: '',
-        reviewFilter: 'all',
+        sortBy: 'date', searchField: 'filename', searchValue: '', reviewFilter: 'all',
       }));
-
-      // Use img-b which will be at index 1 in date sort (charlie, bravo, alpha)
-      // so both prev and next are available
-      mockParams = { imageId: 'img-b' };
-      fetch.mockImplementation((url) => {
-        if (url === '/api/users/me') return Promise.resolve({ ok: false, status: 401 });
-        if (url === '/api/images/img-b') return Promise.resolve({ ok: true, json: async () => mockImageB });
-        if (url.startsWith('/api/projects/test-project-id/images')) return Promise.resolve({ ok: true, json: async () => mockNavImages });
-        if (url.startsWith('/api/projects/test-project-id/classes')) return Promise.resolve({ ok: true, json: async () => [] });
-        return Promise.resolve({ ok: true, json: async () => [] });
-      });
-
+      setupNavFetch();
       renderImageView();
+      await waitForImageLoad('bravo.png');
 
-      await waitFor(() => {
-        expect(screen.getByTestId('image-display')).toHaveTextContent('bravo.png');
-      });
+      pressArrowAndAdvance('ArrowRight');
 
-      // Verify the buildNavQuery includes galleryKey by checking that
-      // the navigate function would be called with the right params.
-      // We can't easily trigger prev/next from here without the real ImageDisplay,
-      // but we can verify the component rendered with the right context by checking
-      // that the galleryKey was used for state lookup
-      const stored = localStorage.getItem('gallery_state_test-project-id_ungrouped');
-      expect(stored).toBeTruthy();
+      expect(mockNavigate).toHaveBeenCalledWith(
+        expect.stringContaining('galleryKey=test-project-id_ungrouped')
+      );
     });
 
     test('silently handles review status API failure during navigation filter', async () => {
       localStorage.setItem('gallery_state_test-project-id', JSON.stringify({
-        sortBy: 'date',
-        searchField: 'filename',
-        searchValue: '',
-        reviewFilter: 'pass',
+        sortBy: 'date', searchField: 'filename', searchValue: '', reviewFilter: 'pass',
       }));
-      mockParams = { imageId: 'img-b' };
-
-      fetch.mockImplementation((url) => {
-        if (url === '/api/users/me') return Promise.resolve({ ok: false, status: 401 });
-        if (url === '/api/images/img-b') return Promise.resolve({ ok: true, json: async () => mockImageB });
-        if (url.startsWith('/api/projects/test-project-id/images')) return Promise.resolve({ ok: true, json: async () => mockNavImages });
-        if (url.startsWith('/api/projects/test-project-id/classes')) return Promise.resolve({ ok: true, json: async () => [] });
-        if (url.includes('image-review-statuses')) return Promise.resolve({ ok: false, status: 500 });
-        return Promise.resolve({ ok: true, json: async () => [] });
-      });
-
+      // reviewStatuses defaults to null in setupNavFetch, causing a 500 response.
+      // With null statuses, all images are treated as "unreviewed", so none match
+      // the "pass" filter. The current image won't be in the filtered list.
+      setupNavFetch();
       renderImageView();
 
-      // Should still render the image even if review status fetch fails
-      await waitFor(() => {
-        expect(screen.getByTestId('image-display')).toHaveTextContent('bravo.png');
-      });
+      // The image itself should still render (loading is independent of navigation)
+      await waitForImageLoad('bravo.png');
+
+      // Navigation should not work since img-b is not in the filtered list
+      pressArrowAndAdvance('ArrowRight');
+      expect(mockNavigate).not.toHaveBeenCalled();
+
+      pressArrowAndAdvance('ArrowLeft');
+      expect(mockNavigate).not.toHaveBeenCalled();
     });
   });
 });
