@@ -30,6 +30,11 @@ fi
 PY_BIN="$(command -v python3 || command -v python || true)"
 export PATH="$HOME/.local/bin:$PATH"
 
+# Ensure uv cache is writable
+if [ ! -w "${UV_CACHE_DIR:-$HOME/.cache/uv}" ] 2>/dev/null; then
+  export UV_CACHE_DIR="/tmp/uv-cache"
+fi
+
 # Check for uv
 if ! command -v uv >/dev/null 2>&1; then
   echo "Error: uv not found. Install with:"
