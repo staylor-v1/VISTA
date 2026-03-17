@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import GalleryListView from './GalleryListView';
 import GalleryGridView from './GalleryGridView';
@@ -27,6 +27,21 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
   const [reviewFilter, setReviewFilter] = useState(() => loadGalleryState(stateKey).reviewFilter || 'all');
   const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
   const [showBulkMetaModal, setShowBulkMetaModal] = useState(false);
+
+  // Reset filter/sort state when the gallery key changes (e.g. switching groups)
+  const prevKeyRef = useRef(stateKey);
+  useEffect(() => {
+    if (prevKeyRef.current !== stateKey) {
+      prevKeyRef.current = stateKey;
+      const saved = loadGalleryState(stateKey);
+      setViewMode(saved.viewMode || 'medium');
+      setSortBy(saved.sortBy || 'date');
+      setSearchField(saved.searchField || 'filename');
+      setSearchValue(saved.searchValue || '');
+      setReviewFilter(saved.reviewFilter || 'all');
+      setCurrentPage(1);
+    }
+  }, [stateKey]);
 
   // Persist filter/sort state to localStorage whenever it changes
   useEffect(() => {
@@ -317,7 +332,7 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
                 metadataKeys={availableMetadataKeys}
                 selectedImages={selectedImages}
                 reviewStatuses={reviewStatuses}
-                onImageClick={(imageId) => navigate(`/view/${imageId}?project=${projectId}`)}
+                onImageClick={(imageId) => navigate(`/view/${imageId}?project=${projectId}&galleryKey=${encodeURIComponent(stateKey)}`)}
                 onToggleSelection={handleImageSelection}
               />
             ) : (
@@ -326,7 +341,7 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
                 viewMode={viewMode}
                 selectedImages={selectedImages}
                 reviewStatuses={reviewStatuses}
-                onImageClick={(imageId) => navigate(`/view/${imageId}?project=${projectId}`)}
+                onImageClick={(imageId) => navigate(`/view/${imageId}?project=${projectId}&galleryKey=${encodeURIComponent(stateKey)}`)}
                 onToggleSelection={handleImageSelection}
                 onRestore={handleRestore}
                 onImageLoadStatusChange={(imageId, status) => {
