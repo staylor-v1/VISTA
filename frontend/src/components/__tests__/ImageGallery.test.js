@@ -723,13 +723,14 @@ describe('ImageGallery', () => {
 
       await waitFor(() => {
         const stored = JSON.parse(localStorage.getItem('gallery_state_test-project-id'));
-        expect(stored).toEqual({
+        expect(stored).toMatchObject({
           viewMode: 'medium',
           sortBy: 'date',
           searchField: 'filename',
           searchValue: '',
           reviewFilter: 'all',
         });
+        expect(typeof stored.lastAccessed).toBe('number');
       });
     });
 
@@ -787,6 +788,7 @@ describe('ImageGallery', () => {
         searchField: 'content_type',
         searchValue: 'png',
         reviewFilter: 'pass',
+        lastAccessed: Date.now(),
       }));
 
       renderImageGallery();
@@ -842,6 +844,7 @@ describe('ImageGallery', () => {
         searchField: 'filename',
         searchValue: 'alpha',
         reviewFilter: 'pass',
+        lastAccessed: Date.now(),
       }));
       localStorage.setItem('gallery_state_proj-1_group_g2', JSON.stringify({
         viewMode: 'large',
@@ -849,6 +852,7 @@ describe('ImageGallery', () => {
         searchField: 'content_type',
         searchValue: 'png',
         reviewFilter: 'unreviewed',
+        lastAccessed: Date.now(),
       }));
 
       // Mount with key g1
@@ -898,6 +902,7 @@ describe('ImageGallery', () => {
         searchField: 'filename',
         searchValue: 'test',
         reviewFilter: 'pass',
+        lastAccessed: Date.now(),
       }));
 
       const { rerender } = render(
