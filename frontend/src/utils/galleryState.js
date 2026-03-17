@@ -67,8 +67,10 @@ function imageMatchesSearch(image, searchField, searchLower) {
     }
     default: {
       const meta = image.metadata || image.metadata_;
-      if (!meta || !meta[searchField]) return false;
-      return String(meta[searchField]).toLowerCase().includes(searchLower);
+      if (!meta) return false;
+      const value = meta[searchField];
+      if (value === null || typeof value === 'undefined') return false;
+      return String(value).toLowerCase().includes(searchLower);
     }
   }
 }
