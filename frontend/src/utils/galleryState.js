@@ -6,6 +6,8 @@
  */
 
 const STORAGE_PREFIX = 'gallery_state_';
+const MAX_ENTRIES = 100;
+const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 const GALLERY_STATE_DEFAULTS = {
   viewMode: 'medium',
@@ -18,11 +20,19 @@ const GALLERY_STATE_DEFAULTS = {
 /**
  * Load saved gallery state from localStorage for a given key.
  * Returns an empty object on missing or corrupt data.
+ * Updates the lastAccessed timestamp so active entries are not evicted.
  */
 function loadGalleryState(key) {
   try {
-    const stored = localStorage.getItem(`${STORAGE_PREFIX}${key}`);
-    return stored ? JSON.parse(stored) : {};
+    const raw = localStorage.getItem(`${STORAGE_PREFIX}${key}`);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    // Touch the entry to keep it alive
+    parsed.lastAccessed = Date.now();
+    localStorage.setItem(`${STORAGE_PREFIX}${key}`, JSON.stringify(parsed));
+    // Strip internal bookkeeping from the returned state
+    const { lastAccessed, ...state } = parsed;
+    return state;
   } catch (e) {
     return {};
   }
@@ -38,12 +48,56 @@ function loadGalleryStateWithDefaults(key) {
 
 /**
  * Persist gallery state to localStorage under the given key.
+ * Stamps the entry with a lastAccessed timestamp and runs periodic cleanup.
  */
 function saveGalleryState(key, state) {
   try {
-    localStorage.setItem(`${STORAGE_PREFIX}${key}`, JSON.stringify(state));
+    const entry = { ...state, lastAccessed: Date.now() };
+    localStorage.setItem(`${STORAGE_PREFIX}${key}`, JSON.stringify(entry));
+    cleanupStaleGalleryStates();
   } catch (e) {
     // Fail closed: if persistence is unavailable, ignore the error.
+  }
+}
+
+/**
+ * Remove gallery state entries that are older than MAX_AGE_MS (30 days).
+ * If the total count still exceeds MAX_ENTRIES after age-based eviction,
+ * drop the oldest entries until under the cap.
+ */
+function cleanupStaleGalleryStates() {
+  try {
+    const now = Date.now();
+    const entries = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(STORAGE_PREFIX)) continue;
+      let lastAccessed = 0;
+      try {
+        const parsed = JSON.parse(localStorage.getItem(k));
+        lastAccessed = parsed && parsed.lastAccessed ? parsed.lastAccessed : 0;
+      } catch (_) {
+        // Corrupt entry -- treat as oldest so it gets evicted.
+      }
+      entries.push({ key: k, lastAccessed });
+    }
+
+    // Phase 1: evict entries older than MAX_AGE_MS
+    const staleKeys = entries
+      .filter(e => now - e.lastAccessed > MAX_AGE_MS)
+      .map(e => e.key);
+    staleKeys.forEach(k => localStorage.removeItem(k));
+
+    // Phase 2: if still over the cap, evict oldest entries
+    const remaining = entries
+      .filter(e => !staleKeys.includes(e.key))
+      .sort((a, b) => a.lastAccessed - b.lastAccessed);
+    while (remaining.length > MAX_ENTRIES) {
+      const evict = remaining.shift();
+      localStorage.removeItem(evict.key);
+    }
+  } catch (e) {
+    // Non-critical -- don't block save on cleanup failure.
   }
 }
 
@@ -131,9 +185,13 @@ function applyGalleryFilters(images, { searchField, searchValue, reviewFilter, s
 
 export {
   GALLERY_STATE_DEFAULTS,
+  STORAGE_PREFIX,
+  MAX_ENTRIES,
+  MAX_AGE_MS,
   loadGalleryState,
   loadGalleryStateWithDefaults,
   saveGalleryState,
+  cleanupStaleGalleryStates,
   filterBySearch,
   filterByReviewStatus,
   sortImages,
