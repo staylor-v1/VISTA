@@ -15,6 +15,7 @@ import CalibrationManager from './components/CalibrationManager';
 import MeasurementList from './components/MeasurementList';
 import ReviewPanel from './components/ReviewPanel';
 import ImageGroupPanel from './components/ImageGroupPanel';
+import { loadGalleryState, applyGalleryFilters, sortImages } from './utils/galleryState';
 
 function ImageView() {
   const { imageId } = useParams();
@@ -165,71 +166,27 @@ function ImageView() {
       }
 
       // Load saved gallery filter/sort state and apply it for consistent navigation
-      let navImages = images;
+      let navImages;
       try {
-        const stored = localStorage.getItem(`gallery_state_${galleryStateKey}`);
-        const galleryState = stored ? JSON.parse(stored) : {};
+        const galleryState = loadGalleryState(galleryStateKey);
 
-        // Apply search filter (client-side, same logic as ImageGallery)
-        if (galleryState.searchValue && galleryState.searchField) {
-          const searchLower = galleryState.searchValue.toLowerCase();
-          const field = galleryState.searchField;
-          navImages = navImages.filter(image => {
-            switch (field) {
-              case 'filename':
-                return (image.filename || '').toLowerCase().includes(searchLower);
-              case 'content_type':
-                return (image.content_type || '').toLowerCase().includes(searchLower);
-              case 'uploaded_by':
-                return (image.uploaded_by_user_id || '').toLowerCase().includes(searchLower);
-              case 'metadata': {
-                const meta = image.metadata || image.metadata_;
-                if (!meta) return false;
-                return Object.values(meta).some(v => String(v).toLowerCase().includes(searchLower));
-              }
-              default: {
-                const meta = image.metadata || image.metadata_;
-                if (!meta || !meta[field]) return false;
-                return String(meta[field]).toLowerCase().includes(searchLower);
-              }
-            }
-          });
-        }
-
-        // Apply review filter if not 'all' (requires an extra API call)
+        // Fetch review statuses if a non-default review filter is active
+        let reviewStatuses = null;
         if (galleryState.reviewFilter && galleryState.reviewFilter !== 'all') {
           try {
             const reviewResp = await fetch(`/api/projects/${projectId}/image-review-statuses`);
             if (reviewResp.ok) {
-              const reviewStatuses = await reviewResp.json();
-              navImages = navImages.filter(image => {
-                const status = reviewStatuses[image.id] || 'unreviewed';
-                return status === galleryState.reviewFilter;
-              });
+              reviewStatuses = await reviewResp.json();
             }
           } catch (e) {
             console.warn('Failed to load review statuses for navigation filter:', e);
           }
         }
 
-        // Apply sort order (same logic as ImageGallery)
-        const sortBy = galleryState.sortBy || 'date';
-        navImages = [...navImages].sort((a, b) => {
-          switch (sortBy) {
-            case 'name':
-              return (a.filename || '').localeCompare(b.filename || '');
-            case 'size':
-              return (b.size_bytes || 0) - (a.size_bytes || 0);
-            case 'date':
-            default:
-              return new Date(b.created_at || 0) - new Date(a.created_at || 0);
-          }
-        });
+        navImages = applyGalleryFilters(images, { ...galleryState, reviewStatuses });
       } catch (e) {
         // If anything goes wrong reading saved state, fall back to default date sort
-        navImages = [...images].sort((a, b) =>
-          new Date(b.created_at || 0) - new Date(a.created_at || 0)
-        );
+        navImages = sortImages(images, 'date');
       }
 
       setProjectImages(navImages);
