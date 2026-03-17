@@ -178,13 +178,21 @@ function ImageView() {
             const reviewResp = await fetch(`/api/projects/${projectId}/image-review-statuses`);
             if (reviewResp.ok) {
               reviewStatuses = await reviewResp.json();
+            } else {
+              console.warn('Non-OK response when loading review statuses for navigation filter:', reviewResp.status);
             }
           } catch (e) {
             console.warn('Failed to load review statuses for navigation filter:', e);
           }
         }
 
-        navImages = applyGalleryFilters(images, { ...galleryState, reviewStatuses });
+        // If review statuses are unavailable, bypass the review filter to avoid empty navImages
+        const effectiveGalleryState =
+          reviewStatuses != null
+            ? { ...galleryState, reviewStatuses }
+            : { ...galleryState, reviewFilter: 'all', reviewStatuses: null };
+
+        navImages = applyGalleryFilters(images, effectiveGalleryState);
       } catch (e) {
         // If anything goes wrong reading saved state, fall back to default date sort
         navImages = sortImages(images, 'date');
