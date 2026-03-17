@@ -89,6 +89,7 @@ const renderImageGallery = (props = {}) => {
 describe('ImageGallery', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
+    localStorage.clear();
     global.fetch = jest.fn(() =>
       Promise.resolve({
         ok: true,
@@ -713,6 +714,124 @@ describe('ImageGallery', () => {
       const headerTexts = Array.from(headers).map(h => h.textContent);
       expect(headerTexts).toContain('color');
       expect(headerTexts).not.toContain('measurements');
+    });
+  });
+
+  describe('State Persistence', () => {
+    test('persists filter/sort state to localStorage on render', async () => {
+      renderImageGallery();
+
+      await waitFor(() => {
+        const stored = JSON.parse(localStorage.getItem('gallery_state_test-project-id'));
+        expect(stored).toEqual({
+          viewMode: 'medium',
+          sortBy: 'date',
+          searchField: 'filename',
+          searchValue: '',
+          reviewFilter: 'all',
+        });
+      });
+    });
+
+    test('persists sort change to localStorage', async () => {
+      renderImageGallery();
+
+      const sortSelect = document.querySelector('.sort-select:not([title])');
+      fireEvent.change(sortSelect, { target: { value: 'name' } });
+
+      await waitFor(() => {
+        const stored = JSON.parse(localStorage.getItem('gallery_state_test-project-id'));
+        expect(stored.sortBy).toBe('name');
+      });
+    });
+
+    test('persists search value to localStorage', async () => {
+      renderImageGallery();
+
+      const searchInput = screen.getByPlaceholderText('Search by filename...');
+      fireEvent.change(searchInput, { target: { value: 'brick' } });
+
+      await waitFor(() => {
+        const stored = JSON.parse(localStorage.getItem('gallery_state_test-project-id'));
+        expect(stored.searchValue).toBe('brick');
+      });
+    });
+
+    test('persists view mode change to localStorage', async () => {
+      renderImageGallery();
+
+      fireEvent.click(screen.getByTitle('Small thumbnails'));
+
+      await waitFor(() => {
+        const stored = JSON.parse(localStorage.getItem('gallery_state_test-project-id'));
+        expect(stored.viewMode).toBe('small');
+      });
+    });
+
+    test('persists review filter change to localStorage', async () => {
+      renderImageGallery();
+
+      const reviewSelect = screen.getByTitle('Filter by review status');
+      fireEvent.change(reviewSelect, { target: { value: 'pass' } });
+
+      await waitFor(() => {
+        const stored = JSON.parse(localStorage.getItem('gallery_state_test-project-id'));
+        expect(stored.reviewFilter).toBe('pass');
+      });
+    });
+
+    test('restores saved state from localStorage on mount', () => {
+      localStorage.setItem('gallery_state_test-project-id', JSON.stringify({
+        viewMode: 'large',
+        sortBy: 'name',
+        searchField: 'content_type',
+        searchValue: 'png',
+        reviewFilter: 'pass',
+      }));
+
+      renderImageGallery();
+
+      // Sort select should show 'name'
+      const sortSelect = document.querySelector('.sort-select:not([title])');
+      expect(sortSelect.value).toBe('name');
+
+      // Search field should show 'content_type'
+      const searchFieldSelect = document.querySelector('.search-field-select');
+      expect(searchFieldSelect.value).toBe('content_type');
+
+      // Search input should show 'png'
+      const searchInput = screen.getByPlaceholderText('Search by content_type...');
+      expect(searchInput.value).toBe('png');
+
+      // Review filter should show 'pass'
+      const reviewSelect = screen.getByTitle('Filter by review status');
+      expect(reviewSelect.value).toBe('pass');
+
+      // Large view mode button should be active
+      const largeBtn = screen.getByTitle('Large thumbnails');
+      expect(largeBtn).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    test('uses galleryKey for localStorage when provided', async () => {
+      renderImageGallery({ galleryKey: 'proj-1_group_g1' });
+
+      await waitFor(() => {
+        const stored = localStorage.getItem('gallery_state_proj-1_group_g1');
+        expect(stored).toBeTruthy();
+      });
+
+      // Should not write to the projectId key
+      expect(localStorage.getItem('gallery_state_test-project-id')).toBeNull();
+    });
+
+    test('falls back to defaults when localStorage contains invalid JSON', () => {
+      localStorage.setItem('gallery_state_test-project-id', 'not valid json');
+
+      renderImageGallery();
+
+      // Should render with defaults without crashing
+      const sortSelect = document.querySelector('.sort-select:not([title])');
+      expect(sortSelect.value).toBe('date');
     });
   });
 });
