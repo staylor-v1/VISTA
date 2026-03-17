@@ -127,7 +127,7 @@ describe('ImageGallery', () => {
       const imageContainer = screen.getByAltText('test-image.jpg').closest('.gallery-item-image');
       fireEvent.click(imageContainer);
       
-      expect(mockNavigate).toHaveBeenCalledWith('/view/img-1?project=test-project-id');
+      expect(mockNavigate).toHaveBeenCalledWith(expect.stringContaining('/view/img-1?project=test-project-id'));
     });
 
     test('shows View button on hover', () => {
@@ -663,7 +663,7 @@ describe('ImageGallery', () => {
       const row = document.querySelector('.gallery-list-row');
       fireEvent.click(row);
 
-      expect(mockNavigate).toHaveBeenCalledWith('/view/img-1?project=test-project-id');
+      expect(mockNavigate).toHaveBeenCalledWith(expect.stringContaining('/view/img-1?project=test-project-id'));
     });
 
     test('list view shows deleted badge for deleted images', () => {
@@ -832,6 +832,131 @@ describe('ImageGallery', () => {
       // Should render with defaults without crashing
       const sortSelect = document.querySelector('.sort-select:not([title])');
       expect(sortSelect.value).toBe('date');
+    });
+
+    test('resets state when galleryKey prop changes', async () => {
+      // Save different state for two different keys
+      localStorage.setItem('gallery_state_proj-1_group_g1', JSON.stringify({
+        viewMode: 'small',
+        sortBy: 'name',
+        searchField: 'filename',
+        searchValue: 'alpha',
+        reviewFilter: 'pass',
+      }));
+      localStorage.setItem('gallery_state_proj-1_group_g2', JSON.stringify({
+        viewMode: 'large',
+        sortBy: 'size',
+        searchField: 'content_type',
+        searchValue: 'png',
+        reviewFilter: 'unreviewed',
+      }));
+
+      // Mount with key g1
+      const { rerender } = render(
+        <BrowserRouter>
+          <ImageGallery
+            projectId="proj-1"
+            galleryKey="proj-1_group_g1"
+            images={[mockRegularImage]}
+            loading={false}
+            onImageUpdated={jest.fn()}
+            refreshProjectImages={jest.fn()}
+          />
+        </BrowserRouter>
+      );
+
+      // Verify g1 state is loaded
+      await waitFor(() => {
+        expect(document.querySelector('.sort-select:not([title])').value).toBe('name');
+      });
+
+      // Re-render with key g2
+      rerender(
+        <BrowserRouter>
+          <ImageGallery
+            projectId="proj-1"
+            galleryKey="proj-1_group_g2"
+            images={[mockRegularImage]}
+            loading={false}
+            onImageUpdated={jest.fn()}
+            refreshProjectImages={jest.fn()}
+          />
+        </BrowserRouter>
+      );
+
+      // Verify g2 state is loaded after key change
+      await waitFor(() => {
+        expect(document.querySelector('.sort-select:not([title])').value).toBe('size');
+        expect(screen.getByTitle('Filter by review status').value).toBe('unreviewed');
+      });
+    });
+
+    test('resets to defaults when galleryKey changes to a key with no saved state', async () => {
+      localStorage.setItem('gallery_state_proj-1_group_g1', JSON.stringify({
+        viewMode: 'small',
+        sortBy: 'name',
+        searchField: 'filename',
+        searchValue: 'test',
+        reviewFilter: 'pass',
+      }));
+
+      const { rerender } = render(
+        <BrowserRouter>
+          <ImageGallery
+            projectId="proj-1"
+            galleryKey="proj-1_group_g1"
+            images={[mockRegularImage]}
+            loading={false}
+            onImageUpdated={jest.fn()}
+            refreshProjectImages={jest.fn()}
+          />
+        </BrowserRouter>
+      );
+
+      await waitFor(() => {
+        expect(document.querySelector('.sort-select:not([title])').value).toBe('name');
+      });
+
+      // Switch to a key that has no saved state
+      rerender(
+        <BrowserRouter>
+          <ImageGallery
+            projectId="proj-1"
+            galleryKey="proj-1_group_new"
+            images={[mockRegularImage]}
+            loading={false}
+            onImageUpdated={jest.fn()}
+            refreshProjectImages={jest.fn()}
+          />
+        </BrowserRouter>
+      );
+
+      await waitFor(() => {
+        expect(document.querySelector('.sort-select:not([title])').value).toBe('date');
+        expect(screen.getByTitle('Filter by review status').value).toBe('all');
+      });
+    });
+
+    test('includes galleryKey in navigation URL', () => {
+      renderImageGallery({ galleryKey: 'proj-1_group_g1' });
+
+      const imageContainer = screen.getByAltText('test-image.jpg').closest('.gallery-item-image');
+      fireEvent.click(imageContainer);
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        expect.stringContaining('galleryKey=proj-1_group_g1')
+      );
+    });
+
+    test('includes projectId as galleryKey when no explicit galleryKey prop', () => {
+      renderImageGallery();
+
+      const imageContainer = screen.getByAltText('test-image.jpg').closest('.gallery-item-image');
+      fireEvent.click(imageContainer);
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        expect.stringContaining('galleryKey=test-project-id')
+      );
     });
   });
 });

@@ -153,16 +153,17 @@ function ImageView() {
         throw new Error('Invalid server response: expected an array of images');
       }
 
-      // Determine the gallery state key for this view
-      // For grouped images, use the group-specific key; otherwise fall back to the project key
+      // Determine the gallery state key for this view.
+      // Prefer the explicit galleryKey from the URL (set by ImageGallery on click).
+      // Fall back to a group-derived key, then the project key.
+      const urlGalleryKey = searchParams.get('galleryKey');
       let galleryStateKey;
-      if (groupId) {
+      if (urlGalleryKey) {
+        galleryStateKey = urlGalleryKey;
+      } else if (groupId) {
         galleryStateKey = `${projectId}_group_${groupId}`;
       } else {
-        // Prefer the ungrouped key if it exists (project uses groups), else project key
-        galleryStateKey = localStorage.getItem(`gallery_state_${projectId}_ungrouped`) !== null
-          ? `${projectId}_ungrouped`
-          : projectId;
+        galleryStateKey = projectId;
       }
 
       // Load saved gallery filter/sort state and apply it for consistent navigation
@@ -199,7 +200,7 @@ function ImageView() {
       console.error('Error loading project images:', error);
       setError('Failed to load project images for navigation. Please try again later.');
     }
-  }, [projectId, imageId]);
+  }, [projectId, imageId, searchParams]);
 
   // Save skip deleted preference to localStorage
   useEffect(() => {
@@ -264,6 +265,14 @@ function ImageView() {
     }
   }, [image?.id, image?.group_id, projectId, loadProjectImages]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Build query string for navigation, preserving galleryKey if present
+  const buildNavQuery = useCallback(() => {
+    const params = new URLSearchParams({ project: projectId });
+    const galleryKey = searchParams.get('galleryKey');
+    if (galleryKey) params.set('galleryKey', galleryKey);
+    return params.toString();
+  }, [projectId, searchParams]);
+
   // Navigate to previous image with transition
   const navigateToPreviousImage = useCallback(() => {
     let targetIndex = currentImageIndex - 1;
@@ -279,10 +288,10 @@ function ImageView() {
       setIsTransitioning(true);
       setTimeout(() => {
         const prevImage = projectImages[targetIndex];
-        navigate(`/view/${prevImage.id}?project=${projectId}`);
+        navigate(`/view/${prevImage.id}?${buildNavQuery()}`);
       }, 300);
     }
-  }, [currentImageIndex, projectImages, navigate, projectId, skipDeletedImages]);
+  }, [currentImageIndex, projectImages, navigate, buildNavQuery, skipDeletedImages]);
 
   // Navigate to next image with transition
   const navigateToNextImage = useCallback(() => {
@@ -299,10 +308,10 @@ function ImageView() {
       setIsTransitioning(true);
       setTimeout(() => {
         const nextImage = projectImages[targetIndex];
-        navigate(`/view/${nextImage.id}?project=${projectId}`);
+        navigate(`/view/${nextImage.id}?${buildNavQuery()}`);
       }, 300);
     }
-  }, [currentImageIndex, projectImages, navigate, projectId, skipDeletedImages]);
+  }, [currentImageIndex, projectImages, navigate, buildNavQuery, skipDeletedImages]);
 
   // Reset transition state when image changes (but keep ML settings)
   useEffect(() => {
