@@ -5,16 +5,7 @@ import GalleryGridView from './GalleryGridView';
 import GalleryDebugPanel from './GalleryDebugPanel';
 import BulkDeleteModal from './BulkDeleteModal';
 import BulkMetadataModal from './BulkMetadataModal';
-
-// Load saved filter/sort state from localStorage for a given gallery key
-function loadGalleryState(key) {
-  try {
-    const stored = localStorage.getItem(`gallery_state_${key}`);
-    return stored ? JSON.parse(stored) : {};
-  } catch (e) {
-    return {};
-  }
-}
+import { loadGalleryState, saveGalleryState, filterBySearch, filterByReviewStatus, sortImages } from '../utils/galleryState';
 
 function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, refreshProjectImages }) {
   const navigate = useNavigate();
@@ -39,53 +30,19 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
 
   // Persist filter/sort state to localStorage whenever it changes
   useEffect(() => {
-    const state = { viewMode, sortBy, searchField, searchValue, reviewFilter };
-    localStorage.setItem(`gallery_state_${stateKey}`, JSON.stringify(state));
+    saveGalleryState(stateKey, { viewMode, sortBy, searchField, searchValue, reviewFilter });
   }, [stateKey, viewMode, sortBy, searchField, searchValue, reviewFilter]);
 
   const imagesPerPage = viewMode === 'small' ? 100 : viewMode === 'medium' ? 50 : viewMode === 'large' ? 25 : 200;
 
-  const filteredImages = images
-    .filter(image => {
-      if (reviewFilter !== 'all') {
-        const imgStatus = reviewStatuses[image.id] || 'unreviewed';
-        if (imgStatus !== reviewFilter) return false;
-      }
-      if (!searchValue) return true;
-
-      const searchLower = searchValue.toLowerCase();
-      switch (searchField) {
-        case 'filename':
-          return (image.filename || '').toLowerCase().includes(searchLower);
-        case 'content_type':
-          return (image.content_type || '').toLowerCase().includes(searchLower);
-        case 'uploaded_by':
-          return (image.uploaded_by_user_id || '').toLowerCase().includes(searchLower);
-        case 'metadata': {
-          const meta = image.metadata || image.metadata_;
-          if (!meta) return false;
-          return Object.values(meta).some(value =>
-            String(value).toLowerCase().includes(searchLower)
-          );
-        }
-        default: {
-          const meta = image.metadata || image.metadata_;
-          if (!meta || !meta[searchField]) return false;
-          return String(meta[searchField]).toLowerCase().includes(searchLower);
-        }
-      }
-    })
-    .sort((a, b) => {
-      switch (sortBy) {
-        case 'name':
-          return (a.filename || '').localeCompare(b.filename || '');
-        case 'size':
-          return (b.size_bytes || 0) - (a.size_bytes || 0);
-        case 'date':
-        default:
-          return new Date(b.created_at || 0) - new Date(a.created_at || 0);
-      }
-    });
+  const filteredImages = sortImages(
+    filterByReviewStatus(
+      filterBySearch(images, searchField, searchValue),
+      reviewFilter,
+      reviewStatuses
+    ),
+    sortBy
+  );
 
   const totalPages = Math.ceil(filteredImages.length / imagesPerPage);
   const indexOfLastImage = currentPage * imagesPerPage;
