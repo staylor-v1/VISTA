@@ -37,7 +37,6 @@ function ReviewStatusSummary({ projectId }) {
       background: 'var(--bg-primary, #fff)',
       border: '1px solid var(--border-light, #e2e8f0)',
       borderRadius: 'var(--radius-md, 8px)',
-      marginBottom: '0.75rem',
       flexWrap: 'wrap',
       fontSize: '0.85rem',
     }}>

@@ -1,7 +1,9 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import FilenameMetadataExtractor from './FilenameMetadataExtractor';
 
-function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setError }) {
+const CONCURRENT_UPLOADS = 6;
+
+function ImageUploader({ projectId, onUploadComplete, setError }) {
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [uploadMetadata, setUploadMetadata] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
@@ -9,11 +11,20 @@ function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setEr
     isValid: true,
     hasPattern: false,
     extractMetadata: () => null,
+    keys: [],
   });
+  const [groupKey, setGroupKey] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const cancelledRef = useRef(false);
 
   const handleExtractorChange = useCallback((config) => {
     setExtractorConfig(config);
-  }, []);
+    // If selected group key is no longer in the keys list, clear it
+    if (groupKey && config.keys && !config.keys.includes(groupKey)) {
+      setGroupKey('');
+    }
+  }, [groupKey]);
 
   // Handle file input change
   const handleFileChange = (e) => {
@@ -67,50 +78,75 @@ function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setEr
       }
     }
     
-    setLoading(true);
-    
-    const uploadPromises = selectedFiles.map(async (file) => {
-      const formData = new FormData();
-      formData.append('file', file);
+    setUploading(true);
+    cancelledRef.current = false;
+    const total = selectedFiles.length;
+    setUploadProgress({ completed: 0, failed: 0, total });
 
-      // Merge filename-extracted metadata with manually entered metadata.
-      const extractedMetadata = extractorConfig.extractMetadata(file.name);
-      const mergedMetadata = (extractedMetadata || manualMetadata)
-        ? { ...(extractedMetadata || {}), ...(manualMetadata || {}) }
-        : null;
+    const results = [];
+    let completed = 0;
+    let failed = 0;
 
-      if (mergedMetadata) {
-        formData.append('metadata', JSON.stringify(mergedMetadata));
-      }
-      
-      try {
-        const response = await fetch(`/api/projects/${projectId}/images`, {
-          method: 'POST',
-          body: formData
-        });
-        
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
+    // Upload files with bounded concurrency
+    const queue = [...selectedFiles];
+    const uploadOne = async () => {
+      while (queue.length > 0) {
+        if (cancelledRef.current) return;
+        const file = queue.shift();
+        if (!file) return;
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const extractedMetadata = extractorConfig.extractMetadata(file.name);
+        const mergedMetadata = (extractedMetadata || manualMetadata)
+          ? { ...(extractedMetadata || {}), ...(manualMetadata || {}) }
+          : null;
+
+        if (mergedMetadata) {
+          formData.append('metadata', JSON.stringify(mergedMetadata));
         }
-        
-        return await response.json();
-      } catch (err) {
-        console.error(`Error uploading ${file.name}:`, err);
-        throw err;
+
+        if (groupKey && extractedMetadata && extractedMetadata[groupKey]) {
+          formData.append('group_identifier', extractedMetadata[groupKey]);
+        }
+
+        try {
+          const response = await fetch(`/api/projects/${projectId}/images`, {
+            method: 'POST',
+            body: formData,
+          });
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          results.push(await response.json());
+        } catch (err) {
+          console.error(`Error uploading ${file.name}:`, err);
+          failed += 1;
+        }
+        completed += 1;
+        setUploadProgress({ completed, failed, total });
       }
-    });
-    
-    try {
-      const results = await Promise.all(uploadPromises);
+    };
+
+    const workers = Array.from(
+      { length: Math.min(CONCURRENT_UPLOADS, total) },
+      () => uploadOne()
+    );
+    await Promise.all(workers);
+
+    if (results.length > 0) {
       onUploadComplete(results);
-      setSelectedFiles([]);
-      setUploadMetadata('');
-      setError(null);
-    } catch (err) {
-      setError(`Upload failed: ${err.message}`);
-    } finally {
-      setLoading(false);
     }
+    if (failed > 0) {
+      setError(`Upload complete: ${results.length} succeeded, ${failed} failed out of ${total}.`);
+    } else {
+      setError(null);
+    }
+    setSelectedFiles([]);
+    setUploadMetadata('');
+    setUploadProgress(null);
+    setUploading(false);
   };
 
   return (
@@ -157,6 +193,26 @@ function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setEr
             files={selectedFiles}
             onConfigChange={handleExtractorChange}
           />
+
+          {extractorConfig.keys && extractorConfig.keys.length > 0 && (
+            <div className="form-group">
+              <label htmlFor="group-key-select">Use as Group Identifier (Optional)</label>
+              <select
+                id="group-key-select"
+                value={groupKey}
+                onChange={(e) => setGroupKey(e.target.value)}
+                className="form-control"
+              >
+                <option value="">-- None --</option>
+                {extractorConfig.keys.map((k) => (
+                  <option key={k} value={k}>{k}</option>
+                ))}
+              </select>
+              <small className="form-text">
+                Select which extracted key to use as the group identifier for each uploaded image.
+              </small>
+            </div>
+          )}
           
           <div className="form-group">
             <label htmlFor="metadata-input">Metadata (Optional JSON)</label>
@@ -170,14 +226,44 @@ function ImageUploader({ projectId, onUploadComplete, loading, setLoading, setEr
           </div>
           
           <div className="form-group">
-            <button 
-              type="submit" 
+            <button
+              type="submit"
               className="btn btn-success"
-              disabled={loading || !extractorConfig.isValid}
+              disabled={uploading || !extractorConfig.isValid}
             >
-              {loading ? 'Uploading...' : 'Upload Images'}
+              {uploading ? 'Uploading...' : 'Upload Images'}
             </button>
+            {uploading && (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ marginLeft: '8px' }}
+                onClick={() => { cancelledRef.current = true; }}
+              >
+                Cancel
+              </button>
+            )}
           </div>
+          {uploadProgress && (
+            <div style={{ marginTop: '12px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', marginBottom: '4px' }}>
+                <span>{uploadProgress.completed} / {uploadProgress.total} uploaded</span>
+                {uploadProgress.failed > 0 && (
+                  <span style={{ color: '#dc3545' }}>{uploadProgress.failed} failed</span>
+                )}
+              </div>
+              <div style={{ width: '100%', height: '8px', backgroundColor: '#e9ecef', borderRadius: '4px', overflow: 'hidden' }}>
+                <div
+                  style={{
+                    width: `${Math.round((uploadProgress.completed / uploadProgress.total) * 100)}%`,
+                    height: '100%',
+                    backgroundColor: uploadProgress.failed > 0 ? '#ffc107' : '#28a745',
+                    transition: 'width 0.2s',
+                  }}
+                />
+              </div>
+            </div>
+          )}
         </form>
       </div>
     </div>
