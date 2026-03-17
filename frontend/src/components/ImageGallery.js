@@ -6,22 +6,42 @@ import GalleryDebugPanel from './GalleryDebugPanel';
 import BulkDeleteModal from './BulkDeleteModal';
 import BulkMetadataModal from './BulkMetadataModal';
 
-function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProjectImages }) {
+// Load saved filter/sort state from localStorage for a given gallery key
+function loadGalleryState(key) {
+  try {
+    const stored = localStorage.getItem(`gallery_state_${key}`);
+    return stored ? JSON.parse(stored) : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, refreshProjectImages }) {
   const navigate = useNavigate();
+  // galleryKey distinguishes between project-level and group-level gallery state
+  const stateKey = galleryKey || projectId;
+
   const [imageLoadStatus, setImageLoadStatus] = useState({});
   const [currentPage, setCurrentPage] = useState(1);
-  const [viewMode, setViewMode] = useState('medium'); // small, medium, large, list
-  const [sortBy, setSortBy] = useState('date'); // date, name, size
-  const [searchField, setSearchField] = useState('filename'); // 'filename', 'content_type', 'uploaded_by', 'metadata', or specific key
-  const [searchValue, setSearchValue] = useState('');
+  // Filter/sort state is persisted to localStorage so it survives navigation
+  const [viewMode, setViewMode] = useState(() => loadGalleryState(stateKey).viewMode || 'medium');
+  const [sortBy, setSortBy] = useState(() => loadGalleryState(stateKey).sortBy || 'date');
+  const [searchField, setSearchField] = useState(() => loadGalleryState(stateKey).searchField || 'filename');
+  const [searchValue, setSearchValue] = useState(() => loadGalleryState(stateKey).searchValue || '');
   const [availableMetadataKeys, setAvailableMetadataKeys] = useState([]);
   const [selectedImages, setSelectedImages] = useState(new Set());
   const [lastSelectedId, setLastSelectedId] = useState(null);
   const [actionError, setActionError] = useState(null);
   const [reviewStatuses, setReviewStatuses] = useState({});
-  const [reviewFilter, setReviewFilter] = useState('all'); // all, unreviewed, pass, reject_pending, reject_confirmed
+  const [reviewFilter, setReviewFilter] = useState(() => loadGalleryState(stateKey).reviewFilter || 'all');
   const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
   const [showBulkMetaModal, setShowBulkMetaModal] = useState(false);
+
+  // Persist filter/sort state to localStorage whenever it changes
+  useEffect(() => {
+    const state = { viewMode, sortBy, searchField, searchValue, reviewFilter };
+    localStorage.setItem(`gallery_state_${stateKey}`, JSON.stringify(state));
+  }, [stateKey, viewMode, sortBy, searchField, searchValue, reviewFilter]);
 
   const imagesPerPage = viewMode === 'small' ? 100 : viewMode === 'medium' ? 50 : viewMode === 'large' ? 25 : 200;
 
