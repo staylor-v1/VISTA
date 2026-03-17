@@ -121,6 +121,7 @@ function GroupGalleryView() {
           <div className="gallery-section">
             <ImageGallery
               projectId={projectId}
+              galleryKey={isUngrouped ? `${projectId}_ungrouped` : `${projectId}_group_${groupId}`}
               images={images}
               loading={loading}
               onImageUpdated={handleImageUpdated}
