@@ -7,6 +7,7 @@ import ImageUploader from './components/ImageUploader';
 import MetadataManager from './components/MetadataManager';
 import ClassManager from './components/ClassManager';
 import ImageGallery from './components/ImageGallery';
+import GroupedImagesPage from './components/GroupedImagesPage';
 import ReviewStatusSummary from './components/ReviewStatusSummary';
 import { downloadExcel } from './utils/downloadExcel';
 
@@ -23,6 +24,8 @@ function Project() {
   const [includeDeleted, setIncludeDeleted] = useState(false);
   const [deletedOnly, setDeletedOnly] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [hasGroups, setHasGroups] = useState(false);
+  const [groupSearch, setGroupSearch] = useState('');
 
   const fetchImages = useCallback(async (projId, opts = {}) => {
     const inc = opts.includeDeleted ?? includeDeleted;
@@ -98,8 +101,21 @@ function Project() {
           const classesData = await classesResponse.json();
           setClasses(classesData);
         }
-        
-  await fetchImages(id);
+
+        // Check if project has groups
+        const hasGroupsResponse = await fetch(`/api/projects/${id}/has-groups`);
+        let projectHasGroups = false;
+        if (hasGroupsResponse.ok) {
+          const hasGroupsData = await hasGroupsResponse.json();
+          projectHasGroups = hasGroupsData.has_groups;
+          setHasGroups(projectHasGroups);
+        }
+
+        // Only fetch the flat image list when the grouped view is not active.
+        // When hasGroups is true, the GroupedImagesPage fetches its own data.
+        if (!projectHasGroups) {
+          await fetchImages(id);
+        }
         
         setLoading(false);
       } catch (err) {
@@ -113,18 +129,28 @@ function Project() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  // Refetch when deletion visibility changes
+  // Refetch when deletion visibility changes, but only in the flat (non-grouped) view
   useEffect(() => {
-    if (project) {
+    if (project && !hasGroups) {
       fetchImages(project.id, { includeDeleted, deletedOnly });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [includeDeleted, deletedOnly, project?.id]);
+  }, [includeDeleted, deletedOnly, project?.id, hasGroups]);
 
   // Handle image upload completion
-  const handleUploadComplete = (newImages) => {
-    // If not showing deleted, just append
+  const handleUploadComplete = async (newImages) => {
     setImages(prevImages => [...prevImages, ...newImages]);
+    // Re-check whether the project now has groups (upload may have created one)
+    try {
+      const resp = await fetch(`/api/projects/${id}/has-groups`);
+      if (resp.ok) {
+        const data = await resp.json();
+        setHasGroups(data.has_groups);
+        if (data.has_groups) {
+          window.scrollTo(0, 0);
+        }
+      }
+    } catch (_) {}
   };
 
   const handleImageStateUpdate = (updatedImage) => {
@@ -248,28 +274,48 @@ function Project() {
         
         {!loading && (
           <div className="project-content">
-            {/* Review Status Summary */}
-            <ReviewStatusSummary projectId={id} />
-
-            {/* Main Gallery Section */}
-            <div className="gallery-section">
-              <ImageGallery 
-                projectId={id} 
-                images={images} 
-                loading={loading} 
-                onImageUpdated={handleImageStateUpdate}
-                refreshProjectImages={(searchOpts) => fetchImages(id, searchOpts)}
-              />
+            {/* Review Status Summary + group search */}
+            <div className="review-summary-row">
+              <ReviewStatusSummary projectId={id} />
+              {hasGroups && (
+                <input
+                  type="text"
+                  className="search-input group-search-inline"
+                  placeholder="Search groups..."
+                  value={groupSearch}
+                  onChange={(e) => setGroupSearch(e.target.value)}
+                />
+              )}
             </div>
+
+            {/* Main Gallery Section - grouped or flat */}
+            {hasGroups ? (
+              <div className="gallery-section">
+                <GroupedImagesPage
+                  projectId={id}
+                  projectName={project?.name}
+                  onBack={() => navigate('/')}
+                  search={groupSearch}
+                />
+              </div>
+            ) : (
+              <div className="gallery-section">
+                <ImageGallery
+                  projectId={id}
+                  images={images}
+                  loading={loading}
+                  onImageUpdated={handleImageStateUpdate}
+                  refreshProjectImages={(searchOpts) => fetchImages(id, searchOpts)}
+                />
+              </div>
+            )}
             
             {/* Quick Upload Section */}
             <div className="upload-section">
-              <ImageUploader 
-                projectId={id} 
-                onUploadComplete={handleUploadComplete} 
-                loading={loading} 
-                setLoading={setLoading} 
-                setError={setError} 
+              <ImageUploader
+                projectId={id}
+                onUploadComplete={handleUploadComplete}
+                setError={setError}
               />
             </div>
             
@@ -298,7 +344,8 @@ function Project() {
               </div>
             </div>
             
-            {/* Image Deletion Controls - moved to bottom */}
+            {/* Image Deletion Controls - only relevant for the flat gallery view */}
+            {!hasGroups && (
             <div className="deletion-controls-section" style={{ marginTop: '24px', padding: '16px', backgroundColor: '#f8f9fa', borderRadius: '8px', border: '1px solid #e9ecef' }}>
               <h3 style={{ margin: '0 0 12px 0', fontSize: '1.1rem', fontWeight: '600', color: '#333' }}>Image View Options</h3>
               <div style={{ display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -328,6 +375,7 @@ function Project() {
                 </span>
               </div>
             </div>
+            )}
           </div>
         )}
       </div>

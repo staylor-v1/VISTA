@@ -79,6 +79,20 @@ These guidelines are for AI coding agents (like GitHub Copilot Chat) working in 
 - Columns are fully dynamic: Filename (always), then one column per unique `metadata_json` key found across all project images, then Review Status / Reviewer / Review Date (most recent review), then Image Classes, then Comment. No hardcoded field names.
 - Tests: `backend/tests/test_export.py`.
 
+## Image Grouping
+
+Images can be organized into named groups (e.g., by part or serial number) using the `image_groups` table.
+
+- `image_groups`: `id`, `project_id`, `identifier` (unique per project), `display_name`; `data_instances.group_id` FK added (nullable).
+- Migration: `backend/alembic/versions/20260306_0004_add_image_groups.py`.
+- Backend router: `routers/groups.py` -- CRUD endpoints at `/api/projects/{id}/groups`, `/api/groups/{id}`, `/api/groups/{id}/images`, `/api/projects/{id}/has-groups`.
+- Upload (`POST /api/projects/{id}/images`) accepts optional `group_identifier` form field to auto-assign the uploaded image to a group (find-or-create).
+- List images supports `?group_id=` and `?ungrouped=true` filters.
+- Frontend: `GroupedImagesPage.js` (project groups overview), `GroupGalleryView.js` (gallery for one group), `ImageGroupPanel.js` (sidebar in ImageView).
+- `Project.js` calls `/api/projects/{id}/has-groups` on load; if true, renders `GroupedImagesPage` instead of the flat `ImageGallery`.
+- `ImageUploader.js` shows a "Use as Group Identifier" dropdown when `FilenameMetadataExtractor` keys are configured.
+- Tests: `backend/tests/test_groups.py`.
+
 ## Conventions & Constraints
 
 - **No emojis** anywhere (code, tests, logs, docs, or tool output).

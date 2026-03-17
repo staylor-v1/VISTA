@@ -14,6 +14,7 @@ import MLDebugOutputs from './components/MLDebugOutputs';
 import CalibrationManager from './components/CalibrationManager';
 import MeasurementList from './components/MeasurementList';
 import ReviewPanel from './components/ReviewPanel';
+import ImageGroupPanel from './components/ImageGroupPanel';
 
 function ImageView() {
   const { imageId } = useParams();
@@ -132,10 +133,13 @@ function ImageView() {
   }, [imageId, projectId]);
 
   // Load project images for navigation
-  const loadProjectImages = useCallback(async () => {
+  const loadProjectImages = useCallback(async (groupId) => {
     try {
-      console.log('Fetching images for project:', projectId);
-      const response = await fetch(`/api/projects/${projectId}/images?include_deleted=true`);
+      const params = new URLSearchParams({ include_deleted: 'true' });
+      if (groupId) {
+        params.set('group_id', groupId);
+      }
+      const response = await fetch(`/api/projects/${projectId}/images?${params}`);
 
       if (!response.ok) {
         throw new Error(`HTTP error! Status: ${response.status}`);
@@ -219,9 +223,15 @@ function ImageView() {
       });
     
     loadImageData();
-    loadProjectImages();
     loadClasses();
-  }, [imageId, projectId, loadImageData, loadProjectImages, loadClasses]);
+  }, [imageId, projectId, loadImageData, loadClasses]);
+
+  // Load project images for navigation once we know the current image's group
+  useEffect(() => {
+    if (image && projectId) {
+      loadProjectImages(image.group_id || null);
+    }
+  }, [image?.id, image?.group_id, projectId, loadProjectImages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Navigate to previous image with transition
   const navigateToPreviousImage = useCallback(() => {
@@ -487,7 +497,13 @@ function ImageView() {
         <div className="view-header-content">
           <button
             className="btn btn-secondary btn-small"
-            onClick={() => navigate(`/project/${projectId}`)}
+            onClick={() => {
+              if (image && image.group_id) {
+                navigate(`/project/${projectId}/group/${image.group_id}`);
+              } else {
+                navigate(`/project/${projectId}`);
+              }
+            }}
           >
             ← Back
           </button>
@@ -522,6 +538,18 @@ function ImageView() {
               {image && (
                 <ReviewPanel
                   imageId={imageId}
+                />
+              )}
+
+              {/* Group assignment panel */}
+              {image && projectId && (
+                <ImageGroupPanel
+                  imageId={imageId}
+                  projectId={projectId}
+                  groupId={image.group_id || null}
+                  onGroupChanged={(newGroupId) => {
+                    setImage(prev => prev ? { ...prev, group_id: newGroupId } : prev);
+                  }}
                 />
               )}
 

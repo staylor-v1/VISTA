@@ -59,7 +59,7 @@ class Settings(BaseSettings):
 
     # Image deletion / retention settings
     IMAGE_DELETE_RETENTION_DAYS: int = 60  # Soft delete retention window (days)
-    IMAGE_DELETE_REASON_MIN_CHARS: int = 10  # Minimum characters required for a deletion reason
+    IMAGE_DELETE_REASON_MIN_CHARS: int = 5  # Minimum characters required for a deletion reason
     IMAGE_DELETE_PURGE_BATCH_SIZE: int = 500  # Max images purged per cycle
     IMAGE_DELETE_PURGE_INTERVAL_SECONDS: int = 3600  # Background purge interval
     ENABLE_IMAGE_PURGE: bool = True  # Toggle background purge task

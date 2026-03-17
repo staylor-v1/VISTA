@@ -1,3 +1,4 @@
+import asyncio
 import os
 import boto3
 import logging
@@ -206,15 +207,19 @@ async def upload_file_to_s3(
                 "error": str(e),
                 "error_type": type(e).__name__
             })
-        
-        # Stream upload to S3 without buffering whole file in memory
-        boto3_client.upload_fileobj(
-            file_data,
-            bucket_name,
-            object_name,
-            ExtraArgs={
-                'ContentType': content_type
-            }
+
+        # Run blocking boto3 call in a thread to avoid blocking the event loop
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: boto3_client.upload_fileobj(
+                file_data,
+                bucket_name,
+                object_name,
+                ExtraArgs={
+                    'ContentType': content_type
+                }
+            ),
         )
         logger.info("Successfully uploaded file to bucket", extra={
             "object_name": object_name,

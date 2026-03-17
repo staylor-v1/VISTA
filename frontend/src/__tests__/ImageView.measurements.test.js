@@ -70,6 +70,12 @@ jest.mock('../components/CalibrationManager', () => {
   };
 });
 
+jest.mock('../components/ImageGroupPanel', () => {
+  return function MockImageGroupPanel() {
+    return <div>ImageGroupPanel</div>;
+  };
+});
+
 jest.mock('../components/MeasurementList', () => {
   return function MockMeasurementList({
     onDeleteMeasurement,

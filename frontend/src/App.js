@@ -1,5 +1,5 @@
 import React, { useState, useEffect, lazy, Suspense, memo, useRef, useCallback } from 'react';
-import { Route, Routes, Link } from 'react-router-dom';
+import { Route, Routes, Link, useLocation } from 'react-router-dom';
 import './App.css';
 import Toast from './components/Toast';
 
@@ -8,6 +8,7 @@ const Project = lazy(() => import('./Project'));
 const ImageView = lazy(() => import('./ImageView'));
 const ApiKeys = lazy(() => import('./ApiKeys'));
 const ProjectReport = lazy(() => import('./components/ProjectReport'));
+const GroupGalleryView = lazy(() => import('./components/GroupGalleryView'));
 
 // Debug counter to track renders
 let renderCount = 0;
@@ -170,6 +171,14 @@ const ProjectItem = memo(function ProjectItem({ project }) {
     </div>
   );
 });
+
+function ScrollToTop() {
+  const { pathname } = useLocation();
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [pathname]);
+  return null;
+}
 
 function App() {
   // const navigate = useNavigate(); // Commented out - not currently used
@@ -391,6 +400,8 @@ function App() {
   );
 
   return (
+    <>
+    <ScrollToTop />
     <Routes>
       <Route path="/" element={<HomePage />} />
       <Route
@@ -406,6 +417,22 @@ function App() {
         element={
           <Suspense fallback={<div className="loading-container">Loading report...</div>}>
             <ProjectReport />
+          </Suspense>
+        }
+      />
+      <Route
+        path="/project/:id/group/:groupId"
+        element={
+          <Suspense fallback={<div className="loading-container">Loading group...</div>}>
+            <GroupGalleryView />
+          </Suspense>
+        }
+      />
+      <Route
+        path="/project/:id/ungrouped"
+        element={
+          <Suspense fallback={<div className="loading-container">Loading ungrouped images...</div>}>
+            <GroupGalleryView />
           </Suspense>
         }
       />
@@ -426,6 +453,7 @@ function App() {
         } 
       />
     </Routes>
+    </>
   );
 }
 

@@ -75,6 +75,8 @@ services:
     working_dir: /app/backend
     command: >
       bash -c "
+        echo 'Syncing dependencies...' &&
+        cd /app && uv sync --frozen --no-install-project && cd /app/backend &&
         echo 'Running database migrations...' &&
         alembic upgrade head &&
         echo 'Running backend tests...' &&
