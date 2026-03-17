@@ -741,20 +741,27 @@ describe('ImageView', () => {
         sortBy: 'date', searchField: 'filename', searchValue: '', reviewFilter: 'pass',
       }));
       // reviewStatuses defaults to null in setupNavFetch, causing a 500 response.
-      // With null statuses, all images are treated as "unreviewed", so none match
-      // the "pass" filter. The current image won't be in the filtered list.
+      // When statuses are unavailable, the code bypasses the review filter (falls back
+      // to 'all') so navigation still works with the full image list.
       setupNavFetch();
       renderImageView();
 
       // The image itself should still render (loading is independent of navigation)
       await waitForImageLoad('bravo.png');
 
-      // Navigation should not work since img-b is not in the filtered list
+      // Date sort (newest first): charlie, bravo, alpha. Bravo is at index 1.
+      // Navigation should still work since the review filter is bypassed,
+      // and the project query param should be preserved in the URL.
       pressArrowAndAdvance('ArrowRight');
-      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(mockNavigate).toHaveBeenCalledWith(
+        '/view/img-a?project=test-project-id'
+      );
 
+      mockNavigate.mockClear();
       pressArrowAndAdvance('ArrowLeft');
-      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(mockNavigate).toHaveBeenCalledWith(
+        '/view/img-c?project=test-project-id'
+      );
     });
   });
 });
