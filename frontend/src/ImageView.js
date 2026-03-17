@@ -152,16 +152,90 @@ function ImageView() {
         throw new Error('Invalid server response: expected an array of images');
       }
 
-      // Sort images by date (newest first) to match the gallery default sorting
-      // Use spread operator to avoid mutating the original array
-      const sortedImages = [...images].sort((a, b) => {
-        return new Date(b.created_at || '1970-01-01') - new Date(a.created_at || '1970-01-01');
-      });
+      // Determine the gallery state key for this view
+      // For grouped images, use the group-specific key; otherwise fall back to the project key
+      let galleryStateKey;
+      if (groupId) {
+        galleryStateKey = `${projectId}_group_${groupId}`;
+      } else {
+        // Prefer the ungrouped key if it exists (project uses groups), else project key
+        galleryStateKey = localStorage.getItem(`gallery_state_${projectId}_ungrouped`) !== null
+          ? `${projectId}_ungrouped`
+          : projectId;
+      }
 
-      setProjectImages(sortedImages);
+      // Load saved gallery filter/sort state and apply it for consistent navigation
+      let navImages = images;
+      try {
+        const stored = localStorage.getItem(`gallery_state_${galleryStateKey}`);
+        const galleryState = stored ? JSON.parse(stored) : {};
 
-      // Find the index of the current image in the sorted array
-      const index = sortedImages.findIndex(img => img.id === imageId);
+        // Apply search filter (client-side, same logic as ImageGallery)
+        if (galleryState.searchValue && galleryState.searchField) {
+          const searchLower = galleryState.searchValue.toLowerCase();
+          const field = galleryState.searchField;
+          navImages = navImages.filter(image => {
+            switch (field) {
+              case 'filename':
+                return (image.filename || '').toLowerCase().includes(searchLower);
+              case 'content_type':
+                return (image.content_type || '').toLowerCase().includes(searchLower);
+              case 'uploaded_by':
+                return (image.uploaded_by_user_id || '').toLowerCase().includes(searchLower);
+              case 'metadata': {
+                const meta = image.metadata || image.metadata_;
+                if (!meta) return false;
+                return Object.values(meta).some(v => String(v).toLowerCase().includes(searchLower));
+              }
+              default: {
+                const meta = image.metadata || image.metadata_;
+                if (!meta || !meta[field]) return false;
+                return String(meta[field]).toLowerCase().includes(searchLower);
+              }
+            }
+          });
+        }
+
+        // Apply review filter if not 'all' (requires an extra API call)
+        if (galleryState.reviewFilter && galleryState.reviewFilter !== 'all') {
+          try {
+            const reviewResp = await fetch(`/api/projects/${projectId}/image-review-statuses`);
+            if (reviewResp.ok) {
+              const reviewStatuses = await reviewResp.json();
+              navImages = navImages.filter(image => {
+                const status = reviewStatuses[image.id] || 'unreviewed';
+                return status === galleryState.reviewFilter;
+              });
+            }
+          } catch (e) {
+            console.warn('Failed to load review statuses for navigation filter:', e);
+          }
+        }
+
+        // Apply sort order (same logic as ImageGallery)
+        const sortBy = galleryState.sortBy || 'date';
+        navImages = [...navImages].sort((a, b) => {
+          switch (sortBy) {
+            case 'name':
+              return (a.filename || '').localeCompare(b.filename || '');
+            case 'size':
+              return (b.size_bytes || 0) - (a.size_bytes || 0);
+            case 'date':
+            default:
+              return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+          }
+        });
+      } catch (e) {
+        // If anything goes wrong reading saved state, fall back to default date sort
+        navImages = [...images].sort((a, b) =>
+          new Date(b.created_at || 0) - new Date(a.created_at || 0)
+        );
+      }
+
+      setProjectImages(navImages);
+
+      // Find the index of the current image in the filtered/sorted array
+      const index = navImages.findIndex(img => img.id === imageId);
       setCurrentImageIndex(index);
 
     } catch (error) {
