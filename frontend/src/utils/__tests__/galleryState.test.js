@@ -1,10 +1,14 @@
 import {
   loadGalleryState,
   saveGalleryState,
+  cleanupStaleGalleryStates,
   filterBySearch,
   filterByReviewStatus,
   sortImages,
   applyGalleryFilters,
+  STORAGE_PREFIX,
+  MAX_ENTRIES,
+  MAX_AGE_MS,
 } from '../galleryState';
 
 const mockImages = [
@@ -201,6 +205,96 @@ describe('galleryState utilities', () => {
     test('works with empty options', () => {
       const result = applyGalleryFilters(mockImages, {});
       expect(result).toHaveLength(3);
+    });
+  });
+
+  describe('cleanup and TTL', () => {
+    test('saveGalleryState stamps lastAccessed on the entry', () => {
+      const before = Date.now();
+      saveGalleryState('ts-key', { sortBy: 'name' });
+      const raw = JSON.parse(localStorage.getItem(`${STORAGE_PREFIX}ts-key`));
+      expect(raw.lastAccessed).toBeGreaterThanOrEqual(before);
+      expect(raw.lastAccessed).toBeLessThanOrEqual(Date.now());
+      expect(raw.sortBy).toBe('name');
+    });
+
+    test('loadGalleryState touches lastAccessed and strips it from result', () => {
+      // Seed an entry with an old timestamp
+      const old = Date.now() - 1000;
+      localStorage.setItem(
+        `${STORAGE_PREFIX}touch-key`,
+        JSON.stringify({ sortBy: 'size', lastAccessed: old })
+      );
+      const state = loadGalleryState('touch-key');
+      expect(state.sortBy).toBe('size');
+      expect(state.lastAccessed).toBeUndefined();
+      // The stored entry should have a refreshed timestamp
+      const raw = JSON.parse(localStorage.getItem(`${STORAGE_PREFIX}touch-key`));
+      expect(raw.lastAccessed).toBeGreaterThan(old);
+    });
+
+    test('cleanupStaleGalleryStates removes entries older than MAX_AGE_MS', () => {
+      const staleTime = Date.now() - MAX_AGE_MS - 1000;
+      const freshTime = Date.now();
+      localStorage.setItem(
+        `${STORAGE_PREFIX}old`,
+        JSON.stringify({ sortBy: 'date', lastAccessed: staleTime })
+      );
+      localStorage.setItem(
+        `${STORAGE_PREFIX}new`,
+        JSON.stringify({ sortBy: 'name', lastAccessed: freshTime })
+      );
+      cleanupStaleGalleryStates();
+      expect(localStorage.getItem(`${STORAGE_PREFIX}old`)).toBeNull();
+      expect(localStorage.getItem(`${STORAGE_PREFIX}new`)).not.toBeNull();
+    });
+
+    test('cleanupStaleGalleryStates does not remove non-gallery keys', () => {
+      localStorage.setItem('unrelated_key', 'keep me');
+      const staleTime = Date.now() - MAX_AGE_MS - 1000;
+      localStorage.setItem(
+        `${STORAGE_PREFIX}stale`,
+        JSON.stringify({ lastAccessed: staleTime })
+      );
+      cleanupStaleGalleryStates();
+      expect(localStorage.getItem('unrelated_key')).toBe('keep me');
+    });
+
+    test('cleanupStaleGalleryStates evicts oldest when over MAX_ENTRIES', () => {
+      // Create MAX_ENTRIES + 5 fresh entries
+      for (let i = 0; i < MAX_ENTRIES + 5; i++) {
+        localStorage.setItem(
+          `${STORAGE_PREFIX}cap-${i}`,
+          JSON.stringify({ lastAccessed: Date.now() - (MAX_ENTRIES + 5 - i) * 1000 })
+        );
+      }
+      cleanupStaleGalleryStates();
+      // Count remaining gallery entries
+      let count = 0;
+      for (let i = 0; i < localStorage.length; i++) {
+        if (localStorage.key(i).startsWith(STORAGE_PREFIX)) count++;
+      }
+      expect(count).toBeLessThanOrEqual(MAX_ENTRIES);
+      // The oldest entries (cap-0 through cap-4) should be gone
+      for (let i = 0; i < 5; i++) {
+        expect(localStorage.getItem(`${STORAGE_PREFIX}cap-${i}`)).toBeNull();
+      }
+      // The newest should still exist
+      expect(localStorage.getItem(`${STORAGE_PREFIX}cap-${MAX_ENTRIES + 4}`)).not.toBeNull();
+    });
+
+    test('cleanupStaleGalleryStates treats corrupt entries as oldest', () => {
+      localStorage.setItem(`${STORAGE_PREFIX}corrupt`, '{not valid json');
+      localStorage.setItem(
+        `${STORAGE_PREFIX}good`,
+        JSON.stringify({ lastAccessed: Date.now() })
+      );
+      // Corrupt entry has lastAccessed=0, but it is not older than MAX_AGE_MS
+      // from the perspective of the age check (now - 0 > MAX_AGE_MS is true
+      // since Date.now() is much larger than 30 days in ms).
+      cleanupStaleGalleryStates();
+      expect(localStorage.getItem(`${STORAGE_PREFIX}corrupt`)).toBeNull();
+      expect(localStorage.getItem(`${STORAGE_PREFIX}good`)).not.toBeNull();
     });
   });
 });
