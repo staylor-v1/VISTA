@@ -40,7 +40,11 @@ function loadGalleryStateWithDefaults(key) {
  * Persist gallery state to localStorage under the given key.
  */
 function saveGalleryState(key, state) {
-  localStorage.setItem(`${STORAGE_PREFIX}${key}`, JSON.stringify(state));
+  try {
+    localStorage.setItem(`${STORAGE_PREFIX}${key}`, JSON.stringify(state));
+  } catch (e) {
+    // Fail closed: if persistence is unavailable, ignore the error.
+  }
 }
 
 /**
