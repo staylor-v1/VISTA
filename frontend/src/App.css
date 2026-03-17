@@ -3455,3 +3455,135 @@ ul li:hover {
   max-height: 80vh;
   object-fit: contain;
 }
+
+/* ---- Image Groups ---- */
+.review-summary-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.review-summary-row > :first-child {
+  flex: 1 1 auto;
+  margin-bottom: 0;
+}
+
+.group-search-inline {
+  flex: 0 0 220px;
+  height: 36px;
+  font-size: 0.85rem;
+}
+
+.grouped-images-page {
+  padding: 0;
+}
+
+.group-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--border-radius);
+  overflow: hidden;
+}
+
+.group-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  background: var(--white);
+  border-bottom: 1px solid var(--gray-200);
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.group-row:last-child {
+  border-bottom: none;
+}
+
+.group-row:hover {
+  background: var(--gray-50, #f9fafb);
+}
+
+.group-row:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
+.group-row-ungrouped {
+  border-top: 2px solid var(--gray-200);
+  color: var(--gray-500);
+  font-style: italic;
+}
+
+.group-row-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--gray-800);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  word-break: break-word;
+}
+
+.group-row-identifier {
+  font-weight: 400;
+  font-size: 0.8rem;
+  color: var(--gray-500);
+}
+
+.group-row-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.group-row-count {
+  font-size: 0.85rem;
+  color: var(--gray-500);
+  white-space: nowrap;
+}
+
+.group-row-arrow {
+  font-size: 1.2rem;
+  color: var(--gray-400);
+  line-height: 1;
+}
+
+.group-status-badge {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-weight: 600;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.group-status-pass {
+  background: var(--green-100, #d4edda);
+  color: var(--green-800, #155724);
+}
+
+.group-status-reject_confirmed {
+  background: var(--red-100, #f8d7da);
+  color: var(--red-800, #721c24);
+}
+
+.group-status-reject_pending {
+  background: var(--yellow-100, #fff3cd);
+  color: var(--yellow-800, #856404);
+}
+
+.group-badge {
+  display: inline-block;
+  background: var(--primary-light, #e8f0fe);
+  color: var(--primary-dark, #1a56db);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.85rem;
+  font-weight: 500;
+}

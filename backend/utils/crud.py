@@ -1,5 +1,6 @@
 import uuid
-from sqlalchemy import select, update, delete, and_, text
+from sqlalchemy import select, update, delete, and_, text, func, exists
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from core import models, schemas
@@ -85,7 +86,7 @@ async def list_ml_analyses_for_image(db: AsyncSession, image_id: uuid.UUID, skip
 
 async def count_ml_analyses_for_image(db: AsyncSession, image_id: uuid.UUID) -> int:
     """Count total ML analyses for an image."""
-    from sqlalchemy import func
+
     result = await db.execute(
         select(func.count()).select_from(models.MLAnalysis).where(models.MLAnalysis.image_id == image_id)
     )
@@ -118,7 +119,7 @@ async def list_ml_annotations(db: AsyncSession, analysis_id: uuid.UUID, skip: in
 
 async def count_ml_annotations(db: AsyncSession, analysis_id: uuid.UUID) -> int:
     """Count total annotations for an analysis."""
-    from sqlalchemy import func
+
     result = await db.execute(
         select(func.count()).select_from(models.MLAnnotation).where(models.MLAnnotation.analysis_id == analysis_id)
     )
@@ -274,13 +275,18 @@ async def get_image(db: AsyncSession, image_id: uuid.UUID) -> Optional[models.Da
     """
     return await get_data_instance(db, image_id)
 
-async def get_data_instances_for_project(db: AsyncSession, project_id: uuid.UUID, skip: int = 0, limit: int = 100, search_field: Optional[str] = None, search_value: Optional[str] = None) -> List[models.DataInstance]:
+async def get_data_instances_for_project(db: AsyncSession, project_id: uuid.UUID, skip: int = 0, limit: int = 100, search_field: Optional[str] = None, search_value: Optional[str] = None, group_id: Optional[uuid.UUID] = None, ungrouped: bool = False) -> List[models.DataInstance]:
     # First check if the project exists
     project = await get_project(db, project_id)
     if not project:
         return []
         
     query = select(models.DataInstance).where(models.DataInstance.project_id == project_id)
+    
+    if group_id is not None:
+        query = query.where(models.DataInstance.group_id == group_id)
+    elif ungrouped:
+        query = query.where(models.DataInstance.group_id.is_(None))
     
     if search_field and search_value:
         search_value_lower = f"%{search_value.lower()}%"
@@ -315,9 +321,9 @@ async def get_deleted_images_for_project(db: AsyncSession, project_id: uuid.UUID
     return result.scalars().all()
 
 async def count_deleted_images_for_project(db: AsyncSession, project_id: uuid.UUID) -> int:
-    from sqlalchemy import func as _func
+
     result = await db.execute(
-        select(_func.count())
+        select(func.count())
         .select_from(models.DataInstance)
         .where(models.DataInstance.project_id == project_id)
         .where(models.DataInstance.deleted_at.isnot(None))
@@ -347,8 +353,8 @@ async def list_image_deletion_events(db: AsyncSession, project_id: uuid.UUID, im
     return result.scalars().all()
 
 async def count_image_deletion_events(db: AsyncSession, project_id: uuid.UUID, image_id: Optional[uuid.UUID] = None) -> int:
-    from sqlalchemy import func as _func
-    stmt = select(_func.count()).select_from(models.ImageDeletionEvent).where(models.ImageDeletionEvent.project_id == project_id)
+
+    stmt = select(func.count()).select_from(models.ImageDeletionEvent).where(models.ImageDeletionEvent.project_id == project_id)
     if image_id:
         stmt = stmt.where(models.ImageDeletionEvent.image_id == image_id)
     result = await db.execute(stmt)
@@ -403,13 +409,12 @@ async def restore_image(db: AsyncSession, image: models.DataInstance):
     return image
 
 async def mark_image_storage_deleted(db: AsyncSession, image: models.DataInstance, *, actor_user_id: Optional[uuid.UUID], hard: bool):
-    from sqlalchemy.sql import func as _func
     await db.execute(
         update(models.DataInstance)
         .where(models.DataInstance.id == image.id)
         .values(
             storage_deleted=True,
-            hard_deleted_at=_func.coalesce(models.DataInstance.hard_deleted_at, _func.now()),
+            hard_deleted_at=func.coalesce(models.DataInstance.hard_deleted_at, func.now()),
             hard_deleted_by_user_id=actor_user_id if hard else models.DataInstance.hard_deleted_by_user_id
         )
     )
@@ -793,11 +798,11 @@ async def delete_image_review(db: AsyncSession, review_id: uuid.UUID, deleted_by
 
 async def get_review_status_for_project(db: AsyncSession, project_id: uuid.UUID) -> Dict[str, Any]:
     """Return aggregate review statistics for a project."""
-    from sqlalchemy import func as _func, case, distinct
+
 
     # Total images (non-deleted)
     total_result = await db.execute(
-        select(_func.count())
+        select(func.count())
         .select_from(models.DataInstance)
         .where(
             models.DataInstance.project_id == project_id,
@@ -811,7 +816,7 @@ async def get_review_status_for_project(db: AsyncSession, project_id: uuid.UUID)
         select(
             models.ImageReview.image_id,
             models.ImageReview.status,
-            _func.row_number().over(
+            func.row_number().over(
                 partition_by=models.ImageReview.image_id,
                 order_by=models.ImageReview.created_at.desc()
             ).label("rn")
@@ -831,7 +836,7 @@ async def get_review_status_for_project(db: AsyncSession, project_id: uuid.UUID)
     counts_result = await db.execute(
         select(
             latest.c.status,
-            _func.count().label("cnt"),
+            func.count().label("cnt"),
         ).group_by(latest.c.status)
     )
     status_counts = {row.status: row.cnt for row in counts_result}
@@ -852,13 +857,13 @@ async def get_review_status_for_images(db: AsyncSession, image_ids: List[uuid.UU
     """Return the latest review status for each image id."""
     if not image_ids:
         return {}
-    from sqlalchemy import func as _func
+
 
     latest_review = (
         select(
             models.ImageReview.image_id,
             models.ImageReview.status,
-            _func.row_number().over(
+            func.row_number().over(
                 partition_by=models.ImageReview.image_id,
                 order_by=models.ImageReview.created_at.desc()
             ).label("rn")
@@ -888,3 +893,302 @@ async def deactivate_api_key(db: AsyncSession, api_key_id: uuid.UUID, deactivate
     
     log_db_operation("UPDATE", "api_keys", api_key_id, deactivated_by or "system", {"deactivated": True})
     return True
+
+
+# ---- ImageGroup CRUD ----
+
+async def get_image_group(db: AsyncSession, group_id: uuid.UUID) -> Optional[models.ImageGroup]:
+    result = await db.execute(
+        select(models.ImageGroup).where(models.ImageGroup.id == group_id)
+    )
+    return result.scalars().first()
+
+
+async def get_image_group_by_identifier(
+    db: AsyncSession, project_id: uuid.UUID, identifier: str
+) -> Optional[models.ImageGroup]:
+    result = await db.execute(
+        select(models.ImageGroup).where(
+            models.ImageGroup.project_id == project_id,
+            models.ImageGroup.identifier == identifier,
+        )
+    )
+    return result.scalars().first()
+
+
+async def get_or_create_image_group(
+    db: AsyncSession, project_id: uuid.UUID, identifier: str, created_by: Optional[str] = None
+) -> models.ImageGroup:
+    existing = await get_image_group_by_identifier(db, project_id, identifier)
+    if existing:
+        return existing
+    group = models.ImageGroup(project_id=project_id, identifier=identifier)
+    db.add(group)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        existing = await get_image_group_by_identifier(db, project_id, identifier)
+        if existing:
+            return existing
+        raise
+    await db.refresh(group)
+    log_db_operation("CREATE", "image_groups", group.id, created_by or "system", {"project_id": str(project_id), "identifier": identifier})
+    return group
+
+
+async def create_image_group(
+    db: AsyncSession, group: schemas.ImageGroupCreate, created_by: Optional[str] = None
+) -> models.ImageGroup:
+    db_group = models.ImageGroup(**group.model_dump())
+    db.add(db_group)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise
+    await db.refresh(db_group)
+    log_db_operation("CREATE", "image_groups", db_group.id, created_by or "system", {"project_id": str(group.project_id), "identifier": group.identifier})
+    return db_group
+
+
+async def update_image_group(
+    db: AsyncSession, group: models.ImageGroup, update_data: schemas.ImageGroupUpdate, updated_by: Optional[str] = None
+) -> models.ImageGroup:
+    values = update_data.model_dump(exclude_unset=True)
+    # identifier is NOT NULL in the schema; drop it if explicitly set to None
+    if "identifier" in values and values["identifier"] is None:
+        del values["identifier"]
+    if values:
+        await db.execute(
+            update(models.ImageGroup).where(models.ImageGroup.id == group.id).values(**values)
+        )
+        await db.commit()
+        await db.refresh(group)
+        log_db_operation("UPDATE", "image_groups", group.id, updated_by or "system", values)
+    return group
+
+
+async def delete_image_group(
+    db: AsyncSession, group: models.ImageGroup, delete_images: bool = False, deleted_by: Optional[str] = None,
+    actor_user_id: Optional[uuid.UUID] = None, retention_days: int = 60,
+) -> None:
+    if delete_images:
+        # Fetch non-deleted images belonging to this group
+        result = await db.execute(
+            select(models.DataInstance).where(
+                models.DataInstance.group_id == group.id,
+                models.DataInstance.deleted_at.is_(None),
+            )
+        )
+        affected_images = list(result.scalars().all())
+        for img in affected_images:
+            prev_state = {"deleted_at": None, "group_id": str(group.id)}
+            await soft_delete_image(
+                db, img,
+                actor_user_id=actor_user_id,
+                reason="Group deleted",
+                retention_days=retention_days,
+            )
+            await create_image_deletion_event(
+                db,
+                image=img,
+                actor_user_id=actor_user_id,
+                action="soft_delete",
+                reason="Group deleted",
+                previous_state=prev_state,
+            )
+    else:
+        # Nullify group_id on member images so they become ungrouped
+        await db.execute(
+            update(models.DataInstance)
+            .where(models.DataInstance.group_id == group.id)
+            .values(group_id=None)
+        )
+    await db.delete(group)
+    await db.commit()
+    log_db_operation("DELETE", "image_groups", group.id, deleted_by or "system", {})
+
+
+async def list_image_groups(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    skip: int = 0,
+    limit: int = 100,
+    search: Optional[str] = None,
+) -> List[models.ImageGroup]:
+    q = select(models.ImageGroup).where(models.ImageGroup.project_id == project_id)
+    if search:
+        escaped = search.replace('/', '//').replace('%', '/%').replace('_', '/_')
+        q = q.where(models.ImageGroup.identifier.ilike(f"%{escaped}%", escape='/'))
+    q = q.order_by(models.ImageGroup.identifier).offset(skip).limit(limit)
+    result = await db.execute(q)
+    return list(result.scalars().all())
+
+
+async def count_image_groups(
+    db: AsyncSession, project_id: uuid.UUID, search: Optional[str] = None
+) -> int:
+
+    q = select(func.count()).select_from(models.ImageGroup).where(models.ImageGroup.project_id == project_id)
+    if search:
+        escaped = search.replace('/', '//').replace('%', '/%').replace('_', '/_')
+        q = q.where(models.ImageGroup.identifier.ilike(f"%{escaped}%", escape='/'))
+    result = await db.execute(q)
+    return result.scalar() or 0
+
+
+async def get_image_counts_for_groups(db: AsyncSession, group_ids: List[uuid.UUID]) -> Dict[uuid.UUID, int]:
+    """Return image counts for multiple groups in a single query."""
+    if not group_ids:
+        return {}
+
+    result = await db.execute(
+        select(
+            models.DataInstance.group_id,
+            func.count(models.DataInstance.id),
+        )
+        .where(
+            models.DataInstance.group_id.in_(group_ids),
+            models.DataInstance.deleted_at.is_(None),
+        )
+        .group_by(models.DataInstance.group_id)
+    )
+    return {row[0]: row[1] for row in result.all()}
+
+
+async def get_aggregate_review_statuses_for_groups(
+    db: AsyncSession, group_ids: List[uuid.UUID]
+) -> Dict[uuid.UUID, Optional[str]]:
+    """Compute aggregate review status for multiple groups in bulk.
+
+    Priority per group:
+      1. Any reject_confirmed  -> 'reject_confirmed'
+      2. Any reject_pending    -> 'reject_pending'
+      3. All pass (every image reviewed as pass) -> 'pass'
+      4. Otherwise -> None
+    """
+    if not group_ids:
+        return {}
+
+
+    # Get all non-deleted images with their group_id for the requested groups
+    image_rows = await db.execute(
+        select(models.DataInstance.id, models.DataInstance.group_id)
+        .where(
+            models.DataInstance.group_id.in_(group_ids),
+            models.DataInstance.deleted_at.is_(None),
+        )
+    )
+    rows = image_rows.all()
+    if not rows:
+        return {gid: None for gid in group_ids}
+
+    # Map group_id -> [image_ids]
+    group_image_map: Dict[uuid.UUID, List[uuid.UUID]] = {}
+    all_image_ids = []
+    for img_id, g_id in rows:
+        group_image_map.setdefault(g_id, []).append(img_id)
+        all_image_ids.append(img_id)
+
+    # Batch fetch review statuses for all images at once
+    statuses = await get_review_status_for_images(db, all_image_ids)
+
+    result = {}
+    for gid in group_ids:
+        img_ids = group_image_map.get(gid, [])
+        if not img_ids:
+            result[gid] = None
+            continue
+        status_values = [statuses.get(iid) for iid in img_ids]
+        if "reject_confirmed" in status_values:
+            result[gid] = "reject_confirmed"
+        elif "reject_pending" in status_values:
+            result[gid] = "reject_pending"
+        else:
+            non_none = [s for s in status_values if s is not None]
+            if non_none and all(s == "pass" for s in non_none) and len(non_none) == len(img_ids):
+                result[gid] = "pass"
+            else:
+                result[gid] = None
+    return result
+
+
+async def count_images_for_group(db: AsyncSession, group_id: uuid.UUID) -> int:
+
+    result = await db.execute(
+        select(func.count())
+        .select_from(models.DataInstance)
+        .where(
+            models.DataInstance.group_id == group_id,
+            models.DataInstance.deleted_at.is_(None),
+        )
+    )
+    return result.scalar() or 0
+
+
+async def assign_images_to_group(
+    db: AsyncSession, group_id: uuid.UUID, image_ids: List[uuid.UUID], project_id: uuid.UUID, assigned_by: Optional[str] = None
+) -> int:
+    result = await db.execute(
+        update(models.DataInstance)
+        .where(
+            models.DataInstance.id.in_(image_ids),
+            models.DataInstance.project_id == project_id,
+            models.DataInstance.deleted_at.is_(None),
+        )
+        .values(group_id=group_id)
+    )
+    await db.commit()
+    log_db_operation("UPDATE", "image_groups", group_id, assigned_by or "system", {"action": "assign_images", "image_ids": [str(i) for i in image_ids], "assigned_count": result.rowcount})
+    return result.rowcount
+
+
+async def remove_images_from_group(
+    db: AsyncSession, group_id: uuid.UUID, image_ids: List[uuid.UUID], project_id: uuid.UUID, removed_by: Optional[str] = None
+) -> int:
+    result = await db.execute(
+        update(models.DataInstance)
+        .where(
+            models.DataInstance.id.in_(image_ids),
+            models.DataInstance.group_id == group_id,
+            models.DataInstance.project_id == project_id,
+        )
+        .values(group_id=None)
+    )
+    await db.commit()
+    log_db_operation("UPDATE", "image_groups", group_id, removed_by or "system", {"action": "remove_images", "image_ids": [str(i) for i in image_ids], "removed_count": result.rowcount})
+    return result.rowcount
+
+
+async def get_aggregate_review_status_for_group(db: AsyncSession, group_id: uuid.UUID) -> Optional[str]:
+    """Compute aggregate review status for a single group.
+
+    Delegates to the batch version to avoid duplicating priority logic.
+    """
+    result = await get_aggregate_review_statuses_for_groups(db, [group_id])
+    return result.get(group_id)
+
+
+async def count_ungrouped_images(db: AsyncSession, project_id: uuid.UUID) -> int:
+    """Return the count of non-deleted images with no group assignment."""
+
+    result = await db.execute(
+        select(func.count())
+        .select_from(models.DataInstance)
+        .where(
+            models.DataInstance.project_id == project_id,
+            models.DataInstance.group_id.is_(None),
+            models.DataInstance.deleted_at.is_(None),
+        )
+    )
+    return result.scalar() or 0
+
+
+async def has_image_groups(db: AsyncSession, project_id: uuid.UUID) -> bool:
+    """Return True if the project has at least one image group."""
+
+    result = await db.execute(
+        select(exists().where(models.ImageGroup.project_id == project_id))
+    )
+    return result.scalar()

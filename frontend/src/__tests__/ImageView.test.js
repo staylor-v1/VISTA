@@ -52,6 +52,12 @@ jest.mock('../components/ImageDeletionControls', () => {
   };
 });
 
+jest.mock('../components/ImageGroupPanel', () => {
+  return function MockImageGroupPanel() {
+    return <div data-testid="image-group-panel">ImageGroupPanel</div>;
+  };
+});
+
 // Mock data
 const mockRegularImage = {
   id: 'test-image-id',
@@ -256,27 +262,21 @@ describe('ImageView', () => {
 
   describe('Project Images Loading', () => {
     test('loads project images with include_deleted=true', async () => {
-      fetch
-        .mockResolvedValueOnce({
-          ok: false,
-          status: 401
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve(mockRegularImage)
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve(mockProjectImages)
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve([])
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve([])
-        });
+      fetch.mockImplementation((url) => {
+        if (url === '/api/users/me') {
+          return Promise.resolve({ ok: false, status: 401 });
+        }
+        if (url === `/api/images/${mockParams.imageId}`) {
+          return Promise.resolve({ ok: true, json: async () => mockRegularImage });
+        }
+        if (url === `/api/projects/test-project-id/images?include_deleted=true`) {
+          return Promise.resolve({ ok: true, json: async () => mockProjectImages });
+        }
+        if (url === `/api/projects/test-project-id/classes`) {
+          return Promise.resolve({ ok: true, json: async () => [] });
+        }
+        return Promise.resolve({ ok: true, json: async () => [] });
+      });
 
       renderImageView();
 
