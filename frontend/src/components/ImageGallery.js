@@ -5,7 +5,7 @@ import GalleryGridView from './GalleryGridView';
 import GalleryDebugPanel from './GalleryDebugPanel';
 import BulkDeleteModal from './BulkDeleteModal';
 import BulkMetadataModal from './BulkMetadataModal';
-import { loadGalleryState, saveGalleryState, filterBySearch, filterByReviewStatus, sortImages } from '../utils/galleryState';
+import { loadGalleryStateWithDefaults, saveGalleryState, filterBySearch, filterByReviewStatus, sortImages } from '../utils/galleryState';
 
 function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, refreshProjectImages }) {
   const navigate = useNavigate();
@@ -14,17 +14,18 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
 
   const [imageLoadStatus, setImageLoadStatus] = useState({});
   const [currentPage, setCurrentPage] = useState(1);
-  // Filter/sort state is persisted to localStorage so it survives navigation
-  const [viewMode, setViewMode] = useState(() => loadGalleryState(stateKey).viewMode || 'medium');
-  const [sortBy, setSortBy] = useState(() => loadGalleryState(stateKey).sortBy || 'date');
-  const [searchField, setSearchField] = useState(() => loadGalleryState(stateKey).searchField || 'filename');
-  const [searchValue, setSearchValue] = useState(() => loadGalleryState(stateKey).searchValue || '');
+  // Filter/sort state is loaded once from localStorage and persisted back on change
+  const [savedState] = useState(() => loadGalleryStateWithDefaults(stateKey));
+  const [viewMode, setViewMode] = useState(savedState.viewMode);
+  const [sortBy, setSortBy] = useState(savedState.sortBy);
+  const [searchField, setSearchField] = useState(savedState.searchField);
+  const [searchValue, setSearchValue] = useState(savedState.searchValue);
   const [availableMetadataKeys, setAvailableMetadataKeys] = useState([]);
   const [selectedImages, setSelectedImages] = useState(new Set());
   const [lastSelectedId, setLastSelectedId] = useState(null);
   const [actionError, setActionError] = useState(null);
   const [reviewStatuses, setReviewStatuses] = useState({});
-  const [reviewFilter, setReviewFilter] = useState(() => loadGalleryState(stateKey).reviewFilter || 'all');
+  const [reviewFilter, setReviewFilter] = useState(savedState.reviewFilter);
   const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
   const [showBulkMetaModal, setShowBulkMetaModal] = useState(false);
 
@@ -33,12 +34,12 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
   useEffect(() => {
     if (prevKeyRef.current !== stateKey) {
       prevKeyRef.current = stateKey;
-      const saved = loadGalleryState(stateKey);
-      setViewMode(saved.viewMode || 'medium');
-      setSortBy(saved.sortBy || 'date');
-      setSearchField(saved.searchField || 'filename');
-      setSearchValue(saved.searchValue || '');
-      setReviewFilter(saved.reviewFilter || 'all');
+      const saved = loadGalleryStateWithDefaults(stateKey);
+      setViewMode(saved.viewMode);
+      setSortBy(saved.sortBy);
+      setSearchField(saved.searchField);
+      setSearchValue(saved.searchValue);
+      setReviewFilter(saved.reviewFilter);
       setCurrentPage(1);
     }
   }, [stateKey]);

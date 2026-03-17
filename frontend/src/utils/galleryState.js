@@ -7,6 +7,14 @@
 
 const STORAGE_PREFIX = 'gallery_state_';
 
+const GALLERY_STATE_DEFAULTS = {
+  viewMode: 'medium',
+  sortBy: 'date',
+  searchField: 'filename',
+  searchValue: '',
+  reviewFilter: 'all',
+};
+
 /**
  * Load saved gallery state from localStorage for a given key.
  * Returns an empty object on missing or corrupt data.
@@ -18,6 +26,14 @@ function loadGalleryState(key) {
   } catch (e) {
     return {};
   }
+}
+
+/**
+ * Load saved gallery state merged with defaults.
+ * Every field is guaranteed to have a value.
+ */
+function loadGalleryStateWithDefaults(key) {
+  return { ...GALLERY_STATE_DEFAULTS, ...loadGalleryState(key) };
 }
 
 /**
@@ -104,7 +120,9 @@ function applyGalleryFilters(images, { searchField, searchValue, reviewFilter, s
 }
 
 export {
+  GALLERY_STATE_DEFAULTS,
   loadGalleryState,
+  loadGalleryStateWithDefaults,
   saveGalleryState,
   filterBySearch,
   filterByReviewStatus,
