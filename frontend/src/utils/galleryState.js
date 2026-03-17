@@ -90,9 +90,13 @@ function filterBySearch(images, searchField, searchValue) {
  * `reviewStatuses` is an object mapping image id -> status string.
  */
 function filterByReviewStatus(images, reviewFilter, reviewStatuses) {
+  // If no specific review filter is requested, or filter is "all", do nothing.
   if (!reviewFilter || reviewFilter === 'all') return images;
+  // If a filter is active but no statuses are available (e.g., fetch failed),
+  // skip review-based filtering rather than treating all as "unreviewed".
+  if (!reviewStatuses) return images;
   return images.filter(img => {
-    const status = (reviewStatuses && reviewStatuses[img.id]) || 'unreviewed';
+    const status = reviewStatuses[img.id] || 'unreviewed';
     return status === reviewFilter;
   });
 }
