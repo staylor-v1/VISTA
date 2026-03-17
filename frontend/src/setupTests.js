@@ -60,7 +60,8 @@ beforeAll(() => {
 		const first = args[0];
 		const message = typeof first === 'string' ? first : '';
 
-		if (message.startsWith('Failed to load image with ID:')) {
+		if (message.startsWith('Failed to load image with ID:') ||
+			message.startsWith('Failed to load review statuses:')) {
 			return;
 		}
 

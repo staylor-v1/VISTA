@@ -15,8 +15,6 @@ function renderUploader(props = {}) {
   const defaultProps = {
     projectId: 'proj-1',
     onUploadComplete: jest.fn(),
-    loading: false,
-    setLoading: jest.fn(),
     setError: jest.fn(),
     ...props,
   };
@@ -34,9 +32,20 @@ describe('ImageUploader', () => {
       expect(screen.getByRole('button', { name: /upload images/i })).not.toBeDisabled();
     });
 
-    test('upload button is disabled when loading is true', () => {
-      renderUploader({ loading: true });
+    test('upload button is disabled during upload', async () => {
+      // Simulate a slow upload so we can observe the disabled state
+      let resolveUpload;
+      global.fetch = jest.fn(() => new Promise((resolve) => { resolveUpload = resolve; }));
+      renderUploader();
+      selectFiles([makeFile('test.png')]);
+      fireEvent.click(screen.getByRole('button', { name: /upload images/i }));
+      // Button should now show "Uploading..." and be disabled
       expect(screen.getByRole('button', { name: /uploading/i })).toBeDisabled();
+      // Resolve the pending upload to clean up
+      resolveUpload({ ok: true, json: async () => ({ id: '1', filename: 'test.png' }) });
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /upload images/i })).not.toBeDisabled();
+      });
     });
 
     test('upload button is disabled when extractor config is invalid', async () => {
@@ -252,7 +261,9 @@ describe('ImageUploader', () => {
       fireEvent.click(screen.getByRole('button', { name: /upload images/i }));
 
       await waitFor(() => {
-        expect(props.setError).toHaveBeenCalledWith('Upload failed: Network error');
+        expect(props.setError).toHaveBeenCalledWith(
+          'Upload complete: 0 succeeded, 1 failed out of 1.'
+        );
       });
     });
 
@@ -270,7 +281,7 @@ describe('ImageUploader', () => {
 
       await waitFor(() => {
         expect(props.setError).toHaveBeenCalledWith(
-          'Upload failed: HTTP error! status: 500'
+          'Upload complete: 0 succeeded, 1 failed out of 1.'
         );
       });
     });
