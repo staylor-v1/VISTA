@@ -1,71 +1,64 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import GalleryListView from './GalleryListView';
 import GalleryGridView from './GalleryGridView';
 import GalleryDebugPanel from './GalleryDebugPanel';
 import BulkDeleteModal from './BulkDeleteModal';
 import BulkMetadataModal from './BulkMetadataModal';
+import { loadGalleryStateWithDefaults, saveGalleryState, filterBySearch, filterByReviewStatus, sortImages } from '../utils/galleryState';
 
-function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProjectImages }) {
+function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, refreshProjectImages }) {
   const navigate = useNavigate();
+  // galleryKey distinguishes between project-level and group-level gallery state
+  const stateKey = galleryKey || projectId;
+
   const [imageLoadStatus, setImageLoadStatus] = useState({});
   const [currentPage, setCurrentPage] = useState(1);
-  const [viewMode, setViewMode] = useState('medium'); // small, medium, large, list
-  const [sortBy, setSortBy] = useState('date'); // date, name, size
-  const [searchField, setSearchField] = useState('filename'); // 'filename', 'content_type', 'uploaded_by', 'metadata', or specific key
-  const [searchValue, setSearchValue] = useState('');
+  // Filter/sort state is loaded once from localStorage and persisted back on change
+  const [savedState] = useState(() => loadGalleryStateWithDefaults(stateKey));
+  const [viewMode, setViewMode] = useState(savedState.viewMode);
+  const [sortBy, setSortBy] = useState(savedState.sortBy);
+  const [searchField, setSearchField] = useState(savedState.searchField);
+  const [searchValue, setSearchValue] = useState(savedState.searchValue);
   const [availableMetadataKeys, setAvailableMetadataKeys] = useState([]);
   const [selectedImages, setSelectedImages] = useState(new Set());
   const [lastSelectedId, setLastSelectedId] = useState(null);
   const [actionError, setActionError] = useState(null);
   const [reviewStatuses, setReviewStatuses] = useState({});
-  const [reviewFilter, setReviewFilter] = useState('all'); // all, unreviewed, pass, reject_pending, reject_confirmed
+  const [reviewFilter, setReviewFilter] = useState(savedState.reviewFilter);
   const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
   const [showBulkMetaModal, setShowBulkMetaModal] = useState(false);
 
+  // Reset filter/sort state when the gallery key changes (e.g. switching groups)
+  const prevKeyRef = useRef(stateKey);
+  useEffect(() => {
+    if (prevKeyRef.current !== stateKey) {
+      prevKeyRef.current = stateKey;
+      const saved = loadGalleryStateWithDefaults(stateKey);
+      setViewMode(saved.viewMode);
+      setSortBy(saved.sortBy);
+      setSearchField(saved.searchField);
+      setSearchValue(saved.searchValue);
+      setReviewFilter(saved.reviewFilter);
+      setCurrentPage(1);
+    }
+  }, [stateKey]);
+
+  // Persist filter/sort state to localStorage whenever it changes
+  useEffect(() => {
+    saveGalleryState(stateKey, { viewMode, sortBy, searchField, searchValue, reviewFilter });
+  }, [stateKey, viewMode, sortBy, searchField, searchValue, reviewFilter]);
+
   const imagesPerPage = viewMode === 'small' ? 100 : viewMode === 'medium' ? 50 : viewMode === 'large' ? 25 : 200;
 
-  const filteredImages = images
-    .filter(image => {
-      if (reviewFilter !== 'all') {
-        const imgStatus = reviewStatuses[image.id] || 'unreviewed';
-        if (imgStatus !== reviewFilter) return false;
-      }
-      if (!searchValue) return true;
-
-      const searchLower = searchValue.toLowerCase();
-      switch (searchField) {
-        case 'filename':
-          return (image.filename || '').toLowerCase().includes(searchLower);
-        case 'content_type':
-          return (image.content_type || '').toLowerCase().includes(searchLower);
-        case 'uploaded_by':
-          return (image.uploaded_by_user_id || '').toLowerCase().includes(searchLower);
-        case 'metadata': {
-          const meta = image.metadata || image.metadata_;
-          if (!meta) return false;
-          return Object.values(meta).some(value =>
-            String(value).toLowerCase().includes(searchLower)
-          );
-        }
-        default: {
-          const meta = image.metadata || image.metadata_;
-          if (!meta || !meta[searchField]) return false;
-          return String(meta[searchField]).toLowerCase().includes(searchLower);
-        }
-      }
-    })
-    .sort((a, b) => {
-      switch (sortBy) {
-        case 'name':
-          return (a.filename || '').localeCompare(b.filename || '');
-        case 'size':
-          return (b.size_bytes || 0) - (a.size_bytes || 0);
-        case 'date':
-        default:
-          return new Date(b.created_at || 0) - new Date(a.created_at || 0);
-      }
-    });
+  const filteredImages = sortImages(
+    filterByReviewStatus(
+      filterBySearch(images, searchField, searchValue),
+      reviewFilter,
+      reviewStatuses
+    ),
+    sortBy
+  );
 
   const totalPages = Math.ceil(filteredImages.length / imagesPerPage);
   const indexOfLastImage = currentPage * imagesPerPage;
@@ -340,7 +333,7 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
                 metadataKeys={availableMetadataKeys}
                 selectedImages={selectedImages}
                 reviewStatuses={reviewStatuses}
-                onImageClick={(imageId) => navigate(`/view/${imageId}?project=${projectId}`)}
+                onImageClick={(imageId) => navigate(`/view/${imageId}?project=${projectId}&galleryKey=${encodeURIComponent(stateKey)}`)}
                 onToggleSelection={handleImageSelection}
               />
             ) : (
@@ -349,7 +342,7 @@ function ImageGallery({ projectId, images, loading, onImageUpdated, refreshProje
                 viewMode={viewMode}
                 selectedImages={selectedImages}
                 reviewStatuses={reviewStatuses}
-                onImageClick={(imageId) => navigate(`/view/${imageId}?project=${projectId}`)}
+                onImageClick={(imageId) => navigate(`/view/${imageId}?project=${projectId}&galleryKey=${encodeURIComponent(stateKey)}`)}
                 onToggleSelection={handleImageSelection}
                 onRestore={handleRestore}
                 onImageLoadStatusChange={(imageId, status) => {

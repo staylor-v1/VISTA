@@ -89,6 +89,7 @@ const renderImageGallery = (props = {}) => {
 describe('ImageGallery', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
+    localStorage.clear();
     global.fetch = jest.fn(() =>
       Promise.resolve({
         ok: true,
@@ -126,7 +127,7 @@ describe('ImageGallery', () => {
       const imageContainer = screen.getByAltText('test-image.jpg').closest('.gallery-item-image');
       fireEvent.click(imageContainer);
       
-      expect(mockNavigate).toHaveBeenCalledWith('/view/img-1?project=test-project-id');
+      expect(mockNavigate).toHaveBeenCalledWith(expect.stringContaining('/view/img-1?project=test-project-id'));
     });
 
     test('shows View button on hover', () => {
@@ -662,7 +663,7 @@ describe('ImageGallery', () => {
       const row = document.querySelector('.gallery-list-row');
       fireEvent.click(row);
 
-      expect(mockNavigate).toHaveBeenCalledWith('/view/img-1?project=test-project-id');
+      expect(mockNavigate).toHaveBeenCalledWith(expect.stringContaining('/view/img-1?project=test-project-id'));
     });
 
     test('list view shows deleted badge for deleted images', () => {
@@ -713,6 +714,254 @@ describe('ImageGallery', () => {
       const headerTexts = Array.from(headers).map(h => h.textContent);
       expect(headerTexts).toContain('color');
       expect(headerTexts).not.toContain('measurements');
+    });
+  });
+
+  describe('State Persistence', () => {
+    test('persists filter/sort state to localStorage on render', async () => {
+      renderImageGallery();
+
+      await waitFor(() => {
+        const stored = JSON.parse(localStorage.getItem('gallery_state_test-project-id'));
+        expect(stored).toMatchObject({
+          viewMode: 'medium',
+          sortBy: 'date',
+          searchField: 'filename',
+          searchValue: '',
+          reviewFilter: 'all',
+        });
+        expect(typeof stored.lastAccessed).toBe('number');
+      });
+    });
+
+    test('persists sort change to localStorage', async () => {
+      renderImageGallery();
+
+      const sortSelect = document.querySelector('.sort-select:not([title])');
+      fireEvent.change(sortSelect, { target: { value: 'name' } });
+
+      await waitFor(() => {
+        const stored = JSON.parse(localStorage.getItem('gallery_state_test-project-id'));
+        expect(stored.sortBy).toBe('name');
+      });
+    });
+
+    test('persists search value to localStorage', async () => {
+      renderImageGallery();
+
+      const searchInput = screen.getByPlaceholderText('Search by filename...');
+      fireEvent.change(searchInput, { target: { value: 'brick' } });
+
+      await waitFor(() => {
+        const stored = JSON.parse(localStorage.getItem('gallery_state_test-project-id'));
+        expect(stored.searchValue).toBe('brick');
+      });
+    });
+
+    test('persists view mode change to localStorage', async () => {
+      renderImageGallery();
+
+      fireEvent.click(screen.getByTitle('Small thumbnails'));
+
+      await waitFor(() => {
+        const stored = JSON.parse(localStorage.getItem('gallery_state_test-project-id'));
+        expect(stored.viewMode).toBe('small');
+      });
+    });
+
+    test('persists review filter change to localStorage', async () => {
+      renderImageGallery();
+
+      const reviewSelect = screen.getByTitle('Filter by review status');
+      fireEvent.change(reviewSelect, { target: { value: 'pass' } });
+
+      await waitFor(() => {
+        const stored = JSON.parse(localStorage.getItem('gallery_state_test-project-id'));
+        expect(stored.reviewFilter).toBe('pass');
+      });
+    });
+
+    test('restores saved state from localStorage on mount', () => {
+      localStorage.setItem('gallery_state_test-project-id', JSON.stringify({
+        viewMode: 'large',
+        sortBy: 'name',
+        searchField: 'content_type',
+        searchValue: 'png',
+        reviewFilter: 'pass',
+        lastAccessed: Date.now(),
+      }));
+
+      renderImageGallery();
+
+      // Sort select should show 'name'
+      const sortSelect = document.querySelector('.sort-select:not([title])');
+      expect(sortSelect.value).toBe('name');
+
+      // Search field should show 'content_type'
+      const searchFieldSelect = document.querySelector('.search-field-select');
+      expect(searchFieldSelect.value).toBe('content_type');
+
+      // Search input should show 'png'
+      const searchInput = screen.getByPlaceholderText('Search by content_type...');
+      expect(searchInput.value).toBe('png');
+
+      // Review filter should show 'pass'
+      const reviewSelect = screen.getByTitle('Filter by review status');
+      expect(reviewSelect.value).toBe('pass');
+
+      // Large view mode button should be active
+      const largeBtn = screen.getByTitle('Large thumbnails');
+      expect(largeBtn).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    test('uses galleryKey for localStorage when provided', async () => {
+      renderImageGallery({ galleryKey: 'proj-1_group_g1' });
+
+      await waitFor(() => {
+        const stored = localStorage.getItem('gallery_state_proj-1_group_g1');
+        expect(stored).toBeTruthy();
+      });
+
+      // Should not write to the projectId key
+      expect(localStorage.getItem('gallery_state_test-project-id')).toBeNull();
+    });
+
+    test('falls back to defaults when localStorage contains invalid JSON', () => {
+      localStorage.setItem('gallery_state_test-project-id', 'not valid json');
+
+      renderImageGallery();
+
+      // Should render with defaults without crashing
+      const sortSelect = document.querySelector('.sort-select:not([title])');
+      expect(sortSelect.value).toBe('date');
+    });
+
+    test('resets state when galleryKey prop changes', async () => {
+      // Save different state for two different keys
+      localStorage.setItem('gallery_state_proj-1_group_g1', JSON.stringify({
+        viewMode: 'small',
+        sortBy: 'name',
+        searchField: 'filename',
+        searchValue: 'alpha',
+        reviewFilter: 'pass',
+        lastAccessed: Date.now(),
+      }));
+      localStorage.setItem('gallery_state_proj-1_group_g2', JSON.stringify({
+        viewMode: 'large',
+        sortBy: 'size',
+        searchField: 'content_type',
+        searchValue: 'png',
+        reviewFilter: 'unreviewed',
+        lastAccessed: Date.now(),
+      }));
+
+      // Mount with key g1
+      const { rerender } = render(
+        <BrowserRouter>
+          <ImageGallery
+            projectId="proj-1"
+            galleryKey="proj-1_group_g1"
+            images={[mockRegularImage]}
+            loading={false}
+            onImageUpdated={jest.fn()}
+            refreshProjectImages={jest.fn()}
+          />
+        </BrowserRouter>
+      );
+
+      // Verify g1 state is loaded
+      await waitFor(() => {
+        expect(document.querySelector('.sort-select:not([title])').value).toBe('name');
+      });
+
+      // Re-render with key g2
+      rerender(
+        <BrowserRouter>
+          <ImageGallery
+            projectId="proj-1"
+            galleryKey="proj-1_group_g2"
+            images={[mockRegularImage]}
+            loading={false}
+            onImageUpdated={jest.fn()}
+            refreshProjectImages={jest.fn()}
+          />
+        </BrowserRouter>
+      );
+
+      // Verify g2 state is loaded after key change
+      await waitFor(() => {
+        expect(document.querySelector('.sort-select:not([title])').value).toBe('size');
+        expect(screen.getByTitle('Filter by review status').value).toBe('unreviewed');
+      });
+    });
+
+    test('resets to defaults when galleryKey changes to a key with no saved state', async () => {
+      localStorage.setItem('gallery_state_proj-1_group_g1', JSON.stringify({
+        viewMode: 'small',
+        sortBy: 'name',
+        searchField: 'filename',
+        searchValue: 'test',
+        reviewFilter: 'pass',
+        lastAccessed: Date.now(),
+      }));
+
+      const { rerender } = render(
+        <BrowserRouter>
+          <ImageGallery
+            projectId="proj-1"
+            galleryKey="proj-1_group_g1"
+            images={[mockRegularImage]}
+            loading={false}
+            onImageUpdated={jest.fn()}
+            refreshProjectImages={jest.fn()}
+          />
+        </BrowserRouter>
+      );
+
+      await waitFor(() => {
+        expect(document.querySelector('.sort-select:not([title])').value).toBe('name');
+      });
+
+      // Switch to a key that has no saved state
+      rerender(
+        <BrowserRouter>
+          <ImageGallery
+            projectId="proj-1"
+            galleryKey="proj-1_group_new"
+            images={[mockRegularImage]}
+            loading={false}
+            onImageUpdated={jest.fn()}
+            refreshProjectImages={jest.fn()}
+          />
+        </BrowserRouter>
+      );
+
+      await waitFor(() => {
+        expect(document.querySelector('.sort-select:not([title])').value).toBe('date');
+        expect(screen.getByTitle('Filter by review status').value).toBe('all');
+      });
+    });
+
+    test('includes galleryKey in navigation URL', () => {
+      renderImageGallery({ galleryKey: 'proj-1_group_g1' });
+
+      const imageContainer = screen.getByAltText('test-image.jpg').closest('.gallery-item-image');
+      fireEvent.click(imageContainer);
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        expect.stringContaining('galleryKey=proj-1_group_g1')
+      );
+    });
+
+    test('includes projectId as galleryKey when no explicit galleryKey prop', () => {
+      renderImageGallery();
+
+      const imageContainer = screen.getByAltText('test-image.jpg').closest('.gallery-item-image');
+      fireEvent.click(imageContainer);
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        expect.stringContaining('galleryKey=test-project-id')
+      );
     });
   });
 });
