@@ -699,6 +699,10 @@ describe('ImageView', () => {
       expect(mockNavigate).toHaveBeenCalledWith(
         expect.stringContaining('/view/img-a?')
       );
+
+      // Verify the ungrouped endpoint was called
+      const imageCalls = fetch.mock.calls.filter(c => c[0].includes('ungrouped=true'));
+      expect(imageCalls.length).toBeGreaterThan(0);
     });
 
     test('falls back to project key when galleryKey is not in URL', async () => {
