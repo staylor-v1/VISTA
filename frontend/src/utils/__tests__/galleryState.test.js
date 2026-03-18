@@ -289,9 +289,8 @@ describe('galleryState utilities', () => {
         `${STORAGE_PREFIX}good`,
         JSON.stringify({ lastAccessed: Date.now() })
       );
-      // Corrupt entry has lastAccessed=0, but it is not older than MAX_AGE_MS
-      // from the perspective of the age check (now - 0 > MAX_AGE_MS is true
-      // since Date.now() is much larger than 30 days in ms).
+      // Corrupt entry has lastAccessed=0, so now - 0 > MAX_AGE_MS is true
+      // (Date.now() is much larger than 30 days in ms), making it stale.
       cleanupStaleGalleryStates();
       expect(localStorage.getItem(`${STORAGE_PREFIX}corrupt`)).toBeNull();
       expect(localStorage.getItem(`${STORAGE_PREFIX}good`)).not.toBeNull();
