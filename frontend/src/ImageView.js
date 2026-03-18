@@ -137,7 +137,12 @@ function ImageView() {
   const loadProjectImages = useCallback(async (groupId) => {
     try {
       const params = new URLSearchParams({ include_deleted: 'true' });
-      if (groupId) {
+      const urlGalleryKey = searchParams.get('galleryKey');
+      const isUngroupedGallery = urlGalleryKey && urlGalleryKey.endsWith('_ungrouped');
+
+      if (isUngroupedGallery) {
+        params.set('ungrouped', 'true');
+      } else if (groupId) {
         params.set('group_id', groupId);
       }
       const response = await fetch(`/api/projects/${projectId}/images?${params}`);
@@ -156,7 +161,6 @@ function ImageView() {
       // Determine the gallery state key for this view.
       // Prefer the explicit galleryKey from the URL (set by ImageGallery on click).
       // Fall back to a group-derived key, then the project key.
-      const urlGalleryKey = searchParams.get('galleryKey');
       let galleryStateKey;
       if (urlGalleryKey) {
         galleryStateKey = urlGalleryKey;
