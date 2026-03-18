@@ -18,6 +18,7 @@ function formatFileSize(bytes) {
 function GalleryGridView({
   images,
   viewMode,
+  thumbnailSize,
   selectedImages,
   reviewStatuses,
   onImageClick,
@@ -25,8 +26,11 @@ function GalleryGridView({
   onRestore,
   onImageLoadStatusChange,
 }) {
+  const gridStyle = viewMode !== 'list'
+    ? { gridTemplateColumns: `repeat(auto-fill, minmax(${thumbnailSize}px, 1fr))` }
+    : undefined;
   return (
-    <div className={`gallery-grid view-${viewMode}`}>
+    <div className="gallery-grid" style={gridStyle}>
       {images.map(image => (
         <div
           key={image.id}
