@@ -724,7 +724,8 @@ describe('ImageGallery', () => {
       await waitFor(() => {
         const stored = JSON.parse(localStorage.getItem('gallery_state_test-project-id'));
         expect(stored).toMatchObject({
-          viewMode: 'medium',
+          viewMode: 'grid',
+          thumbnailSize: 220,
           sortBy: 'date',
           searchField: 'filename',
           searchValue: '',
@@ -758,14 +759,16 @@ describe('ImageGallery', () => {
       });
     });
 
-    test('persists view mode change to localStorage', async () => {
+    test('persists thumbnail size change to localStorage', async () => {
       renderImageGallery();
 
-      fireEvent.click(screen.getByTitle('Small thumbnails'));
+      const slider = screen.getByTitle('Adjust thumbnail size');
+      fireEvent.change(slider, { target: { value: '350' } });
 
       await waitFor(() => {
         const stored = JSON.parse(localStorage.getItem('gallery_state_test-project-id'));
-        expect(stored.viewMode).toBe('small');
+        expect(stored.thumbnailSize).toBe(350);
+        expect(stored.viewMode).toBe('grid');
       });
     });
 
@@ -783,7 +786,8 @@ describe('ImageGallery', () => {
 
     test('restores saved state from localStorage on mount', () => {
       localStorage.setItem('gallery_state_test-project-id', JSON.stringify({
-        viewMode: 'large',
+        viewMode: 'grid',
+        thumbnailSize: 300,
         sortBy: 'name',
         searchField: 'content_type',
         searchValue: 'png',
@@ -809,9 +813,9 @@ describe('ImageGallery', () => {
       const reviewSelect = screen.getByTitle('Filter by review status');
       expect(reviewSelect.value).toBe('pass');
 
-      // Large view mode button should be active
-      const largeBtn = screen.getByTitle('Large thumbnails');
-      expect(largeBtn).toHaveAttribute('aria-pressed', 'true');
+      // Thumbnail size slider should reflect stored size
+      const slider = screen.getByTitle('Adjust thumbnail size');
+      expect(slider.value).toBe('300');
     });
 
     test('uses galleryKey for localStorage when provided', async () => {
