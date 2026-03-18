@@ -1,5 +1,6 @@
 import {
   loadGalleryState,
+  loadGalleryStateWithDefaults,
   saveGalleryState,
   cleanupStaleGalleryStates,
   filterBySearch,
@@ -59,6 +60,57 @@ describe('galleryState utilities', () => {
     test('returns empty object on corrupt JSON', () => {
       localStorage.setItem('gallery_state_bad', '{not json');
       expect(loadGalleryState('bad')).toEqual({});
+    });
+  });
+
+  describe('loadGalleryStateWithDefaults', () => {
+    test('returns defaults when no state is stored', () => {
+      const state = loadGalleryStateWithDefaults('no-key');
+      expect(state.viewMode).toBe('grid');
+      expect(state.thumbnailSize).toBe(220);
+      expect(state.sortBy).toBe('date');
+    });
+
+    test('merges stored state with defaults', () => {
+      saveGalleryState('merge-key', { sortBy: 'name', viewMode: 'grid', thumbnailSize: 300 });
+      const state = loadGalleryStateWithDefaults('merge-key');
+      expect(state.sortBy).toBe('name');
+      expect(state.thumbnailSize).toBe(300);
+      expect(state.searchField).toBe('filename');
+    });
+
+    test('migrates legacy viewMode small to grid + thumbnailSize 150', () => {
+      saveGalleryState('legacy-key', { viewMode: 'small', sortBy: 'name' });
+      const state = loadGalleryStateWithDefaults('legacy-key');
+      expect(state.viewMode).toBe('grid');
+      expect(state.thumbnailSize).toBe(150);
+    });
+
+    test('migrates legacy viewMode medium to grid + thumbnailSize 220', () => {
+      saveGalleryState('legacy-key', { viewMode: 'medium', sortBy: 'date' });
+      const state = loadGalleryStateWithDefaults('legacy-key');
+      expect(state.viewMode).toBe('grid');
+      expect(state.thumbnailSize).toBe(220);
+    });
+
+    test('migrates legacy viewMode large to grid + thumbnailSize 300', () => {
+      saveGalleryState('legacy-key', { viewMode: 'large', sortBy: 'size' });
+      const state = loadGalleryStateWithDefaults('legacy-key');
+      expect(state.viewMode).toBe('grid');
+      expect(state.thumbnailSize).toBe(300);
+    });
+
+    test('preserves explicit thumbnailSize when migrating legacy viewMode', () => {
+      saveGalleryState('legacy-key', { viewMode: 'small', thumbnailSize: 200 });
+      const state = loadGalleryStateWithDefaults('legacy-key');
+      expect(state.viewMode).toBe('grid');
+      expect(state.thumbnailSize).toBe(200);
+    });
+
+    test('preserves list viewMode without migration', () => {
+      saveGalleryState('list-key', { viewMode: 'list' });
+      const state = loadGalleryStateWithDefaults('list-key');
+      expect(state.viewMode).toBe('list');
     });
   });
 
