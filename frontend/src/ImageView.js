@@ -15,6 +15,7 @@ import CalibrationManager from './components/CalibrationManager';
 import MeasurementList from './components/MeasurementList';
 import ReviewPanel from './components/ReviewPanel';
 import ImageGroupPanel from './components/ImageGroupPanel';
+import { loadGalleryState, applyGalleryFilters, sortImages } from './utils/galleryState';
 
 function ImageView() {
   const { imageId } = useParams();
@@ -136,7 +137,12 @@ function ImageView() {
   const loadProjectImages = useCallback(async (groupId) => {
     try {
       const params = new URLSearchParams({ include_deleted: 'true' });
-      if (groupId) {
+      const urlGalleryKey = searchParams.get('galleryKey');
+      const isUngroupedGallery = urlGalleryKey && urlGalleryKey.endsWith('_ungrouped');
+
+      if (isUngroupedGallery) {
+        params.set('ungrouped', 'true');
+      } else if (groupId) {
         params.set('group_id', groupId);
       }
       const response = await fetch(`/api/projects/${projectId}/images?${params}`);
@@ -152,23 +158,61 @@ function ImageView() {
         throw new Error('Invalid server response: expected an array of images');
       }
 
-      // Sort images by date (newest first) to match the gallery default sorting
-      // Use spread operator to avoid mutating the original array
-      const sortedImages = [...images].sort((a, b) => {
-        return new Date(b.created_at || '1970-01-01') - new Date(a.created_at || '1970-01-01');
-      });
+      // Determine the gallery state key for this view.
+      // Prefer the explicit galleryKey from the URL (set by ImageGallery on click).
+      // Fall back to a group-derived key, then the project key.
+      let galleryStateKey;
+      if (urlGalleryKey) {
+        galleryStateKey = urlGalleryKey;
+      } else if (groupId) {
+        galleryStateKey = `${projectId}_group_${groupId}`;
+      } else {
+        galleryStateKey = projectId;
+      }
 
-      setProjectImages(sortedImages);
+      // Load saved gallery filter/sort state and apply it for consistent navigation
+      let navImages;
+      try {
+        const galleryState = loadGalleryState(galleryStateKey);
 
-      // Find the index of the current image in the sorted array
-      const index = sortedImages.findIndex(img => img.id === imageId);
+        // Fetch review statuses if a non-default review filter is active
+        let reviewStatuses = null;
+        if (galleryState.reviewFilter && galleryState.reviewFilter !== 'all') {
+          try {
+            const reviewResp = await fetch(`/api/projects/${projectId}/image-review-statuses`);
+            if (reviewResp.ok) {
+              reviewStatuses = await reviewResp.json();
+            } else {
+              console.warn('Non-OK response when loading review statuses for navigation filter:', reviewResp.status);
+            }
+          } catch (e) {
+            console.warn('Failed to load review statuses for navigation filter:', e);
+          }
+        }
+
+        // If review statuses are unavailable, bypass the review filter to avoid empty navImages
+        const effectiveGalleryState =
+          reviewStatuses != null
+            ? { ...galleryState, reviewStatuses }
+            : { ...galleryState, reviewFilter: 'all', reviewStatuses: null };
+
+        navImages = applyGalleryFilters(images, effectiveGalleryState);
+      } catch (e) {
+        // If anything goes wrong reading saved state, fall back to default date sort
+        navImages = sortImages(images, 'date');
+      }
+
+      setProjectImages(navImages);
+
+      // Find the index of the current image in the filtered/sorted array
+      const index = navImages.findIndex(img => img.id === imageId);
       setCurrentImageIndex(index);
 
     } catch (error) {
       console.error('Error loading project images:', error);
       setError('Failed to load project images for navigation. Please try again later.');
     }
-  }, [projectId, imageId]);
+  }, [projectId, imageId, searchParams]);
 
   // Save skip deleted preference to localStorage
   useEffect(() => {
@@ -233,6 +277,14 @@ function ImageView() {
     }
   }, [image?.id, image?.group_id, projectId, loadProjectImages]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Build query string for navigation, preserving galleryKey if present
+  const buildNavQuery = useCallback(() => {
+    const params = new URLSearchParams({ project: projectId });
+    const galleryKey = searchParams.get('galleryKey');
+    if (galleryKey) params.set('galleryKey', galleryKey);
+    return params.toString();
+  }, [projectId, searchParams]);
+
   // Navigate to previous image with transition
   const navigateToPreviousImage = useCallback(() => {
     let targetIndex = currentImageIndex - 1;
@@ -248,10 +300,10 @@ function ImageView() {
       setIsTransitioning(true);
       setTimeout(() => {
         const prevImage = projectImages[targetIndex];
-        navigate(`/view/${prevImage.id}?project=${projectId}`);
+        navigate(`/view/${prevImage.id}?${buildNavQuery()}`);
       }, 300);
     }
-  }, [currentImageIndex, projectImages, navigate, projectId, skipDeletedImages]);
+  }, [currentImageIndex, projectImages, navigate, buildNavQuery, skipDeletedImages]);
 
   // Navigate to next image with transition
   const navigateToNextImage = useCallback(() => {
@@ -268,10 +320,10 @@ function ImageView() {
       setIsTransitioning(true);
       setTimeout(() => {
         const nextImage = projectImages[targetIndex];
-        navigate(`/view/${nextImage.id}?project=${projectId}`);
+        navigate(`/view/${nextImage.id}?${buildNavQuery()}`);
       }, 300);
     }
-  }, [currentImageIndex, projectImages, navigate, projectId, skipDeletedImages]);
+  }, [currentImageIndex, projectImages, navigate, buildNavQuery, skipDeletedImages]);
 
   // Reset transition state when image changes (but keep ML settings)
   useEffect(() => {
