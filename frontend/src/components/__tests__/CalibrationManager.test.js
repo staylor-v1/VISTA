@@ -492,4 +492,178 @@ describe('CalibrationManager', () => {
       });
     });
   });
+
+  describe('metadata-based calibration rules', () => {
+    const ruleCalibration = {
+      pixels_per_mm: 15,
+      pixels_per_inch: 381,
+      unit: 'mm'
+    };
+    const projectCalibration = {
+      pixels_per_mm: 10,
+      pixels_per_inch: 254,
+      unit: 'mm'
+    };
+
+    it('uses metadata rule when image metadata matches a project rule', async () => {
+      const imageWithMetadata = {
+        metadata: { camera: 'a47' }
+      };
+
+      global.fetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({
+          calibration_rules: [
+            { metadata_key: 'camera', metadata_value: 'a47', calibration: ruleCalibration }
+          ]
+        })
+      });
+
+      render(<CalibrationManager {...defaultProps} image={imageWithMetadata} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('15.00 px/mm')).toBeInTheDocument();
+        expect(screen.getByText('Using metadata rule: camera = a47')).toBeInTheDocument();
+      });
+
+      expect(defaultProps.onCalibrationChange).toHaveBeenCalledWith(ruleCalibration);
+    });
+
+    it('metadata rule takes priority over project default', async () => {
+      const imageWithMetadata = {
+        metadata: { camera: 'a47' }
+      };
+
+      global.fetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({
+          calibration_default: projectCalibration,
+          calibration_rules: [
+            { metadata_key: 'camera', metadata_value: 'a47', calibration: ruleCalibration }
+          ]
+        })
+      });
+
+      render(<CalibrationManager {...defaultProps} image={imageWithMetadata} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('15.00 px/mm')).toBeInTheDocument();
+        expect(screen.getByText('Using metadata rule: camera = a47')).toBeInTheDocument();
+      });
+    });
+
+    it('image override takes priority over metadata rule', async () => {
+      const imageCalibration = { pixels_per_mm: 20, pixels_per_inch: 508, unit: 'mm' };
+      const imageWithOverrideAndMetadata = {
+        metadata: {
+          calibration_override: imageCalibration,
+          camera: 'a47'
+        }
+      };
+
+      render(<CalibrationManager {...defaultProps} image={imageWithOverrideAndMetadata} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('20.00 px/mm')).toBeInTheDocument();
+        expect(screen.getByText('Using image-specific calibration')).toBeInTheDocument();
+      });
+
+      // Should not fetch project data when image has override
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('falls back to project default when no metadata rule matches', async () => {
+      const imageWithMetadata = {
+        metadata: { camera: 'other-camera' }
+      };
+
+      global.fetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({
+          calibration_default: projectCalibration,
+          calibration_rules: [
+            { metadata_key: 'camera', metadata_value: 'a47', calibration: ruleCalibration }
+          ]
+        })
+      });
+
+      render(<CalibrationManager {...defaultProps} image={imageWithMetadata} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('10.00 px/mm')).toBeInTheDocument();
+        expect(screen.getByText('Using project default calibration')).toBeInTheDocument();
+      });
+    });
+
+    it('ignores rules when image has no metadata', async () => {
+      global.fetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({
+          calibration_default: projectCalibration,
+          calibration_rules: [
+            { metadata_key: 'camera', metadata_value: 'a47', calibration: ruleCalibration }
+          ]
+        })
+      });
+
+      render(<CalibrationManager {...defaultProps} image={{}} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Using project default calibration')).toBeInTheDocument();
+      });
+    });
+
+    it('saves a new metadata calibration rule', async () => {
+      const imageWithMetadata = {
+        metadata: { camera: 'a47' }
+      };
+
+      global.fetch
+        .mockResolvedValueOnce({ ok: false }) // Initial load (no calibration)
+        .mockResolvedValueOnce({ // Fetch current rules before saving
+          ok: true,
+          json: () => Promise.resolve({ calibration_rules: [] })
+        })
+        .mockResolvedValueOnce({ ok: true }) // Save rule
+        .mockResolvedValueOnce({ // Reload after save
+          ok: true,
+          json: () => Promise.resolve({
+            calibration_rules: [
+              { metadata_key: 'camera', metadata_value: 'a47', calibration: { pixels_per_mm: 12, pixels_per_inch: 304.8, unit: 'mm' } }
+            ]
+          })
+        });
+
+      render(<CalibrationManager {...defaultProps} image={imageWithMetadata} />);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Set Calibration' })).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Set Calibration' }));
+
+      const input = screen.getByRole('spinbutton');
+      fireEvent.change(input, { target: { value: '12' } });
+
+      // Select metadata key in the form
+      const select = screen.getByRole('combobox');
+      fireEvent.change(select, { target: { value: 'camera' } });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Save for camera = a47' }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          '/api/projects/project-123/metadata',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('calibration_rules')
+          })
+        );
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText(/Metadata calibration rule saved/)).toBeInTheDocument();
+      });
+    });
+  });
 });
