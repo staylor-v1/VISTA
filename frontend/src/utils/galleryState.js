@@ -10,7 +10,8 @@ const MAX_ENTRIES = 100;
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 const GALLERY_STATE_DEFAULTS = {
-  viewMode: 'medium',
+  viewMode: 'grid',
+  thumbnailSize: 220,
   sortBy: 'date',
   searchField: 'filename',
   searchValue: '',
@@ -41,9 +42,30 @@ function loadGalleryState(key) {
 /**
  * Load saved gallery state merged with defaults.
  * Every field is guaranteed to have a value.
+ * Migrates legacy viewMode values ('small', 'medium', 'large') to 'grid' + thumbnailSize.
  */
 function loadGalleryStateWithDefaults(key) {
-  return { ...GALLERY_STATE_DEFAULTS, ...loadGalleryState(key) };
+  const saved = loadGalleryState(key);
+  const merged = { ...GALLERY_STATE_DEFAULTS, ...saved };
+
+  // Migrate old named viewMode values to 'grid' + thumbnailSize
+  const legacySizeMap = { small: 150, medium: 220, large: 300 };
+  if (legacySizeMap[merged.viewMode] !== undefined) {
+    if (saved.thumbnailSize === undefined) {
+      merged.thumbnailSize = legacySizeMap[merged.viewMode];
+    }
+    merged.viewMode = 'grid';
+  }
+
+  // Clamp thumbnailSize to the supported slider range
+  const size = Number(merged.thumbnailSize);
+  if (!Number.isFinite(size) || size < 100 || size > 500) {
+    merged.thumbnailSize = GALLERY_STATE_DEFAULTS.thumbnailSize;
+  } else {
+    merged.thumbnailSize = size;
+  }
+
+  return merged;
 }
 
 /**

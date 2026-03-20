@@ -17,6 +17,7 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
   // Filter/sort state is loaded once from localStorage and persisted back on change
   const [savedState] = useState(() => loadGalleryStateWithDefaults(stateKey));
   const [viewMode, setViewMode] = useState(savedState.viewMode);
+  const [thumbnailSize, setThumbnailSize] = useState(savedState.thumbnailSize);
   const [sortBy, setSortBy] = useState(savedState.sortBy);
   const [searchField, setSearchField] = useState(savedState.searchField);
   const [searchValue, setSearchValue] = useState(savedState.searchValue);
@@ -36,6 +37,7 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
       prevKeyRef.current = stateKey;
       const saved = loadGalleryStateWithDefaults(stateKey);
       setViewMode(saved.viewMode);
+      setThumbnailSize(saved.thumbnailSize);
       setSortBy(saved.sortBy);
       setSearchField(saved.searchField);
       setSearchValue(saved.searchValue);
@@ -44,12 +46,15 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
     }
   }, [stateKey]);
 
-  // Persist filter/sort state to localStorage whenever it changes
+  // Persist filter/sort state to localStorage whenever it changes.
+  // Debounce to avoid excessive writes while dragging the thumbnail size slider.
   useEffect(() => {
-    saveGalleryState(stateKey, { viewMode, sortBy, searchField, searchValue, reviewFilter });
-  }, [stateKey, viewMode, sortBy, searchField, searchValue, reviewFilter]);
+    const state = { viewMode, thumbnailSize, sortBy, searchField, searchValue, reviewFilter };
+    const timer = setTimeout(() => saveGalleryState(stateKey, state), 300);
+    return () => clearTimeout(timer);
+  }, [stateKey, viewMode, thumbnailSize, sortBy, searchField, searchValue, reviewFilter]);
 
-  const imagesPerPage = viewMode === 'small' ? 100 : viewMode === 'medium' ? 50 : viewMode === 'large' ? 25 : 200;
+  const imagesPerPage = viewMode === 'list' ? 200 : 60;
 
   const filteredImages = sortImages(
     filterByReviewStatus(
@@ -229,23 +234,30 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
             </select>
             
             <div className="view-mode-buttons">
-              {[
-                { mode: 'small', label: 'Small thumbnails', content: 'S' },
-                { mode: 'medium', label: 'Medium thumbnails', content: 'M' },
-                { mode: 'large', label: 'Large thumbnails', content: 'L' },
-              ].map(({ mode, label, content }) => (
-                <button
-                  key={mode}
-                  className={`view-mode-btn ${viewMode === mode ? 'active' : ''}`}
-                  onClick={() => setViewMode(mode)}
-                  title={label}
-                  aria-label={label}
-                  aria-pressed={viewMode === mode}
-                >{content}</button>
-              ))}
+              <div className="thumbnail-size-control">
+                <input
+                  id="thumbnail-size-slider"
+                  type="range"
+                  min="100"
+                  max="500"
+                  step="10"
+                  value={thumbnailSize}
+                  onChange={(e) => {
+                    setThumbnailSize(Number(e.target.value));
+                    if (viewMode === 'list') setViewMode('grid');
+                  }}
+                  className="thumbnail-size-slider"
+                  title="Adjust thumbnail size"
+                  aria-label="Adjust thumbnail size"
+                  aria-valuemin={100}
+                  aria-valuemax={500}
+                  aria-valuenow={thumbnailSize}
+                />
+                <span className="thumbnail-size-label">{thumbnailSize}px</span>
+              </div>
               <button
                 className={`view-mode-btn ${viewMode === 'list' ? 'active' : ''}`}
-                onClick={() => setViewMode('list')}
+                onClick={() => setViewMode(viewMode === 'list' ? 'grid' : 'list')}
                 title="List view"
                 aria-label="List view"
                 aria-pressed={viewMode === 'list'}
@@ -340,6 +352,7 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
               <GalleryGridView
                 images={currentImages}
                 viewMode={viewMode}
+                thumbnailSize={thumbnailSize}
                 selectedImages={selectedImages}
                 reviewStatuses={reviewStatuses}
                 onImageClick={(imageId) => navigate(`/view/${imageId}?project=${projectId}&galleryKey=${encodeURIComponent(stateKey)}`)}

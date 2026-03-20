@@ -32,23 +32,32 @@ function Project() {
     const delOnly = opts.deletedOnly ?? deletedOnly;
     const searchField = opts.searchField;
     const searchValue = opts.searchValue;
-    let url = `/api/projects/${projId}/images`;
-    const params = [];
+    const baseParams = new URLSearchParams();
     if (delOnly) {
-      params.push('deleted_only=true');
+      baseParams.set('deleted_only', 'true');
     } else if (inc) {
-      params.push('include_deleted=true');
+      baseParams.set('include_deleted', 'true');
     }
     if (searchField && searchValue) {
-      params.push(`search_field=${encodeURIComponent(searchField)}`);
-      params.push(`search_value=${encodeURIComponent(searchValue)}`);
+      baseParams.set('search_field', searchField);
+      baseParams.set('search_value', searchValue);
     }
-    if (params.length) url += `?${params.join('&')}`;
-    const imagesResponse = await fetch(url);
-    if (imagesResponse.ok) {
-      const imagesData = await imagesResponse.json();
-      setImages(imagesData);
+    const PAGE_SIZE = 200;
+    let skip = 0;
+    let allImages = [];
+    let hasMore = true;
+    while (hasMore) {
+      const params = new URLSearchParams(baseParams);
+      params.set('skip', String(skip));
+      params.set('limit', String(PAGE_SIZE));
+      const resp = await fetch(`/api/projects/${projId}/images?${params}`);
+      if (!resp.ok) break;
+      const batch = await resp.json();
+      allImages = allImages.concat(batch);
+      hasMore = batch.length === PAGE_SIZE;
+      skip += PAGE_SIZE;
     }
+    setImages(allImages);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
