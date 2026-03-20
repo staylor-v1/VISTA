@@ -7,10 +7,6 @@ import BulkDeleteModal from './BulkDeleteModal';
 import BulkMetadataModal from './BulkMetadataModal';
 import { loadGalleryStateWithDefaults, saveGalleryState, filterBySearch, filterByReviewStatus, sortImages } from '../utils/galleryState';
 
-// Scaling factor used to derive imagesPerPage from thumbnailSize.
-// At 220px (default) this yields ~68; at 150px ~100; at 300px ~50; at 500px ~30.
-const IMAGES_PER_PAGE_SCALE = 15000;
-
 function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, refreshProjectImages }) {
   const navigate = useNavigate();
   // galleryKey distinguishes between project-level and group-level gallery state
@@ -55,7 +51,7 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
     saveGalleryState(stateKey, { viewMode, thumbnailSize, sortBy, searchField, searchValue, reviewFilter });
   }, [stateKey, viewMode, thumbnailSize, sortBy, searchField, searchValue, reviewFilter]);
 
-  const imagesPerPage = viewMode === 'list' ? 200 : Math.max(12, Math.round(IMAGES_PER_PAGE_SCALE / thumbnailSize));
+  const imagesPerPage = viewMode === 'list' ? 200 : 60;
 
   const filteredImages = sortImages(
     filterByReviewStatus(
