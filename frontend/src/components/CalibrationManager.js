@@ -11,6 +11,7 @@ export default function CalibrationManager({
 }) {
   const [calibration, setCalibration] = useState(null);
   const [isImageOverride, setIsImageOverride] = useState(false);
+  const [matchedRule, setMatchedRule] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editUnit, setEditUnit] = useState('mm');
   const [editPixelsPerUnit, setEditPixelsPerUnit] = useState('');
@@ -25,6 +26,7 @@ export default function CalibrationManager({
     if (metadata?.calibration_override) {
       setCalibration(metadata.calibration_override);
       setIsImageOverride(true);
+      setMatchedRule(null);
       if (onCalibrationChange) {
         onCalibrationChange(metadata.calibration_override);
       }
@@ -37,6 +39,29 @@ export default function CalibrationManager({
       const response = await fetch(`/api/projects/${projectId}/metadata-dict`);
       if (response.ok) {
         const data = await response.json();
+
+        // Check metadata-based calibration rules (priority between image override and project default)
+        const rules = Array.isArray(data.calibration_rules) ? data.calibration_rules : [];
+        if (metadata && rules.length > 0) {
+          for (const rule of rules) {
+            if (
+              rule.metadata_key &&
+              rule.metadata_value !== undefined &&
+              metadata[rule.metadata_key] !== undefined &&
+              String(metadata[rule.metadata_key]) === String(rule.metadata_value)
+            ) {
+              setCalibration(rule.calibration);
+              setMatchedRule(rule);
+              if (onCalibrationChange) {
+                onCalibrationChange(rule.calibration);
+              }
+              return;
+            }
+          }
+        }
+
+        setMatchedRule(null);
+
         if (data.calibration_default) {
           setCalibration(data.calibration_default);
           if (onCalibrationChange) {
@@ -49,6 +74,7 @@ export default function CalibrationManager({
       console.error('Error loading project calibration:', err);
     }
 
+    setMatchedRule(null);
     setCalibration(null);
     if (onCalibrationChange) {
       onCalibrationChange(null);
@@ -222,6 +248,65 @@ export default function CalibrationManager({
     }
   };
 
+  const handleSaveMetadataRule = async (metadataKey, metadataValue) => {
+    const validation = validateCalibration(editPixelsPerUnit);
+    if (validation && validation.startsWith('Calibration must')) {
+      setError(validation);
+      return;
+    }
+
+    const pixelsPerUnit = parseFloat(editPixelsPerUnit);
+    const pixels_per_mm = editUnit === 'mm' ? pixelsPerUnit : pixelsPerUnit / MM_PER_INCH;
+    const pixels_per_inch = editUnit === 'inches' ? pixelsPerUnit : pixelsPerUnit * MM_PER_INCH;
+
+    const calibrationData = {
+      pixels_per_mm,
+      pixels_per_inch,
+      unit: editUnit,
+      updated_at: new Date().toISOString()
+    };
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const fetchResp = await fetch(`/api/projects/${projectId}/metadata-dict`);
+      let existingRules = [];
+      if (fetchResp.ok) {
+        const data = await fetchResp.json();
+        existingRules = Array.isArray(data.calibration_rules) ? data.calibration_rules : [];
+      }
+
+      const filteredRules = existingRules.filter(
+        r => !(r.metadata_key === metadataKey && String(r.metadata_value) === String(metadataValue))
+      );
+      const newRules = [...filteredRules, {
+        metadata_key: metadataKey,
+        metadata_value: String(metadataValue),
+        calibration: calibrationData
+      }];
+
+      const saveResp = await fetch(`/api/projects/${projectId}/metadata`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'calibration_rules', value: newRules })
+      });
+
+      if (!saveResp.ok) {
+        throw new Error(`Failed to save metadata rule: ${saveResp.statusText}`);
+      }
+
+      setIsEditing(false);
+      setMessage(`Metadata calibration rule saved (${metadataKey} = ${metadataValue})`);
+      setTimeout(() => setMessage(null), 3000);
+      await loadCalibration();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const formatCalibration = (cal) => {
     if (!cal) return null;
     return (
@@ -306,13 +391,15 @@ export default function CalibrationManager({
               </div>
               <div style={{
                 fontSize: '12px',
-                color: isImageOverride ? '#d97706' : '#059669',
+                color: isImageOverride ? '#d97706' : matchedRule ? '#7c3aed' : '#059669',
                 fontWeight: '500',
                 marginBottom: '8px'
               }}>
                 {isImageOverride
                   ? 'Using image-specific calibration'
-                  : 'Using project default calibration'}
+                  : matchedRule
+                    ? `Using metadata rule: ${matchedRule.metadata_key} = ${matchedRule.metadata_value}`
+                    : 'Using project default calibration'}
               </div>
               {isImageOverride && (
                 <button
@@ -372,6 +459,10 @@ export default function CalibrationManager({
           isLoading={isLoading}
           onSaveProjectDefault={handleSaveProjectDefault}
           onSaveImageOverride={handleSaveImageOverride}
+          onSaveMetadataRule={handleSaveMetadataRule}
+          imageMetadataKeys={Object.entries(image?.metadata || image?.metadata_ || {})
+            .filter(([key]) => key !== 'calibration_override')
+            .map(([key, value]) => ({ key, value }))}
           onCancel={handleCancelEdit}
         />
       )}
