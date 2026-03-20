@@ -1178,21 +1178,6 @@ ul li:hover {
   margin-bottom: var(--space-6);
 }
 
-.gallery-grid.view-small {
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: var(--space-3);
-}
-
-.gallery-grid.view-medium {
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: var(--space-4);
-}
-
-.gallery-grid.view-large {
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: var(--space-6);
-}
-
 .gallery-item {
   position: relative;
   background: var(--bg-primary);
@@ -1996,18 +1981,6 @@ ul li:hover {
   
   .view-mode-buttons {
     align-self: center;
-  }
-  
-  .gallery-grid.view-small {
-    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-  }
-  
-  .gallery-grid.view-medium {
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  }
-  
-  .gallery-grid.view-large {
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   }
   
   .gallery-pagination-info {
