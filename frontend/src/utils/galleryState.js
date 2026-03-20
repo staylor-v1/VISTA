@@ -57,6 +57,14 @@ function loadGalleryStateWithDefaults(key) {
     merged.viewMode = 'grid';
   }
 
+  // Clamp thumbnailSize to the supported slider range
+  const size = Number(merged.thumbnailSize);
+  if (!Number.isFinite(size) || size < 100 || size > 500) {
+    merged.thumbnailSize = GALLERY_STATE_DEFAULTS.thumbnailSize;
+  } else {
+    merged.thumbnailSize = size;
+  }
+
   return merged;
 }
 
