@@ -46,9 +46,12 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
     }
   }, [stateKey]);
 
-  // Persist filter/sort state to localStorage whenever it changes
+  // Persist filter/sort state to localStorage whenever it changes.
+  // Debounce to avoid excessive writes while dragging the thumbnail size slider.
   useEffect(() => {
-    saveGalleryState(stateKey, { viewMode, thumbnailSize, sortBy, searchField, searchValue, reviewFilter });
+    const state = { viewMode, thumbnailSize, sortBy, searchField, searchValue, reviewFilter };
+    const timer = setTimeout(() => saveGalleryState(stateKey, state), 300);
+    return () => clearTimeout(timer);
   }, [stateKey, viewMode, thumbnailSize, sortBy, searchField, searchValue, reviewFilter]);
 
   const imagesPerPage = viewMode === 'list' ? 200 : 60;
