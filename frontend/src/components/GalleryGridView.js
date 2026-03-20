@@ -15,6 +15,18 @@ function formatFileSize(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
+// Snap to the nearest fixed tier to keep backend thumbnail cache bounded.
+// At most 5 distinct cache entries per image instead of one per slider step.
+const THUMBNAIL_TIERS = [200, 400, 600, 800, 1000];
+function snapToTier(size) {
+  const target = size * 2; // 2x for retina
+  let best = THUMBNAIL_TIERS[0];
+  for (const tier of THUMBNAIL_TIERS) {
+    if (Math.abs(tier - target) < Math.abs(best - target)) best = tier;
+  }
+  return best;
+}
+
 function GalleryGridView({
   images,
   viewMode,
@@ -26,6 +38,7 @@ function GalleryGridView({
   onRestore,
   onImageLoadStatusChange,
 }) {
+  const thumbFetchSize = snapToTier(thumbnailSize);
   const gridStyle = viewMode !== 'list'
     ? { gridTemplateColumns: `repeat(auto-fill, minmax(${thumbnailSize}px, 1fr))` }
     : undefined;
@@ -64,7 +77,7 @@ function GalleryGridView({
             }}
           >
             <img
-              src={image.deleted_at ? DELETED_IMAGE_SVG : `/api/images/${image.id}/thumbnail?width=400&height=400`}
+              src={image.deleted_at ? DELETED_IMAGE_SVG : `/api/images/${image.id}/thumbnail?width=${thumbFetchSize}&height=${thumbFetchSize}`}
               alt={image.filename || 'Image'}
               loading="lazy"
               onLoad={() => {
