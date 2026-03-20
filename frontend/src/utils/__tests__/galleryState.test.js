@@ -112,6 +112,30 @@ describe('galleryState utilities', () => {
       const state = loadGalleryStateWithDefaults('list-key');
       expect(state.viewMode).toBe('list');
     });
+
+    test('clamps thumbnailSize below minimum to default', () => {
+      saveGalleryState('clamp-key', { viewMode: 'grid', thumbnailSize: 0 });
+      const state = loadGalleryStateWithDefaults('clamp-key');
+      expect(state.thumbnailSize).toBe(220);
+    });
+
+    test('clamps thumbnailSize above maximum to default', () => {
+      saveGalleryState('clamp-key', { viewMode: 'grid', thumbnailSize: 9999 });
+      const state = loadGalleryStateWithDefaults('clamp-key');
+      expect(state.thumbnailSize).toBe(220);
+    });
+
+    test('falls back to default for non-numeric thumbnailSize', () => {
+      saveGalleryState('clamp-key', { viewMode: 'grid', thumbnailSize: 'big' });
+      const state = loadGalleryStateWithDefaults('clamp-key');
+      expect(state.thumbnailSize).toBe(220);
+    });
+
+    test('falls back to default for null thumbnailSize', () => {
+      saveGalleryState('clamp-key', { viewMode: 'grid', thumbnailSize: null });
+      const state = loadGalleryStateWithDefaults('clamp-key');
+      expect(state.thumbnailSize).toBe(220);
+    });
   });
 
   describe('filterBySearch', () => {
