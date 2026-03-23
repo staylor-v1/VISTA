@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import CalibrationEditForm from './CalibrationEditForm';
 
 const MM_PER_INCH = 25.4;
@@ -19,10 +19,12 @@ export default function CalibrationManager({
   const [error, setError] = useState(null);
   const [message, setMessage] = useState(null);
 
+  const imageMetadata = useMemo(() => image?.metadata || image?.metadata_ || {}, [image]);
+
   const loadCalibration = useCallback(async () => {
     setError(null);
 
-    const metadata = image?.metadata || image?.metadata_;
+    const metadata = imageMetadata;
     if (metadata?.calibration_override) {
       setCalibration(metadata.calibration_override);
       setIsImageOverride(true);
@@ -79,7 +81,7 @@ export default function CalibrationManager({
     if (onCalibrationChange) {
       onCalibrationChange(null);
     }
-  }, [image, projectId, onCalibrationChange]);
+  }, [imageMetadata, projectId, onCalibrationChange]);
 
   useEffect(() => {
     loadCalibration();
@@ -460,7 +462,7 @@ export default function CalibrationManager({
           onSaveProjectDefault={handleSaveProjectDefault}
           onSaveImageOverride={handleSaveImageOverride}
           onSaveMetadataRule={handleSaveMetadataRule}
-          imageMetadataKeys={Object.entries(image?.metadata || image?.metadata_ || {})
+          imageMetadataKeys={Object.entries(imageMetadata)
             .filter(([key]) => key !== 'calibration_override')
             .map(([key, value]) => ({ key, value }))}
           onCancel={handleCancelEdit}
