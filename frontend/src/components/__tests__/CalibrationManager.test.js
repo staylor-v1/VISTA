@@ -137,7 +137,7 @@ describe('CalibrationManager', () => {
       });
     });
 
-    it('shows "Revert to Project Default" button', async () => {
+    it('shows "Clear Image Override" button', async () => {
       const imageWithOverride = {
         metadata: {
           calibration_override: imageCalibration
@@ -147,7 +147,7 @@ describe('CalibrationManager', () => {
       render(<CalibrationManager {...defaultProps} image={imageWithOverride} />);
 
       await waitFor(() => {
-        expect(screen.getByRole('button', { name: 'Revert to Project Default' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Clear Image Override' })).toBeInTheDocument();
       });
     });
   });
@@ -391,10 +391,10 @@ describe('CalibrationManager', () => {
       render(<CalibrationManager {...defaultProps} image={imageWithOverride} />);
 
       await waitFor(() => {
-        expect(screen.getByRole('button', { name: 'Revert to Project Default' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Clear Image Override' })).toBeInTheDocument();
       });
 
-      fireEvent.click(screen.getByRole('button', { name: 'Revert to Project Default' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Clear Image Override' }));
 
       await waitFor(() => {
         expect(global.fetch).toHaveBeenCalledWith(
@@ -416,10 +416,10 @@ describe('CalibrationManager', () => {
       render(<CalibrationManager {...defaultProps} image={imageWithOverride} />);
 
       await waitFor(() => {
-        expect(screen.getByRole('button', { name: 'Revert to Project Default' })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Clear Image Override' })).toBeInTheDocument();
       });
 
-      fireEvent.click(screen.getByRole('button', { name: 'Revert to Project Default' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Clear Image Override' }));
 
       expect(global.fetch).not.toHaveBeenCalled();
     });
