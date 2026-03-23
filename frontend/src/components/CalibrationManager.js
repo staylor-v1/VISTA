@@ -53,6 +53,7 @@ export default function CalibrationManager({
               String(metadata[rule.metadata_key]) === String(rule.metadata_value)
             ) {
               setCalibration(rule.calibration);
+              setIsImageOverride(false);
               setMatchedRule(rule);
               if (onCalibrationChange) {
                 onCalibrationChange(rule.calibration);
@@ -123,7 +124,7 @@ export default function CalibrationManager({
 
   const handleSaveProjectDefault = async () => {
     const validation = validateCalibration(editPixelsPerUnit);
-    if (validation && validation.startsWith('Calibration must')) {
+    if (validation) {
       setError(validation);
       return;
     }
@@ -174,7 +175,7 @@ export default function CalibrationManager({
 
   const handleSaveImageOverride = async () => {
     const validation = validateCalibration(editPixelsPerUnit);
-    if (validation && validation.startsWith('Calibration must')) {
+    if (validation) {
       setError(validation);
       return;
     }
@@ -252,7 +253,7 @@ export default function CalibrationManager({
 
   const handleSaveMetadataRule = async (metadataKey, metadataValue) => {
     const validation = validateCalibration(editPixelsPerUnit);
-    if (validation && validation.startsWith('Calibration must')) {
+    if (validation) {
       setError(validation);
       return;
     }
