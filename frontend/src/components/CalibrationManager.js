@@ -311,12 +311,14 @@ export default function CalibrationManager({
 
   const formatCalibration = (cal) => {
     if (!cal) return null;
+    const useInches = cal.unit === 'inches';
+    const pxPerUnit = useInches ? cal.pixels_per_inch : cal.pixels_per_mm;
+    const unitLabel = useInches ? 'inch' : 'mm';
     return (
       <div style={{ fontSize: '14px', color: '#4b5563' }}>
-        <div>{cal.pixels_per_mm.toFixed(2)} px/mm</div>
-        <div>{cal.pixels_per_inch.toFixed(2)} px/inch</div>
+        <div>{pxPerUnit.toFixed(2)} px/{unitLabel}</div>
         <div style={{ fontSize: '12px', color: '#9ca3af', marginTop: '4px' }}>
-          ({(1 / cal.pixels_per_mm).toFixed(4)} mm/px)
+          ({(1 / pxPerUnit).toFixed(4)} {unitLabel}/px)
         </div>
       </div>
     );
