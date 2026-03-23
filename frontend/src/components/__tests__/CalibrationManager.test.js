@@ -378,7 +378,7 @@ describe('CalibrationManager', () => {
     };
 
     it('clears override when confirmed', async () => {
-      window.confirm = jest.fn(() => true);
+      jest.spyOn(window, 'confirm').mockReturnValue(true);
 
       global.fetch.mockResolvedValue({ ok: true });
 
@@ -405,7 +405,7 @@ describe('CalibrationManager', () => {
     });
 
     it('does not clear override when cancelled', async () => {
-      window.confirm = jest.fn(() => false);
+      jest.spyOn(window, 'confirm').mockReturnValue(false);
 
       const imageWithOverride = {
         metadata: {
@@ -708,7 +708,7 @@ describe('CalibrationManager', () => {
         metadata: { camera: 'a47' }
       };
 
-      window.confirm = jest.fn(() => true);
+      jest.spyOn(window, 'confirm').mockReturnValue(true);
 
       global.fetch
         .mockResolvedValueOnce({ // Initial load
@@ -778,7 +778,7 @@ describe('CalibrationManager', () => {
         metadata: { camera: 'a47' }
       };
 
-      window.confirm = jest.fn(() => false);
+      jest.spyOn(window, 'confirm').mockReturnValue(false);
 
       global.fetch.mockResolvedValue({
         ok: true,
