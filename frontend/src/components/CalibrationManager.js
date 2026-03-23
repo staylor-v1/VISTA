@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import CalibrationEditForm from './CalibrationEditForm';
 
 const MM_PER_INCH = 25.4;
@@ -18,6 +18,7 @@ export default function CalibrationManager({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const [message, setMessage] = useState(null);
+  const overrideCleared = useRef(false);
 
   const imageMetadata = useMemo(() => image?.metadata || image?.metadata_ || {}, [image]);
 
@@ -25,7 +26,7 @@ export default function CalibrationManager({
     setError(null);
 
     const metadata = imageMetadata;
-    if (metadata?.calibration_override) {
+    if (metadata?.calibration_override && !overrideCleared.current) {
       setCalibration(metadata.calibration_override);
       setIsImageOverride(true);
       setMatchedRule(null);
@@ -85,6 +86,7 @@ export default function CalibrationManager({
   }, [imageMetadata, projectId, onCalibrationChange]);
 
   useEffect(() => {
+    overrideCleared.current = false;
     loadCalibration();
   }, [loadCalibration]);
 
@@ -208,6 +210,7 @@ export default function CalibrationManager({
         throw new Error(`Failed to save image calibration: ${response.statusText}`);
       }
 
+      overrideCleared.current = false;
       setCalibration(calibrationData);
       setIsImageOverride(true);
       setIsEditing(false);
@@ -241,9 +244,7 @@ export default function CalibrationManager({
         throw new Error(`Failed to clear override: ${response.statusText}`);
       }
 
-      // Remove from local image object so loadCalibration does not short-circuit
-      if (image?.metadata) delete image.metadata.calibration_override;
-      if (image?.metadata_) delete image.metadata_.calibration_override;
+      overrideCleared.current = true;
 
       setMessage('Image calibration override cleared');
       setTimeout(() => setMessage(null), 3000);
