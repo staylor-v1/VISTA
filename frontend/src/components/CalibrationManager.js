@@ -309,6 +309,50 @@ export default function CalibrationManager({
     }
   };
 
+  const handleDeleteMetadataRule = async () => {
+    if (!matchedRule) return;
+    if (!window.confirm(
+      `Remove calibration rule for ${matchedRule.metadata_key} = ${matchedRule.metadata_value}?`
+    )) {
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const fetchResp = await fetch(`/api/projects/${projectId}/metadata-dict`);
+      let existingRules = [];
+      if (fetchResp.ok) {
+        const data = await fetchResp.json();
+        existingRules = Array.isArray(data.calibration_rules) ? data.calibration_rules : [];
+      }
+
+      const updatedRules = existingRules.filter(
+        r => !(r.metadata_key === matchedRule.metadata_key &&
+               String(r.metadata_value) === String(matchedRule.metadata_value))
+      );
+
+      const saveResp = await fetch(`/api/projects/${projectId}/metadata`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'calibration_rules', value: updatedRules })
+      });
+
+      if (!saveResp.ok) {
+        throw new Error(`Failed to delete metadata rule: ${saveResp.statusText}`);
+      }
+
+      setMessage(`Metadata rule removed (${matchedRule.metadata_key} = ${matchedRule.metadata_value})`);
+      setTimeout(() => setMessage(null), 3000);
+      await loadCalibration();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const formatCalibration = (cal) => {
     if (!cal) return null;
     const useInches = cal.unit === 'inches';
@@ -421,6 +465,24 @@ export default function CalibrationManager({
                   }}
                 >
                   {isLoading ? 'Clearing...' : 'Revert to Project Default'}
+                </button>
+              )}
+              {matchedRule && !isImageOverride && (
+                <button
+                  onClick={handleDeleteMetadataRule}
+                  disabled={isLoading}
+                  style={{
+                    padding: '6px 12px',
+                    fontSize: '13px',
+                    background: 'white',
+                    color: '#dc2626',
+                    border: '1px solid #dc2626',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    width: '100%'
+                  }}
+                >
+                  {isLoading ? 'Removing...' : 'Remove Metadata Rule'}
                 </button>
               )}
             </div>
