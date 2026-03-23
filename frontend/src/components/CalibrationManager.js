@@ -20,7 +20,8 @@ export default function CalibrationManager({
   const [message, setMessage] = useState(null);
   const overrideCleared = useRef(false);
 
-  const imageMetadata = useMemo(() => image?.metadata || image?.metadata_ || {}, [image]);
+  const rawMetadata = image?.metadata || image?.metadata_;
+  const imageMetadata = useMemo(() => rawMetadata || {}, [rawMetadata]);
 
   const loadCalibration = useCallback(async () => {
     setError(null);
@@ -50,6 +51,8 @@ export default function CalibrationManager({
             if (
               rule.metadata_key &&
               rule.metadata_value !== undefined &&
+              rule.calibration?.pixels_per_mm &&
+              rule.calibration?.pixels_per_inch &&
               metadata[rule.metadata_key] !== undefined &&
               String(metadata[rule.metadata_key]) === String(rule.metadata_value)
             ) {
