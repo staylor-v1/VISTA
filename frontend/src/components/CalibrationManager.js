@@ -225,7 +225,7 @@ export default function CalibrationManager({
   };
 
   const handleClearOverride = async () => {
-    if (!window.confirm('Clear image-specific calibration and revert to project default?')) {
+    if (!window.confirm('Clear image-specific calibration?')) {
       return;
     }
 
@@ -241,7 +241,11 @@ export default function CalibrationManager({
         throw new Error(`Failed to clear override: ${response.statusText}`);
       }
 
-      setMessage('Reverted to project default calibration');
+      // Remove from local image object so loadCalibration does not short-circuit
+      if (image?.metadata) delete image.metadata.calibration_override;
+      if (image?.metadata_) delete image.metadata_.calibration_override;
+
+      setMessage('Image calibration override cleared');
       setTimeout(() => setMessage(null), 3000);
       await loadCalibration();
     } catch (err) {
@@ -465,7 +469,7 @@ export default function CalibrationManager({
                     width: '100%'
                   }}
                 >
-                  {isLoading ? 'Clearing...' : 'Revert to Project Default'}
+                  {isLoading ? 'Clearing...' : 'Clear Image Override'}
                 </button>
               )}
               {matchedRule && !isImageOverride && (
