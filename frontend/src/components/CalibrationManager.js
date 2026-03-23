@@ -1,7 +1,31 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import CalibrationEditForm from './CalibrationEditForm';
+import CalibrationDisplay from './CalibrationDisplay';
 
 const MM_PER_INCH = 25.4;
+
+function validateAndBuildCalibration(editPixelsPerUnit, editUnit) {
+  const num = parseFloat(editPixelsPerUnit);
+  if (isNaN(num) || num <= 0) {
+    return { error: 'Calibration must be a positive number' };
+  }
+  if (num < 0.1 || num > 10000) {
+    return {
+      warning: 'Warning: Calibration value seems unrealistic (expected between 0.1 and 10000 px/unit)',
+      calibration: buildCalibrationData(num, editUnit)
+    };
+  }
+  return { calibration: buildCalibrationData(num, editUnit) };
+}
+
+function buildCalibrationData(pixelsPerUnit, unit) {
+  return {
+    pixels_per_mm: unit === 'mm' ? pixelsPerUnit : pixelsPerUnit / MM_PER_INCH,
+    pixels_per_inch: unit === 'inches' ? pixelsPerUnit : pixelsPerUnit * MM_PER_INCH,
+    unit,
+    updated_at: new Date().toISOString()
+  };
+}
 
 export default function CalibrationManager({
   projectId,
@@ -116,38 +140,22 @@ export default function CalibrationManager({
     setMessage(null);
   };
 
-  const validateCalibration = (value) => {
-    const num = parseFloat(value);
-    if (isNaN(num) || num <= 0) {
-      return { error: 'Calibration must be a positive number' };
+  const prepareCalibration = () => {
+    const result = validateAndBuildCalibration(editPixelsPerUnit, editUnit);
+    if (result.error) {
+      setError(result.error);
+      return null;
     }
-    if (num < 0.1 || num > 10000) {
-      return { warning: 'Warning: Calibration value seems unrealistic (expected between 0.1 and 10000 px/unit)' };
+    if (result.warning) {
+      setMessage(result.warning);
+      setTimeout(() => setMessage(null), 5000);
     }
-    return null;
+    return result.calibration;
   };
 
   const handleSaveProjectDefault = async () => {
-    const validation = validateCalibration(editPixelsPerUnit);
-    if (validation?.error) {
-      setError(validation.error);
-      return;
-    }
-    if (validation?.warning) {
-      setMessage(validation.warning);
-      setTimeout(() => setMessage(null), 5000);
-    }
-
-    const pixelsPerUnit = parseFloat(editPixelsPerUnit);
-    const pixels_per_mm = editUnit === 'mm' ? pixelsPerUnit : pixelsPerUnit / MM_PER_INCH;
-    const pixels_per_inch = editUnit === 'inches' ? pixelsPerUnit : pixelsPerUnit * MM_PER_INCH;
-
-    const calibrationData = {
-      pixels_per_mm,
-      pixels_per_inch,
-      unit: editUnit,
-      updated_at: new Date().toISOString()
-    };
+    const calibrationData = prepareCalibration();
+    if (!calibrationData) return;
 
     setIsLoading(true);
     setError(null);
@@ -156,10 +164,7 @@ export default function CalibrationManager({
       const response = await fetch(`/api/projects/${projectId}/metadata`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          key: 'calibration_default',
-          value: calibrationData
-        })
+        body: JSON.stringify({ key: 'calibration_default', value: calibrationData })
       });
 
       if (!response.ok) {
@@ -183,26 +188,8 @@ export default function CalibrationManager({
   };
 
   const handleSaveImageOverride = async () => {
-    const validation = validateCalibration(editPixelsPerUnit);
-    if (validation?.error) {
-      setError(validation.error);
-      return;
-    }
-    if (validation?.warning) {
-      setMessage(validation.warning);
-      setTimeout(() => setMessage(null), 5000);
-    }
-
-    const pixelsPerUnit = parseFloat(editPixelsPerUnit);
-    const pixels_per_mm = editUnit === 'mm' ? pixelsPerUnit : pixelsPerUnit / MM_PER_INCH;
-    const pixels_per_inch = editUnit === 'inches' ? pixelsPerUnit : pixelsPerUnit * MM_PER_INCH;
-
-    const calibrationData = {
-      pixels_per_mm,
-      pixels_per_inch,
-      unit: editUnit,
-      updated_at: new Date().toISOString()
-    };
+    const calibrationData = prepareCalibration();
+    if (!calibrationData) return;
 
     setIsLoading(true);
     setError(null);
@@ -211,10 +198,7 @@ export default function CalibrationManager({
       const response = await fetch(`/api/images/${imageId}/metadata`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          key: 'calibration_override',
-          value: calibrationData
-        })
+        body: JSON.stringify({ key: 'calibration_override', value: calibrationData })
       });
 
       if (!response.ok) {
@@ -268,26 +252,8 @@ export default function CalibrationManager({
   };
 
   const handleSaveMetadataRule = async (metadataKey, metadataValue) => {
-    const validation = validateCalibration(editPixelsPerUnit);
-    if (validation?.error) {
-      setError(validation.error);
-      return;
-    }
-    if (validation?.warning) {
-      setMessage(validation.warning);
-      setTimeout(() => setMessage(null), 5000);
-    }
-
-    const pixelsPerUnit = parseFloat(editPixelsPerUnit);
-    const pixels_per_mm = editUnit === 'mm' ? pixelsPerUnit : pixelsPerUnit / MM_PER_INCH;
-    const pixels_per_inch = editUnit === 'inches' ? pixelsPerUnit : pixelsPerUnit * MM_PER_INCH;
-
-    const calibrationData = {
-      pixels_per_mm,
-      pixels_per_inch,
-      unit: editUnit,
-      updated_at: new Date().toISOString()
-    };
+    const calibrationData = prepareCalibration();
+    if (!calibrationData) return;
 
     setIsLoading(true);
     setError(null);
@@ -374,46 +340,14 @@ export default function CalibrationManager({
     }
   };
 
-  const formatCalibration = (cal) => {
-    if (!cal) return null;
-    const useInches = cal.unit === 'inches';
-    const pxPerUnit = useInches ? cal.pixels_per_inch : cal.pixels_per_mm;
-    const unitLabel = useInches ? 'inch' : 'mm';
-    return (
-      <div style={{ fontSize: '14px', color: '#4b5563' }}>
-        <div>{pxPerUnit.toFixed(2)} px/{unitLabel}</div>
-        <div style={{ fontSize: '12px', color: '#9ca3af', marginTop: '4px' }}>
-          ({(1 / pxPerUnit).toFixed(4)} {unitLabel}/px)
-        </div>
-      </div>
-    );
-  };
-
   return (
-    <div style={{
-      padding: '16px',
-      borderBottom: '1px solid #e5e7eb',
-      background: '#f9fafb'
-    }}>
-      <div style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: '12px'
-      }}>
+    <div style={{ padding: '16px', borderBottom: '1px solid #e5e7eb', background: '#f9fafb' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
         <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '600' }}>Calibration</h3>
         {!isEditing && calibration && (
           <button
             onClick={handleStartEdit}
-            style={{
-              padding: '4px 8px',
-              fontSize: '12px',
-              background: '#3b82f6',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer'
-            }}
+            style={{ padding: '4px 8px', fontSize: '12px', background: '#3b82f6', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
           >
             Edit
           </button>
@@ -421,122 +355,27 @@ export default function CalibrationManager({
       </div>
 
       {message && (
-        <div style={{
-          padding: '8px',
-          marginBottom: '12px',
-          background: '#d1fae5',
-          color: '#065f46',
-          borderRadius: '4px',
-          fontSize: '13px'
-        }}>
+        <div style={{ padding: '8px', marginBottom: '12px', background: '#d1fae5', color: '#065f46', borderRadius: '4px', fontSize: '13px' }}>
           {message}
         </div>
       )}
 
       {error && (
-        <div style={{
-          padding: '8px',
-          marginBottom: '12px',
-          background: '#fee2e2',
-          color: '#991b1b',
-          borderRadius: '4px',
-          fontSize: '13px'
-        }}>
+        <div style={{ padding: '8px', marginBottom: '12px', background: '#fee2e2', color: '#991b1b', borderRadius: '4px', fontSize: '13px' }}>
           {error}
         </div>
       )}
 
       {!isEditing ? (
-        <div>
-          {calibration ? (
-            <div>
-              <div style={{
-                padding: '8px',
-                background: 'white',
-                borderRadius: '4px',
-                marginBottom: '8px'
-              }}>
-                {formatCalibration(calibration)}
-              </div>
-              <div style={{
-                fontSize: '12px',
-                color: isImageOverride ? '#d97706' : matchedRule ? '#7c3aed' : '#059669',
-                fontWeight: '500',
-                marginBottom: '8px'
-              }}>
-                {isImageOverride
-                  ? 'Using image-specific calibration'
-                  : matchedRule
-                    ? `Using metadata rule: ${matchedRule.metadata_key} = ${matchedRule.metadata_value}`
-                    : 'Using project default calibration'}
-              </div>
-              {isImageOverride && (
-                <button
-                  onClick={handleClearOverride}
-                  disabled={isLoading}
-                  style={{
-                    padding: '6px 12px',
-                    fontSize: '13px',
-                    background: 'white',
-                    color: '#dc2626',
-                    border: '1px solid #dc2626',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    width: '100%'
-                  }}
-                >
-                  {isLoading ? 'Clearing...' : 'Clear Image Override'}
-                </button>
-              )}
-              {matchedRule && !isImageOverride && (
-                <button
-                  onClick={handleDeleteMetadataRule}
-                  disabled={isLoading}
-                  style={{
-                    padding: '6px 12px',
-                    fontSize: '13px',
-                    background: 'white',
-                    color: '#dc2626',
-                    border: '1px solid #dc2626',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    width: '100%'
-                  }}
-                >
-                  {isLoading ? 'Removing...' : 'Remove Metadata Rule'}
-                </button>
-              )}
-            </div>
-          ) : (
-            <div>
-              <div style={{
-                padding: '12px',
-                background: '#fef3c7',
-                color: '#92400e',
-                borderRadius: '4px',
-                fontSize: '13px',
-                marginBottom: '12px'
-              }}>
-                No calibration set. Set calibration to enable measurements.
-              </div>
-              <button
-                onClick={handleStartEdit}
-                style={{
-                  padding: '8px 12px',
-                  fontSize: '14px',
-                  background: '#3b82f6',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  width: '100%'
-                }}
-              >
-                Set Calibration
-              </button>
-            </div>
-          )}
-        </div>
+        <CalibrationDisplay
+          calibration={calibration}
+          isImageOverride={isImageOverride}
+          matchedRule={matchedRule}
+          isLoading={isLoading}
+          onClearOverride={handleClearOverride}
+          onDeleteMetadataRule={handleDeleteMetadataRule}
+          onStartEdit={handleStartEdit}
+        />
       ) : (
         <CalibrationEditForm
           editUnit={editUnit}
