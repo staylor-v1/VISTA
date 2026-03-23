@@ -116,19 +116,23 @@ export default function CalibrationManager({
   const validateCalibration = (value) => {
     const num = parseFloat(value);
     if (isNaN(num) || num <= 0) {
-      return 'Calibration must be a positive number';
+      return { error: 'Calibration must be a positive number' };
     }
     if (num < 0.1 || num > 10000) {
-      return 'Warning: Calibration value seems unrealistic (expected between 0.1 and 10000 px/unit)';
+      return { warning: 'Warning: Calibration value seems unrealistic (expected between 0.1 and 10000 px/unit)' };
     }
     return null;
   };
 
   const handleSaveProjectDefault = async () => {
     const validation = validateCalibration(editPixelsPerUnit);
-    if (validation) {
-      setError(validation);
+    if (validation?.error) {
+      setError(validation.error);
       return;
+    }
+    if (validation?.warning) {
+      setMessage(validation.warning);
+      setTimeout(() => setMessage(null), 5000);
     }
 
     const pixelsPerUnit = parseFloat(editPixelsPerUnit);
@@ -177,9 +181,13 @@ export default function CalibrationManager({
 
   const handleSaveImageOverride = async () => {
     const validation = validateCalibration(editPixelsPerUnit);
-    if (validation) {
-      setError(validation);
+    if (validation?.error) {
+      setError(validation.error);
       return;
+    }
+    if (validation?.warning) {
+      setMessage(validation.warning);
+      setTimeout(() => setMessage(null), 5000);
     }
 
     const pixelsPerUnit = parseFloat(editPixelsPerUnit);
@@ -258,9 +266,13 @@ export default function CalibrationManager({
 
   const handleSaveMetadataRule = async (metadataKey, metadataValue) => {
     const validation = validateCalibration(editPixelsPerUnit);
-    if (validation) {
-      setError(validation);
+    if (validation?.error) {
+      setError(validation.error);
       return;
+    }
+    if (validation?.warning) {
+      setMessage(validation.warning);
+      setTimeout(() => setMessage(null), 5000);
     }
 
     const pixelsPerUnit = parseFloat(editPixelsPerUnit);
