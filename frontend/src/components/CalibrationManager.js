@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import CalibrationEditForm from './CalibrationEditForm';
 import CalibrationDisplay from './CalibrationDisplay';
+import { isUserMetadataKey } from '../utils/metadataKeys';
 
 const MM_PER_INCH = 25.4;
 
@@ -387,7 +388,7 @@ export default function CalibrationManager({
           onSaveImageOverride={handleSaveImageOverride}
           onSaveMetadataRule={handleSaveMetadataRule}
           imageMetadataKeys={Object.entries(imageMetadata)
-            .filter(([key]) => key !== 'calibration_override')
+            .filter(([key]) => isUserMetadataKey(key))
             .map(([key, value]) => ({ key, value }))}
           onCancel={handleCancelEdit}
         />
