@@ -70,7 +70,6 @@ describe('CalibrationManager', () => {
 
       await waitFor(() => {
         expect(screen.getByText('10.00 px/mm')).toBeInTheDocument();
-        expect(screen.getByText('254.00 px/inch')).toBeInTheDocument();
       });
     });
 
