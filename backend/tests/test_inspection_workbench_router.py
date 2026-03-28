@@ -162,3 +162,88 @@ def test_create_part_rejects_batch_from_other_project(client):
     )
     assert part_resp.status_code == 400
     assert "does not belong" in part_resp.json()["detail"]
+
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_part_review_workflow_supports_three_simulated_users_with_progressive_data(client, project_type):
+    scenarios = [
+        {
+            "email": f"review-basic-{project_type.lower()}@example.com",
+            "group": f"{project_type.lower()}-review-basic",
+            "parts": [{"serial_number": f"{project_type}-RB-0001", "display_name": "rb-1"}],
+            "target_state": "in_review",
+        },
+        {
+            "email": f"review-intermediate-{project_type.lower()}@example.com",
+            "group": f"{project_type.lower()}-review-intermediate",
+            "parts": [
+                {"serial_number": f"{project_type}-RI-0101", "display_name": "ri-1"},
+                {"serial_number": f"{project_type}-RI-0102", "display_name": "ri-2"},
+            ],
+            "target_state": "reject_pending",
+        },
+        {
+            "email": f"review-advanced-{project_type.lower()}@example.com",
+            "group": f"{project_type.lower()}-review-advanced",
+            "parts": [
+                {"serial_number": f"{project_type}-RA-9001", "display_name": "ra-1"},
+                {"serial_number": f"{project_type}-RA-9002", "display_name": "ra-2"},
+                {"serial_number": f"{project_type}-RA-9003", "display_name": "ra-3"},
+            ],
+            "target_state": "pass",
+        },
+    ]
+
+    for scenario in scenarios:
+        headers = {
+            "X-User-Id": scenario["email"],
+            "X-User-Groups": f"[\"{scenario['group']}\"]",
+        }
+        project_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": f"{project_type} review workflow {scenario['group']}",
+                "description": "workflow project",
+                "meta_group_id": scenario["group"],
+                "project_type": project_type,
+            },
+            headers=headers,
+        )
+        assert project_resp.status_code == 201, project_resp.text
+        project_id = project_resp.json()["id"]
+
+        batch_resp = client.post(
+            f"/api/projects/{project_id}/batches",
+            json={"name": "review-batch", "description": "review batch"},
+            headers=headers,
+        )
+        assert batch_resp.status_code == 201
+        batch_id = batch_resp.json()["id"]
+
+        created_parts = []
+        for part in scenario["parts"]:
+            part_resp = client.post(
+                f"/api/projects/{project_id}/parts",
+                json={**part, "batch_id": batch_id, "review_state": "unreviewed"},
+                headers=headers,
+            )
+            assert part_resp.status_code == 201, part_resp.text
+            created_parts.append(part_resp.json())
+
+        target_part = created_parts[-1]
+        update_resp = client.patch(
+            f"/api/projects/{project_id}/parts/{target_part['id']}",
+            json={"review_state": scenario["target_state"]},
+            headers=headers,
+        )
+        assert update_resp.status_code == 200, update_resp.text
+        assert update_resp.json()["review_state"] == scenario["target_state"]
+
+        filtered_resp = client.get(
+            f"/api/projects/{project_id}/parts?review_state={scenario['target_state']}",
+            headers=headers,
+        )
+        assert filtered_resp.status_code == 200
+        filtered = filtered_resp.json()
+        assert len(filtered) == 1
+        assert filtered[0]["id"] == target_part["id"]
