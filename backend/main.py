@@ -18,7 +18,7 @@ from core.config import settings as _app_settings
 from utils.boto3_client import boto3_client, ensure_bucket_exists
 from middleware.cors_debug import add_cors_middleware, debug_exception_middleware
 from middleware.security_headers import SecurityHeadersMiddleware
-from routers import projects, images, users, image_classes, comments, project_metadata, api_keys, ml_analyses, reviews, export, groups
+from routers import projects, images, users, image_classes, comments, project_metadata, api_keys, ml_analyses, reviews, export, groups, inspection_workbench
 
 
 """
@@ -187,6 +187,7 @@ def create_app() -> FastAPI:
     api_router.include_router(api_keys.router)
     api_router.include_router(reviews.router)
     api_router.include_router(groups.router)
+    api_router.include_router(inspection_workbench.router)
 
     # Add health check endpoint (no auth required)
     @app.get("/api/health")

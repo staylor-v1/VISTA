@@ -53,6 +53,60 @@ class Project(ProjectBase):
         "populate_by_name": True
     }
 
+
+class InspectionBatchBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+
+
+class InspectionBatchCreate(InspectionBatchBase):
+    pass
+
+
+class InspectionBatch(InspectionBatchBase):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = {
+        "from_attributes": True,
+        "populate_by_name": True
+    }
+
+
+class InspectionPartBase(BaseModel):
+    serial_number: str = Field(..., min_length=1, max_length=255)
+    display_name: Optional[str] = Field(None, max_length=255)
+    metadata_json: Optional[Dict[str, Any]] = Field(
+        None,
+        validation_alias="metadata",
+        serialization_alias="metadata",
+    )
+    review_state: str = Field(default="unreviewed", pattern=r"^(unreviewed|in_review|pass|reject_pending|reject_confirmed)$")
+
+    @field_validator("serial_number")
+    @classmethod
+    def strip_serial_number(cls, v: str) -> str:
+        return v.strip()
+
+
+class InspectionPartCreate(InspectionPartBase):
+    batch_id: Optional[uuid.UUID] = None
+
+
+class InspectionPart(InspectionPartBase):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    batch_id: Optional[uuid.UUID] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = {
+        "from_attributes": True,
+        "populate_by_name": True
+    }
+
 # ImageGroup schemas
 class ImageGroupBase(BaseModel):
     identifier: str = Field(..., min_length=1, max_length=255)
