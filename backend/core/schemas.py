@@ -31,6 +31,14 @@ class ProjectBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     meta_group_id: str = Field(..., min_length=1, max_length=255)
+    project_type: str = Field(default="PT1", pattern=r"^(PT1|PT2|PT3)$")
+
+    @field_validator("project_type", mode="before")
+    @classmethod
+    def normalize_project_type(cls, v: str) -> str:
+        if isinstance(v, str):
+            return v.strip().upper()
+        return v
 
 class ProjectCreate(ProjectBase):
     pass
