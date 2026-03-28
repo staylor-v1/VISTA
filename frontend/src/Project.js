@@ -9,6 +9,7 @@ import ClassManager from './components/ClassManager';
 import ImageGallery from './components/ImageGallery';
 import GroupedImagesPage from './components/GroupedImagesPage';
 import ReviewStatusSummary from './components/ReviewStatusSummary';
+import InspectionWorkbenchPanel from './components/InspectionWorkbenchPanel';
 import { downloadExcel } from './utils/downloadExcel';
 
 function Project() {
@@ -26,6 +27,7 @@ function Project() {
   const [exporting, setExporting] = useState(false);
   const [hasGroups, setHasGroups] = useState(false);
   const [groupSearch, setGroupSearch] = useState('');
+  const [activeTab, setActiveTab] = useState('inspection');
 
   const fetchImages = useCallback(async (projId, opts = {}) => {
     const inc = opts.includeDeleted ?? includeDeleted;
@@ -283,6 +285,29 @@ function Project() {
         
         {!loading && (
           <div className="project-content">
+            <div className="project-tabs" role="tablist" aria-label="Project sections">
+              <button
+                className={`project-tab ${activeTab === 'inspection' ? 'active' : ''}`}
+                onClick={() => setActiveTab('inspection')}
+                role="tab"
+                aria-selected={activeTab === 'inspection'}
+              >
+                Inspection
+              </button>
+              <button
+                className={`project-tab ${activeTab === 'project-data' ? 'active' : ''}`}
+                onClick={() => setActiveTab('project-data')}
+                role="tab"
+                aria-selected={activeTab === 'project-data'}
+              >
+                Project Data
+              </button>
+            </div>
+
+            {activeTab === 'project-data' ? (
+              <InspectionWorkbenchPanel projectId={id} projectType={project?.project_type} />
+            ) : (
+              <>
             {/* Review Status Summary + group search */}
             <div className="review-summary-row">
               <ReviewStatusSummary projectId={id} />
@@ -384,6 +409,8 @@ function Project() {
                 </span>
               </div>
             </div>
+            )}
+              </>
             )}
           </div>
         )}
