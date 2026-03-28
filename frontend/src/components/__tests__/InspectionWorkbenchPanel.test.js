@@ -19,6 +19,7 @@ const scenarioByUser = [
           defect_count: 0,
           configured_views: ['front', 'back'],
           view_images: { front: 'front-basic.png' },
+          volume_shape: { axial: 20, coronal: 18, sagittal: 16 },
         },
       },
     ],
@@ -40,6 +41,7 @@ const scenarioByUser = [
           defects: [{ severity: 'minor' }, { severity: 'critical' }],
           configured_views: ['left', 'right', 'top'],
           view_images: { left: 'left-mid.png' },
+          volume_shape: { axial: 32, coronal: 28, sagittal: 24 },
         },
       },
       {
@@ -51,6 +53,7 @@ const scenarioByUser = [
         metadata: {
           defects: [],
           configured_views: ['front', 'back'],
+          volume_shape: { axial: 40, coronal: 36, sagittal: 34 },
         },
       },
     ],
@@ -71,6 +74,7 @@ const scenarioByUser = [
         metadata: {
           defects: [{ severity: 'critical' }, { severity: 'critical' }, { severity: 'major' }],
           view_images: { front: 'adv-front.png', top: 'adv-top.png' },
+          volume_shape: { axial: 128, coronal: 96, sagittal: 80 },
         },
       },
       {
@@ -81,6 +85,7 @@ const scenarioByUser = [
         review_state: 'in_review',
         metadata: {
           defects: [{ severity: 'major' }],
+          volume_shape: { axial: 256, coronal: 192, sagittal: 144 },
         },
       },
       {
@@ -91,6 +96,7 @@ const scenarioByUser = [
         review_state: 'pass',
         metadata: {
           defects: [],
+          volume_shape: { axial: 300, coronal: 240, sagittal: 180 },
         },
       },
     ],
@@ -159,8 +165,34 @@ describe('InspectionWorkbenchPanel', () => {
         expect(screen.getByText('Passed: 1')).toBeInTheDocument();
       });
 
-      // View-board should render at least one configured/default view cell
-      expect(screen.getAllByText(/No image mapped|Mapped:/).length).toBeGreaterThan(0);
+      if (projectType === 'PT1') {
+        // PT1 keeps the configured external-view board.
+        expect(screen.getAllByText(/No image mapped|Mapped:/).length).toBeGreaterThan(0);
+      } else {
+        // PT2/PT3 render MPR shell with synchronized locator state.
+        expect(screen.getByTestId('mpr-shell')).toBeInTheDocument();
+        expect(screen.getByText('Axial plane')).toBeInTheDocument();
+        expect(screen.getByText('Coronal plane')).toBeInTheDocument();
+        expect(screen.getByText('Sagittal plane')).toBeInTheDocument();
+        const initialPart = scenario.parts[0];
+        const initialSagittalMidpoint = Math.floor((initialPart.metadata.volume_shape.sagittal - 1) / 2) + 1;
+        expect(screen.getByTestId('mpr-locator')).toHaveTextContent(new RegExp(`S${initialSagittalMidpoint}`));
+        fireEvent.click(screen.getByRole('button', { name: 'Zoom +' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Pan →' }));
+        await waitFor(() => {
+          expect(screen.getAllByText(/Pan \(10, 0\)/).length).toBeGreaterThan(0);
+        });
+
+        // Reset batch filter to make all parts visible and validate synchronized part-switch behavior.
+        fireEvent.change(screen.getByLabelText('Batch'), { target: { value: '' } });
+        if (scenario.parts.length > 1) {
+          fireEvent.click(screen.getByText(scenario.parts[1].display_name));
+          const switchedSagittalMidpoint = Math.floor((scenario.parts[1].metadata.volume_shape.sagittal - 1) / 2) + 1;
+          await waitFor(() => {
+            expect(screen.getByTestId('mpr-locator')).toHaveTextContent(new RegExp(`S${switchedSagittalMidpoint}`));
+          });
+        }
+      }
 
       unmount();
     }
