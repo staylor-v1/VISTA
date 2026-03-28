@@ -17,12 +17,22 @@ This file is the execution artifact for the orchestrated migration so the combin
 ## Execution Log
 
 - [x] PR-01 implemented in current working branch.
-- [ ] PR-02 pending.
+- [x] PR-02 implemented in current working branch.
 - [ ] PR-03 pending.
 - [ ] PR-04 pending.
 - [ ] PR-05 pending.
 - [ ] PR-06 pending.
 - [ ] PR-07 pending.
+
+## PR-02 scope record (implemented)
+
+- Added backend `inspection_batches` and `inspection_parts` domain entities with uniqueness/index constraints.
+- Added project-scoped API endpoints:
+  - `POST /api/projects/{project_id}/batches`
+  - `GET /api/projects/{project_id}/batches`
+  - `POST /api/projects/{project_id}/parts`
+  - `GET /api/projects/{project_id}/parts`
+- Added automated tests with three simulated users per project type (`PT1`, `PT2`, `PT3`) and progressively complex synthetic workflows.
 
 ## Split Guidance
 
