@@ -116,9 +116,36 @@ async def create_inspection_part(
 async def list_inspection_parts(
     project_id: uuid.UUID,
     batch_id: Optional[uuid.UUID] = None,
+    review_state: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
 ): 
     await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
-    parts = await crud.list_inspection_parts(db=db, project_id=project_id, batch_id=batch_id)
+    parts = await crud.list_inspection_parts(
+        db=db,
+        project_id=project_id,
+        batch_id=batch_id,
+        review_state=review_state,
+    )
     return [_serialize_inspection_part(part) for part in parts]
+
+
+@router.patch("/projects/{project_id}/parts/{part_id}", response_model=schemas.InspectionPart)
+async def update_inspection_part_review_state(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    payload: schemas.InspectionPartUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    updated = await crud.update_inspection_part_review_state(
+        db=db,
+        project_id=project_id,
+        part_id=part_id,
+        review_state=payload.review_state,
+        updated_by=current_user.email,
+    )
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+    return _serialize_inspection_part(updated)
