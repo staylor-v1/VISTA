@@ -95,6 +95,10 @@ class InspectionPartCreate(InspectionPartBase):
     batch_id: Optional[uuid.UUID] = None
 
 
+class InspectionPartUpdate(BaseModel):
+    review_state: str = Field(pattern=r"^(unreviewed|in_review|pass|reject_pending|reject_confirmed)$")
+
+
 class InspectionPart(InspectionPartBase):
     id: uuid.UUID
     project_id: uuid.UUID

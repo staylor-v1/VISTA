@@ -298,6 +298,7 @@ async def list_inspection_parts(
     db: AsyncSession,
     project_id: uuid.UUID,
     batch_id: Optional[uuid.UUID] = None,
+    review_state: Optional[str] = None,
 ) -> List[models.InspectionPart]:
     query = (
         select(models.InspectionPart)
@@ -306,9 +307,49 @@ async def list_inspection_parts(
     )
     if batch_id:
         query = query.where(models.InspectionPart.batch_id == batch_id)
+    if review_state:
+        query = query.where(models.InspectionPart.review_state == review_state)
 
     result = await db.execute(query)
     return result.scalars().all()
+
+
+async def get_inspection_part(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+) -> Optional[models.InspectionPart]:
+    result = await db.execute(
+        select(models.InspectionPart).where(
+            models.InspectionPart.project_id == project_id,
+            models.InspectionPart.id == part_id,
+        )
+    )
+    return result.scalars().first()
+
+
+async def update_inspection_part_review_state(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    review_state: str,
+    updated_by: Optional[str] = None,
+) -> Optional[models.InspectionPart]:
+    part = await get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        return None
+
+    part.review_state = review_state
+    await db.commit()
+    await db.refresh(part)
+    log_db_operation(
+        "UPDATE",
+        "inspection_parts",
+        part.id,
+        updated_by or "system",
+        {"project_id": str(project_id), "review_state": review_state},
+    )
+    return part
 
 # DataInstance CRUD operations
 async def get_data_instance(db: AsyncSession, image_id: uuid.UUID) -> Optional[models.DataInstance]:
