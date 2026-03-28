@@ -249,6 +249,67 @@ async def create_project(db: AsyncSession, project: schemas.ProjectCreate, creat
     log_db_operation("CREATE", "projects", db_project.id, created_by or "system", {"name": project.name, "meta_group_id": project.meta_group_id})
     return db_project
 
+
+async def create_inspection_batch(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    batch: schemas.InspectionBatchCreate,
+    created_by: Optional[str] = None,
+) -> models.InspectionBatch:
+    db_batch = models.InspectionBatch(project_id=project_id, **batch.model_dump())
+    db.add(db_batch)
+    await db.commit()
+    await db.refresh(db_batch)
+    log_db_operation("CREATE", "inspection_batches", db_batch.id, created_by or "system", {"project_id": str(project_id), "name": batch.name})
+    return db_batch
+
+
+async def list_inspection_batches(db: AsyncSession, project_id: uuid.UUID) -> List[models.InspectionBatch]:
+    result = await db.execute(
+        select(models.InspectionBatch)
+        .where(models.InspectionBatch.project_id == project_id)
+        .order_by(models.InspectionBatch.created_at.asc())
+    )
+    return result.scalars().all()
+
+
+async def get_inspection_batch(db: AsyncSession, batch_id: uuid.UUID) -> Optional[models.InspectionBatch]:
+    result = await db.execute(select(models.InspectionBatch).where(models.InspectionBatch.id == batch_id))
+    return result.scalars().first()
+
+
+async def create_inspection_part(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    part: schemas.InspectionPartCreate,
+    created_by: Optional[str] = None,
+) -> models.InspectionPart:
+    payload = part.model_dump(by_alias=False)
+    metadata_payload = payload.pop("metadata_json", None)
+    db_part = models.InspectionPart(project_id=project_id, metadata_json=metadata_payload, **payload)
+    db.add(db_part)
+    await db.commit()
+    await db.refresh(db_part)
+    log_db_operation("CREATE", "inspection_parts", db_part.id, created_by or "system", {"project_id": str(project_id), "serial_number": part.serial_number})
+    return db_part
+
+
+async def list_inspection_parts(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    batch_id: Optional[uuid.UUID] = None,
+) -> List[models.InspectionPart]:
+    query = (
+        select(models.InspectionPart)
+        .where(models.InspectionPart.project_id == project_id)
+        .order_by(models.InspectionPart.created_at.asc())
+    )
+    if batch_id:
+        query = query.where(models.InspectionPart.batch_id == batch_id)
+
+    result = await db.execute(query)
+    return result.scalars().all()
+
 # DataInstance CRUD operations
 async def get_data_instance(db: AsyncSession, image_id: uuid.UUID) -> Optional[models.DataInstance]:
     result = await db.execute(
