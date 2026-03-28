@@ -12,6 +12,10 @@ def test_user_schema_optional_groups():
 def test_project_schema_validation():
     p = schemas.ProjectCreate(name="N", description=None, meta_group_id="g")
     assert p.meta_group_id == "g"
+    assert p.project_type == "PT1"
+
+    p2 = schemas.ProjectCreate(name="N2", description=None, meta_group_id="g", project_type="pt2")
+    assert p2.project_type == "PT2"
 
 
 def test_data_instance_metadata_validator_handles_str_json():
