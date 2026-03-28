@@ -31,6 +31,7 @@ Use the following role sequence and keep outputs explicit:
    - Run automated tests for each milestone.
    - A milestone is not done until required tests pass.
    - If tests fail, fix or clearly document blocker.
+   - After intial tests pass, implement an aggressive red team blue team strategy. The red team subagent will create adversarial inputs and actions to uncover unplanned use cases and edge cases that real users might attempt.  The blue team subagent that improves the codebase to be robust to the red team cases and to support new use cases.
 
 5. **Reviewer**
    - Perform skeptical final review for:
