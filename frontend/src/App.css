@@ -3779,3 +3779,137 @@ ul li:hover {
   color: #6c757d;
   font-size: 0.8rem;
 }
+
+.mpr-shell {
+  border: 1px solid #dbe2ea;
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.mpr-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.mpr-pane {
+  border: 1px solid #dbe2ea;
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+  min-height: 150px;
+}
+
+.mpr-pane header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 0.82rem;
+}
+
+.mpr-pane label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.8rem;
+  color: #4b5563;
+}
+
+.mpr-pane input[type='range'] {
+  width: 100%;
+}
+
+.mpr-pane p {
+  margin: 8px 0 0;
+  font-size: 0.82rem;
+}
+
+.mpr-crosshair-preview {
+  position: relative;
+  margin-top: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: repeating-linear-gradient(
+    0deg,
+    #f8fafc,
+    #f8fafc 8px,
+    #f1f5f9 8px,
+    #f1f5f9 16px
+  );
+  min-height: 62px;
+  overflow: hidden;
+}
+
+.mpr-crosshair-preview .line {
+  position: absolute;
+  display: block;
+}
+
+.mpr-crosshair-preview .line-axial,
+.mpr-crosshair-preview .line-coronal {
+  width: 100%;
+  height: 2px;
+  left: 0;
+}
+
+.mpr-crosshair-preview .line-sagittal {
+  height: 100%;
+  width: 2px;
+  top: 0;
+}
+
+.line-axial {
+  background: #1d4ed8;
+}
+
+.line-coronal {
+  background: #b45309;
+}
+
+.line-sagittal {
+  background: #0f766e;
+}
+
+.mpr-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.mpr-legend .chip {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.chip-axial {
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+
+.chip-coronal {
+  color: #b45309;
+  background: #fef3c7;
+}
+
+.chip-sagittal {
+  color: #0f766e;
+  background: #ccfbf1;
+}
+
+.mpr-nav-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+@media (max-width: 900px) {
+  .mpr-grid {
+    grid-template-columns: 1fr;
+  }
+}

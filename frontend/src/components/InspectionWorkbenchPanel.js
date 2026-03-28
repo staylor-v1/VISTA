@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 
 const VIEW_ORDER = ['front', 'back', 'left', 'right', 'top', 'bottom'];
+const MPR_AXES = ['axial', 'coronal', 'sagittal'];
 const REVIEW_LABELS = {
   unreviewed: 'Unreviewed',
   in_review: 'In Review',
@@ -30,6 +31,16 @@ function getPartViews(part) {
   return VIEW_ORDER;
 }
 
+function getMprDimensions(part) {
+  const raw = part?.metadata?.volume_shape || part?.metadata?.mpr?.volume_shape || {};
+  const dimensions = MPR_AXES.reduce((acc, axis) => {
+    const value = Number(raw?.[axis]);
+    acc[axis] = Number.isFinite(value) && value > 0 ? Math.floor(value) : 128;
+    return acc;
+  }, {});
+  return dimensions;
+}
+
 function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [batches, setBatches] = useState([]);
   const [parts, setParts] = useState([]);
@@ -40,6 +51,8 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [savingPartId, setSavingPartId] = useState(null);
+  const [slicePosition, setSlicePosition] = useState({ axial: 0, coronal: 0, sagittal: 0 });
+  const [viewportTransform, setViewportTransform] = useState({ zoom: 1, panX: 0, panY: 0 });
 
   useEffect(() => {
     const loadWorkbenchData = async () => {
@@ -101,12 +114,23 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     () => filteredParts.find((part) => part.id === selectedPartId) || filteredParts[0] || null,
     [filteredParts, selectedPartId],
   );
+  const mprDimensions = useMemo(() => getMprDimensions(selectedPart), [selectedPart]);
 
   useEffect(() => {
     if (selectedPart && selectedPart.id !== selectedPartId) {
       setSelectedPartId(selectedPart.id);
     }
   }, [selectedPart, selectedPartId]);
+
+  useEffect(() => {
+    if (!selectedPart || !['PT2', 'PT3'].includes(projectType)) return;
+    setSlicePosition({
+      axial: Math.floor((mprDimensions.axial - 1) / 2),
+      coronal: Math.floor((mprDimensions.coronal - 1) / 2),
+      sagittal: Math.floor((mprDimensions.sagittal - 1) / 2),
+    });
+    setViewportTransform({ zoom: 1, panX: 0, panY: 0 });
+  }, [selectedPart, projectType, mprDimensions]);
 
   const reviewSummary = useMemo(() => {
     return parts.reduce(
@@ -137,6 +161,31 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     } finally {
       setSavingPartId(null);
     }
+  };
+
+  const updateSlicePosition = (axis, value, dimensions) => {
+    const upper = Math.max(0, (dimensions?.[axis] || 1) - 1);
+    const nextValue = Math.min(upper, Math.max(0, Number(value) || 0));
+    setSlicePosition((prev) => ({ ...prev, [axis]: nextValue }));
+  };
+
+  const adjustZoom = (delta) => {
+    setViewportTransform((prev) => {
+      const nextZoom = Math.min(4, Math.max(0.5, Number((prev.zoom + delta).toFixed(2))));
+      return { ...prev, zoom: nextZoom };
+    });
+  };
+
+  const panViewport = (dx, dy) => {
+    setViewportTransform((prev) => ({
+      ...prev,
+      panX: Math.min(200, Math.max(-200, prev.panX + dx)),
+      panY: Math.min(200, Math.max(-200, prev.panY + dy)),
+    }));
+  };
+
+  const resetViewport = () => {
+    setViewportTransform({ zoom: 1, panX: 0, panY: 0 });
   };
 
   return (
@@ -280,24 +329,134 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                     </div>
                   </div>
 
-                  <div className="view-board">
-                    {getPartViews(selectedPart).map((viewName) => {
-                      const imagesByView = selectedPart?.metadata?.view_images || {};
-                      const imageRef = imagesByView?.[viewName];
-                      return (
-                        <div key={viewName} className="view-cell">
-                          <div className="view-cell-title">{viewName.toUpperCase()}</div>
-                          <div className="view-cell-body">
-                            {imageRef ? (
-                              <span className="view-cell-has-data">Mapped: {imageRef}</span>
-                            ) : (
-                              <span className="view-cell-empty">No image mapped</span>
-                            )}
+                  {['PT2', 'PT3'].includes(projectType) ? (
+                    <div className="mpr-shell" data-testid="mpr-shell">
+                      <div className="mpr-grid">
+                        <section className="mpr-pane mpr-pane-axial" aria-label="Axial pane">
+                          <header>
+                            <strong>Axial</strong>
+                            <span>
+                              Slice {slicePosition.axial + 1} / {mprDimensions.axial}
+                            </span>
+                          </header>
+                          <label htmlFor="axialSlice">Axial slice</label>
+                          <input
+                            id="axialSlice"
+                            data-testid="slice-slider-axial"
+                            type="range"
+                            min="0"
+                            max={Math.max(0, mprDimensions.axial - 1)}
+                            value={slicePosition.axial}
+                            onChange={(e) => updateSlicePosition('axial', e.target.value, mprDimensions)}
+                          />
+                          <div className="mpr-crosshair-preview" aria-hidden="true">
+                            <span className="line line-coronal" style={{ top: `${((slicePosition.coronal + 1) / mprDimensions.coronal) * 100}%` }} />
+                            <span className="line line-sagittal" style={{ left: `${((slicePosition.sagittal + 1) / mprDimensions.sagittal) * 100}%` }} />
                           </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                          <p>Crosshair at C{slicePosition.coronal + 1} / S{slicePosition.sagittal + 1}</p>
+                          <p className="muted">Zoom {viewportTransform.zoom.toFixed(2)}x • Pan ({viewportTransform.panX}, {viewportTransform.panY})</p>
+                        </section>
+
+                        <section className="mpr-pane mpr-pane-coronal" aria-label="Coronal pane">
+                          <header>
+                            <strong>Coronal</strong>
+                            <span>
+                              Slice {slicePosition.coronal + 1} / {mprDimensions.coronal}
+                            </span>
+                          </header>
+                          <label htmlFor="coronalSlice">Coronal slice</label>
+                          <input
+                            id="coronalSlice"
+                            data-testid="slice-slider-coronal"
+                            type="range"
+                            min="0"
+                            max={Math.max(0, mprDimensions.coronal - 1)}
+                            value={slicePosition.coronal}
+                            onChange={(e) => updateSlicePosition('coronal', e.target.value, mprDimensions)}
+                          />
+                          <div className="mpr-crosshair-preview" aria-hidden="true">
+                            <span className="line line-axial" style={{ top: `${((slicePosition.axial + 1) / mprDimensions.axial) * 100}%` }} />
+                            <span className="line line-sagittal" style={{ left: `${((slicePosition.sagittal + 1) / mprDimensions.sagittal) * 100}%` }} />
+                          </div>
+                          <p>Crosshair at A{slicePosition.axial + 1} / S{slicePosition.sagittal + 1}</p>
+                          <p className="muted">Zoom {viewportTransform.zoom.toFixed(2)}x • Pan ({viewportTransform.panX}, {viewportTransform.panY})</p>
+                        </section>
+
+                        <section className="mpr-pane mpr-pane-sagittal" aria-label="Sagittal pane">
+                          <header>
+                            <strong>Sagittal</strong>
+                            <span>
+                              Slice {slicePosition.sagittal + 1} / {mprDimensions.sagittal}
+                            </span>
+                          </header>
+                          <label htmlFor="sagittalSlice">Sagittal slice</label>
+                          <input
+                            id="sagittalSlice"
+                            data-testid="slice-slider-sagittal"
+                            type="range"
+                            min="0"
+                            max={Math.max(0, mprDimensions.sagittal - 1)}
+                            value={slicePosition.sagittal}
+                            onChange={(e) => updateSlicePosition('sagittal', e.target.value, mprDimensions)}
+                          />
+                          <div className="mpr-crosshair-preview" aria-hidden="true">
+                            <span className="line line-axial" style={{ top: `${((slicePosition.axial + 1) / mprDimensions.axial) * 100}%` }} />
+                            <span className="line line-coronal" style={{ left: `${((slicePosition.coronal + 1) / mprDimensions.coronal) * 100}%` }} />
+                          </div>
+                          <p>Crosshair at A{slicePosition.axial + 1} / C{slicePosition.coronal + 1}</p>
+                          <p className="muted">Zoom {viewportTransform.zoom.toFixed(2)}x • Pan ({viewportTransform.panX}, {viewportTransform.panY})</p>
+                        </section>
+
+                        <section className="mpr-pane mpr-pane-3d" aria-label="3D orientation pane">
+                          <header>
+                            <strong>3D Orientation</strong>
+                            <span>Locator</span>
+                          </header>
+                          <p data-testid="mpr-locator">
+                            A{slicePosition.axial + 1} • C{slicePosition.coronal + 1} • S{slicePosition.sagittal + 1}
+                          </p>
+                          <div className="mpr-legend">
+                            <span className="chip chip-axial">Axial plane</span>
+                            <span className="chip chip-coronal">Coronal plane</span>
+                            <span className="chip chip-sagittal">Sagittal plane</span>
+                          </div>
+                          <div className="mpr-nav-controls">
+                            <button type="button" className="btn btn-secondary btn-sm" onClick={() => adjustZoom(0.1)}>Zoom +</button>
+                            <button type="button" className="btn btn-secondary btn-sm" onClick={() => adjustZoom(-0.1)}>Zoom -</button>
+                            <button type="button" className="btn btn-secondary btn-sm" onClick={resetViewport}>Reset</button>
+                          </div>
+                          <div className="mpr-nav-controls">
+                            <button type="button" className="btn btn-secondary btn-sm" onClick={() => panViewport(0, -10)}>Pan ↑</button>
+                            <button type="button" className="btn btn-secondary btn-sm" onClick={() => panViewport(-10, 0)}>Pan ←</button>
+                            <button type="button" className="btn btn-secondary btn-sm" onClick={() => panViewport(10, 0)}>Pan →</button>
+                            <button type="button" className="btn btn-secondary btn-sm" onClick={() => panViewport(0, 10)}>Pan ↓</button>
+                          </div>
+                          <p className="muted">
+                            Plane intersections are synchronized across orthographic panes.
+                          </p>
+                        </section>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="view-board">
+                      {getPartViews(selectedPart).map((viewName) => {
+                        const imagesByView = selectedPart?.metadata?.view_images || {};
+                        const imageRef = imagesByView?.[viewName];
+                        return (
+                          <div key={viewName} className="view-cell">
+                            <div className="view-cell-title">{viewName.toUpperCase()}</div>
+                            <div className="view-cell-body">
+                              {imageRef ? (
+                                <span className="view-cell-has-data">Mapped: {imageRef}</span>
+                              ) : (
+                                <span className="view-cell-empty">No image mapped</span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </>
               )}
             </div>

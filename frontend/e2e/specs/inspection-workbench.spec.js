@@ -2,7 +2,7 @@ const path = require('path');
 const { test, expect } = require('@playwright/test');
 const { mockInspectionWorkbenchRoutes } = require('../fixtures/inspectionWorkbenchMocks');
 
-const screenshotPath = path.resolve(__dirname, '../../artifacts/pr03-workbench.png');
+const screenshotPath = path.resolve(__dirname, '../../artifacts/pr04-mpr-workbench.png');
 
 for (const projectType of ['PT1', 'PT2', 'PT3']) {
   test.describe(`Inspection Workbench E2E (${projectType})`, () => {
@@ -26,17 +26,27 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
 
       await page.getByRole('button', { name: /mark pass/i }).click();
       await expect(page.getByText('Passed: 1')).toBeVisible();
+
+      if (projectType === 'PT1') {
+        await expect(page.getByText(/Mapped:|No image mapped/).first()).toBeVisible();
+      } else {
+        await expect(page.getByTestId('mpr-shell')).toBeVisible();
+        await expect(page.getByText('3D Orientation')).toBeVisible();
+        await page.getByRole('button', { name: 'Zoom +' }).click();
+        await expect(page.getByText(/Zoom 1.10x/).first()).toBeVisible();
+      }
     });
   });
 }
 
 test.describe('Inspection Workbench screenshot artifact', () => {
-  test('captures project data view-board screenshot', async ({ page }) => {
-    const { projectId } = await mockInspectionWorkbenchRoutes(page, { type: 'PT1' });
+  test('captures PT2 MPR workbench screenshot', async ({ page }) => {
+    const { projectId } = await mockInspectionWorkbenchRoutes(page, { type: 'PT2' });
 
     await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
     await page.getByRole('tab', { name: 'Project Data' }).click();
-    await page.getByLabel('Defect filter').selectOption('critical_only');
+    await expect(page.getByTestId('mpr-shell')).toBeVisible();
+    await page.getByRole('button', { name: 'Zoom +' }).click();
 
     const panel = page.locator('section[aria-label="Inspection Workbench"]');
     await expect(panel).toBeVisible();
