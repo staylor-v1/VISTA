@@ -1,58 +1,151 @@
 const projectId = 'proj-pt1';
 
-function createMockData() {
-  const batches = [
-    { id: 'batch-a', name: 'Batch A' },
-    { id: 'batch-b', name: 'Batch B' },
-  ];
+const scenarioByUser = {
+  basic: {
+    batches: [{ id: 'batch-basic', name: 'Batch Basic' }],
+    parts: [
+      {
+        id: 'part-basic-001',
+        batch_id: 'batch-basic',
+        serial_number: 'SN-BASIC-001',
+        display_name: 'Housing Basic',
+        review_state: 'unreviewed',
+        metadata: {
+          defects: [],
+          configured_views: ['front', 'back'],
+          volume_shape: { axial: 24, coronal: 20, sagittal: 18 },
+          overlay_layers: [{ id: 'voids', label: 'Voids', color: '#f59e0b' }],
+        },
+      },
+    ],
+  },
+  intermediate: {
+    batches: [
+      { id: 'batch-mid-a', name: 'Batch Mid A' },
+      { id: 'batch-mid-b', name: 'Batch Mid B' },
+    ],
+    parts: [
+      {
+        id: 'part-mid-001',
+        batch_id: 'batch-mid-a',
+        serial_number: 'SN-MID-001',
+        display_name: 'Housing Mid 1',
+        review_state: 'in_review',
+        metadata: {
+          defects: [{ severity: 'minor' }, { severity: 'critical' }],
+          configured_views: ['front', 'back', 'left', 'right'],
+          view_images: { front: 'housing-mid-front.png', right: 'housing-mid-right.png' },
+          volume_shape: { axial: 64, coronal: 56, sagittal: 40 },
+          overlay_layers: [
+            { id: 'segmentation', label: 'Segmentation', color: '#ef4444' },
+            { id: 'porosity', label: 'Porosity', color: '#8b5cf6' },
+          ],
+          segmentation_runs: [
+            {
+              run_id: 'seeded-seg-mid',
+              axis: 'axial',
+              slice_index: 12,
+              status: 'completed',
+              overlay_id: 'segmentation-axial-12',
+            },
+          ],
+          measurement_runs: [
+            {
+              run_id: 'seeded-measure-mid',
+              status: 'completed',
+              units: 'mm',
+              values: { crack_length_mm: 11.4, pore_area_mm2: 2.4, edge_offset_mm: 0.38 },
+            },
+          ],
+        },
+      },
+      {
+        id: 'part-mid-002',
+        batch_id: 'batch-mid-b',
+        serial_number: 'SN-MID-002',
+        display_name: 'Housing Mid 2',
+        review_state: 'unreviewed',
+        metadata: {
+          defects: [],
+          configured_views: ['top', 'bottom'],
+          volume_shape: { axial: 48, coronal: 42, sagittal: 38 },
+        },
+      },
+    ],
+  },
+  advanced: {
+    batches: [
+      { id: 'batch-adv-a', name: 'Batch Adv A' },
+      { id: 'batch-adv-b', name: 'Batch Adv B' },
+    ],
+    parts: [
+      {
+        id: 'part-adv-001',
+        batch_id: 'batch-adv-a',
+        serial_number: 'SN-ADV-001',
+        display_name: 'Housing Adv 1',
+        review_state: 'reject_pending',
+        metadata: {
+          defects: [{ severity: 'critical' }, { severity: 'critical' }, { severity: 'major' }],
+          configured_views: ['front', 'back', 'left', 'right', 'top', 'bottom'],
+          view_images: { front: 'housing-adv-front.png', top: 'housing-adv-top.png' },
+          volume_shape: { axial: 128, coronal: 96, sagittal: 80 },
+          overlay_layers: [
+            { id: 'segmentation', label: 'Segmentation', color: '#ef4444' },
+            { id: 'heatmap', label: 'Heatmap', color: '#10b981' },
+            { id: 'porosity', label: 'Porosity', color: '#8b5cf6' },
+          ],
+          segmentation_runs: [
+            {
+              run_id: 'seeded-seg-adv',
+              axis: 'coronal',
+              slice_index: 22,
+              status: 'completed',
+              overlay_id: 'segmentation-coronal-22',
+            },
+          ],
+          measurement_runs: [
+            {
+              run_id: 'seeded-measure-adv',
+              status: 'completed',
+              units: 'mm',
+              values: { crack_length_mm: 23.9, pore_area_mm2: 4.2, edge_offset_mm: 0.27 },
+            },
+          ],
+        },
+      },
+      {
+        id: 'part-adv-002',
+        batch_id: 'batch-adv-a',
+        serial_number: 'SN-ADV-002',
+        display_name: 'Housing Adv 2',
+        review_state: 'in_review',
+        metadata: {
+          defects: [{ severity: 'major' }],
+          volume_shape: { axial: 180, coronal: 140, sagittal: 120 },
+        },
+      },
+      {
+        id: 'part-adv-003',
+        batch_id: 'batch-adv-b',
+        serial_number: 'SN-ADV-003',
+        display_name: 'Housing Adv 3',
+        review_state: 'pass',
+        metadata: {
+          defects: [],
+          volume_shape: { axial: 220, coronal: 170, sagittal: 130 },
+        },
+      },
+    ],
+  },
+};
 
-  const parts = [
-    {
-      id: 'part-001',
-      batch_id: 'batch-a',
-      serial_number: 'SN-PT1-001',
-      display_name: 'Housing Front',
-      review_state: 'in_review',
-      metadata: {
-        defects: [{ severity: 'minor' }, { severity: 'critical' }],
-        configured_views: ['front', 'back', 'left', 'right'],
-        view_images: { front: 'housing-front.png', right: 'housing-right.png' },
-        overlay_layers: [
-          { id: 'segmentation', label: 'Segmentation', color: '#ef4444' },
-          { id: 'porosity', label: 'Porosity', color: '#8b5cf6' },
-        ],
-      },
-    },
-    {
-      id: 'part-002',
-      batch_id: 'batch-b',
-      serial_number: 'SN-PT1-002',
-      display_name: 'Housing Rear',
-      review_state: 'unreviewed',
-      metadata: {
-        defects: [],
-        configured_views: ['front', 'back', 'top', 'bottom'],
-        overlay_layers: [{ id: 'voids', label: 'Voids', color: '#f59e0b' }],
-      },
-    },
-    {
-      id: 'part-003',
-      batch_id: 'batch-b',
-      serial_number: 'SN-PT1-003',
-      display_name: 'Housing Critical',
-      review_state: 'reject_pending',
-      metadata: {
-        defects: [{ severity: 'critical' }, { severity: 'critical' }],
-        view_images: { top: 'critical-top.png' },
-      },
-    },
-  ];
-
-  return { batches, parts };
+function createMockData(scenario = 'advanced') {
+  return scenarioByUser[scenario] || scenarioByUser.advanced;
 }
 
-async function mockInspectionWorkbenchRoutes(page, { type = 'PT1' } = {}) {
-  const { batches, parts } = createMockData();
+async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'advanced' } = {}) {
+  const { batches, parts } = createMockData(scenario);
   let mutableParts = [...parts];
 
   await page.route('**/api/**', async (route) => {
