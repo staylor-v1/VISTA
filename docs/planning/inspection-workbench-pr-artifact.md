@@ -30,7 +30,7 @@ This file is the execution artifact for the orchestrated migration so the combin
 - [~] PR-07 in progress (kept on original scope because implementation is already underway).
 - [x] PR-08 implemented in current working branch.
 - [~] PR-09 in progress (milestone 1 landed: inspector modalities/quick-switch/measurement capture controls).
-- [ ] PR-10 not started.
+- [~] PR-10 in progress (milestone 1 started: backend annotation payload + audit metadata endpoints).
 - [ ] PR-11 not started.
 - [ ] PR-12 not started.
 
@@ -168,6 +168,17 @@ When preparing upstream PRs:
 - Preserve and display annotation timestamp + username in hover/details.
 - Add review-status affordances in inspector/summary workflows.
 - Acceptance: API + UI tests verify create/edit/hide/show + audit metadata rendering across project types.
+
+#### PR-10 milestone 1 (implemented in artifact branch)
+- Added inspection workbench backend annotation endpoints on part context:
+  - `POST /api/projects/{project_id}/parts/{part_id}/annotations`
+  - `GET /api/projects/{project_id}/parts/{part_id}/annotations`
+  - `PATCH /api/projects/{project_id}/parts/{part_id}/annotations/{annotation_id}`
+- Implemented unified annotation payload contract including:
+  - `defect_class`, `modality`, `comment`, `disposition`, `measurements`, `bbox`, `hidden`.
+  - audit metadata: `created_at`, `created_by`, `updated_at`, `updated_by`.
+- Persisted annotations in part metadata (`metadata.annotations`) to avoid schema migration during this milestone.
+- Added pytest API coverage in existing test suite for three simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) verifying create/edit/hide/show and audit metadata.
 
 ### PR-11 — project configuration surface
 - Add Project Configuration tab sections for:
