@@ -498,6 +498,98 @@ def test_export_excel_excludes_measurements_metadata(client):
     assert "lot_number" in headers
 
 
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_project_json_report_supports_three_progressive_users(client, project_type):
+    scenarios = [
+        {"user": "report-basic", "level": 1, "batch_count": 1, "part_count": 1, "review_state": "unreviewed"},
+        {"user": "report-intermediate", "level": 2, "batch_count": 2, "part_count": 2, "review_state": "reject_pending"},
+        {"user": "report-advanced", "level": 3, "batch_count": 3, "part_count": 3, "review_state": "pass"},
+    ]
+
+    for scenario in scenarios:
+        group = f"{project_type.lower()}-{scenario['user']}"
+        headers = {
+            "X-User-Id": f"{scenario['user']}-{project_type.lower()}@example.com",
+            "X-User-Groups": f"[\"{group}\"]",
+        }
+        project_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": f"{project_type} {scenario['user']} project",
+                "description": "json report scenario",
+                "meta_group_id": group,
+                "project_type": project_type,
+            },
+            headers=headers,
+        )
+        assert project_resp.status_code == 201, project_resp.text
+        project_id = project_resp.json()["id"]
+
+        for batch_idx in range(scenario["batch_count"]):
+            batch_resp = client.post(
+                f"/api/projects/{project_id}/batches",
+                json={
+                    "name": f"batch-{batch_idx}",
+                    "description": f"scenario {scenario['user']} batch {batch_idx}",
+                },
+                headers=headers,
+            )
+            assert batch_resp.status_code == 201, batch_resp.text
+            batch_id = batch_resp.json()["id"]
+
+            part_resp = client.post(
+                f"/api/projects/{project_id}/parts",
+                json={
+                    "serial_number": f"{project_type}-{scenario['level']}-{batch_idx}",
+                    "display_name": f"part-{batch_idx}",
+                    "batch_id": batch_id,
+                    "review_state": scenario["review_state"] if batch_idx % 2 == 0 else "unreviewed",
+                    "metadata": {"synthetic_level": scenario["level"], "workflow_step": batch_idx + 1},
+                },
+                headers=headers,
+            )
+            assert part_resp.status_code == 201, part_resp.text
+
+        for image_idx in range(scenario["part_count"]):
+            files = {"file": (f"{project_type}_{scenario['user']}_{image_idx}.png", b"fake-png-data", "image/png")}
+            image_resp = client.post(
+                f"/api/projects/{project_id}/images",
+                files=files,
+                data={"metadata": _json.dumps({"synthetic_level": scenario["level"], "slot": image_idx})},
+                headers=headers,
+            )
+            assert image_resp.status_code == 201, image_resp.text
+
+        report_resp = client.get(f"/api/projects/{project_id}/report-json", headers=headers)
+        assert report_resp.status_code == 200, report_resp.text
+        payload = report_resp.json()
+        assert payload["project"]["project_type"] == project_type
+        assert payload["summary"]["total_batches"] == scenario["batch_count"]
+        assert payload["summary"]["total_parts"] == scenario["batch_count"]
+        assert payload["summary"]["total_images"] == scenario["part_count"]
+        assert payload["summary"]["reviewed_parts"] >= 0
+        assert payload["summary"]["unreviewed_parts"] >= 0
+
+
+def test_project_json_report_forbidden_for_non_group_member(client):
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": "JSON Report Access",
+            "description": "access check",
+            "meta_group_id": "json-report-private",
+            "project_type": "PT1",
+        },
+    )
+    assert project_resp.status_code == 201
+    project_id = project_resp.json()["id"]
+
+    with patch("routers.export.is_user_in_group", return_value=False):
+        report_resp = client.get(f"/api/projects/{project_id}/report-json")
+
+    assert report_resp.status_code == 403
+
+
 # ---------------------------------------------------------------------------
 # Unit tests for _build_workbook helper
 # ---------------------------------------------------------------------------
