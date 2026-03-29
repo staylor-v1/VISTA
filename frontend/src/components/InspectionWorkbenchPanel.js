@@ -2,6 +2,11 @@ import React, { useEffect, useMemo, useState } from 'react';
 
 const VIEW_ORDER = ['front', 'back', 'left', 'right', 'top', 'bottom'];
 const MPR_AXES = ['axial', 'coronal', 'sagittal'];
+const DEFAULT_OVERLAY_LAYERS = [
+  { id: 'segmentation', label: 'Segmentation', color: '#ef4444' },
+  { id: 'heatmap', label: 'Heatmap', color: '#8b5cf6' },
+  { id: 'voids', label: 'Voids', color: '#f59e0b' },
+];
 const REVIEW_LABELS = {
   unreviewed: 'Unreviewed',
   in_review: 'In Review',
@@ -41,6 +46,20 @@ function getMprDimensions(part) {
   return dimensions;
 }
 
+function getOverlayLayers(part) {
+  const overlays = part?.metadata?.overlay_layers;
+  if (Array.isArray(overlays) && overlays.length > 0) {
+    return overlays
+      .filter((overlay) => overlay && overlay.id)
+      .map((overlay) => ({
+        id: String(overlay.id),
+        label: overlay.label || String(overlay.id),
+        color: overlay.color || '#64748b',
+      }));
+  }
+  return DEFAULT_OVERLAY_LAYERS;
+}
+
 function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [batches, setBatches] = useState([]);
   const [parts, setParts] = useState([]);
@@ -53,6 +72,9 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [savingPartId, setSavingPartId] = useState(null);
   const [slicePosition, setSlicePosition] = useState({ axial: 0, coronal: 0, sagittal: 0 });
   const [viewportTransform, setViewportTransform] = useState({ zoom: 1, panX: 0, panY: 0 });
+  const [contrastPercent, setContrastPercent] = useState(100);
+  const [activeOverlayIds, setActiveOverlayIds] = useState([]);
+  const [cursorProbe, setCursorProbe] = useState({ x: 50, y: 50 });
 
   useEffect(() => {
     const loadWorkbenchData = async () => {
@@ -115,6 +137,22 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     [filteredParts, selectedPartId],
   );
   const mprDimensions = useMemo(() => getMprDimensions(selectedPart), [selectedPart]);
+  const overlayLayers = useMemo(() => getOverlayLayers(selectedPart), [selectedPart]);
+  const tooltipValues = useMemo(() => {
+    const axisSeed = slicePosition.axial + slicePosition.coronal + slicePosition.sagittal;
+    const base = Math.min(
+      255,
+      Math.max(
+        0,
+        Math.round(((cursorProbe.x * 0.35 + cursorProbe.y * 0.65 + axisSeed) * contrastPercent) / 100),
+      ),
+    );
+    const overlays = activeOverlayIds.map((overlayId, index) => {
+      const value = Number((((base + (index + 1) * 17) / 255) * 100).toFixed(1));
+      return { overlayId, value };
+    });
+    return { base, overlays };
+  }, [activeOverlayIds, contrastPercent, cursorProbe.x, cursorProbe.y, slicePosition]);
 
   useEffect(() => {
     if (selectedPart && selectedPart.id !== selectedPartId) {
@@ -130,6 +168,12 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
       sagittal: Math.floor((mprDimensions.sagittal - 1) / 2),
     });
     setViewportTransform({ zoom: 1, panX: 0, panY: 0 });
+    setContrastPercent(100);
+    const defaultActive = getOverlayLayers(selectedPart)
+      .slice(0, 2)
+      .map((overlay) => overlay.id);
+    setActiveOverlayIds(defaultActive);
+    setCursorProbe({ x: 50, y: 50 });
   }, [selectedPart, projectType, mprDimensions]);
 
   const reviewSummary = useMemo(() => {
@@ -186,6 +230,13 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
 
   const resetViewport = () => {
     setViewportTransform({ zoom: 1, panX: 0, panY: 0 });
+  };
+
+  const toggleOverlay = (overlayId) => {
+    setActiveOverlayIds((prev) => {
+      if (prev.includes(overlayId)) return prev.filter((id) => id !== overlayId);
+      return [...prev, overlayId];
+    });
   };
 
   return (
@@ -331,6 +382,68 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
 
                   {['PT2', 'PT3'].includes(projectType) ? (
                     <div className="mpr-shell" data-testid="mpr-shell">
+                      <div className="mpr-controls">
+                        <label htmlFor="contrastSlider">Contrast ({contrastPercent}%)</label>
+                        <input
+                          id="contrastSlider"
+                          data-testid="contrast-slider"
+                          type="range"
+                          min="50"
+                          max="150"
+                          value={contrastPercent}
+                          onChange={(e) => setContrastPercent(Number(e.target.value))}
+                        />
+                        <div className="overlay-toggles">
+                          {overlayLayers.map((overlay) => {
+                            const checked = activeOverlayIds.includes(overlay.id);
+                            return (
+                              <label key={overlay.id} className="overlay-toggle">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggleOverlay(overlay.id)}
+                                />
+                                <span
+                                  className="overlay-swatch"
+                                  style={{ backgroundColor: overlay.color }}
+                                  aria-hidden="true"
+                                />
+                                {overlay.label}
+                              </label>
+                            );
+                          })}
+                        </div>
+                        <div className="probe-controls">
+                          <label htmlFor="probeX">Cursor X ({cursorProbe.x})</label>
+                          <input
+                            id="probeX"
+                            data-testid="probe-x"
+                            type="range"
+                            min="0"
+                            max="100"
+                            value={cursorProbe.x}
+                            onChange={(e) => setCursorProbe((prev) => ({ ...prev, x: Number(e.target.value) }))}
+                          />
+                          <label htmlFor="probeY">Cursor Y ({cursorProbe.y})</label>
+                          <input
+                            id="probeY"
+                            data-testid="probe-y"
+                            type="range"
+                            min="0"
+                            max="100"
+                            value={cursorProbe.y}
+                            onChange={(e) => setCursorProbe((prev) => ({ ...prev, y: Number(e.target.value) }))}
+                          />
+                        </div>
+                        <p data-testid="mpr-tooltip-values">
+                          Cursor ({cursorProbe.x}, {cursorProbe.y}) • Base {tooltipValues.base}
+                          {tooltipValues.overlays.length > 0
+                            ? ` • ${tooltipValues.overlays
+                              .map((entry) => `${entry.overlayId}: ${entry.value}%`)
+                              .join(' | ')}`
+                            : ' • No overlays selected'}
+                        </p>
+                      </div>
                       <div className="mpr-grid">
                         <section className="mpr-pane mpr-pane-axial" aria-label="Axial pane">
                           <header>

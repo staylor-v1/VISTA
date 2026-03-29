@@ -20,7 +20,7 @@ This file is the execution artifact for the orchestrated migration so the combin
 - [x] PR-02 implemented in current working branch.
 - [x] PR-03 implemented in current working branch.
 - [x] PR-04 implemented in current working branch.
-- [ ] PR-05 pending.
+- [x] PR-05 implemented in current working branch.
 - [ ] PR-06 pending.
 - [ ] PR-07 pending.
 
@@ -72,3 +72,14 @@ When preparing upstream PRs:
 - Added lightweight spatial-locator previews in orthographic panes with color-coded intersection lines for plane awareness.
 - Added synchronized viewport controls (`Zoom +/-`, `Pan`, `Reset`) shared across orthographic panes.
 - Expanded Playwright E2E assertions to validate PT2/PT3 MPR shell rendering and synchronized zoom behavior.
+
+## PR-05 scope record (implemented)
+
+### Milestone 1 — overlay controls and contrast baseline
+- Added PT2/PT3 overlay-layer toggles driven by part metadata (`overlay_layers`) with multi-select behavior.
+- Added global MPR contrast control (`50-150%`) shared across orthographic panes.
+- Added cursor probe controls and synchronized tooltip payload rendering base + overlay values in-workbench context.
+
+### Milestone 2 — synthetic workflow coverage and artifact continuity
+- Expanded existing React Testing Library coverage for three simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) with progressive overlay complexity.
+- Expanded Playwright fixture metadata and E2E assertions to validate PR-05 controls in PT2/PT3 while preserving PT1 behavior.
