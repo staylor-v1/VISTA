@@ -28,7 +28,7 @@ This file is the execution artifact for the orchestrated migration so the combin
 - [x] PR-05 implemented in current working branch.
 - [x] PR-06 implemented in current working branch.
 - [~] PR-07 in progress (kept on original scope because implementation is already underway).
-- [ ] PR-08 not started.
+- [x] PR-08 implemented in current working branch.
 - [ ] PR-09 not started.
 - [ ] PR-10 not started.
 - [ ] PR-11 not started.
@@ -137,10 +137,16 @@ When preparing upstream PRs:
   - Playwright assertions that persisted state API writes occur during end-to-end project data interactions.
 
 ### PR-08 — UI exposure foundation (project type selection + visibility)
-- Ensure every PT feature addition is discoverable in the product UI when shipped (no backend-only PT capability).
-- Add project-type selector (`PT1`/`PT2`/`PT3`) to project creation UI, persisted through existing create-project API contract.
-- Add project-type visibility in project list/detail surfaces so users can confirm active mode before entering workflows.
-- Acceptance: create-project flow tests verify type selection and persisted type rendering; UI smoke coverage for PT1/PT2/PT3 entry points.
+
+### Milestone 1 — create-project project-type selection
+- Added `Project Type` selector to the create-project modal with explicit choices for `PT1`, `PT2`, and `PT3`.
+- Wired selected value into existing `POST /api/projects/` payload via `project_type`.
+- Added automated RTL tests to cover three simulated users (`basic`, `intermediate`, `advanced`) for each project type (`PT1`, `PT2`, `PT3`) with progressive synthetic data.
+
+### Milestone 2 — project-type visibility and smoke coverage
+- Added project-type display to project dashboard cards and project detail metadata so workflow mode is visible before/after navigation.
+- Added Playwright smoke coverage for PT1/PT2/PT3 entry points validating type visibility on dashboard and project detail pages.
+- Preserved existing PT inspection workbench behavior and contracts without backend API changes.
 
 ### PR-09 — inspector modalities, overlays, and measurements
 - Add inspector surface for per-view modality toggles and thumbnail quick-switching.
