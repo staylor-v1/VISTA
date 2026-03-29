@@ -20,6 +20,7 @@ const scenarioByUser = [
           configured_views: ['front', 'back'],
           view_images: { front: 'front-basic.png' },
           volume_shape: { axial: 20, coronal: 18, sagittal: 16 },
+          overlay_layers: [{ id: 'voids', label: 'Voids', color: '#f59e0b' }],
         },
       },
     ],
@@ -42,6 +43,10 @@ const scenarioByUser = [
           configured_views: ['left', 'right', 'top'],
           view_images: { left: 'left-mid.png' },
           volume_shape: { axial: 32, coronal: 28, sagittal: 24 },
+          overlay_layers: [
+            { id: 'segmentation', label: 'Segmentation', color: '#ef4444' },
+            { id: 'porosity', label: 'Porosity', color: '#8b5cf6' },
+          ],
         },
       },
       {
@@ -75,6 +80,11 @@ const scenarioByUser = [
           defects: [{ severity: 'critical' }, { severity: 'critical' }, { severity: 'major' }],
           view_images: { front: 'adv-front.png', top: 'adv-top.png' },
           volume_shape: { axial: 128, coronal: 96, sagittal: 80 },
+          overlay_layers: [
+            { id: 'segmentation', label: 'Segmentation', color: '#ef4444' },
+            { id: 'heatmap', label: 'Heatmap', color: '#8b5cf6' },
+            { id: 'porosity', label: 'Porosity', color: '#f59e0b' },
+          ],
         },
       },
       {
@@ -174,9 +184,17 @@ describe('InspectionWorkbenchPanel', () => {
         expect(screen.getByText('Axial plane')).toBeInTheDocument();
         expect(screen.getByText('Coronal plane')).toBeInTheDocument();
         expect(screen.getByText('Sagittal plane')).toBeInTheDocument();
+        expect(screen.getByLabelText(/Contrast/)).toBeInTheDocument();
+        const tooltip = screen.getByTestId('mpr-tooltip-values');
+        expect(tooltip).toHaveTextContent(/Cursor/);
         const initialPart = scenario.parts[0];
         const initialSagittalMidpoint = Math.floor((initialPart.metadata.volume_shape.sagittal - 1) / 2) + 1;
         expect(screen.getByTestId('mpr-locator')).toHaveTextContent(new RegExp(`S${initialSagittalMidpoint}`));
+        expect(screen.getByTestId('mpr-tooltip-values')).toHaveTextContent('Base');
+        const firstOverlay = scenario.parts[0].metadata.overlay_layers?.[0]?.label || 'Segmentation';
+        const firstOverlayToggle = screen.getByLabelText(firstOverlay);
+        fireEvent.click(firstOverlayToggle);
+        expect(screen.getByTestId('mpr-tooltip-values')).toHaveTextContent(/No overlays selected|%/);
         fireEvent.click(screen.getByRole('button', { name: 'Zoom +' }));
         fireEvent.click(screen.getByRole('button', { name: 'Pan →' }));
         await waitFor(() => {
