@@ -168,20 +168,144 @@ const CreateProjectModal = memo(function CreateProjectModal({ onClose, onSubmit,
   );
 });
 
+const EditProjectModal = memo(function EditProjectModal({ project, onClose, onSubmit }) {
+  const [name, setName] = useState(project?.name || '');
+  const [description, setDescription] = useState(project?.description || '');
+  const [projectType, setProjectType] = useState(project?.project_type || 'PT1');
+
+  useEffect(() => {
+    setName(project?.name || '');
+    setDescription(project?.description || '');
+    setProjectType(project?.project_type || 'PT1');
+  }, [project]);
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onSubmit({
+      name,
+      description,
+      project_type: projectType,
+    });
+  };
+
+  if (!project) return null;
+
+  return (
+    <div className="modal">
+      <div className="modal-content">
+        <div className="modal-header">
+          <h3>Edit Project</h3>
+          <span className="close" onClick={onClose}>&times;</span>
+        </div>
+        <div className="modal-body">
+          <form id="edit-project-form" onSubmit={handleSubmit}>
+            <div className="form-group">
+              <label htmlFor="edit_name">Project Name *</label>
+              <input
+                type="text"
+                id="edit_name"
+                className="form-control"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+              />
+            </div>
+            <div className="form-group">
+              <label htmlFor="edit_description">Description</label>
+              <textarea
+                id="edit_description"
+                rows="3"
+                className="form-control"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+              ></textarea>
+            </div>
+            <div className="form-group">
+              <label htmlFor="edit_project_type">Project Type *</label>
+              <select
+                id="edit_project_type"
+                className="form-control"
+                value={projectType}
+                onChange={(e) => setProjectType(e.target.value)}
+              >
+                <option value="PT1">PT1 — External Multi-View</option>
+                <option value="PT2">PT2 — 3D Slice Review</option>
+                <option value="PT3">PT3 — Advanced 3D Slice Review</option>
+              </select>
+            </div>
+          </form>
+        </div>
+        <div className="modal-footer">
+          <button type="button" className="btn btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" form="edit-project-form" className="btn btn-success btn-large">
+            Save Changes
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 // Memoized ProjectItem component to prevent unnecessary re-renders
-const ProjectItem = memo(function ProjectItem({ project }) {
+const ProjectItem = memo(function ProjectItem({ project, onEdit }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+
   return (
     <div className="project-card">
+      <div className="project-card-header">
+        <div className="project-card-header-row">
+          <Link
+            to={`/project/${project.id}`}
+            className="project-card-link-title"
+          >
+          <h3 className="project-card-title">{project.name}</h3>
+          </Link>
+          <div className="project-card-menu">
+            <button
+              type="button"
+              className="project-card-menu-button"
+              aria-label={`Project options for ${project.name}`}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setMenuOpen((prev) => !prev);
+              }}
+            >
+              …
+            </button>
+            {menuOpen && (
+              <div className="project-card-menu-dropdown">
+                <button
+                  type="button"
+                  className="project-card-menu-item"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setMenuOpen(false);
+                    onEdit(project);
+                  }}
+                >
+                  Edit
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+        <Link
+          to={`/project/${project.id}`}
+          style={{ textDecoration: 'none', color: 'inherit', display: 'block' }}
+        >
+          <div className="project-card-meta">
+            ID: {project.id} • Group: {project.meta_group_id} • Type: {project.project_type || 'PT1'}
+          </div>
+        </Link>
+      </div>
       <Link 
         to={`/project/${project.id}`} 
         style={{ textDecoration: 'none', color: 'inherit', display: 'block' }}
       >
-        <div className="project-card-header">
-          <h3 className="project-card-title">{project.name}</h3>
-          <div className="project-card-meta">
-            ID: {project.id} • Group: {project.meta_group_id} • Type: {project.project_type || 'PT1'}
-          </div>
-        </div>
         <div className="project-card-body">
           <p className="project-card-description">
             {project.description || 'No description provided'}
@@ -206,6 +330,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
   const [showModal, setShowModal] = useState(false);
+  const [editingProject, setEditingProject] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
   // const [newProject, setNewProject] = useState({  // Commented out - not currently used
   //   name: '',
@@ -293,14 +418,18 @@ function App() {
         return response.json();
       })
       .then(data => {
+        const normalized = {
+          ...data,
+          project_type: data.project_type || projectData.project_type || 'PT1',
+        };
         console.log("Project created successfully:", data);
         // Add the new project to the projects list
-        setProjects(prev => [...prev, data]);
+        setProjects(prev => [...prev, normalized]);
         // Close modal
         setShowModal(false);
         setLoading(false);
         // Show success toast
-        showToast(`Project "${data.name}" created successfully!`, 'success');
+        showToast(`Project "${normalized.name}" created successfully!`, 'success');
       })
       .catch(err => {
         console.error("Failed to create project:", err);
@@ -308,6 +437,42 @@ function App() {
         setLoading(false);
       });
   }, []);
+
+  const handleEditProject = useCallback((project) => {
+    setEditingProject(project);
+  }, []);
+
+  const handleUpdateProject = useCallback((updatedData) => {
+    if (!editingProject) return;
+    setLoading(true);
+
+    fetch(`/api/projects/${editingProject.id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(updatedData),
+    })
+      .then(response => {
+        if (!response.ok) {
+          return response.json().then((errorData) => {
+            throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+          });
+        }
+        return response.json();
+      })
+      .then((savedProject) => {
+        setProjects((prev) => prev.map((p) => (p.id === savedProject.id ? savedProject : p)));
+        setEditingProject(null);
+        setLoading(false);
+        showToast(`Project "${savedProject.name}" updated successfully!`, 'success');
+      })
+      .catch((err) => {
+        console.error('Failed to update project:', err);
+        showToast(err.message, 'error');
+        setLoading(false);
+      });
+  }, [editingProject]);
 
 
   const HomePage = () => (
@@ -401,7 +566,7 @@ function App() {
             </div>
             <div className="projects-grid">
               {projects.map(project => (
-                <ProjectItem key={project.id} project={project} />
+                <ProjectItem key={project.id} project={project} onEdit={handleEditProject} />
               ))}
             </div>
           </>
@@ -414,6 +579,13 @@ function App() {
           onClose={() => setShowModal(false)} 
           onSubmit={handleCreateProject}
           currentUser={currentUser}
+        />
+      )}
+      {editingProject && (
+        <EditProjectModal
+          project={editingProject}
+          onClose={() => setEditingProject(null)}
+          onSubmit={handleUpdateProject}
         />
       )}
     </div>

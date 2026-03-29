@@ -96,3 +96,52 @@ async def read_project(
             detail=f"User '{current_user.email}' does not have access to project '{project_id}' (group '{db_project.meta_group_id}'). Please contact an administrator if you need access to this project.",
         )
     return db_project
+
+
+@router.put("/{project_id}", response_model=schemas.Project)
+async def update_existing_project(
+    project_id: uuid.UUID,
+    project_update: schemas.ProjectUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """
+    Update project metadata (name, description, group, project_type) if the user has access.
+    """
+    db_project = await crud.get_project(db=db, project_id=project_id)
+    if db_project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    # Must have access to current project group.
+    if not is_user_in_group(current_user.email, db_project.meta_group_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"User '{current_user.email}' does not have access to update project '{project_id}' (group '{db_project.meta_group_id}').",
+        )
+
+    updates = project_update.model_dump(exclude_unset=True)
+    if "meta_group_id" in updates and not is_user_in_group(current_user.email, updates["meta_group_id"]):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"User '{current_user.email}' cannot move project '{project_id}' to group '{updates['meta_group_id']}'.",
+        )
+
+    updated = await crud.update_project(
+        db=db,
+        project_id=project_id,
+        project=project_update,
+        updated_by=current_user.email,
+    )
+    assert updated is not None
+
+    cache = Cache()
+    cache_patterns = [
+        f"projects:user:{current_user.email}:skip:0:limit:100",
+        f"projects:user:{current_user.email}:skip:0:limit:50",
+        f"projects:user:{current_user.email}:skip:0:limit:20",
+        f"projects:user:{current_user.email}:skip:0:limit:10",
+    ]
+    for cache_key in cache_patterns:
+        await cache.delete(cache_key)
+
+    return updated
