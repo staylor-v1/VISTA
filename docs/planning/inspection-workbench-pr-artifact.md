@@ -22,7 +22,7 @@ This file is the execution artifact for the orchestrated migration so the combin
 - [x] PR-04 implemented in current working branch.
 - [x] PR-05 implemented in current working branch.
 - [x] PR-06 implemented in current working branch.
-- [ ] PR-07 pending.
+- [~] PR-07 in progress.
 
 ## PR-02 scope record (implemented)
 
@@ -105,3 +105,12 @@ When preparing upstream PRs:
 - Added PT2/PT3 workbench state rehydration from part metadata so the latest `segmentation_runs` and `measurement_runs` display immediately after part selection/reload.
 - Extended existing React Testing Library suite to verify progressive synthetic users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) with persisted run summaries visible for non-basic scenarios before new invocations.
 - Expanded Playwright E2E fixture/scenario coverage so each project type now exercises three simulated users (`basic`, `intermediate`, `advanced`) with progressively complex data and verifies persisted run summaries in PT2/PT3 before invoking new ML actions.
+
+## PR-07 scope record (in progress)
+
+### Milestone 1 — project-level JSON report export endpoint
+- Added backend endpoint `GET /api/projects/{project_id}/report-json` in the export router.
+- Report payload currently includes:
+  - `project` identity and type metadata (`id`, `name`, `project_type`, `meta_group_id`),
+  - `summary` counters (`total_images`, `total_batches`, `total_parts`, `reviewed_parts`, `unreviewed_parts`).
+- Added API-level tests in the existing pytest export suite for three progressive simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) with synthetic data.
