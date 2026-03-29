@@ -32,6 +32,8 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
       } else {
         await expect(page.getByTestId('mpr-shell')).toBeVisible();
         await expect(page.getByText('3D Orientation')).toBeVisible();
+        await expect(page.getByLabel(/Contrast/)).toBeVisible();
+        await expect(page.getByTestId('mpr-tooltip-values')).toContainText('Cursor');
         await page.getByRole('button', { name: 'Zoom +' }).click();
         await expect(page.getByText(/Zoom 1.10x/).first()).toBeVisible();
       }
