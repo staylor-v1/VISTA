@@ -163,6 +163,16 @@ When preparing upstream PRs:
 - Extended existing React Testing Library + Playwright suites to assert these controls with three progressive synthetic users (`basic`, `intermediate`, `advanced`) for all project types.
 - Screenshot is generated during E2E runs at `frontend/artifacts/pr09-inspector-modalities-measurements.png` and intentionally **not committed**; see `docs/planning/pr09-screenshot-analysis.md` for recorded UI analytics.
 
+#### PR-09 milestone 2 (in progress in artifact branch)
+- Added shared inspector viewport controls in `InspectionWorkbenchPanel` for all project types (`PT1`, `PT2`, `PT3`):
+  - synchronized zoom controls (`Zoom +`, `Zoom -`, `Reset`),
+  - pan controls (`↑`, `←`, `→`, `↓`),
+  - explicit viewport state indicator (`Zoom x • Pan (x, y)`).
+- Extended workbench workspace-state persistence to include `inspector.viewport_transform` for server-backed rehydration.
+- Extended existing React Testing Library scenarios (three simulated users per project type) to assert:
+  - viewport controls mutate state correctly,
+  - PT2/PT3 MPR navigation assertions remain scoped to 3D pane controls.
+
 ### PR-10 — annotations + audit trail metadata
 - Expand annotations to include defect class, modality, comment, disposition, measurements, bbox, hide/show.
 - Preserve and display annotation timestamp + username in hover/details.
