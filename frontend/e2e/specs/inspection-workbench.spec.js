@@ -4,6 +4,7 @@ const { mockInspectionWorkbenchRoutes } = require('../fixtures/inspectionWorkben
 
 const screenshotPath = path.resolve(__dirname, '../../artifacts/pr04-mpr-workbench.png');
 const pr08ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr08-project-type-visibility.png');
+const pr09ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr09-inspector-modalities-measurements.png');
 const simulatedUsers = ['basic', 'intermediate', 'advanced'];
 
 for (const projectType of ['PT1', 'PT2', 'PT3']) {
@@ -17,6 +18,13 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
 
         await expect(page.getByRole('heading', { name: 'Project Data' })).toBeVisible();
         await expect(page.getByText(`Inspection workbench for ${projectType} projects.`)).toBeVisible();
+        await expect(page.getByTestId('inspector-common-controls')).toBeVisible();
+        await page.getByPlaceholder('label').fill(`${simulatedUser}-distance`);
+        await page.getByPlaceholder('value').fill('12.5');
+        await page.getByRole('button', { name: 'Save measurement' }).click();
+        await expect(page.getByTestId('manual-measurement-list')).toContainText(`${simulatedUser}-distance: 12.5mm`);
+        await page.getByTestId('toggle-image-visibility').click();
+        await expect(page.getByTestId('toggle-image-visibility')).toContainText(/Show image|Hide image/);
 
         if (simulatedUser === 'basic') {
           await expect(page.getByText('Batches: 1')).toBeVisible();
@@ -90,6 +98,21 @@ test.describe('Inspection Workbench screenshot artifact', () => {
     const panel = page.locator('section[aria-label="Inspection Workbench"]');
     await expect(panel).toBeVisible();
     await panel.screenshot({ path: screenshotPath });
+  });
+});
+
+test.describe('PR-09 inspector controls screenshot artifact', () => {
+  test('captures PT1 modalities + measurements controls screenshot', async ({ page }) => {
+    const { projectId } = await mockInspectionWorkbenchRoutes(page, { type: 'PT1', scenario: 'advanced' });
+    await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
+    await page.getByRole('tab', { name: 'Project Data' }).click();
+    await expect(page.getByTestId('inspector-common-controls')).toBeVisible();
+    await page.getByPlaceholder('label').fill('qa-length');
+    await page.getByPlaceholder('value').fill('18.25');
+    await page.getByRole('button', { name: 'Save measurement' }).click();
+    const panel = page.locator('section[aria-label="Inspection Workbench"]');
+    await expect(panel).toBeVisible();
+    await panel.screenshot({ path: pr09ScreenshotPath });
   });
 });
 
