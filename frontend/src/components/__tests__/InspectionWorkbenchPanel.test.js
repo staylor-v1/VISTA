@@ -252,6 +252,14 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getByTestId('manual-measurement-list')).toHaveTextContent(`${scenario.user}-length: 12.6mm`);
       fireEvent.click(screen.getByRole('button', { name: new RegExp(`Delete measurement ${scenario.user}-length`, 'i') }));
       expect(screen.getByTestId('manual-measurement-list')).toHaveTextContent('No measurements captured.');
+      expect(screen.getByTestId('inspector-viewport-state')).toHaveTextContent(/Zoom 1\.\d{2}x|Zoom 1.00x/);
+      const inspectorNav = screen.getByTestId('inspector-nav-controls');
+      fireEvent.click(within(inspectorNav).getByRole('button', { name: 'Zoom +' }));
+      fireEvent.click(within(inspectorNav).getByRole('button', { name: 'Pan →' }));
+      await waitFor(() => {
+        expect(screen.getByTestId('inspector-viewport-state')).toHaveTextContent(/Zoom 1\.10x/);
+        expect(screen.getByTestId('inspector-viewport-state')).toHaveTextContent(/Pan \(10, 0\)/);
+      });
 
       fireEvent.click(screen.getByTestId('toggle-image-visibility'));
       if (projectType === 'PT1') {
@@ -320,8 +328,9 @@ describe('InspectionWorkbenchPanel', () => {
         await waitFor(() => {
           expect(screen.getByTestId('measurement-result')).toHaveTextContent(/Measurements completed/);
         });
-        fireEvent.click(screen.getByRole('button', { name: 'Zoom +' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Pan →' }));
+        const mprNav = screen.getByLabelText('3D orientation pane');
+        fireEvent.click(within(mprNav).getByRole('button', { name: 'Zoom +' }));
+        fireEvent.click(within(mprNav).getByRole('button', { name: 'Pan →' }));
         await waitFor(() => {
           expect(screen.getAllByText(/Pan \((-?\d+), (-?\d+)\)/).length).toBeGreaterThan(0);
         });
