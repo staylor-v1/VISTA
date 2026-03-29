@@ -152,6 +152,43 @@ class InspectionWorkspaceStateResponse(BaseModel):
     state: Dict[str, Any] = Field(default_factory=dict)
     updated_at: Optional[datetime] = None
 
+
+class InspectionAnnotationBase(BaseModel):
+    defect_class: str = Field(..., min_length=1, max_length=128)
+    modality: str = Field(..., min_length=1, max_length=64)
+    comment: Optional[str] = Field(default=None, max_length=2000)
+    disposition: str = Field(default="open", pattern=r"^(open|accepted|rejected|needs_info)$")
+    measurements: Dict[str, float] = Field(default_factory=dict)
+    bbox: Optional[Dict[str, float]] = None
+    hidden: bool = False
+
+
+class InspectionAnnotationCreate(InspectionAnnotationBase):
+    pass
+
+
+class InspectionAnnotationUpdate(BaseModel):
+    defect_class: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    modality: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    comment: Optional[str] = Field(default=None, max_length=2000)
+    disposition: Optional[str] = Field(default=None, pattern=r"^(open|accepted|rejected|needs_info)$")
+    measurements: Optional[Dict[str, float]] = None
+    bbox: Optional[Dict[str, float]] = None
+    hidden: Optional[bool] = None
+
+
+class InspectionAnnotation(InspectionAnnotationBase):
+    id: uuid.UUID
+    created_at: datetime
+    created_by: str
+    updated_at: datetime
+    updated_by: str
+
+
+class InspectionAnnotationListResponse(BaseModel):
+    part_id: uuid.UUID
+    annotations: List[InspectionAnnotation]
+
 # ImageGroup schemas
 class ImageGroupBase(BaseModel):
     identifier: str = Field(..., min_length=1, max_length=255)
