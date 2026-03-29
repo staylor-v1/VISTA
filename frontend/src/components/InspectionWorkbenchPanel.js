@@ -405,6 +405,10 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     setMeasurementDraft({ label: '', value: '' });
   };
 
+  const deleteMeasurement = (measurementId) => {
+    setMeasurementEntries((prev) => prev.filter((entry) => entry.id !== measurementId));
+  };
+
   const runSegmentation = async () => {
     if (!selectedPart) return;
     try {
@@ -660,8 +664,18 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                         ) : (
                           measurementEntries.map((entry) => (
                             <li key={entry.id}>
-                              {entry.label}: {entry.value}
-                              {entry.units} ({entry.modality} • {entry.view})
+                              <span>
+                                {entry.label}: {entry.value}
+                                {entry.units} ({entry.modality} • {entry.view})
+                              </span>
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => deleteMeasurement(entry.id)}
+                                aria-label={`Delete measurement ${entry.label}`}
+                              >
+                                Delete
+                              </button>
                             </li>
                           ))
                         )}
