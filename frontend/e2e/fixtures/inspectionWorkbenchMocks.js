@@ -18,6 +18,7 @@ const scenarioByUser = {
         metadata: {
           defects: [],
           configured_views: ['front', 'back'],
+          modalities: ['visual'],
           volume_shape: { axial: 24, coronal: 20, sagittal: 18 },
           overlay_layers: [{ id: 'voids', label: 'Voids', color: '#f59e0b' }],
         },
@@ -52,6 +53,7 @@ const scenarioByUser = {
         metadata: {
           defects: [{ severity: 'minor' }, { severity: 'critical' }],
           configured_views: ['front', 'back', 'left', 'right'],
+          modalities: ['visual', 'infrared'],
           view_images: { front: 'housing-mid-front.png', right: 'housing-mid-right.png' },
           volume_shape: { axial: 64, coronal: 56, sagittal: 40 },
           overlay_layers: [
@@ -119,6 +121,7 @@ const scenarioByUser = {
         metadata: {
           defects: [{ severity: 'critical' }, { severity: 'critical' }, { severity: 'major' }],
           configured_views: ['front', 'back', 'left', 'right', 'top', 'bottom'],
+          modalities: ['visual', 'infrared', 'uv'],
           view_images: { front: 'housing-adv-front.png', top: 'housing-adv-top.png' },
           volume_shape: { axial: 128, coronal: 96, sagittal: 80 },
           overlay_layers: [

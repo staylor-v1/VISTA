@@ -7,6 +7,7 @@ const DEFAULT_OVERLAY_LAYERS = [
   { id: 'heatmap', label: 'Heatmap', color: '#8b5cf6' },
   { id: 'voids', label: 'Voids', color: '#f59e0b' },
 ];
+const DEFAULT_MODALITIES = ['visual', 'infrared', 'uv'];
 const REVIEW_LABELS = {
   unreviewed: 'Unreviewed',
   in_review: 'In Review',
@@ -34,6 +35,14 @@ function getPartViews(part) {
     return configuredViews.map((value) => String(value).toLowerCase());
   }
   return VIEW_ORDER;
+}
+
+function getModalities(part) {
+  const modalities = part?.metadata?.modalities;
+  if (Array.isArray(modalities) && modalities.length > 0) {
+    return modalities.map((value) => String(value));
+  }
+  return DEFAULT_MODALITIES;
 }
 
 function getMprDimensions(part) {
@@ -92,6 +101,11 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [mlActionLoading, setMlActionLoading] = useState({ segmentation: false, measurement: false });
   const [workspaceStateLoaded, setWorkspaceStateLoaded] = useState(false);
   const [workspaceHydration, setWorkspaceHydration] = useState({});
+  const [enabledModalities, setEnabledModalities] = useState([]);
+  const [selectedViewName, setSelectedViewName] = useState('');
+  const [imageEnabled, setImageEnabled] = useState(true);
+  const [measurementEntries, setMeasurementEntries] = useState([]);
+  const [measurementDraft, setMeasurementDraft] = useState({ label: '', value: '' });
 
   useEffect(() => {
     const loadWorkbenchData = async () => {
@@ -173,14 +187,21 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   );
   const mprDimensions = useMemo(() => getMprDimensions(selectedPart), [selectedPart]);
   const overlayLayers = useMemo(() => getOverlayLayers(selectedPart), [selectedPart]);
+  const modalityOptions = useMemo(() => getModalities(selectedPart), [selectedPart]);
+  const activeViewName = useMemo(() => {
+    if (!selectedPart) return '';
+    const configuredViews = getPartViews(selectedPart);
+    if (selectedViewName && configuredViews.includes(selectedViewName)) {
+      return selectedViewName;
+    }
+    return configuredViews[0] || '';
+  }, [selectedPart, selectedViewName]);
+
   const tooltipValues = useMemo(() => {
     const axisSeed = slicePosition.axial + slicePosition.coronal + slicePosition.sagittal;
     const base = Math.min(
       255,
-      Math.max(
-        0,
-        Math.round(((cursorProbe.x * 0.35 + cursorProbe.y * 0.65 + axisSeed) * contrastPercent) / 100),
-      ),
+      Math.max(0, Math.round(((cursorProbe.x * 0.35 + cursorProbe.y * 0.65 + axisSeed) * contrastPercent) / 100)),
     );
     const overlays = activeOverlayIds.map((overlayId, index) => {
       const value = Number((((base + (index + 1) * 17) / 255) * 100).toFixed(1));
@@ -227,6 +248,19 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   }, [selectedPart, projectType, mprDimensions, workspaceHydration]);
 
   useEffect(() => {
+    if (!selectedPart) return;
+    const savedInspector = workspaceHydration?.inspector || {};
+    const savedModalities = Array.isArray(savedInspector.modalities)
+      ? savedInspector.modalities.map((value) => String(value))
+      : [];
+    setEnabledModalities(savedModalities.length > 0 ? savedModalities : getModalities(selectedPart).slice(0, 1));
+    setSelectedViewName(savedInspector.view_name ? String(savedInspector.view_name) : '');
+    setImageEnabled(savedInspector.image_enabled !== false);
+    setMeasurementEntries(Array.isArray(savedInspector.measurements) ? savedInspector.measurements : []);
+    setMeasurementDraft({ label: '', value: '' });
+  }, [selectedPart, workspaceHydration]);
+
+  useEffect(() => {
     if (loading || !workspaceStateLoaded) return;
     const saveHandle = setTimeout(async () => {
       try {
@@ -248,6 +282,12 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                   cursor_probe: cursorProbe,
                 }
                 : undefined,
+              inspector: {
+                modalities: enabledModalities,
+                view_name: activeViewName || '',
+                image_enabled: imageEnabled,
+                measurements: measurementEntries,
+              },
             },
           }),
         });
@@ -258,10 +298,14 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     return () => clearTimeout(saveHandle);
   }, [
     activeOverlayIds,
+    activeViewName,
     contrastPercent,
     cursorProbe,
     defectFilter,
+    enabledModalities,
+    imageEnabled,
     loading,
+    measurementEntries,
     projectId,
     projectType,
     selectedBatchId,
@@ -333,6 +377,32 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
       if (prev.includes(overlayId)) return prev.filter((id) => id !== overlayId);
       return [...prev, overlayId];
     });
+  };
+
+  const toggleModality = (modality) => {
+    setEnabledModalities((prev) => {
+      if (prev.includes(modality)) {
+        if (prev.length === 1) return prev;
+        return prev.filter((value) => value !== modality);
+      }
+      return [...prev, modality];
+    });
+  };
+
+  const saveMeasurement = () => {
+    const value = Number(measurementDraft.value);
+    const label = measurementDraft.label.trim();
+    if (!label || !Number.isFinite(value)) return;
+    const nextEntry = {
+      id: `${Date.now()}-${measurementEntries.length + 1}`,
+      label,
+      value: Number(value.toFixed(2)),
+      units: 'mm',
+      modality: enabledModalities[0] || modalityOptions[0] || 'visual',
+      view: activeViewName || 'axial',
+    };
+    setMeasurementEntries((prev) => [nextEntry, ...prev]);
+    setMeasurementDraft({ label: '', value: '' });
   };
 
   const runSegmentation = async () => {
@@ -521,6 +591,81 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                       >
                         Flag Reject
                       </button>
+                    </div>
+                  </div>
+
+                  <div className="inspector-common-controls" data-testid="inspector-common-controls">
+                    <div className="modality-controls">
+                      <strong>Modalities</strong>
+                      <div className="modality-list">
+                        {modalityOptions.map((modality) => (
+                          <label key={modality} className="overlay-toggle">
+                            <input
+                              type="checkbox"
+                              checked={enabledModalities.includes(modality)}
+                              onChange={() => toggleModality(modality)}
+                            />
+                            <span>{modality}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="view-switcher">
+                      <strong>View quick switch</strong>
+                      <div className="view-thumbnail-list">
+                        {getPartViews(selectedPart).map((viewName) => (
+                          <button
+                            key={viewName}
+                            type="button"
+                            className={`btn btn-secondary btn-sm ${activeViewName === viewName ? 'active' : ''}`}
+                            onClick={() => setSelectedViewName(viewName)}
+                          >
+                            {viewName.toUpperCase()}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="image-toggle">
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        data-testid="toggle-image-visibility"
+                        onClick={() => setImageEnabled((prev) => !prev)}
+                      >
+                        {imageEnabled ? 'Hide image' : 'Show image'}
+                      </button>
+                    </div>
+                    <div className="measurement-capture">
+                      <strong>Measurements</strong>
+                      <div className="measurement-fields">
+                        <input
+                          type="text"
+                          placeholder="label"
+                          value={measurementDraft.label}
+                          onChange={(event) => setMeasurementDraft((prev) => ({ ...prev, label: event.target.value }))}
+                        />
+                        <input
+                          type="number"
+                          placeholder="value"
+                          value={measurementDraft.value}
+                          onChange={(event) => setMeasurementDraft((prev) => ({ ...prev, value: event.target.value }))}
+                        />
+                        <button type="button" className="btn btn-secondary btn-sm" onClick={saveMeasurement}>
+                          Save measurement
+                        </button>
+                      </div>
+                      <ul className="measurement-list" data-testid="manual-measurement-list">
+                        {measurementEntries.length === 0 ? (
+                          <li className="muted">No measurements captured.</li>
+                        ) : (
+                          measurementEntries.map((entry) => (
+                            <li key={entry.id}>
+                              {entry.label}: {entry.value}
+                              {entry.units} ({entry.modality} • {entry.view})
+                            </li>
+                          ))
+                        )}
+                      </ul>
                     </div>
                   </div>
 
@@ -732,10 +877,12 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                         const imagesByView = selectedPart?.metadata?.view_images || {};
                         const imageRef = imagesByView?.[viewName];
                         return (
-                          <div key={viewName} className="view-cell">
+                          <div key={viewName} className={`view-cell ${activeViewName === viewName ? 'selected' : ''}`}>
                             <div className="view-cell-title">{viewName.toUpperCase()}</div>
                             <div className="view-cell-body">
-                              {imageRef ? (
+                              {!imageEnabled ? (
+                                <span className="view-cell-empty">Image hidden</span>
+                              ) : imageRef ? (
                                 <span className="view-cell-has-data">Mapped: {imageRef}</span>
                               ) : (
                                 <span className="view-cell-empty">No image mapped</span>
