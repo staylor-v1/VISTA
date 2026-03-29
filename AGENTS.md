@@ -29,10 +29,10 @@ Use the following role sequence and keep outputs explicit:
 
 4. **QA / Tester**
    - Run automated tests for each milestone.
-   - Test should be exhaustive and end-to-end from user actions and data to screen shots upon which you perform visual analytics to confirm that expected UI components and behaviors exist from the point of view of an end user. 
+   - Test should be exhaustive and end-to-end from user actions and data to a report of the output from visual analytics conducted on screenshots to confirm that expected UI components and behaviors exist from the point of view of an end user. 
    - A milestone is not done until required tests pass.
    - If tests fail, fix or clearly document blocker.
-   - After intial tests pass, implement an aggressive red team blue team strategy. The red team subagent will create adversarial inputs and actions to uncover unplanned use cases and edge cases that real users might attempt.  The blue team subagent that improves the codebase to be robust to the red team cases and to support new use cases.
+   - After intial tests pass, implement an aggressive red team blue team strategy. The red team subagent will create adversarial inputs and actions to uncover unplanned use cases and edge cases that real users might attempt.  The blue team subagent then improves the codebase to be robust to the red team cases and to support new use cases.
 
 5. **Reviewer**
    - Perform skeptical final review for:
