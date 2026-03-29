@@ -16,6 +16,7 @@ import utils.crud as crud
 router = APIRouter(tags=["Inspection Workbench"])
 
 WORKSPACE_STATE_KEY_PREFIX = "inspection_workbench.workspace_state"
+ANNOTATIONS_METADATA_KEY = "annotations"
 
 
 async def _get_project_with_access_check(
@@ -51,6 +52,12 @@ def _serialize_inspection_part(part) -> dict:
 
 def _workspace_state_metadata_key(user_email: str) -> str:
     return f"{WORKSPACE_STATE_KEY_PREFIX}:{user_email.strip().lower()}"
+
+
+def _part_annotations(part) -> List[dict]:
+    metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+    annotations = metadata.get(ANNOTATIONS_METADATA_KEY)
+    return list(annotations) if isinstance(annotations, list) else []
 
 
 @router.post(
@@ -278,6 +285,117 @@ async def invoke_ai_measurements(
         "values": values,
         "created_at": created_at,
     }
+
+
+@router.get(
+    "/projects/{project_id}/parts/{part_id}/annotations",
+    response_model=schemas.InspectionAnnotationListResponse,
+)
+async def list_part_annotations(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    include_hidden: bool = True,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+
+    annotations = _part_annotations(part)
+    if not include_hidden:
+        annotations = [annotation for annotation in annotations if not annotation.get("hidden", False)]
+    return {"part_id": part_id, "annotations": annotations}
+
+
+@router.post(
+    "/projects/{project_id}/parts/{part_id}/annotations",
+    response_model=schemas.InspectionAnnotation,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_part_annotation(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    payload: schemas.InspectionAnnotationCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+
+    now = datetime.now(timezone.utc)
+    annotation_entry = {
+        "id": str(uuid.uuid4()),
+        **payload.model_dump(),
+        "created_at": now.isoformat(),
+        "created_by": current_user.email,
+        "updated_at": now.isoformat(),
+        "updated_by": current_user.email,
+    }
+    annotations = _part_annotations(part)
+    annotations.append(annotation_entry)
+    updated_part = await crud.update_inspection_part_metadata(
+        db=db,
+        project_id=project_id,
+        part_id=part_id,
+        metadata_patch={ANNOTATIONS_METADATA_KEY: annotations},
+        updated_by=current_user.email,
+    )
+    if not updated_part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+    return annotation_entry
+
+
+@router.patch(
+    "/projects/{project_id}/parts/{part_id}/annotations/{annotation_id}",
+    response_model=schemas.InspectionAnnotation,
+)
+async def update_part_annotation(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    annotation_id: uuid.UUID,
+    payload: schemas.InspectionAnnotationUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+
+    existing_annotations = _part_annotations(part)
+    update_payload = payload.model_dump(exclude_none=True)
+    now = datetime.now(timezone.utc).isoformat()
+    updated_annotation = None
+    updated_annotations = []
+
+    for annotation in existing_annotations:
+        if annotation.get("id") == str(annotation_id):
+            annotation = {
+                **annotation,
+                **update_payload,
+                "updated_at": now,
+                "updated_by": current_user.email,
+            }
+            updated_annotation = annotation
+        updated_annotations.append(annotation)
+
+    if not updated_annotation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Annotation not found")
+
+    persisted = await crud.update_inspection_part_metadata(
+        db=db,
+        project_id=project_id,
+        part_id=part_id,
+        metadata_patch={ANNOTATIONS_METADATA_KEY: updated_annotations},
+        updated_by=current_user.email,
+    )
+    if not persisted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+    return updated_annotation
 
 
 @router.get(
