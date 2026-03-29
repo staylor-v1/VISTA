@@ -250,6 +250,29 @@ async def create_project(db: AsyncSession, project: schemas.ProjectCreate, creat
     return db_project
 
 
+async def update_project(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    project: schemas.ProjectUpdate,
+    updated_by: Optional[str] = None,
+) -> Optional[models.Project]:
+    db_project = await get_project(db, project_id)
+    if db_project is None:
+        return None
+
+    updates = project.model_dump(exclude_unset=True)
+    if not updates:
+        return db_project
+
+    for key, value in updates.items():
+        setattr(db_project, key, value)
+
+    await db.commit()
+    await db.refresh(db_project)
+    log_db_operation("UPDATE", "projects", db_project.id, updated_by or "system", {"changes": updates})
+    return db_project
+
+
 async def create_inspection_batch(
     db: AsyncSession,
     project_id: uuid.UUID,

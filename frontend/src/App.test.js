@@ -115,4 +115,133 @@ describe('project type UI exposure', () => {
       });
     }
   );
+
+  test('keeps selected project type on dashboard card even if create response omits project_type', async () => {
+    global.fetch = jest.fn((input, init = {}) => {
+      const url = typeof input === 'string' ? input : input.url;
+      const method = (init.method || 'GET').toUpperCase();
+
+      if (url.endsWith('/api/users/me')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ email: 'pt2-user@example.com' }),
+        });
+      }
+
+      if (url.endsWith('/api/projects/') && method === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ([]),
+        });
+      }
+
+      if (url.endsWith('/api/projects/') && method === 'POST') {
+        const payload = JSON.parse(init.body || '{}');
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: async () => ({
+            id: 'created-pt2',
+            name: payload.name,
+            description: payload.description,
+            meta_group_id: payload.meta_group_id,
+          }),
+        });
+      }
+
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+    });
+
+    const user = userEvent.setup();
+    render(
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    );
+
+    await user.click(await screen.findByRole('button', { name: 'Create Your First Project' }));
+    await user.type(screen.getByLabelText('Project Name *'), 'Test PT2');
+    await user.type(screen.getByLabelText('Access Group *'), 'pt2-group');
+    await user.selectOptions(screen.getByLabelText('Project Type *'), 'PT2');
+    await user.click(screen.getByRole('button', { name: 'Create Project' }));
+
+    expect(await screen.findByText(/Type: PT2/)).toBeInTheDocument();
+  });
+
+  test('shows project card ellipsis menu and allows editing name and type', async () => {
+    global.fetch = jest.fn((input, init = {}) => {
+      const url = typeof input === 'string' ? input : input.url;
+      const method = (init.method || 'GET').toUpperCase();
+
+      if (url.endsWith('/api/users/me')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ email: 'editor@example.com' }),
+        });
+      }
+
+      if (url.endsWith('/api/projects/') && method === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ([
+            {
+              id: 'project-1',
+              name: 'Project Original',
+              description: 'Original description',
+              meta_group_id: 'g1',
+              project_type: 'PT1',
+            },
+          ]),
+        });
+      }
+
+      if (url.endsWith('/api/projects/project-1') && method === 'PUT') {
+        const payload = JSON.parse(init.body || '{}');
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: 'project-1',
+            meta_group_id: 'g1',
+            ...payload,
+          }),
+        });
+      }
+
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+    });
+
+    const user = userEvent.setup();
+    render(
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    );
+
+    await screen.findByText('Project Original');
+    await user.click(screen.getByRole('button', { name: /Project options for Project Original/i }));
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+
+    const nameInput = screen.getByLabelText('Project Name *');
+    await user.clear(nameInput);
+    await user.type(nameInput, 'Project Edited');
+    await user.selectOptions(screen.getByLabelText('Project Type *'), 'PT2');
+    await user.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    expect(await screen.findByText('Project Edited')).toBeInTheDocument();
+    expect(screen.getByText(/Type: PT2/)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/projects/project-1',
+        expect.objectContaining({
+          method: 'PUT',
+          body: expect.stringContaining('"project_type":"PT2"'),
+        })
+      );
+    });
+  });
 });
