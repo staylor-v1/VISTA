@@ -21,7 +21,7 @@ This file is the execution artifact for the orchestrated migration so the combin
 - [x] PR-03 implemented in current working branch.
 - [x] PR-04 implemented in current working branch.
 - [x] PR-05 implemented in current working branch.
-- [~] PR-06 in progress (Milestone 1 implemented, Milestone 2 started).
+- [x] PR-06 implemented in current working branch.
 - [ ] PR-07 pending.
 
 ## PR-02 scope record (implemented)
@@ -84,7 +84,7 @@ When preparing upstream PRs:
 - Expanded existing React Testing Library coverage for three simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) with progressive overlay complexity.
 - Expanded Playwright fixture metadata and E2E assertions to validate PR-05 controls in PT2/PT3 while preserving PT1 behavior.
 
-## PR-06 scope record (in progress)
+## PR-06 scope record (implemented)
 
 ### Milestone 1 — invoke segmentation and AI measurements in-context
 - Added inspection workbench API endpoints:
@@ -104,3 +104,4 @@ When preparing upstream PRs:
 ### Milestone 2 — persist and rehydrate ML invocation context in workbench
 - Added PT2/PT3 workbench state rehydration from part metadata so the latest `segmentation_runs` and `measurement_runs` display immediately after part selection/reload.
 - Extended existing React Testing Library suite to verify progressive synthetic users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) with persisted run summaries visible for non-basic scenarios before new invocations.
+- Expanded Playwright E2E fixture/scenario coverage so each project type now exercises three simulated users (`basic`, `intermediate`, `advanced`) with progressively complex data and verifies persisted run summaries in PT2/PT3 before invoking new ML actions.
