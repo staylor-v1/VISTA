@@ -106,6 +106,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [imageEnabled, setImageEnabled] = useState(true);
   const [measurementEntries, setMeasurementEntries] = useState([]);
   const [measurementDraft, setMeasurementDraft] = useState({ label: '', value: '' });
+  const [inspectorViewport, setInspectorViewport] = useState({ zoom: 1, panX: 0, panY: 0 });
 
   useEffect(() => {
     const loadWorkbenchData = async () => {
@@ -257,6 +258,12 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     setSelectedViewName(savedInspector.view_name ? String(savedInspector.view_name) : '');
     setImageEnabled(savedInspector.image_enabled !== false);
     setMeasurementEntries(Array.isArray(savedInspector.measurements) ? savedInspector.measurements : []);
+    const savedInspectorViewport = savedInspector.viewport_transform || {};
+    setInspectorViewport({
+      zoom: clampRange(savedInspectorViewport.zoom, 0.5, 4, 1),
+      panX: clampRange(savedInspectorViewport.panX, -200, 200, 0),
+      panY: clampRange(savedInspectorViewport.panY, -200, 200, 0),
+    });
     setMeasurementDraft({ label: '', value: '' });
   }, [selectedPart, workspaceHydration]);
 
@@ -287,6 +294,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                 view_name: activeViewName || '',
                 image_enabled: imageEnabled,
                 measurements: measurementEntries,
+                viewport_transform: inspectorViewport,
               },
             },
           }),
@@ -306,6 +314,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     imageEnabled,
     loading,
     measurementEntries,
+    inspectorViewport,
     projectId,
     projectType,
     selectedBatchId,
@@ -407,6 +416,25 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
 
   const deleteMeasurement = (measurementId) => {
     setMeasurementEntries((prev) => prev.filter((entry) => entry.id !== measurementId));
+  };
+
+  const adjustInspectorZoom = (delta) => {
+    setInspectorViewport((prev) => ({
+      ...prev,
+      zoom: Math.min(4, Math.max(0.5, Number((prev.zoom + delta).toFixed(2)))),
+    }));
+  };
+
+  const panInspectorViewport = (dx, dy) => {
+    setInspectorViewport((prev) => ({
+      ...prev,
+      panX: Math.min(200, Math.max(-200, prev.panX + dx)),
+      panY: Math.min(200, Math.max(-200, prev.panY + dy)),
+    }));
+  };
+
+  const resetInspectorViewport = () => {
+    setInspectorViewport({ zoom: 1, panX: 0, panY: 0 });
   };
 
   const runSegmentation = async () => {
@@ -680,6 +708,23 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                           ))
                         )}
                       </ul>
+                    </div>
+                    <div className="inspector-nav-controls" data-testid="inspector-nav-controls">
+                      <strong>Inspector viewport</strong>
+                      <div className="mpr-nav-controls">
+                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => adjustInspectorZoom(0.1)}>Zoom +</button>
+                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => adjustInspectorZoom(-0.1)}>Zoom -</button>
+                        <button type="button" className="btn btn-secondary btn-sm" onClick={resetInspectorViewport}>Reset</button>
+                      </div>
+                      <div className="mpr-nav-controls">
+                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => panInspectorViewport(0, -10)}>Pan ↑</button>
+                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => panInspectorViewport(-10, 0)}>Pan ←</button>
+                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => panInspectorViewport(10, 0)}>Pan →</button>
+                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => panInspectorViewport(0, 10)}>Pan ↓</button>
+                      </div>
+                      <p className="muted" data-testid="inspector-viewport-state">
+                        Zoom {inspectorViewport.zoom.toFixed(2)}x • Pan ({inspectorViewport.panX}, {inspectorViewport.panY})
+                      </p>
                     </div>
                   </div>
 
