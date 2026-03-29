@@ -247,3 +247,79 @@ def test_part_review_workflow_supports_three_simulated_users_with_progressive_da
         filtered = filtered_resp.json()
         assert len(filtered) == 1
         assert filtered[0]["id"] == target_part["id"]
+
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_segmentation_and_measurement_invocation_supports_progressive_users(client, project_type):
+    scenarios = [
+        {"email": f"ml-basic-{project_type.lower()}@example.com", "group": f"{project_type.lower()}-ml-basic", "synthetic_level": 1},
+        {"email": f"ml-intermediate-{project_type.lower()}@example.com", "group": f"{project_type.lower()}-ml-intermediate", "synthetic_level": 2},
+        {"email": f"ml-advanced-{project_type.lower()}@example.com", "group": f"{project_type.lower()}-ml-advanced", "synthetic_level": 3},
+    ]
+
+    for scenario in scenarios:
+        headers = {
+            "X-User-Id": scenario["email"],
+            "X-User-Groups": f"[\"{scenario['group']}\"]",
+        }
+        project_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": f"{project_type} ml workflow {scenario['group']}",
+                "description": "ml invocation workflow",
+                "meta_group_id": scenario["group"],
+                "project_type": project_type,
+            },
+            headers=headers,
+        )
+        assert project_resp.status_code == 201, project_resp.text
+        project_id = project_resp.json()["id"]
+
+        batch_resp = client.post(
+            f"/api/projects/{project_id}/batches",
+            json={"name": "ml-batch", "description": "ml test batch"},
+            headers=headers,
+        )
+        assert batch_resp.status_code == 201, batch_resp.text
+
+        part_resp = client.post(
+            f"/api/projects/{project_id}/parts",
+            json={
+                "serial_number": f"{project_type}-ML-{scenario['synthetic_level']}",
+                "display_name": f"ml-part-{scenario['synthetic_level']}",
+                "batch_id": batch_resp.json()["id"],
+                "metadata": {"synthetic_level": scenario["synthetic_level"]},
+            },
+            headers=headers,
+        )
+        assert part_resp.status_code == 201, part_resp.text
+        part_id = part_resp.json()["id"]
+
+        segmentation_resp = client.post(
+            f"/api/projects/{project_id}/parts/{part_id}/segmentation-runs",
+            json={"axis": "axial", "slice_index": scenario["synthetic_level"]},
+            headers=headers,
+        )
+        assert segmentation_resp.status_code == 202, segmentation_resp.text
+        segmentation = segmentation_resp.json()
+        assert segmentation["status"] == "completed"
+        assert segmentation["axis"] == "axial"
+        assert segmentation["overlay_id"] == f"segmentation-axial-{scenario['synthetic_level']}"
+
+        measurement_resp = client.post(
+            f"/api/projects/{project_id}/parts/{part_id}/measurement-runs",
+            json={"measurement_profile": "workbench-default", "include_overlays": [segmentation["overlay_id"]]},
+            headers=headers,
+        )
+        assert measurement_resp.status_code == 202, measurement_resp.text
+        measurement = measurement_resp.json()
+        assert measurement["status"] == "completed"
+        assert measurement["measurement_profile"] == "workbench-default"
+        assert measurement["units"] == "mm"
+        assert measurement["values"]["crack_length_mm"] > 0
+
+        listed_parts = client.get(f"/api/projects/{project_id}/parts", headers=headers)
+        assert listed_parts.status_code == 200, listed_parts.text
+        persisted_part = listed_parts.json()[0]
+        assert len(persisted_part["metadata"]["segmentation_runs"]) == 1
+        assert len(persisted_part["metadata"]["measurement_runs"]) == 1

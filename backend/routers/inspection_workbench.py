@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -149,3 +150,125 @@ async def update_inspection_part_review_state(
     if not updated:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
     return _serialize_inspection_part(updated)
+
+
+@router.post(
+    "/projects/{project_id}/parts/{part_id}/segmentation-runs",
+    response_model=schemas.InspectionSegmentationInvokeResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def invoke_part_segmentation(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    payload: schemas.InspectionSegmentationInvokeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+
+    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+
+    created_at = datetime.now(timezone.utc)
+    run_id = uuid.uuid4()
+    overlay_id = f"segmentation-{payload.axis}-{payload.slice_index}"
+    run_entry = {
+        "run_id": str(run_id),
+        "axis": payload.axis,
+        "slice_index": payload.slice_index,
+        "status": "completed",
+        "overlay_id": overlay_id,
+        "created_at": created_at.isoformat(),
+        "requested_by": current_user.email,
+    }
+
+    existing_runs = []
+    if isinstance(part.metadata_json, dict):
+        existing_runs = list(part.metadata_json.get("segmentation_runs") or [])
+    updated_part = await crud.update_inspection_part_metadata(
+        db=db,
+        project_id=project_id,
+        part_id=part_id,
+        metadata_patch={"segmentation_runs": [*existing_runs, run_entry]},
+        updated_by=current_user.email,
+    )
+    if not updated_part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+
+    return {
+        "run_id": run_id,
+        "part_id": part_id,
+        "axis": payload.axis,
+        "slice_index": payload.slice_index,
+        "status": "completed",
+        "overlay_id": overlay_id,
+        "created_at": created_at,
+    }
+
+
+@router.post(
+    "/projects/{project_id}/parts/{part_id}/measurement-runs",
+    response_model=schemas.InspectionMeasurementInvokeResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def invoke_ai_measurements(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    payload: schemas.InspectionMeasurementInvokeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+
+    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+
+    synthetic_level = 0
+    if isinstance(part.metadata_json, dict):
+        synthetic_level = int(part.metadata_json.get("synthetic_level") or 0)
+
+    complexity_multiplier = max(1, synthetic_level)
+    values = {
+        "crack_length_mm": round((12.4 + len(payload.include_overlays) * 1.7) * complexity_multiplier, 2),
+        "pore_area_mm2": round((2.1 + len(payload.measurement_profile) * 0.08) * complexity_multiplier, 2),
+        "edge_offset_mm": round((0.35 + (complexity_multiplier * 0.11)), 2),
+    }
+
+    created_at = datetime.now(timezone.utc)
+    run_id = uuid.uuid4()
+    result_entry = {
+        "run_id": str(run_id),
+        "measurement_profile": payload.measurement_profile,
+        "include_overlays": payload.include_overlays,
+        "status": "completed",
+        "units": "mm",
+        "values": values,
+        "created_at": created_at.isoformat(),
+        "requested_by": current_user.email,
+    }
+
+    existing_runs = []
+    if isinstance(part.metadata_json, dict):
+        existing_runs = list(part.metadata_json.get("measurement_runs") or [])
+
+    updated_part = await crud.update_inspection_part_metadata(
+        db=db,
+        project_id=project_id,
+        part_id=part_id,
+        metadata_patch={"measurement_runs": [*existing_runs, result_entry]},
+        updated_by=current_user.email,
+    )
+    if not updated_part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+
+    return {
+        "run_id": run_id,
+        "part_id": part_id,
+        "status": "completed",
+        "measurement_profile": payload.measurement_profile,
+        "units": "mm",
+        "values": values,
+        "created_at": created_at,
+    }
