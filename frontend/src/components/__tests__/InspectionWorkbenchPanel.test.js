@@ -27,6 +27,17 @@ const scenarioByUser = [
           view_images: { front: 'front-basic.png' },
           volume_shape: { axial: 20, coronal: 18, sagittal: 16 },
           overlay_layers: [{ id: 'voids', label: 'Voids', color: '#f59e0b' }],
+          annotations: [
+            {
+              id: 'seed-annotation-basic',
+              defect_class: 'seed-basic',
+              modality: 'visual',
+              disposition: 'open',
+              hidden: false,
+              updated_by: 'seed-user@example.com',
+              updated_at: '2026-03-28T11:00:00Z',
+            },
+          ],
         },
       },
     ],
@@ -84,6 +95,17 @@ const scenarioByUser = [
               values: { crack_length_mm: 10.2, pore_area_mm2: 1.8, edge_offset_mm: 0.41 },
             },
           ],
+          annotations: [
+            {
+              id: 'seed-annotation-mid',
+              defect_class: 'seed-mid',
+              modality: 'infrared',
+              disposition: 'needs_info',
+              hidden: false,
+              updated_by: 'seed-user@example.com',
+              updated_at: '2026-03-28T11:00:00Z',
+            },
+          ],
         },
       },
       {
@@ -136,6 +158,17 @@ const scenarioByUser = [
             { id: 'heatmap', label: 'Heatmap', color: '#8b5cf6' },
             { id: 'porosity', label: 'Porosity', color: '#f59e0b' },
           ],
+          annotations: [
+            {
+              id: 'seed-annotation-adv',
+              defect_class: 'seed-adv',
+              modality: 'uv',
+              disposition: 'open',
+              hidden: false,
+              updated_by: 'seed-user@example.com',
+              updated_at: '2026-03-28T11:00:00Z',
+            },
+          ],
         },
       },
       {
@@ -167,6 +200,10 @@ const scenarioByUser = [
 function mockWorkbenchFetch({ batches, parts, workspaceState = {} }) {
   let mutableParts = [...parts];
   const savedWorkspaceStates = [];
+  const annotationsByPart = Object.fromEntries(
+    mutableParts.map((part) => [part.id, Array.isArray(part.metadata?.annotations) ? [...part.metadata.annotations] : []]),
+  );
+  let annotationSeq = 0;
 
   global.fetch = jest.fn((url, options = {}) => {
     if (url.includes('/workspace-state') && (!options.method || options.method === 'GET')) {
@@ -180,6 +217,27 @@ function mockWorkbenchFetch({ batches, parts, workspaceState = {} }) {
       return Promise.resolve({ ok: true, json: async () => batches });
     }
     if (url.includes('/parts/') && options.method === 'PATCH') {
+      if (url.includes('/annotations/')) {
+        const segments = url.split('/');
+        const partId = segments[segments.length - 3];
+        const annotationId = segments[segments.length - 1];
+        const payload = JSON.parse(options.body || '{}');
+        const updatedItems = (annotationsByPart[partId] || []).map((annotation) =>
+          annotation.id === annotationId
+            ? {
+              ...annotation,
+              ...payload,
+              updated_at: '2026-03-28T12:30:00Z',
+              updated_by: 'qa-reviewer@example.com',
+            }
+            : annotation,
+        );
+        annotationsByPart[partId] = updatedItems;
+        return Promise.resolve({
+          ok: true,
+          json: async () => updatedItems.find((annotation) => annotation.id === annotationId),
+        });
+      }
       const partId = url.split('/').pop();
       const payload = JSON.parse(options.body || '{}');
       mutableParts = mutableParts.map((part) =>
@@ -216,6 +274,30 @@ function mockWorkbenchFetch({ batches, parts, workspaceState = {} }) {
             edge_offset_mm: 0.46,
           },
         }),
+      });
+    }
+    if (url.includes('/annotations') && options.method === 'POST') {
+      const segments = url.split('/');
+      const partId = segments[segments.length - 2];
+      annotationSeq += 1;
+      const payload = JSON.parse(options.body || '{}');
+      const created = {
+        id: `annotation-${annotationSeq}`,
+        ...payload,
+        created_at: '2026-03-28T12:00:00Z',
+        created_by: 'qa-reviewer@example.com',
+        updated_at: '2026-03-28T12:00:00Z',
+        updated_by: 'qa-reviewer@example.com',
+      };
+      annotationsByPart[partId] = [created, ...(annotationsByPart[partId] || [])];
+      return Promise.resolve({ ok: true, json: async () => created });
+    }
+    if (url.includes('/annotations') && (!options.method || options.method === 'GET')) {
+      const segments = url.split('?')[0].split('/');
+      const partId = segments[segments.length - 2];
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ part_id: partId, annotations: annotationsByPart[partId] || [] }),
       });
     }
     if (url.includes('/parts')) {
@@ -287,6 +369,24 @@ describe('InspectionWorkbenchPanel', () => {
       fireEvent.click(screen.getByRole('button', { name: /mark pass/i }));
       await waitFor(() => {
         expect(screen.getByText('Passed: 1')).toBeInTheDocument();
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('annotation-list')).toHaveTextContent('seed-user@example.com @ 2026-03-28 11:00:00');
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+      await waitFor(() => {
+        expect(screen.getByTestId('annotation-list')).toHaveTextContent('Hidden');
+        expect(screen.getByTestId('annotation-list')).toHaveTextContent('qa-reviewer@example.com @ 2026-03-28 12:30:00');
+      });
+      fireEvent.change(screen.getByPlaceholderText('defect class'), { target: { value: `${scenario.user}-crack` } });
+      fireEvent.change(screen.getByPlaceholderText('annotation modality'), { target: { value: 'visual' } });
+      fireEvent.click(screen.getByRole('button', { name: /add annotation/i }));
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          expect.stringContaining('/annotations'),
+          expect.objectContaining({ method: 'POST' }),
+        );
       });
 
       if (projectType === 'PT1') {
