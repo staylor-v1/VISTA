@@ -125,11 +125,16 @@ When preparing upstream PRs:
   - `summary` counters (`total_images`, `total_batches`, `total_parts`, `reviewed_parts`, `unreviewed_parts`).
 - Added API-level tests in the existing pytest export suite for three progressive simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) with synthetic data.
 
-### Milestone 2 — preserve original PR-07 scope + handoff (updated)
-- Keep PR-07 on the originally-started scope (`bulk ingest/export/report JSON + workspace persistence/governance`) to avoid churn mid-stream.
-- Start the UI exposure foundation in PR-08 and treat PR-07 outputs as prerequisites for cross-type workflow rollout.
-
-## Feature extension plan (new)
+### Milestone 2 — per-user server-backed workspace persistence
+- Added inspection workbench endpoints:
+  - `GET /api/projects/{project_id}/workspace-state`
+  - `PUT /api/projects/{project_id}/workspace-state`
+- Workspace state is persisted per-project and per-user via namespaced project metadata keys (`inspection_workbench.workspace_state:{user_email}`), avoiding schema migration while preserving access-control boundaries.
+- Added frontend workbench rehydration + debounced persistence for shared controls (`batch`, `defect_filter`, `sort`, selected part) and PT2/PT3 MPR state (`slice_position`, `viewport_transform`, `contrast_percent`, overlays, cursor probe).
+- Added automated tests in existing frameworks with three progressive synthetic users (`basic`, `intermediate`, `advanced`) for each project type (`PT1`, `PT2`, `PT3`):
+  - Pytest API coverage for persistence/readback and per-user isolation.
+  - React Testing Library assertions for persistence requests during sequential workflows.
+  - Playwright assertions that persisted state API writes occur during end-to-end project data interactions.
 
 ### PR-08 — UI exposure foundation (project type selection + visibility)
 - Ensure every PT feature addition is discoverable in the product UI when shipped (no backend-only PT capability).
