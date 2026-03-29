@@ -323,3 +323,88 @@ def test_segmentation_and_measurement_invocation_supports_progressive_users(clie
         persisted_part = listed_parts.json()[0]
         assert len(persisted_part["metadata"]["segmentation_runs"]) == 1
         assert len(persisted_part["metadata"]["measurement_runs"]) == 1
+
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_workspace_state_persistence_supports_progressive_users(client, project_type):
+    scenarios = [
+        {
+            "email": f"workspace-basic-{project_type.lower()}@example.com",
+            "group": f"{project_type.lower()}-workspace-basic",
+            "state": {
+                "selected_batch_id": "batch-basic",
+                "defect_filter": "all",
+                "sort_mode": "defect_desc",
+            },
+        },
+        {
+            "email": f"workspace-intermediate-{project_type.lower()}@example.com",
+            "group": f"{project_type.lower()}-workspace-intermediate",
+            "state": {
+                "selected_batch_id": "batch-mid-a",
+                "defect_filter": "has_defects",
+                "sort_mode": "serial_asc",
+                "selected_part_id": "part-mid-1",
+            },
+        },
+        {
+            "email": f"workspace-advanced-{project_type.lower()}@example.com",
+            "group": f"{project_type.lower()}-workspace-advanced",
+            "state": {
+                "selected_batch_id": "batch-adv-a",
+                "defect_filter": "critical_only",
+                "sort_mode": "defect_desc",
+                "selected_part_id": "part-adv-1",
+                "mpr": {
+                    "slice_position": {"axial": 9, "coronal": 7, "sagittal": 5},
+                    "viewport_transform": {"zoom": 1.3, "panX": 12, "panY": -8},
+                    "contrast_percent": 112,
+                    "active_overlay_ids": ["segmentation", "porosity"],
+                    "cursor_probe": {"x": 67, "y": 42},
+                },
+            },
+        },
+    ]
+
+    for scenario in scenarios:
+        headers = {
+            "X-User-Id": scenario["email"],
+            "X-User-Groups": f"[\"{scenario['group']}\"]",
+        }
+        project_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": f"{project_type} workspace {scenario['group']}",
+                "description": "workspace persistence workflow",
+                "meta_group_id": scenario["group"],
+                "project_type": project_type,
+            },
+            headers=headers,
+        )
+        assert project_resp.status_code == 201, project_resp.text
+        project_id = project_resp.json()["id"]
+
+        initial_resp = client.get(f"/api/projects/{project_id}/workspace-state", headers=headers)
+        assert initial_resp.status_code == 200, initial_resp.text
+        assert initial_resp.json()["state"] == {}
+
+        save_resp = client.put(
+            f"/api/projects/{project_id}/workspace-state",
+            json={"state": scenario["state"]},
+            headers=headers,
+        )
+        assert save_resp.status_code == 200, save_resp.text
+        assert save_resp.json()["state"] == scenario["state"]
+
+        reload_resp = client.get(f"/api/projects/{project_id}/workspace-state", headers=headers)
+        assert reload_resp.status_code == 200, reload_resp.text
+        assert reload_resp.json()["state"] == scenario["state"]
+
+        update_payload = {**scenario["state"], "sort_mode": "serial_asc"}
+        overwrite_resp = client.put(
+            f"/api/projects/{project_id}/workspace-state",
+            json={"state": update_payload},
+            headers=headers,
+        )
+        assert overwrite_resp.status_code == 200, overwrite_resp.text
+        assert overwrite_resp.json()["state"]["sort_mode"] == "serial_asc"

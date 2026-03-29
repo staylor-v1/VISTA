@@ -2,6 +2,11 @@ const projectId = 'proj-pt1';
 
 const scenarioByUser = {
   basic: {
+    workspaceState: {
+      selected_batch_id: 'batch-basic',
+      defect_filter: 'all',
+      sort_mode: 'defect_desc',
+    },
     batches: [{ id: 'batch-basic', name: 'Batch Basic' }],
     parts: [
       {
@@ -20,6 +25,19 @@ const scenarioByUser = {
     ],
   },
   intermediate: {
+    workspaceState: {
+      selected_batch_id: 'batch-mid-a',
+      defect_filter: 'critical_only',
+      sort_mode: 'serial_asc',
+      selected_part_id: 'part-mid-001',
+      mpr: {
+        slice_position: { axial: 12, coronal: 9, sagittal: 7 },
+        viewport_transform: { zoom: 1.25, panX: 15, panY: -10 },
+        contrast_percent: 114,
+        active_overlay_ids: ['segmentation'],
+        cursor_probe: { x: 61, y: 46 },
+      },
+    },
     batches: [
       { id: 'batch-mid-a', name: 'Batch Mid A' },
       { id: 'batch-mid-b', name: 'Batch Mid B' },
@@ -74,6 +92,19 @@ const scenarioByUser = {
     ],
   },
   advanced: {
+    workspaceState: {
+      selected_batch_id: 'batch-adv-a',
+      defect_filter: 'has_defects',
+      sort_mode: 'defect_desc',
+      selected_part_id: 'part-adv-001',
+      mpr: {
+        slice_position: { axial: 20, coronal: 16, sagittal: 10 },
+        viewport_transform: { zoom: 1.3, panX: 20, panY: -14 },
+        contrast_percent: 109,
+        active_overlay_ids: ['segmentation', 'porosity'],
+        cursor_probe: { x: 58, y: 52 },
+      },
+    },
     batches: [
       { id: 'batch-adv-a', name: 'Batch Adv A' },
       { id: 'batch-adv-b', name: 'Batch Adv B' },
@@ -145,8 +176,9 @@ function createMockData(scenario = 'advanced') {
 }
 
 async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'advanced' } = {}) {
-  const { batches, parts } = createMockData(scenario);
+  const { batches, parts, workspaceState } = createMockData(scenario);
   let mutableParts = [...parts];
+  const savedWorkspaceStates = [];
 
   await page.route('**/api/**', async (route) => {
     const url = route.request().url();
@@ -188,6 +220,24 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
     }
     if (url.endsWith(`/api/projects/${projectId}/batches`)) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(batches) });
+      return;
+    }
+    if (url.endsWith(`/api/projects/${projectId}/workspace-state`) && method === 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ project_id: projectId, user_email: 'e2e@example.com', state: workspaceState || {} }),
+      });
+      return;
+    }
+    if (url.endsWith(`/api/projects/${projectId}/workspace-state`) && method === 'PUT') {
+      const payload = route.request().postDataJSON() || {};
+      savedWorkspaceStates.push(payload);
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ project_id: projectId, user_email: 'e2e@example.com', state: payload.state || {} }),
+      });
       return;
     }
     if (url.includes(`/api/projects/${projectId}/parts/`) && method === 'PATCH') {
@@ -244,6 +294,7 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
   return {
     projectId,
     getParts: () => mutableParts,
+    getWorkspaceStates: () => savedWorkspaceStates,
   };
 }
 
