@@ -21,7 +21,7 @@ This file is the execution artifact for the orchestrated migration so the combin
 - [x] PR-03 implemented in current working branch.
 - [x] PR-04 implemented in current working branch.
 - [x] PR-05 implemented in current working branch.
-- [ ] PR-06 pending.
+- [~] PR-06 in progress (Milestone 1 implemented).
 - [ ] PR-07 pending.
 
 ## PR-02 scope record (implemented)
@@ -83,3 +83,19 @@ When preparing upstream PRs:
 ### Milestone 2 — synthetic workflow coverage and artifact continuity
 - Expanded existing React Testing Library coverage for three simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) with progressive overlay complexity.
 - Expanded Playwright fixture metadata and E2E assertions to validate PR-05 controls in PT2/PT3 while preserving PT1 behavior.
+
+## PR-06 scope record (in progress)
+
+### Milestone 1 — invoke segmentation and AI measurements in-context
+- Added inspection workbench API endpoints:
+  - `POST /api/projects/{project_id}/parts/{part_id}/segmentation-runs`
+  - `POST /api/projects/{project_id}/parts/{part_id}/measurement-runs`
+- Added backend persistence for run outputs in part metadata (`segmentation_runs`, `measurement_runs`) without schema migration.
+- Added PT2/PT3 workbench controls:
+  - **Run Segmentation** button using current slice context.
+  - **Run AI Measurements** button using active overlay context.
+  - In-context result summaries rendered directly inside the MPR controls panel.
+- Added automated tests in existing frameworks:
+  - Pytest API tests covering three simulated users (`basic`, `intermediate`, `advanced`) for each project type (`PT1`, `PT2`, `PT3`) with progressive synthetic complexity.
+  - React Testing Library assertions for segmentation and measurement invocation/results in PT2/PT3 flows.
+  - Playwright E2E assertions for invocation controls and in-context result rendering.
