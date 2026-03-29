@@ -74,7 +74,7 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
           await expect(page.getByTestId('segmentation-result')).toContainText('Segmentation completed');
           await page.getByTestId('run-measurements').click();
           await expect(page.getByTestId('measurement-result')).toContainText('Measurements completed');
-          await page.getByRole('button', { name: 'Zoom +' }).click();
+          await page.getByLabel('3D orientation pane').getByRole('button', { name: 'Zoom +' }).click();
           await expect(page.getByText(/Zoom [0-9.]+x/).first()).toBeVisible();
         }
 
@@ -93,7 +93,7 @@ test.describe('Inspection Workbench screenshot artifact', () => {
     await expect(page.getByTestId('mpr-shell')).toBeVisible();
     await page.getByTestId('run-segmentation').click();
     await expect(page.getByTestId('segmentation-result')).toContainText('Segmentation completed');
-    await page.getByRole('button', { name: 'Zoom +' }).click();
+    await page.getByLabel('3D orientation pane').getByRole('button', { name: 'Zoom +' }).click();
 
     const panel = page.locator('section[aria-label="Inspection Workbench"]');
     await expect(panel).toBeVisible();
