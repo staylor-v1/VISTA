@@ -17,6 +17,10 @@ function createMockData() {
         defects: [{ severity: 'minor' }, { severity: 'critical' }],
         configured_views: ['front', 'back', 'left', 'right'],
         view_images: { front: 'housing-front.png', right: 'housing-right.png' },
+        overlay_layers: [
+          { id: 'segmentation', label: 'Segmentation', color: '#ef4444' },
+          { id: 'porosity', label: 'Porosity', color: '#8b5cf6' },
+        ],
       },
     },
     {
@@ -28,6 +32,7 @@ function createMockData() {
       metadata: {
         defects: [],
         configured_views: ['front', 'back', 'top', 'bottom'],
+        overlay_layers: [{ id: 'voids', label: 'Voids', color: '#f59e0b' }],
       },
     },
     {
