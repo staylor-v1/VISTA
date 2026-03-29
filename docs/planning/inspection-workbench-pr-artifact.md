@@ -13,6 +13,11 @@ This file is the execution artifact for the orchestrated migration so the combin
 5. **PR-05 — overlay layering + tooltip values + contrast controls**
 6. **PR-06 — segmentation/AI measurement invocation + in-context results**
 7. **PR-07 — bulk ingest/export/report JSON + workspace persistence/governance**
+8. **PR-08 — UI exposure foundation (project type selection + visibility)**
+9. **PR-09 — inspector modalities, overlays, and measurements**
+10. **PR-10 — annotations + audit trail metadata**
+11. **PR-11 — project configuration surface (modalities/views/defect/process/display/copy-config)**
+12. **PR-12 — hardening: discrepancy detection, regression/e2e matrix, governance closeout**
 
 ## Execution Log
 
@@ -22,7 +27,12 @@ This file is the execution artifact for the orchestrated migration so the combin
 - [x] PR-04 implemented in current working branch.
 - [x] PR-05 implemented in current working branch.
 - [x] PR-06 implemented in current working branch.
-- [~] PR-07 in progress.
+- [~] PR-07 in progress (kept on original scope because implementation is already underway).
+- [ ] PR-08 not started.
+- [ ] PR-09 not started.
+- [ ] PR-10 not started.
+- [ ] PR-11 not started.
+- [ ] PR-12 not started.
 
 ## PR-02 scope record (implemented)
 
@@ -114,3 +124,47 @@ When preparing upstream PRs:
   - `project` identity and type metadata (`id`, `name`, `project_type`, `meta_group_id`),
   - `summary` counters (`total_images`, `total_batches`, `total_parts`, `reviewed_parts`, `unreviewed_parts`).
 - Added API-level tests in the existing pytest export suite for three progressive simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) with synthetic data.
+
+### Milestone 2 — preserve original PR-07 scope + handoff (updated)
+- Keep PR-07 on the originally-started scope (`bulk ingest/export/report JSON + workspace persistence/governance`) to avoid churn mid-stream.
+- Start the UI exposure foundation in PR-08 and treat PR-07 outputs as prerequisites for cross-type workflow rollout.
+
+## Feature extension plan (new)
+
+### PR-08 — UI exposure foundation (project type selection + visibility)
+- Ensure every PT feature addition is discoverable in the product UI when shipped (no backend-only PT capability).
+- Add project-type selector (`PT1`/`PT2`/`PT3`) to project creation UI, persisted through existing create-project API contract.
+- Add project-type visibility in project list/detail surfaces so users can confirm active mode before entering workflows.
+- Acceptance: create-project flow tests verify type selection and persisted type rendering; UI smoke coverage for PT1/PT2/PT3 entry points.
+
+### PR-09 — inspector modalities, overlays, and measurements
+- Add inspector surface for per-view modality toggles and thumbnail quick-switching.
+- Add zoom/pan interactions with synchronized controls and image on/off controls.
+- Add measurement capture/display flows for part inspection workflows.
+- Acceptance: component + E2E tests pass for PT1/PT2/PT3 with common-control assertions.
+
+### PR-10 — annotations + audit trail metadata
+- Expand annotations to include defect class, modality, comment, disposition, measurements, bbox, hide/show.
+- Preserve and display annotation timestamp + username in hover/details.
+- Add review-status affordances in inspector/summary workflows.
+- Acceptance: API + UI tests verify create/edit/hide/show + audit metadata rendering across project types.
+
+### PR-11 — project configuration surface
+- Add Project Configuration tab sections for:
+  - image modalities (add/manage + example upload + calibration),
+  - part views (manual/auto add + required modalities),
+  - defect types (name/color/definition),
+  - process settings checkboxes,
+  - display settings/color maps,
+  - copy configuration from existing project.
+- Ensure project configuration options are available across project types unless explicitly constrained by product requirements.
+- Acceptance: form/API round-trip tests plus migration-safe defaults for existing projects.
+
+### PR-12 — hardening + discrepancy workflows + governance closeout
+- Add delete-project flow with restricted access + explicit warning confirmation UX (if not completed in PR-07).
+- Finalize server-backed per-user workspace persistence for panel open/resize/orientation and inspector context.
+- Finalize static hotkey listing UI and configurable hotkeys storage/validation across project types.
+- Add high-volume ingest API ergonomics: counters, discrepancy detection, part-organization validation.
+- Add export bundle coverage for images/metadata/overlays/annotations and PDF report options.
+- Close gaps with cross-type red-team scenarios (PT1/PT2/PT3) and stabilize with blue-team fixes.
+- Acceptance: end-to-end matrix with adversarial cases, authorization checks, performance sanity checks, and release checklist sign-off.
