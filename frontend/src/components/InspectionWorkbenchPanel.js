@@ -46,6 +46,12 @@ function getMprDimensions(part) {
   return dimensions;
 }
 
+function getLatestRunFromMetadata(part, key) {
+  const runs = part?.metadata?.[key];
+  if (!Array.isArray(runs) || runs.length === 0) return null;
+  return runs[runs.length - 1];
+}
+
 function getOverlayLayers(part) {
   const overlays = part?.metadata?.overlay_layers;
   if (Array.isArray(overlays) && overlays.length > 0) {
@@ -177,8 +183,8 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
       .map((overlay) => overlay.id);
     setActiveOverlayIds(defaultActive);
     setCursorProbe({ x: 50, y: 50 });
-    setSegmentationRun(null);
-    setMeasurementRun(null);
+    setSegmentationRun(getLatestRunFromMetadata(selectedPart, 'segmentation_runs'));
+    setMeasurementRun(getLatestRunFromMetadata(selectedPart, 'measurement_runs'));
     setMlActionLoading({ segmentation: false, measurement: false });
   }, [selectedPart, projectType, mprDimensions]);
 
