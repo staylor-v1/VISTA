@@ -250,6 +250,8 @@ describe('InspectionWorkbenchPanel', () => {
       fireEvent.change(screen.getByPlaceholderText('value'), { target: { value: '12.6' } });
       fireEvent.click(screen.getByRole('button', { name: /save measurement/i }));
       expect(screen.getByTestId('manual-measurement-list')).toHaveTextContent(`${scenario.user}-length: 12.6mm`);
+      fireEvent.click(screen.getByRole('button', { name: new RegExp(`Delete measurement ${scenario.user}-length`, 'i') }));
+      expect(screen.getByTestId('manual-measurement-list')).toHaveTextContent('No measurements captured.');
 
       fireEvent.click(screen.getByTestId('toggle-image-visibility'));
       if (projectType === 'PT1') {
