@@ -15,6 +15,8 @@ import utils.crud as crud
 
 router = APIRouter(tags=["Inspection Workbench"])
 
+WORKSPACE_STATE_KEY_PREFIX = "inspection_workbench.workspace_state"
+
 
 async def _get_project_with_access_check(
     project_id: uuid.UUID,
@@ -45,6 +47,10 @@ def _serialize_inspection_part(part) -> dict:
         "created_at": part.created_at,
         "updated_at": part.updated_at,
     }
+
+
+def _workspace_state_metadata_key(user_email: str) -> str:
+    return f"{WORKSPACE_STATE_KEY_PREFIX}:{user_email.strip().lower()}"
 
 
 @router.post(
@@ -271,4 +277,60 @@ async def invoke_ai_measurements(
         "units": "mm",
         "values": values,
         "created_at": created_at,
+    }
+
+
+@router.get(
+    "/projects/{project_id}/workspace-state",
+    response_model=schemas.InspectionWorkspaceStateResponse,
+)
+async def get_inspection_workspace_state(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    metadata_key = _workspace_state_metadata_key(current_user.email)
+    metadata = await crud.get_project_metadata_by_key(
+        db=db,
+        project_id=project_id,
+        key=metadata_key,
+    )
+    raw_state = metadata.value if metadata else {}
+    safe_state = raw_state if isinstance(raw_state, dict) else {}
+    return {
+        "project_id": project_id,
+        "user_email": current_user.email,
+        "state": safe_state,
+        "updated_at": metadata.updated_at if metadata else None,
+    }
+
+
+@router.put(
+    "/projects/{project_id}/workspace-state",
+    response_model=schemas.InspectionWorkspaceStateResponse,
+)
+async def update_inspection_workspace_state(
+    project_id: uuid.UUID,
+    payload: schemas.InspectionWorkspaceStatePayload,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    metadata_key = _workspace_state_metadata_key(current_user.email)
+    updated = await crud.create_or_update_project_metadata(
+        db=db,
+        metadata=schemas.ProjectMetadataCreate(
+            project_id=project_id,
+            key=metadata_key,
+            value=payload.state,
+        ),
+        created_by=current_user.email,
+    )
+    safe_state = updated.value if isinstance(updated.value, dict) else {}
+    return {
+        "project_id": project_id,
+        "user_email": current_user.email,
+        "state": safe_state,
+        "updated_at": updated.updated_at,
     }

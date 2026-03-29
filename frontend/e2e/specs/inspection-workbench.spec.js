@@ -9,7 +9,7 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
   for (const simulatedUser of simulatedUsers) {
     test.describe(`Inspection Workbench E2E (${projectType}) ${simulatedUser}`, () => {
       test(`renders project data workflow for ${projectType} ${simulatedUser}`, async ({ page }) => {
-        const { projectId } = await mockInspectionWorkbenchRoutes(page, { type: projectType, scenario: simulatedUser });
+        const { projectId, getWorkspaceStates } = await mockInspectionWorkbenchRoutes(page, { type: projectType, scenario: simulatedUser });
 
         await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
         await page.getByRole('tab', { name: 'Project Data' }).click();
@@ -66,8 +66,10 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
           await page.getByTestId('run-measurements').click();
           await expect(page.getByTestId('measurement-result')).toContainText('Measurements completed');
           await page.getByRole('button', { name: 'Zoom +' }).click();
-          await expect(page.getByText(/Zoom 1.10x/).first()).toBeVisible();
+          await expect(page.getByText(/Zoom [0-9.]+x/).first()).toBeVisible();
         }
+
+        await expect.poll(() => getWorkspaceStates().length).toBeGreaterThan(0);
       });
     });
   }

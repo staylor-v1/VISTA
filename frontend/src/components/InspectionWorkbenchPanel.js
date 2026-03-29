@@ -66,6 +66,12 @@ function getOverlayLayers(part) {
   return DEFAULT_OVERLAY_LAYERS;
 }
 
+function clampRange(value, min, max, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(max, Math.max(min, numeric));
+}
+
 function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [batches, setBatches] = useState([]);
   const [parts, setParts] = useState([]);
@@ -84,6 +90,8 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [segmentationRun, setSegmentationRun] = useState(null);
   const [measurementRun, setMeasurementRun] = useState(null);
   const [mlActionLoading, setMlActionLoading] = useState({ segmentation: false, measurement: false });
+  const [workspaceStateLoaded, setWorkspaceStateLoaded] = useState(false);
+  const [workspaceHydration, setWorkspaceHydration] = useState({});
 
   useEffect(() => {
     const loadWorkbenchData = async () => {
@@ -91,9 +99,10 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
         setLoading(true);
         setError(null);
 
-        const [batchResp, partResp] = await Promise.all([
+        const [batchResp, partResp, workspaceResp] = await Promise.all([
           fetch(`/api/projects/${projectId}/batches`),
           fetch(`/api/projects/${projectId}/parts`),
+          fetch(`/api/projects/${projectId}/workspace-state`),
         ]);
         if (!batchResp.ok) {
           throw new Error(`Failed to load batches (${batchResp.status})`);
@@ -102,17 +111,34 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
           throw new Error(`Failed to load parts (${partResp.status})`);
         }
 
-        const [batchData, partData] = await Promise.all([batchResp.json(), partResp.json()]);
+        const [batchData, partData, workspaceData] = await Promise.all([
+          batchResp.json(),
+          partResp.json(),
+          workspaceResp.ok ? workspaceResp.json() : Promise.resolve({ state: {} }),
+        ]);
         const safeBatches = Array.isArray(batchData) ? batchData : [];
         const safeParts = Array.isArray(partData) ? partData : [];
+        const savedState = workspaceData?.state && typeof workspaceData.state === 'object' ? workspaceData.state : {};
+        setWorkspaceHydration(savedState);
         setBatches(safeBatches);
         setParts(safeParts);
-        if (safeParts.length > 0) {
+        const savedBatchId = String(savedState.selected_batch_id || '');
+        setSelectedBatchId(savedBatchId);
+        const savedDefectFilter = String(savedState.defect_filter || 'all');
+        setDefectFilter(['all', 'has_defects', 'critical_only'].includes(savedDefectFilter) ? savedDefectFilter : 'all');
+        const savedSortMode = String(savedState.sort_mode || 'defect_desc');
+        setSortMode(['defect_desc', 'serial_asc'].includes(savedSortMode) ? savedSortMode : 'defect_desc');
+        const savedPartId = String(savedState.selected_part_id || '');
+        const selectedFromSaved = safeParts.find((part) => part.id === savedPartId);
+        if (selectedFromSaved) {
+          setSelectedPartId(selectedFromSaved.id);
+        } else if (safeParts.length > 0) {
           setSelectedPartId(safeParts[0].id);
         }
       } catch (err) {
         setError(err.message || 'Failed to load inspection workbench data');
       } finally {
+        setWorkspaceStateLoaded(true);
         setLoading(false);
       }
     };
@@ -171,22 +197,80 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
 
   useEffect(() => {
     if (!selectedPart || !['PT2', 'PT3'].includes(projectType)) return;
+    const savedMpr = workspaceHydration?.mpr || {};
+    const savedSlice = savedMpr?.slice_position || {};
+    const savedViewport = savedMpr?.viewport_transform || {};
+    const savedProbe = savedMpr?.cursor_probe || {};
     setSlicePosition({
-      axial: Math.floor((mprDimensions.axial - 1) / 2),
-      coronal: Math.floor((mprDimensions.coronal - 1) / 2),
-      sagittal: Math.floor((mprDimensions.sagittal - 1) / 2),
+      axial: clampRange(savedSlice.axial, 0, Math.max(0, mprDimensions.axial - 1), Math.floor((mprDimensions.axial - 1) / 2)),
+      coronal: clampRange(savedSlice.coronal, 0, Math.max(0, mprDimensions.coronal - 1), Math.floor((mprDimensions.coronal - 1) / 2)),
+      sagittal: clampRange(savedSlice.sagittal, 0, Math.max(0, mprDimensions.sagittal - 1), Math.floor((mprDimensions.sagittal - 1) / 2)),
     });
-    setViewportTransform({ zoom: 1, panX: 0, panY: 0 });
-    setContrastPercent(100);
+    setViewportTransform({
+      zoom: clampRange(savedViewport.zoom, 0.5, 4, 1),
+      panX: clampRange(savedViewport.panX, -200, 200, 0),
+      panY: clampRange(savedViewport.panY, -200, 200, 0),
+    });
+    setContrastPercent(clampRange(savedMpr.contrast_percent, 50, 150, 100));
     const defaultActive = getOverlayLayers(selectedPart)
       .slice(0, 2)
       .map((overlay) => overlay.id);
-    setActiveOverlayIds(defaultActive);
-    setCursorProbe({ x: 50, y: 50 });
+    const savedOverlayIds = Array.isArray(savedMpr.active_overlay_ids) ? savedMpr.active_overlay_ids.map((entry) => String(entry)) : [];
+    setActiveOverlayIds(savedOverlayIds.length > 0 ? savedOverlayIds : defaultActive);
+    setCursorProbe({
+      x: clampRange(savedProbe.x, 0, 100, 50),
+      y: clampRange(savedProbe.y, 0, 100, 50),
+    });
     setSegmentationRun(getLatestRunFromMetadata(selectedPart, 'segmentation_runs'));
     setMeasurementRun(getLatestRunFromMetadata(selectedPart, 'measurement_runs'));
     setMlActionLoading({ segmentation: false, measurement: false });
-  }, [selectedPart, projectType, mprDimensions]);
+  }, [selectedPart, projectType, mprDimensions, workspaceHydration]);
+
+  useEffect(() => {
+    if (loading || !workspaceStateLoaded) return;
+    const saveHandle = setTimeout(async () => {
+      try {
+        await fetch(`/api/projects/${projectId}/workspace-state`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            state: {
+              selected_batch_id: selectedBatchId || '',
+              defect_filter: defectFilter,
+              sort_mode: sortMode,
+              selected_part_id: selectedPart?.id || '',
+              mpr: ['PT2', 'PT3'].includes(projectType)
+                ? {
+                  slice_position: slicePosition,
+                  viewport_transform: viewportTransform,
+                  contrast_percent: contrastPercent,
+                  active_overlay_ids: activeOverlayIds,
+                  cursor_probe: cursorProbe,
+                }
+                : undefined,
+            },
+          }),
+        });
+      } catch (_err) {
+        // Workspace persistence is non-blocking for main workbench interactions.
+      }
+    }, 350);
+    return () => clearTimeout(saveHandle);
+  }, [
+    activeOverlayIds,
+    contrastPercent,
+    cursorProbe,
+    defectFilter,
+    loading,
+    projectId,
+    projectType,
+    selectedBatchId,
+    selectedPart,
+    slicePosition,
+    sortMode,
+    viewportTransform,
+    workspaceStateLoaded,
+  ]);
 
   const reviewSummary = useMemo(() => {
     return parts.reduce(
