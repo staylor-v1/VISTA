@@ -229,6 +229,7 @@ function Project() {
                 </button>
               </span>
               <span className="project-group">Group: {project?.meta_group_id}</span>
+              <span className="project-group">Type: {project?.project_type || 'PT1'}</span>
               {currentUser && <span className="project-user">{currentUser.email}</span>}
             </div>
             <div className="project-actions" style={{ marginTop: '12px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
