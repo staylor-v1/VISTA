@@ -21,7 +21,7 @@ This file is the execution artifact for the orchestrated migration so the combin
 - [x] PR-03 implemented in current working branch.
 - [x] PR-04 implemented in current working branch.
 - [x] PR-05 implemented in current working branch.
-- [~] PR-06 in progress (Milestone 1 implemented).
+- [~] PR-06 in progress (Milestone 1 implemented, Milestone 2 started).
 - [ ] PR-07 pending.
 
 ## PR-02 scope record (implemented)
@@ -99,3 +99,8 @@ When preparing upstream PRs:
   - Pytest API tests covering three simulated users (`basic`, `intermediate`, `advanced`) for each project type (`PT1`, `PT2`, `PT3`) with progressive synthetic complexity.
   - React Testing Library assertions for segmentation and measurement invocation/results in PT2/PT3 flows.
   - Playwright E2E assertions for invocation controls and in-context result rendering.
+
+
+### Milestone 2 — persist and rehydrate ML invocation context in workbench
+- Added PT2/PT3 workbench state rehydration from part metadata so the latest `segmentation_runs` and `measurement_runs` display immediately after part selection/reload.
+- Extended existing React Testing Library suite to verify progressive synthetic users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) with persisted run summaries visible for non-basic scenarios before new invocations.
