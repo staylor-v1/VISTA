@@ -21,6 +21,7 @@ const CreateProjectModal = memo(function CreateProjectModal({ onClose, onSubmit,
   const nameInputRef = useRef(null);
   const descriptionInputRef = useRef(null);
   const groupIdInputRef = useRef(null);
+  const projectTypeInputRef = useRef(null);
   
   // Track focus state for debugging
   const [focusState, setFocusState] = useState('none');
@@ -34,7 +35,8 @@ const CreateProjectModal = memo(function CreateProjectModal({ onClose, onSubmit,
     const newProject = {
       name: nameInputRef.current.value,
       description: descriptionInputRef.current.value,
-      meta_group_id: groupIdInputRef.current.value
+      meta_group_id: groupIdInputRef.current.value,
+      project_type: projectTypeInputRef.current.value,
     };
     
     onSubmit(newProject);
@@ -125,6 +127,24 @@ const CreateProjectModal = memo(function CreateProjectModal({ onClose, onSubmit,
                 Enter the ID of a group you are a member of
               </small>
             </div>
+            <div className="form-group">
+              <label htmlFor="project_type">Project Type *</label>
+              <select
+                id="project_type"
+                ref={projectTypeInputRef}
+                defaultValue="PT1"
+                onFocus={() => handleFocus('projectType')}
+                onBlur={() => handleBlur('projectType')}
+                className="form-control"
+              >
+                <option value="PT1">PT1 — External Multi-View</option>
+                <option value="PT2">PT2 — 3D Slice Review</option>
+                <option value="PT3">PT3 — Advanced 3D Slice Review</option>
+              </select>
+              <small className="form-text">
+                Select the project workflow mode used by inspection workbench tools
+              </small>
+            </div>
           </form>
         </div>
         <div className="modal-footer">
@@ -159,7 +179,7 @@ const ProjectItem = memo(function ProjectItem({ project }) {
         <div className="project-card-header">
           <h3 className="project-card-title">{project.name}</h3>
           <div className="project-card-meta">
-            ID: {project.id} • Group: {project.meta_group_id}
+            ID: {project.id} • Group: {project.meta_group_id} • Type: {project.project_type || 'PT1'}
           </div>
         </div>
         <div className="project-card-body">
