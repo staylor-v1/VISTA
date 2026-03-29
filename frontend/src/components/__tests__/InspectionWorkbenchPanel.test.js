@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import InspectionWorkbenchPanel from '../InspectionWorkbenchPanel';
 
 const projectTypes = ['PT1', 'PT2', 'PT3'];
@@ -23,6 +23,7 @@ const scenarioByUser = [
         metadata: {
           defect_count: 0,
           configured_views: ['front', 'back'],
+          modalities: ['visual'],
           view_images: { front: 'front-basic.png' },
           volume_shape: { axial: 20, coronal: 18, sagittal: 16 },
           overlay_layers: [{ id: 'voids', label: 'Voids', color: '#f59e0b' }],
@@ -59,6 +60,7 @@ const scenarioByUser = [
         metadata: {
           defects: [{ severity: 'minor' }, { severity: 'critical' }],
           configured_views: ['left', 'right', 'top'],
+          modalities: ['visual', 'infrared'],
           view_images: { left: 'left-mid.png' },
           volume_shape: { axial: 32, coronal: 28, sagittal: 24 },
           overlay_layers: [
@@ -126,6 +128,7 @@ const scenarioByUser = [
         review_state: 'reject_pending',
         metadata: {
           defects: [{ severity: 'critical' }, { severity: 'critical' }, { severity: 'major' }],
+          modalities: ['visual', 'infrared', 'uv'],
           view_images: { front: 'adv-front.png', top: 'adv-top.png' },
           volume_shape: { axial: 128, coronal: 96, sagittal: 80 },
           overlay_layers: [
@@ -241,6 +244,17 @@ describe('InspectionWorkbenchPanel', () => {
       });
       expect(screen.getByText(`Parts: ${scenario.parts.length}`)).toBeInTheDocument();
       expect(screen.getByText(new RegExp(projectType))).toBeInTheDocument();
+      expect(screen.getByTestId('inspector-common-controls')).toBeInTheDocument();
+
+      fireEvent.change(screen.getByPlaceholderText('label'), { target: { value: `${scenario.user}-length` } });
+      fireEvent.change(screen.getByPlaceholderText('value'), { target: { value: '12.6' } });
+      fireEvent.click(screen.getByRole('button', { name: /save measurement/i }));
+      expect(screen.getByTestId('manual-measurement-list')).toHaveTextContent(`${scenario.user}-length: 12.6mm`);
+
+      fireEvent.click(screen.getByTestId('toggle-image-visibility'));
+      if (projectType === 'PT1') {
+        expect(screen.getAllByText('Image hidden').length).toBeGreaterThan(0);
+      }
 
       // Defect-centric filter
       fireEvent.change(screen.getByLabelText('Defect filter'), { target: { value: 'has_defects' } });
@@ -267,7 +281,10 @@ describe('InspectionWorkbenchPanel', () => {
 
       if (projectType === 'PT1') {
         // PT1 keeps the configured external-view board.
-        expect(screen.getAllByText(/No image mapped|Mapped:/).length).toBeGreaterThan(0);
+        expect(screen.getAllByText(/Image hidden|No image mapped|Mapped:/).length).toBeGreaterThan(0);
+        const quickSwitch = screen.getByText('View quick switch').closest('.view-switcher');
+        const quickSwitchButtons = within(quickSwitch).getAllByRole('button');
+        fireEvent.click(quickSwitchButtons[0]);
       } else {
         // PT2/PT3 render MPR shell with synchronized locator state.
         expect(screen.getByTestId('mpr-shell')).toBeInTheDocument();

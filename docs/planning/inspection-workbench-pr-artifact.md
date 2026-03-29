@@ -29,7 +29,7 @@ This file is the execution artifact for the orchestrated migration so the combin
 - [x] PR-06 implemented in current working branch.
 - [~] PR-07 in progress (kept on original scope because implementation is already underway).
 - [x] PR-08 implemented in current working branch.
-- [ ] PR-09 not started.
+- [~] PR-09 in progress (milestone 1 landed: inspector modalities/quick-switch/measurement capture controls).
 - [ ] PR-10 not started.
 - [ ] PR-11 not started.
 - [ ] PR-12 not started.
@@ -153,6 +153,15 @@ When preparing upstream PRs:
 - Add zoom/pan interactions with synchronized controls and image on/off controls.
 - Add measurement capture/display flows for part inspection workflows.
 - Acceptance: component + E2E tests pass for PT1/PT2/PT3 with common-control assertions.
+
+#### PR-09 milestone 1 (implemented in artifact branch)
+- Added shared inspector controls across PT1/PT2/PT3 for:
+  - modality toggles,
+  - per-view quick-switch buttons,
+  - image visibility toggle,
+  - manual measurement capture list persisted through workspace-state payload.
+- Extended existing React Testing Library + Playwright suites to assert these controls with three progressive synthetic users (`basic`, `intermediate`, `advanced`) for all project types.
+- Screenshot is generated during E2E runs at `frontend/artifacts/pr09-inspector-modalities-measurements.png` and intentionally **not committed**; see `docs/planning/pr09-screenshot-analysis.md` for recorded UI analytics.
 
 ### PR-10 — annotations + audit trail metadata
 - Expand annotations to include defect class, modality, comment, disposition, measurements, bbox, hide/show.

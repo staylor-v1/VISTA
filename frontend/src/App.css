@@ -3734,6 +3734,40 @@ ul li:hover {
   flex-wrap: wrap;
 }
 
+.inspector-common-controls {
+  border: 1px solid #dbe2ea;
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8fafc;
+  margin-bottom: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.modality-list,
+.view-thumbnail-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.measurement-fields {
+  margin-top: 6px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.measurement-fields input {
+  min-width: 100px;
+}
+
+.measurement-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
 .view-board {
   display: grid;
   grid-template-columns: repeat(3, minmax(120px, 1fr));
@@ -3750,6 +3784,11 @@ ul li:hover {
   border: 1px solid #dbe2ea;
   border-radius: 8px;
   overflow: hidden;
+}
+
+.view-cell.selected {
+  border-color: #1a56db;
+  box-shadow: 0 0 0 1px #1a56db inset;
 }
 
 .view-cell-title {
