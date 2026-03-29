@@ -351,6 +351,31 @@ async def update_inspection_part_review_state(
     )
     return part
 
+
+async def update_inspection_part_metadata(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    metadata_patch: Dict,
+    updated_by: Optional[str] = None,
+) -> Optional[models.InspectionPart]:
+    part = await get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        return None
+
+    current_metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+    part.metadata_json = {**current_metadata, **metadata_patch}
+    await db.commit()
+    await db.refresh(part)
+    log_db_operation(
+        "UPDATE",
+        "inspection_parts",
+        part.id,
+        updated_by or "system",
+        {"project_id": str(project_id), "metadata_keys": sorted(metadata_patch.keys())},
+    )
+    return part
+
 # DataInstance CRUD operations
 async def get_data_instance(db: AsyncSession, image_id: uuid.UUID) -> Optional[models.DataInstance]:
     result = await db.execute(

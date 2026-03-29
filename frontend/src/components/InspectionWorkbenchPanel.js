@@ -75,6 +75,9 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [contrastPercent, setContrastPercent] = useState(100);
   const [activeOverlayIds, setActiveOverlayIds] = useState([]);
   const [cursorProbe, setCursorProbe] = useState({ x: 50, y: 50 });
+  const [segmentationRun, setSegmentationRun] = useState(null);
+  const [measurementRun, setMeasurementRun] = useState(null);
+  const [mlActionLoading, setMlActionLoading] = useState({ segmentation: false, measurement: false });
 
   useEffect(() => {
     const loadWorkbenchData = async () => {
@@ -174,6 +177,9 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
       .map((overlay) => overlay.id);
     setActiveOverlayIds(defaultActive);
     setCursorProbe({ x: 50, y: 50 });
+    setSegmentationRun(null);
+    setMeasurementRun(null);
+    setMlActionLoading({ segmentation: false, measurement: false });
   }, [selectedPart, projectType, mprDimensions]);
 
   const reviewSummary = useMemo(() => {
@@ -237,6 +243,54 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
       if (prev.includes(overlayId)) return prev.filter((id) => id !== overlayId);
       return [...prev, overlayId];
     });
+  };
+
+  const runSegmentation = async () => {
+    if (!selectedPart) return;
+    try {
+      setMlActionLoading((prev) => ({ ...prev, segmentation: true }));
+      const resp = await fetch(`/api/projects/${projectId}/parts/${selectedPart.id}/segmentation-runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ axis: 'axial', slice_index: slicePosition.axial }),
+      });
+      if (!resp.ok) {
+        throw new Error(`Failed to run segmentation (${resp.status})`);
+      }
+      const result = await resp.json();
+      setSegmentationRun(result);
+      if (result.overlay_id) {
+        setActiveOverlayIds((prev) => (prev.includes(result.overlay_id) ? prev : [...prev, result.overlay_id]));
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to run segmentation');
+    } finally {
+      setMlActionLoading((prev) => ({ ...prev, segmentation: false }));
+    }
+  };
+
+  const runMeasurements = async () => {
+    if (!selectedPart) return;
+    try {
+      setMlActionLoading((prev) => ({ ...prev, measurement: true }));
+      const resp = await fetch(`/api/projects/${projectId}/parts/${selectedPart.id}/measurement-runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          measurement_profile: 'workbench-default',
+          include_overlays: activeOverlayIds,
+        }),
+      });
+      if (!resp.ok) {
+        throw new Error(`Failed to run AI measurements (${resp.status})`);
+      }
+      const result = await resp.json();
+      setMeasurementRun(result);
+    } catch (err) {
+      setError(err.message || 'Failed to run AI measurements');
+    } finally {
+      setMlActionLoading((prev) => ({ ...prev, measurement: false }));
+    }
   };
 
   return (
@@ -443,6 +497,38 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                               .join(' | ')}`
                             : ' • No overlays selected'}
                         </p>
+                        <div className="mpr-ml-actions">
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            data-testid="run-segmentation"
+                            onClick={runSegmentation}
+                            disabled={mlActionLoading.segmentation}
+                          >
+                            {mlActionLoading.segmentation ? 'Running…' : 'Run Segmentation'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            data-testid="run-measurements"
+                            onClick={runMeasurements}
+                            disabled={mlActionLoading.measurement}
+                          >
+                            {mlActionLoading.measurement ? 'Running…' : 'Run AI Measurements'}
+                          </button>
+                        </div>
+                        {segmentationRun && (
+                          <p data-testid="segmentation-result">
+                            Segmentation {segmentationRun.status}: {segmentationRun.overlay_id} on {segmentationRun.axis} slice {segmentationRun.slice_index + 1}
+                          </p>
+                        )}
+                        {measurementRun && (
+                          <p data-testid="measurement-result">
+                            Measurements {measurementRun.status}: {Object.entries(measurementRun.values || {})
+                              .map(([key, value]) => `${key}=${value}${measurementRun.units || ''}`)
+                              .join(' • ')}
+                          </p>
+                        )}
                       </div>
                       <div className="mpr-grid">
                         <section className="mpr-pane mpr-pane-axial" aria-label="Axial pane">
