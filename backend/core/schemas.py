@@ -111,6 +111,36 @@ class InspectionPart(InspectionPartBase):
         "populate_by_name": True
     }
 
+
+class InspectionSegmentationInvokeRequest(BaseModel):
+    axis: str = Field(default="axial", pattern=r"^(axial|coronal|sagittal)$")
+    slice_index: int = Field(default=0, ge=0)
+
+
+class InspectionSegmentationInvokeResponse(BaseModel):
+    run_id: uuid.UUID
+    part_id: uuid.UUID
+    axis: str
+    slice_index: int
+    status: str
+    overlay_id: str
+    created_at: datetime
+
+
+class InspectionMeasurementInvokeRequest(BaseModel):
+    measurement_profile: str = Field(default="default", min_length=1, max_length=64)
+    include_overlays: List[str] = Field(default_factory=list)
+
+
+class InspectionMeasurementInvokeResponse(BaseModel):
+    run_id: uuid.UUID
+    part_id: uuid.UUID
+    status: str
+    measurement_profile: str
+    units: str
+    values: Dict[str, float]
+    created_at: datetime
+
 # ImageGroup schemas
 class ImageGroupBase(BaseModel):
     identifier: str = Field(..., min_length=1, max_length=255)

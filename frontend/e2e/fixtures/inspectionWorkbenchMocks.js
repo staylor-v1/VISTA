@@ -105,6 +105,41 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1' } = {}) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(updated) });
       return;
     }
+    if (url.includes('/segmentation-runs') && method === 'POST') {
+      const payload = route.request().postDataJSON() || {};
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          run_id: 'seg-run-1',
+          part_id: mutableParts[0].id,
+          axis: payload.axis || 'axial',
+          slice_index: payload.slice_index || 0,
+          status: 'completed',
+          overlay_id: `segmentation-${payload.axis || 'axial'}-${payload.slice_index || 0}`,
+        }),
+      });
+      return;
+    }
+    if (url.includes('/measurement-runs') && method === 'POST') {
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          run_id: 'measurement-run-1',
+          part_id: mutableParts[0].id,
+          status: 'completed',
+          measurement_profile: 'workbench-default',
+          units: 'mm',
+          values: {
+            crack_length_mm: 14.1,
+            pore_area_mm2: 2.8,
+            edge_offset_mm: 0.46,
+          },
+        }),
+      });
+      return;
+    }
     if (url.includes(`/api/projects/${projectId}/parts`)) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(mutableParts) });
       return;
