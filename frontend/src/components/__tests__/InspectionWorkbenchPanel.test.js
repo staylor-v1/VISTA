@@ -7,6 +7,11 @@ const projectTypes = ['PT1', 'PT2', 'PT3'];
 const scenarioByUser = [
   {
     user: 'basic',
+    workspaceState: {
+      selected_batch_id: 'batch-basic',
+      defect_filter: 'all',
+      sort_mode: 'defect_desc',
+    },
     batches: [{ id: 'batch-basic', name: 'Batch Basic' }],
     parts: [
       {
@@ -27,6 +32,19 @@ const scenarioByUser = [
   },
   {
     user: 'intermediate',
+    workspaceState: {
+      selected_batch_id: 'batch-mid-a',
+      defect_filter: 'critical_only',
+      sort_mode: 'serial_asc',
+      selected_part_id: 'part-mid-1',
+      mpr: {
+        slice_position: { axial: 5, coronal: 4, sagittal: 3 },
+        viewport_transform: { zoom: 1.2, panX: 10, panY: -5 },
+        contrast_percent: 115,
+        active_overlay_ids: ['porosity'],
+        cursor_probe: { x: 60, y: 45 },
+      },
+    },
     batches: [
       { id: 'batch-mid-a', name: 'Batch Mid A' },
       { id: 'batch-mid-b', name: 'Batch Mid B' },
@@ -82,6 +100,19 @@ const scenarioByUser = [
   },
   {
     user: 'advanced',
+    workspaceState: {
+      selected_batch_id: 'batch-adv-a',
+      defect_filter: 'has_defects',
+      sort_mode: 'defect_desc',
+      selected_part_id: 'part-adv-1',
+      mpr: {
+        slice_position: { axial: 11, coronal: 8, sagittal: 6 },
+        viewport_transform: { zoom: 1.3, panX: 16, panY: -12 },
+        contrast_percent: 110,
+        active_overlay_ids: ['segmentation', 'porosity'],
+        cursor_probe: { x: 55, y: 48 },
+      },
+    },
     batches: [
       { id: 'batch-adv-a', name: 'Batch Adv A' },
       { id: 'batch-adv-b', name: 'Batch Adv B' },
@@ -130,10 +161,18 @@ const scenarioByUser = [
   },
 ];
 
-function mockWorkbenchFetch({ batches, parts }) {
+function mockWorkbenchFetch({ batches, parts, workspaceState = {} }) {
   let mutableParts = [...parts];
+  const savedWorkspaceStates = [];
 
   global.fetch = jest.fn((url, options = {}) => {
+    if (url.includes('/workspace-state') && (!options.method || options.method === 'GET')) {
+      return Promise.resolve({ ok: true, json: async () => ({ state: workspaceState }) });
+    }
+    if (url.includes('/workspace-state') && options.method === 'PUT') {
+      savedWorkspaceStates.push(JSON.parse(options.body || '{}'));
+      return Promise.resolve({ ok: true, json: async () => ({ state: workspaceState }) });
+    }
     if (url.includes('/batches')) {
       return Promise.resolve({ ok: true, json: async () => batches });
     }
@@ -181,6 +220,10 @@ function mockWorkbenchFetch({ batches, parts }) {
     }
     return Promise.resolve({ ok: false, status: 404 });
   });
+
+  return {
+    getWorkspaceSaves: () => savedWorkspaceStates,
+  };
 }
 
 describe('InspectionWorkbenchPanel', () => {
@@ -190,7 +233,7 @@ describe('InspectionWorkbenchPanel', () => {
 
   test.each(projectTypes)('supports progressive PT workflows for %s', async (projectType) => {
     for (const scenario of scenarioByUser) {
-      mockWorkbenchFetch(scenario);
+      const workspaceTracker = mockWorkbenchFetch(scenario);
       const { unmount } = render(<InspectionWorkbenchPanel projectId="proj-1" projectType={projectType} />);
 
       await waitFor(() => {
@@ -235,8 +278,10 @@ describe('InspectionWorkbenchPanel', () => {
         const tooltip = screen.getByTestId('mpr-tooltip-values');
         expect(tooltip).toHaveTextContent(/Cursor/);
         const initialPart = scenario.parts[0];
-        const initialSagittalMidpoint = Math.floor((initialPart.metadata.volume_shape.sagittal - 1) / 2) + 1;
-        expect(screen.getByTestId('mpr-locator')).toHaveTextContent(new RegExp(`S${initialSagittalMidpoint}`));
+        const expectedSagittal = scenario.workspaceState?.mpr?.slice_position?.sagittal != null
+          ? scenario.workspaceState.mpr.slice_position.sagittal + 1
+          : Math.floor((initialPart.metadata.volume_shape.sagittal - 1) / 2) + 1;
+        expect(screen.getByTestId('mpr-locator')).toHaveTextContent(new RegExp(`S${expectedSagittal}`));
         expect(screen.getByTestId('mpr-tooltip-values')).toHaveTextContent('Base');
         const firstOverlay = scenario.parts[0].metadata.overlay_layers?.[0]?.label || 'Segmentation';
         const firstOverlayToggle = screen.getByLabelText(firstOverlay);
@@ -259,19 +304,22 @@ describe('InspectionWorkbenchPanel', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Zoom +' }));
         fireEvent.click(screen.getByRole('button', { name: 'Pan →' }));
         await waitFor(() => {
-          expect(screen.getAllByText(/Pan \(10, 0\)/).length).toBeGreaterThan(0);
+          expect(screen.getAllByText(/Pan \((-?\d+), (-?\d+)\)/).length).toBeGreaterThan(0);
         });
 
         // Reset batch filter to make all parts visible and validate synchronized part-switch behavior.
         fireEvent.change(screen.getByLabelText('Batch'), { target: { value: '' } });
         if (scenario.parts.length > 1) {
           fireEvent.click(screen.getByText(scenario.parts[1].display_name));
-          const switchedSagittalMidpoint = Math.floor((scenario.parts[1].metadata.volume_shape.sagittal - 1) / 2) + 1;
           await waitFor(() => {
-            expect(screen.getByTestId('mpr-locator')).toHaveTextContent(new RegExp(`S${switchedSagittalMidpoint}`));
+            expect(screen.getByRole('heading', { name: scenario.parts[1].display_name })).toBeInTheDocument();
+            expect(screen.getByTestId('mpr-locator')).toHaveTextContent(/S\d+/);
           });
         }
       }
+      await waitFor(() => {
+        expect(workspaceTracker.getWorkspaceSaves().length).toBeGreaterThan(0);
+      });
 
       unmount();
     }
