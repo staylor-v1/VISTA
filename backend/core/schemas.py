@@ -141,6 +141,17 @@ class InspectionMeasurementInvokeResponse(BaseModel):
     values: Dict[str, float]
     created_at: datetime
 
+
+class InspectionWorkspaceStatePayload(BaseModel):
+    state: Dict[str, Any] = Field(default_factory=dict)
+
+
+class InspectionWorkspaceStateResponse(BaseModel):
+    project_id: uuid.UUID
+    user_email: str
+    state: Dict[str, Any] = Field(default_factory=dict)
+    updated_at: Optional[datetime] = None
+
 # ImageGroup schemas
 class ImageGroupBase(BaseModel):
     identifier: str = Field(..., min_length=1, max_length=255)
