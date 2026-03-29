@@ -90,3 +90,29 @@ def test_project_type_validation_rejects_unknown_values(client):
     }
     resp = client.post("/api/projects/", json=payload)
     assert resp.status_code == 422
+
+
+def test_update_project_allows_editing_name_and_project_type(client):
+    create_payload = {
+        "name": "Test PT2",
+        "description": "before",
+        "meta_group_id": "g-edit",
+        "project_type": "PT2",
+    }
+    create_resp = client.post("/api/projects/", json=create_payload)
+    assert create_resp.status_code == 201, create_resp.text
+    project = create_resp.json()
+    assert project["project_type"] == "PT2"
+
+    update_resp = client.put(
+        f"/api/projects/{project['id']}",
+        json={"name": "Test PT2 Edited", "project_type": "PT3"},
+    )
+    assert update_resp.status_code == 200, update_resp.text
+    updated = update_resp.json()
+    assert updated["name"] == "Test PT2 Edited"
+    assert updated["project_type"] == "PT3"
+
+    read_resp = client.get(f"/api/projects/{project['id']}")
+    assert read_resp.status_code == 200
+    assert read_resp.json()["project_type"] == "PT3"
