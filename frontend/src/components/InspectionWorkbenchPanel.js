@@ -107,6 +107,17 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [measurementEntries, setMeasurementEntries] = useState([]);
   const [measurementDraft, setMeasurementDraft] = useState({ label: '', value: '' });
   const [inspectorViewport, setInspectorViewport] = useState({ zoom: 1, panX: 0, panY: 0 });
+  const [annotations, setAnnotations] = useState([]);
+  const [annotationsLoading, setAnnotationsLoading] = useState(false);
+  const [annotationDraft, setAnnotationDraft] = useState({
+    defect_class: '',
+    modality: '',
+    comment: '',
+    disposition: 'open',
+    measurement_name: '',
+    measurement_value: '',
+    bbox: { x: '', y: '', width: '', height: '' },
+  });
 
   useEffect(() => {
     const loadWorkbenchData = async () => {
@@ -265,7 +276,41 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
       panY: clampRange(savedInspectorViewport.panY, -200, 200, 0),
     });
     setMeasurementDraft({ label: '', value: '' });
+    setAnnotationDraft({
+      defect_class: '',
+      modality: getModalities(selectedPart)[0] || 'visual',
+      comment: '',
+      disposition: 'open',
+      measurement_name: '',
+      measurement_value: '',
+      bbox: { x: '', y: '', width: '', height: '' },
+    });
   }, [selectedPart, workspaceHydration]);
+
+  useEffect(() => {
+    const loadAnnotations = async () => {
+      if (!selectedPart?.id) {
+        setAnnotations([]);
+        return;
+      }
+      setAnnotationsLoading(true);
+      try {
+        const resp = await fetch(`/api/projects/${projectId}/parts/${selectedPart.id}/annotations`);
+        if (!resp.ok) {
+          throw new Error(`Failed to load annotations (${resp.status})`);
+        }
+        const payload = await resp.json();
+        const annotationItems = Array.isArray(payload?.annotations) ? payload.annotations : [];
+        setAnnotations(annotationItems);
+      } catch (_err) {
+        setAnnotations([]);
+      } finally {
+        setAnnotationsLoading(false);
+      }
+    };
+
+    loadAnnotations();
+  }, [projectId, selectedPart?.id]);
 
   useEffect(() => {
     if (loading || !workspaceStateLoaded) return;
@@ -482,6 +527,78 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
       setError(err.message || 'Failed to run AI measurements');
     } finally {
       setMlActionLoading((prev) => ({ ...prev, measurement: false }));
+    }
+  };
+
+  const resetAnnotationDraft = () => {
+    setAnnotationDraft({
+      defect_class: '',
+      modality: enabledModalities[0] || modalityOptions[0] || 'visual',
+      comment: '',
+      disposition: 'open',
+      measurement_name: '',
+      measurement_value: '',
+      bbox: { x: '', y: '', width: '', height: '' },
+    });
+  };
+
+  const createAnnotation = async () => {
+    if (!selectedPart?.id || !annotationDraft.defect_class.trim()) return;
+    const measurementName = annotationDraft.measurement_name.trim();
+    const measurementValue = Number(annotationDraft.measurement_value);
+    const measurements = measurementName && Number.isFinite(measurementValue)
+      ? { [measurementName]: Number(measurementValue.toFixed(2)) }
+      : {};
+    const bboxPayload = ['x', 'y', 'width', 'height'].reduce((acc, key) => {
+      const value = Number(annotationDraft.bbox[key]);
+      if (Number.isFinite(value)) {
+        acc[key] = value;
+      }
+      return acc;
+    }, {});
+
+    const payload = {
+      defect_class: annotationDraft.defect_class.trim(),
+      modality: (annotationDraft.modality || enabledModalities[0] || modalityOptions[0] || 'visual').trim(),
+      comment: annotationDraft.comment.trim() || null,
+      disposition: annotationDraft.disposition,
+      measurements,
+      bbox: Object.keys(bboxPayload).length === 4 ? bboxPayload : null,
+      hidden: false,
+    };
+
+    try {
+      const resp = await fetch(`/api/projects/${projectId}/parts/${selectedPart.id}/annotations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        throw new Error(`Failed to create annotation (${resp.status})`);
+      }
+      const created = await resp.json();
+      setAnnotations((prev) => [created, ...prev]);
+      resetAnnotationDraft();
+    } catch (err) {
+      setError(err.message || 'Failed to create annotation');
+    }
+  };
+
+  const updateAnnotationVisibility = async (annotationId, hidden) => {
+    if (!selectedPart?.id) return;
+    try {
+      const resp = await fetch(`/api/projects/${projectId}/parts/${selectedPart.id}/annotations/${annotationId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hidden }),
+      });
+      if (!resp.ok) {
+        throw new Error(`Failed to update annotation (${resp.status})`);
+      }
+      const updated = await resp.json();
+      setAnnotations((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+    } catch (err) {
+      setError(err.message || 'Failed to update annotation');
     }
   };
 
@@ -725,6 +842,97 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                       <p className="muted" data-testid="inspector-viewport-state">
                         Zoom {inspectorViewport.zoom.toFixed(2)}x • Pan ({inspectorViewport.panX}, {inspectorViewport.panY})
                       </p>
+                    </div>
+                    <div className="annotation-controls" data-testid="annotation-controls">
+                      <strong>Annotations</strong>
+                      <div className="measurement-fields">
+                        <input
+                          type="text"
+                          placeholder="defect class"
+                          value={annotationDraft.defect_class}
+                          onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, defect_class: event.target.value }))}
+                        />
+                        <input
+                          type="text"
+                          placeholder="annotation modality"
+                          value={annotationDraft.modality}
+                          onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, modality: event.target.value }))}
+                        />
+                        <select
+                          aria-label="Annotation disposition"
+                          value={annotationDraft.disposition}
+                          onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, disposition: event.target.value }))}
+                        >
+                          <option value="open">Open</option>
+                          <option value="accepted">Accepted</option>
+                          <option value="rejected">Rejected</option>
+                          <option value="needs_info">Needs Info</option>
+                        </select>
+                      </div>
+                      <div className="measurement-fields">
+                        <input
+                          type="text"
+                          placeholder="measurement name"
+                          value={annotationDraft.measurement_name}
+                          onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, measurement_name: event.target.value }))}
+                        />
+                        <input
+                          type="number"
+                          placeholder="measurement value"
+                          value={annotationDraft.measurement_value}
+                          onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, measurement_value: event.target.value }))}
+                        />
+                        <input
+                          type="text"
+                          placeholder="annotation comment"
+                          value={annotationDraft.comment}
+                          onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, comment: event.target.value }))}
+                        />
+                      </div>
+                      <div className="measurement-fields">
+                        {['x', 'y', 'width', 'height'].map((key) => (
+                          <input
+                            key={key}
+                            type="number"
+                            placeholder={`bbox ${key}`}
+                            value={annotationDraft.bbox[key]}
+                            onChange={(event) => setAnnotationDraft((prev) => ({
+                              ...prev,
+                              bbox: { ...prev.bbox, [key]: event.target.value },
+                            }))}
+                          />
+                        ))}
+                        <button type="button" className="btn btn-secondary btn-sm" onClick={createAnnotation}>
+                          Add annotation
+                        </button>
+                      </div>
+                      <ul className="measurement-list" data-testid="annotation-list">
+                        {annotationsLoading ? (
+                          <li className="muted">Loading annotations…</li>
+                        ) : annotations.length === 0 ? (
+                          <li className="muted">No annotations captured.</li>
+                        ) : (
+                          annotations.map((annotation) => (
+                            <li key={annotation.id}>
+                              <span>
+                                {annotation.defect_class} • {annotation.modality} • {annotation.disposition}
+                                {annotation.hidden ? ' • Hidden' : ' • Visible'}
+                                {' • '}
+                                {annotation.updated_by || annotation.created_by || 'unknown'}
+                                {' @ '}
+                                {(annotation.updated_at || annotation.created_at || '').slice(0, 19).replace('T', ' ')}
+                              </span>
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => updateAnnotationVisibility(annotation.id, !annotation.hidden)}
+                              >
+                                {annotation.hidden ? 'Show' : 'Hide'}
+                              </button>
+                            </li>
+                          ))
+                        )}
+                      </ul>
                     </div>
                   </div>
 
