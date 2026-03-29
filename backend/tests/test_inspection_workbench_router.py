@@ -408,3 +408,135 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
         )
         assert overwrite_resp.status_code == 200, overwrite_resp.text
         assert overwrite_resp.json()["state"]["sort_mode"] == "serial_asc"
+
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_part_annotations_support_progressive_users_with_audit_trail(client, project_type):
+    scenarios = [
+        {
+            "email": f"annot-basic-{project_type.lower()}@example.com",
+            "group": f"{project_type.lower()}-annot-basic",
+            "part_suffix": "001",
+            "annotation": {
+                "defect_class": "scratch",
+                "modality": "visual",
+                "comment": "baseline visible scratch",
+                "disposition": "open",
+                "measurements": {"length_mm": 3.2},
+                "bbox": {"x": 10.0, "y": 14.0, "width": 22.0, "height": 8.0},
+            },
+        },
+        {
+            "email": f"annot-intermediate-{project_type.lower()}@example.com",
+            "group": f"{project_type.lower()}-annot-intermediate",
+            "part_suffix": "010",
+            "annotation": {
+                "defect_class": "void_cluster",
+                "modality": "infrared",
+                "comment": "cluster detected in two adjacent regions",
+                "disposition": "needs_info",
+                "measurements": {"area_mm2": 5.5, "diameter_mm": 2.1},
+                "bbox": {"x": 20.0, "y": 26.0, "width": 35.0, "height": 16.0},
+            },
+        },
+        {
+            "email": f"annot-advanced-{project_type.lower()}@example.com",
+            "group": f"{project_type.lower()}-annot-advanced",
+            "part_suffix": "900",
+            "annotation": {
+                "defect_class": "delamination",
+                "modality": "uv",
+                "comment": "multi-zone delamination requiring disposition update",
+                "disposition": "open",
+                "measurements": {"length_mm": 19.4, "depth_mm": 1.8, "area_mm2": 22.0},
+                "bbox": {"x": 45.0, "y": 52.0, "width": 60.0, "height": 24.0},
+            },
+        },
+    ]
+
+    for scenario in scenarios:
+        headers = {
+            "X-User-Id": scenario["email"],
+            "X-User-Groups": f"[\"{scenario['group']}\"]",
+        }
+        project_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": f"{project_type} annotation workflow {scenario['group']}",
+                "description": "annotation + audit metadata workflow",
+                "meta_group_id": scenario["group"],
+                "project_type": project_type,
+            },
+            headers=headers,
+        )
+        assert project_resp.status_code == 201, project_resp.text
+        project_id = project_resp.json()["id"]
+
+        batch_resp = client.post(
+            f"/api/projects/{project_id}/batches",
+            json={"name": "annotation-batch", "description": "annotation test batch"},
+            headers=headers,
+        )
+        assert batch_resp.status_code == 201, batch_resp.text
+
+        part_resp = client.post(
+            f"/api/projects/{project_id}/parts",
+            json={
+                "serial_number": f"{project_type}-ANNOT-{scenario['part_suffix']}",
+                "display_name": f"annot-part-{scenario['part_suffix']}",
+                "batch_id": batch_resp.json()["id"],
+            },
+            headers=headers,
+        )
+        assert part_resp.status_code == 201, part_resp.text
+        part_id = part_resp.json()["id"]
+
+        create_resp = client.post(
+            f"/api/projects/{project_id}/parts/{part_id}/annotations",
+            json=scenario["annotation"],
+            headers=headers,
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        created_annotation = create_resp.json()
+        assert created_annotation["defect_class"] == scenario["annotation"]["defect_class"]
+        assert created_annotation["modality"] == scenario["annotation"]["modality"]
+        assert created_annotation["hidden"] is False
+        assert isinstance(created_annotation["created_by"], str)
+        assert "@" in created_annotation["created_by"]
+        assert created_annotation["updated_by"] == created_annotation["created_by"]
+        assert created_annotation["created_at"]
+        assert created_annotation["updated_at"]
+
+        annotation_id = created_annotation["id"]
+        update_resp = client.patch(
+            f"/api/projects/{project_id}/parts/{part_id}/annotations/{annotation_id}",
+            json={
+                "disposition": "accepted",
+                "comment": f"{scenario['annotation']['comment']} [reviewed]",
+                "hidden": True,
+            },
+            headers=headers,
+        )
+        assert update_resp.status_code == 200, update_resp.text
+        updated_annotation = update_resp.json()
+        assert updated_annotation["disposition"] == "accepted"
+        assert updated_annotation["hidden"] is True
+        assert updated_annotation["updated_by"] == created_annotation["created_by"]
+        assert updated_annotation["updated_at"] >= updated_annotation["created_at"]
+
+        visible_list_resp = client.get(
+            f"/api/projects/{project_id}/parts/{part_id}/annotations?include_hidden=false",
+            headers=headers,
+        )
+        assert visible_list_resp.status_code == 200, visible_list_resp.text
+        assert visible_list_resp.json()["annotations"] == []
+
+        full_list_resp = client.get(
+            f"/api/projects/{project_id}/parts/{part_id}/annotations",
+            headers=headers,
+        )
+        assert full_list_resp.status_code == 200, full_list_resp.text
+        returned_annotations = full_list_resp.json()["annotations"]
+        assert len(returned_annotations) == 1
+        assert returned_annotations[0]["id"] == annotation_id
+        assert returned_annotations[0]["hidden"] is True
