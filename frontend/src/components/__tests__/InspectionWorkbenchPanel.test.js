@@ -47,6 +47,23 @@ const scenarioByUser = [
             { id: 'segmentation', label: 'Segmentation', color: '#ef4444' },
             { id: 'porosity', label: 'Porosity', color: '#8b5cf6' },
           ],
+          segmentation_runs: [
+            {
+              run_id: 'seeded-seg-mid',
+              axis: 'axial',
+              slice_index: 3,
+              status: 'completed',
+              overlay_id: 'segmentation-axial-3',
+            },
+          ],
+          measurement_runs: [
+            {
+              run_id: 'seeded-measure-mid',
+              status: 'completed',
+              units: 'mm',
+              values: { crack_length_mm: 10.2, pore_area_mm2: 1.8, edge_offset_mm: 0.41 },
+            },
+          ],
         },
       },
       {
@@ -225,6 +242,12 @@ describe('InspectionWorkbenchPanel', () => {
         const firstOverlayToggle = screen.getByLabelText(firstOverlay);
         fireEvent.click(firstOverlayToggle);
         expect(screen.getByTestId('mpr-tooltip-values')).toHaveTextContent(/No overlays selected|%/);
+        if (scenario.parts[0].metadata?.segmentation_runs?.length) {
+          expect(screen.getByTestId('segmentation-result')).toHaveTextContent(/Segmentation completed/);
+        }
+        if (scenario.parts[0].metadata?.measurement_runs?.length) {
+          expect(screen.getByTestId('measurement-result')).toHaveTextContent(/Measurements completed/);
+        }
         fireEvent.click(screen.getByTestId('run-segmentation'));
         await waitFor(() => {
           expect(screen.getByTestId('segmentation-result')).toHaveTextContent(/Segmentation completed/);
