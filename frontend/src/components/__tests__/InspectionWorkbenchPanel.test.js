@@ -129,6 +129,36 @@ function mockWorkbenchFetch({ batches, parts }) {
       const updated = mutableParts.find((part) => part.id === partId);
       return Promise.resolve({ ok: true, json: async () => updated });
     }
+    if (url.includes('/segmentation-runs') && options.method === 'POST') {
+      const payload = JSON.parse(options.body || '{}');
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          run_id: 'seg-run-1',
+          part_id: mutableParts[0]?.id || 'part',
+          axis: payload.axis || 'axial',
+          slice_index: payload.slice_index || 0,
+          status: 'completed',
+          overlay_id: `segmentation-${payload.axis || 'axial'}-${payload.slice_index || 0}`,
+        }),
+      });
+    }
+    if (url.includes('/measurement-runs') && options.method === 'POST') {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          run_id: 'measure-run-1',
+          part_id: mutableParts[0]?.id || 'part',
+          status: 'completed',
+          units: 'mm',
+          values: {
+            crack_length_mm: 12.4,
+            pore_area_mm2: 2.1,
+            edge_offset_mm: 0.46,
+          },
+        }),
+      });
+    }
     if (url.includes('/parts')) {
       return Promise.resolve({ ok: true, json: async () => mutableParts });
     }
@@ -195,6 +225,14 @@ describe('InspectionWorkbenchPanel', () => {
         const firstOverlayToggle = screen.getByLabelText(firstOverlay);
         fireEvent.click(firstOverlayToggle);
         expect(screen.getByTestId('mpr-tooltip-values')).toHaveTextContent(/No overlays selected|%/);
+        fireEvent.click(screen.getByTestId('run-segmentation'));
+        await waitFor(() => {
+          expect(screen.getByTestId('segmentation-result')).toHaveTextContent(/Segmentation completed/);
+        });
+        fireEvent.click(screen.getByTestId('run-measurements'));
+        await waitFor(() => {
+          expect(screen.getByTestId('measurement-result')).toHaveTextContent(/Measurements completed/);
+        });
         fireEvent.click(screen.getByRole('button', { name: 'Zoom +' }));
         fireEvent.click(screen.getByRole('button', { name: 'Pan →' }));
         await waitFor(() => {

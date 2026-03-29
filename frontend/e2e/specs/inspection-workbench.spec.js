@@ -34,6 +34,10 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
         await expect(page.getByText('3D Orientation')).toBeVisible();
         await expect(page.getByLabel(/Contrast/)).toBeVisible();
         await expect(page.getByTestId('mpr-tooltip-values')).toContainText('Cursor');
+        await page.getByTestId('run-segmentation').click();
+        await expect(page.getByTestId('segmentation-result')).toContainText('Segmentation completed');
+        await page.getByTestId('run-measurements').click();
+        await expect(page.getByTestId('measurement-result')).toContainText('Measurements completed');
         await page.getByRole('button', { name: 'Zoom +' }).click();
         await expect(page.getByText(/Zoom 1.10x/).first()).toBeVisible();
       }
@@ -48,6 +52,8 @@ test.describe('Inspection Workbench screenshot artifact', () => {
     await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
     await page.getByRole('tab', { name: 'Project Data' }).click();
     await expect(page.getByTestId('mpr-shell')).toBeVisible();
+    await page.getByTestId('run-segmentation').click();
+    await expect(page.getByTestId('segmentation-result')).toContainText('Segmentation completed');
     await page.getByRole('button', { name: 'Zoom +' }).click();
 
     const panel = page.locator('section[aria-label="Inspection Workbench"]');
