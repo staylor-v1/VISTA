@@ -5,7 +5,7 @@ import logging
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func as _func
 
@@ -18,6 +18,26 @@ import utils.crud as crud
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Export"])
+
+
+async def _get_project_with_export_access(
+    project_id: uuid.UUID,
+    db: AsyncSession,
+    current_user: schemas.User,
+) -> models.Project:
+    db_project = await crud.get_project(db=db, project_id=project_id)
+    if db_project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found",
+        )
+
+    if not is_user_in_group(current_user.email, db_project.meta_group_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"User does not have access to project '{project_id}'.",
+        )
+    return db_project
 
 
 @router.get("/projects/{project_id}/export-excel")
@@ -36,19 +56,11 @@ async def export_project_excel(
     - Image Classes (derived from classifications)
     - Comment (derived from comments)
     """
-    # Verify project exists and user has access
-    db_project = await crud.get_project(db=db, project_id=project_id)
-    if db_project is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found",
-        )
-
-    if not is_user_in_group(current_user.email, db_project.meta_group_id):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"User does not have access to project '{project_id}'.",
-        )
+    db_project = await _get_project_with_export_access(
+        project_id=project_id,
+        db=db,
+        current_user=current_user,
+    )
 
     # Fetch all non-deleted images for the project
     result = await db.execute(
@@ -229,6 +241,67 @@ async def export_project_excel(
             "Content-Disposition": f'attachment; filename="{filename}"',
         },
     )
+
+
+@router.get("/projects/{project_id}/report-json")
+async def export_project_report_json(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    db_project = await _get_project_with_export_access(
+        project_id=project_id,
+        db=db,
+        current_user=current_user,
+    )
+
+    image_count_result = await db.execute(
+        select(_func.count())
+        .select_from(models.DataInstance)
+        .where(models.DataInstance.project_id == project_id)
+        .where(models.DataInstance.deleted_at.is_(None))
+    )
+    total_images = image_count_result.scalar_one()
+
+    part_count_result = await db.execute(
+        select(_func.count())
+        .select_from(models.InspectionPart)
+        .where(models.InspectionPart.project_id == project_id)
+    )
+    total_parts = part_count_result.scalar_one()
+
+    batch_count_result = await db.execute(
+        select(_func.count())
+        .select_from(models.InspectionBatch)
+        .where(models.InspectionBatch.project_id == project_id)
+    )
+    total_batches = batch_count_result.scalar_one()
+
+    reviewed_states = ("pass", "reject_pending", "reject_confirmed")
+    reviewed_parts_result = await db.execute(
+        select(_func.count())
+        .select_from(models.InspectionPart)
+        .where(models.InspectionPart.project_id == project_id)
+        .where(models.InspectionPart.review_state.in_(reviewed_states))
+    )
+    reviewed_parts = reviewed_parts_result.scalar_one()
+
+    report_payload = {
+        "project": {
+            "id": str(db_project.id),
+            "name": db_project.name,
+            "project_type": db_project.project_type,
+            "meta_group_id": db_project.meta_group_id,
+        },
+        "summary": {
+            "total_images": total_images,
+            "total_batches": total_batches,
+            "total_parts": total_parts,
+            "reviewed_parts": reviewed_parts,
+            "unreviewed_parts": max(total_parts - reviewed_parts, 0),
+        },
+    }
+    return JSONResponse(content=report_payload)
 
 
 def _build_workbook(project_name: str, rows: list[dict], meta_keys: list[str]):
