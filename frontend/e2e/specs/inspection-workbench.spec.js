@@ -3,6 +3,7 @@ const { test, expect } = require('@playwright/test');
 const { mockInspectionWorkbenchRoutes } = require('../fixtures/inspectionWorkbenchMocks');
 
 const screenshotPath = path.resolve(__dirname, '../../artifacts/pr04-mpr-workbench.png');
+const pr08ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr08-project-type-visibility.png');
 const simulatedUsers = ['basic', 'intermediate', 'advanced'];
 
 for (const projectType of ['PT1', 'PT2', 'PT3']) {
@@ -90,4 +91,76 @@ test.describe('Inspection Workbench screenshot artifact', () => {
     await expect(panel).toBeVisible();
     await panel.screenshot({ path: screenshotPath });
   });
+});
+
+test.describe('PR-08 project type UI exposure smoke', () => {
+  for (const projectType of ['PT1', 'PT2', 'PT3']) {
+    test(`dashboard and project detail surfaces show ${projectType}`, async ({ page }) => {
+      const projectId = `proj-${projectType.toLowerCase()}-smoke`;
+
+      await page.route('**/api/**', async (route) => {
+        const url = route.request().url();
+        const method = route.request().method();
+
+        if (url.endsWith('/api/users/me')) {
+          await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ detail: 'Unauthorized' }) });
+          return;
+        }
+        if (url.endsWith('/api/projects/') && method === 'GET') {
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify([{
+              id: projectId,
+              name: `${projectType} smoke`,
+              description: 'Synthetic smoke project',
+              meta_group_id: 'qa-team',
+              project_type: projectType,
+            }]),
+          });
+          return;
+        }
+        if (url.endsWith(`/api/projects/${projectId}`)) {
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              id: projectId,
+              name: `${projectType} smoke`,
+              description: 'Synthetic smoke project',
+              meta_group_id: 'qa-team',
+              project_type: projectType,
+            }),
+          });
+          return;
+        }
+        if (url.endsWith(`/api/projects/${projectId}/metadata-dict`)) {
+          await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+          return;
+        }
+        if (url.endsWith(`/api/projects/${projectId}/classes`)) {
+          await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+          return;
+        }
+        if (url.endsWith(`/api/projects/${projectId}/has-groups`)) {
+          await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ has_groups: false }) });
+          return;
+        }
+        if (url.includes(`/api/projects/${projectId}/images`)) {
+          await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+          return;
+        }
+        await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+      });
+
+      await page.goto('/', { waitUntil: 'networkidle' });
+      await expect(page.getByText(`Type: ${projectType}`)).toBeVisible();
+      if (projectType === 'PT2') {
+        await page.screenshot({ path: pr08ScreenshotPath, fullPage: true });
+      }
+
+      await page.getByRole('link', { name: `${projectType} smoke` }).click();
+      await expect(page.getByText(`Type: ${projectType}`)).toBeVisible();
+    });
+  }
 });
