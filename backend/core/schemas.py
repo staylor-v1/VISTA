@@ -43,6 +43,19 @@ class ProjectBase(BaseModel):
 class ProjectCreate(ProjectBase):
     pass
 
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    meta_group_id: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    project_type: Optional[str] = Field(default=None, pattern=r"^(PT1|PT2|PT3)$")
+
+    @field_validator("project_type", mode="before")
+    @classmethod
+    def normalize_project_type(cls, v: Optional[str]) -> Optional[str]:
+        if isinstance(v, str):
+            return v.strip().upper()
+        return v
+
 class Project(ProjectBase):
     id: uuid.UUID
     created_at: datetime
