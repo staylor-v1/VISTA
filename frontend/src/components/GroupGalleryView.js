@@ -8,12 +8,14 @@ function GroupGalleryView() {
   const navigate = useNavigate();
   const location = useLocation();
   const isUngrouped = !groupId;
-  const groupIdentifier = location.state?.groupIdentifier || (isUngrouped ? 'Ungrouped' : groupId);
 
   const [project, setProject] = useState(null);
+  const [groupInfo, setGroupInfo] = useState(null);
   const [images, setImages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  const groupIdentifier = groupInfo?.display_name || groupInfo?.identifier || location.state?.groupIdentifier || (isUngrouped ? 'Ungrouped' : groupId);
 
   const fetchImages = useCallback(async (opts = {}) => {
     setLoading(true);
@@ -57,8 +59,14 @@ function GroupGalleryView() {
       .then(r => r.ok ? r.json() : null)
       .then(data => setProject(data))
       .catch(() => {});
+    if (groupId && !isUngrouped) {
+      fetch(`/api/groups/${groupId}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => setGroupInfo(data))
+        .catch(() => {});
+    }
     fetchImages();
-  }, [projectId, fetchImages]);
+  }, [projectId, groupId, isUngrouped, fetchImages]);
 
   const handleImageUpdated = (updatedImage) => {
     setImages(prev => {
