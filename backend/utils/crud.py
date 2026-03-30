@@ -560,10 +560,9 @@ async def create_comment(db: AsyncSession, comment: schemas.ImageCommentCreate, 
     
     log_db_operation("CREATE", "image_comments", db_comment.id, created_by or "system", {"image_id": str(comment.image_id), "text_length": len(comment.text)})
     
-    # Explicitly load the comment without the relationship
-    # to avoid the MissingGreenlet error
     result = await db.execute(
         select(models.ImageComment)
+        .options(selectinload(models.ImageComment.author))
         .where(models.ImageComment.id == db_comment.id)
     )
     return result.scalars().first()
