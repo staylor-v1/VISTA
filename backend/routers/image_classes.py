@@ -5,8 +5,7 @@ from typing import List
 import utils.crud as crud
 from core import schemas
 from core.database import get_db
-from core.group_auth_helper import is_user_in_group
-from utils.dependencies import get_current_user, get_project_or_403, get_image_or_403
+from utils.dependencies import get_current_user, get_user_context, UserContext, get_project_or_403, get_image_or_403
 
 router = APIRouter(
     tags=["Image Classes"],
@@ -187,30 +186,24 @@ async def list_image_classifications(
 async def delete_classification(
     classification_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: schemas.User = Depends(get_current_user),
+    user_context: UserContext = Depends(get_user_context),
 ):
     # Get the classification
     db_classification = await crud.get_image_classification(db=db, classification_id=classification_id)
     if db_classification is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Classification not found")
-    
-    # Check if the user has access to the image
-    await get_image_or_403(db_classification.image_id, db, current_user)
-    
-    # Only allow the user who created the classification or admin users to delete it
-    is_admin = is_user_in_group(current_user.email, "admin")
-    if (not current_user.id or str(db_classification.created_by_id) != str(current_user.id)) and not is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to delete this classification",
-        )
-    
+
+    # Check if the user has access to the image's project
+    await get_image_or_403(db_classification.image_id, db, user_context.user)
+
     # Delete the classification
-    success = await crud.delete_image_classification(db=db, classification_id=classification_id)
+    success = await crud.delete_image_classification(
+        db=db, classification_id=classification_id, deleted_by=user_context.email
+    )
     if not success:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete classification",
         )
-    
+
     return None

@@ -234,8 +234,7 @@ class ImageComment(ImageCommentBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
     
-    # Remove the related data that's causing issues
-    # author: Optional[User] = None
+    author: Optional[User] = None
 
     model_config = {
         "from_attributes": True,
