@@ -155,6 +155,12 @@ function GroupedImagesPage({ projectId, projectName, onBack, search }) {
                     className="btn btn-small btn-danger"
                     disabled={deletingGroupId === group.id}
                     onClick={(e) => handleDeleteGroup(e, group)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.stopPropagation();
+                        e.preventDefault();
+                      }
+                    }}
                   >
                     {deletingGroupId === group.id ? 'Deleting...' : 'Delete'}
                   </button>
