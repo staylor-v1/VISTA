@@ -55,6 +55,7 @@ function GroupGalleryView() {
   }, [projectId, groupId, isUngrouped]);
 
   useEffect(() => {
+    setGroupInfo(null);
     fetch(`/api/projects/${projectId}`)
       .then(r => r.ok ? r.json() : null)
       .then(data => setProject(data))
