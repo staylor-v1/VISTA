@@ -149,17 +149,44 @@ const CreateProjectModal = memo(function CreateProjectModal({ onClose, onSubmit,
 });
 
 // Memoized ProjectItem component to prevent unnecessary re-renders
-const ProjectItem = memo(function ProjectItem({ project }) {
+const ProjectItem = memo(function ProjectItem({ project, currentUser, onArchiveToggle }) {
+  const isCreator = currentUser && project.created_by && project.created_by === currentUser.email;
+  const [archiving, setArchiving] = React.useState(false);
+
+  const handleArchiveToggle = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setArchiving(true);
+    try {
+      const action = project.is_archived ? 'unarchive' : 'archive';
+      const resp = await fetch(`/api/projects/${project.id}/${action}`, { method: 'PATCH' });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        alert(err.detail || `Failed to ${action} project`);
+        return;
+      }
+      const updated = await resp.json();
+      onArchiveToggle(updated);
+    } finally {
+      setArchiving(false);
+    }
+  };
+
   return (
-    <div className="project-card">
-      <Link 
-        to={`/project/${project.id}`} 
+    <div className={`project-card${project.is_archived ? ' project-card-archived' : ''}`}>
+      <Link
+        to={`/project/${project.id}`}
         style={{ textDecoration: 'none', color: 'inherit', display: 'block' }}
       >
         <div className="project-card-header">
-          <h3 className="project-card-title">{project.name}</h3>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <h3 className="project-card-title" style={{ margin: 0 }}>{project.name}</h3>
+            {project.is_archived && (
+              <span className="archived-badge">Archived</span>
+            )}
+          </div>
           <div className="project-card-meta">
-            ID: {project.id} • Group: {project.meta_group_id}
+            ID: {project.id} &bull; Group: {project.meta_group_id}
           </div>
         </div>
         <div className="project-card-body">
@@ -168,6 +195,18 @@ const ProjectItem = memo(function ProjectItem({ project }) {
           </p>
         </div>
       </Link>
+      {isCreator && (
+        <div className="project-card-footer">
+          <button
+            className={`btn btn-sm ${project.is_archived ? 'btn-secondary' : 'btn-warning'}`}
+            onClick={handleArchiveToggle}
+            disabled={archiving}
+            title={project.is_archived ? 'Unarchive this project' : 'Archive this project'}
+          >
+            {archiving ? '...' : project.is_archived ? 'Unarchive' : 'Archive'}
+          </button>
+        </div>
+      )}
     </div>
   );
 });
@@ -187,11 +226,7 @@ function App() {
   const [toast, setToast] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
-  // const [newProject, setNewProject] = useState({  // Commented out - not currently used
-  //   name: '',
-  //   description: '',
-  //   meta_group_id: ''
-  // });
+  const [showArchived, setShowArchived] = useState(false);
   
   // Function to show a toast notification
   const showToast = (message, type = 'error') => {
@@ -227,7 +262,7 @@ function App() {
       });
 
     // Fetch projects from the API
-    fetch('/api/projects/')
+    fetch('/api/projects/?include_archived=true')
       .then(response => {
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
@@ -289,8 +324,15 @@ function App() {
       });
   }, []);
 
+  // Handle archive/unarchive toggle from ProjectItem
+  const handleArchiveToggle = useCallback((updatedProject) => {
+    setProjects(prev => prev.map(p => p.id === updatedProject.id ? updatedProject : p));
+  }, []);
 
-  const HomePage = () => (
+  const HomePage = () => {
+    const visibleProjects = showArchived ? projects : projects.filter(p => !p.is_archived);
+
+    return (
     <div className="App">
       <header className="App-header">
         <div className="header-content">
@@ -371,17 +413,43 @@ function App() {
           <>
             <div className="flex justify-between items-center mb-6">
               <h2 style={{ margin: 0, color: 'var(--gray-900)', fontSize: '1.5rem', fontWeight: '600' }}>
-                Your Projects ({projects.length})
+                Your Projects ({visibleProjects.length})
               </h2>
-              <div className="flex gap-4">
+              <div className="flex gap-4 items-center">
+                <label className="archive-toggle-label">
+                  <input
+                    type="checkbox"
+                    checked={showArchived}
+                    onChange={e => setShowArchived(e.target.checked)}
+                    className="archive-toggle-input"
+                  />
+                  <span className="archive-toggle-track">
+                    <span className="archive-toggle-thumb"></span>
+                  </span>
+                  <span style={{ fontSize: '0.875rem', color: 'var(--gray-600)' }}>
+                    Show archived
+                  </span>
+                </label>
                 <span style={{ fontSize: '0.875rem', color: 'var(--gray-500)' }}>
-                  {projects.length} {projects.length === 1 ? 'project' : 'projects'} total
+                  {visibleProjects.length} {visibleProjects.length === 1 ? 'project' : 'projects'} shown
                 </span>
               </div>
             </div>
+            {visibleProjects.length === 0 && (
+              <div className="card text-center">
+                <div className="card-content">
+                  <p style={{ color: 'var(--gray-500)' }}>All projects are archived. Toggle "Show archived" to view them.</p>
+                </div>
+              </div>
+            )}
             <div className="projects-grid">
-              {projects.map(project => (
-                <ProjectItem key={project.id} project={project} />
+              {visibleProjects.map(project => (
+                <ProjectItem
+                  key={project.id}
+                  project={project}
+                  currentUser={currentUser}
+                  onArchiveToggle={handleArchiveToggle}
+                />
               ))}
             </div>
           </>
@@ -398,6 +466,7 @@ function App() {
       )}
     </div>
   );
+  };
 
   return (
     <>

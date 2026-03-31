@@ -12,7 +12,7 @@ from core.database import get_db
 from core.config import settings
 from core.group_auth_helper import is_user_in_group
 from utils.dependencies import get_current_user
-from utils.dependencies import get_project_or_403
+from utils.dependencies import get_project_or_403, get_project_or_403_writable
 from utils.boto3_client import upload_file_to_s3, get_presigned_download_url, delete_file_from_s3
 from utils.serialization import to_data_instance_schema
 from utils.file_security import get_content_disposition_header
@@ -39,7 +39,7 @@ async def upload_image_to_project(
     The image is associated with the project and the uploading user.
     Optionally accepts group_identifier to assign the image to a group (find-or-create).
     """
-    db_project = await get_project_or_403(project_id, db, current_user)
+    db_project = await get_project_or_403_writable(project_id, db, current_user)
     # Capture scalar values before any blocking IO to avoid MissingGreenlet
     # errors when SQLAlchemy tries to lazy-load expired attributes.
     db_project_id = db_project.id
@@ -564,6 +564,8 @@ async def delete_image(
     is_member = is_user_in_group(current_user.email, db_image.project.meta_group_id)
     if not is_member:
         raise HTTPException(status_code=403, detail="Forbidden")
+    if db_image.project.is_archived:
+        raise HTTPException(status_code=403, detail="This project is archived and read-only. Unarchive it to make changes.")
     retention_days = settings.IMAGE_DELETE_RETENTION_DAYS
     actor_user_id = current_user.id
     if not db_image.deleted_at:
@@ -600,6 +602,8 @@ async def restore_deleted_image(
     is_member = is_user_in_group(current_user.email, db_image.project.meta_group_id)
     if not is_member:
         raise HTTPException(status_code=403, detail="Forbidden")
+    if db_image.project.is_archived:
+        raise HTTPException(status_code=403, detail="This project is archived and read-only. Unarchive it to make changes.")
     from datetime import datetime, timezone
     retention_deadline = db_image.pending_hard_delete_at
     if retention_deadline and datetime.now(timezone.utc) > retention_deadline:
@@ -650,6 +654,11 @@ async def update_image_metadata(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"User '{current_user.email}' does not have access to image '{image_id}'",
+        )
+    if db_image.project.is_archived:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This project is archived and read-only. Unarchive it to make changes.",
         )
     
     # Update the metadata
@@ -712,6 +721,11 @@ async def delete_image_metadata(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"User '{current_user.email}' does not have access to image '{image_id}'",
+        )
+    if db_image.project.is_archived:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This project is archived and read-only. Unarchive it to make changes.",
         )
     
     # Update the metadata
