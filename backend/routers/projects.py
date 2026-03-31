@@ -116,6 +116,8 @@ async def archive_project(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the project creator can archive this project.",
         )
+    # Note: projects without a recorded creator (created_by is NULL, i.e. legacy projects)
+    # can be archived by any group member, since there is no creator to enforce ownership.
 
     result = await crud.archive_project(db=db, project_id=project_id, archived_by=current_user.email)
     return result
@@ -141,6 +143,8 @@ async def unarchive_project(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only the project creator can unarchive this project.",
         )
+    # Note: projects without a recorded creator (created_by is NULL, i.e. legacy projects)
+    # can be unarchived by any group member, since there is no creator to enforce ownership.
 
     result = await crud.unarchive_project(db=db, project_id=project_id, unarchived_by=current_user.email)
     return result
