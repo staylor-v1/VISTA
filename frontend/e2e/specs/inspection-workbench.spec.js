@@ -19,8 +19,9 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
         await expect(page.getByRole('heading', { name: 'Project Data' })).toBeVisible();
         await expect(page.getByText(`Inspection workbench for ${projectType} projects.`)).toBeVisible();
         await expect(page.getByTestId('inspector-common-controls')).toBeVisible();
-        await page.getByPlaceholder('label').fill(`${simulatedUser}-distance`);
-        await page.getByPlaceholder('value').fill('12.5');
+        const measurementCapture = page.locator('.measurement-capture');
+        await measurementCapture.getByPlaceholder('label', { exact: true }).fill(`${simulatedUser}-distance`);
+        await measurementCapture.getByPlaceholder('value', { exact: true }).fill('12.5');
         await page.getByRole('button', { name: 'Save measurement' }).click();
         await expect(page.getByTestId('manual-measurement-list')).toContainText(`${simulatedUser}-distance: 12.5mm`);
         await page.getByTestId('toggle-image-visibility').click();
@@ -107,8 +108,9 @@ test.describe('PR-09 inspector controls screenshot artifact', () => {
     await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
     await page.getByRole('tab', { name: 'Project Data' }).click();
     await expect(page.getByTestId('inspector-common-controls')).toBeVisible();
-    await page.getByPlaceholder('label').fill('qa-length');
-    await page.getByPlaceholder('value').fill('18.25');
+    const measurementCapture = page.locator('.measurement-capture');
+    await measurementCapture.getByPlaceholder('label', { exact: true }).fill('qa-length');
+    await measurementCapture.getByPlaceholder('value', { exact: true }).fill('18.25');
     await page.getByRole('button', { name: 'Save measurement' }).click();
     const panel = page.locator('section[aria-label="Inspection Workbench"]');
     await expect(panel).toBeVisible();
