@@ -374,6 +374,14 @@ describe('InspectionWorkbenchPanel', () => {
       await waitFor(() => {
         expect(screen.getByTestId('annotation-list')).toHaveTextContent('seed-user@example.com @ 2026-03-28 11:00:00');
       });
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      fireEvent.change(screen.getByLabelText('Edit annotation defect class'), { target: { value: `${scenario.user}-edited-defect` } });
+      fireEvent.change(screen.getByLabelText('Edit annotation disposition'), { target: { value: 'accepted' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => {
+        expect(screen.getByTestId('annotation-list')).toHaveTextContent(`${scenario.user}-edited-defect •`);
+        expect(screen.getByTestId('annotation-list')).toHaveTextContent('• accepted');
+      });
       fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
       await waitFor(() => {
         expect(screen.getByTestId('annotation-list')).toHaveTextContent('Hidden');
