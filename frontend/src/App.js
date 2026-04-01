@@ -150,15 +150,19 @@ const CreateProjectModal = memo(function CreateProjectModal({ onClose, onSubmit,
 
 // Memoized ProjectItem component to prevent unnecessary re-renders
 const ProjectItem = memo(function ProjectItem({ project, currentUser, onArchiveToggle }) {
-  const isCreator = currentUser && project.created_by && project.created_by === currentUser.email;
+  const canArchive = currentUser && (!project.created_by || project.created_by === currentUser.email);
   const [archiving, setArchiving] = React.useState(false);
 
   const handleArchiveToggle = async (e) => {
     e.preventDefault();
     e.stopPropagation();
+    const action = project.is_archived ? 'unarchive' : 'archive';
+    const message = project.is_archived
+      ? `Unarchive "${project.name}"? This will restore full editing access.`
+      : `Archive "${project.name}"? The project will become read-only and hidden from the default view.`;
+    if (!window.confirm(message)) return;
     setArchiving(true);
     try {
-      const action = project.is_archived ? 'unarchive' : 'archive';
       const resp = await fetch(`/api/projects/${project.id}/${action}`, { method: 'PATCH' });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
@@ -195,7 +199,7 @@ const ProjectItem = memo(function ProjectItem({ project, currentUser, onArchiveT
           </p>
         </div>
       </Link>
-      {isCreator && (
+      {canArchive && (
         <div className="project-card-footer">
           <button
             className={`btn btn-sm ${project.is_archived ? 'btn-secondary' : 'btn-warning'}`}
