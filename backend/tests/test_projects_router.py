@@ -90,3 +90,50 @@ def test_archive_nonexistent_project_returns_404(client):
     fake_id = str(uuid.uuid4())
     r = client.patch(f"/api/projects/{fake_id}/archive")
     assert r.status_code == 404
+
+
+def test_default_listing_excludes_archived(client):
+    """The default GET /api/projects/ should exclude archived projects."""
+    r1 = client.post("/api/projects/", json={"name": "Active", "description": "", "meta_group_id": "g1"})
+    r2 = client.post("/api/projects/", json={"name": "ToArchive", "description": "", "meta_group_id": "g1"})
+    assert r1.status_code == 201
+    assert r2.status_code == 201
+    archived_id = r2.json()["id"]
+    client.patch(f"/api/projects/{archived_id}/archive")
+
+    # Default listing should not include archived
+    resp = client.get("/api/projects/")
+    ids = [p["id"] for p in resp.json()]
+    assert archived_id not in ids
+
+    # Explicit include_archived should include it
+    resp2 = client.get("/api/projects/?include_archived=true")
+    ids2 = [p["id"] for p in resp2.json()]
+    assert archived_id in ids2
+
+
+def test_archived_project_blocks_metadata_mutation(client):
+    """Project metadata mutations should be blocked for archived projects."""
+    r = client.post("/api/projects/", json={"name": "MetaTest", "description": "", "meta_group_id": "g1"})
+    assert r.status_code == 201
+    pid = r.json()["id"]
+    client.patch(f"/api/projects/{pid}/archive")
+
+    r2 = client.post(f"/api/projects/{pid}/metadata", json={"key": "k", "value": "v"})
+    assert r2.status_code == 403
+    assert "archived" in r2.json()["detail"].lower()
+
+
+def test_archived_project_blocks_class_creation(client):
+    """Image class creation should be blocked for archived projects."""
+    r = client.post("/api/projects/", json={"name": "ClassTest", "description": "", "meta_group_id": "g1"})
+    assert r.status_code == 201
+    pid = r.json()["id"]
+    client.patch(f"/api/projects/{pid}/archive")
+
+    r2 = client.post(
+        f"/api/projects/{pid}/classes",
+        json={"name": "TestClass", "project_id": pid},
+    )
+    assert r2.status_code == 403
+    assert "archived" in r2.json()["detail"].lower()
