@@ -34,7 +34,7 @@ function ImageView() {
   const [currentUser, setCurrentUser] = useState(null);
   const [sidebarWidth, setSidebarWidth] = useState(350);
   const [isResizing, setIsResizing] = useState(false);
-  const [projectArchived, setProjectArchived] = useState(false);
+  const [projectArchived, setProjectArchived] = useState(null);
 
   // Navigation settings - restore from localStorage
   const [skipDeletedImages, setSkipDeletedImages] = useState(() => {
@@ -578,7 +578,7 @@ function ImageView() {
       </header>
 
       <div className="container" style={{ maxWidth: '100%', padding: 'var(--space-4)' }}>
-        {projectArchived && (
+        {projectArchived === true && (
           <div className="archived-project-notice">
             <strong>This project is archived.</strong> It is read-only. Classifications, comments, reviews, and other edits are disabled.
           </div>
@@ -606,7 +606,7 @@ function ImageView() {
               {image && (
                 <ReviewPanel
                   imageId={imageId}
-                  readOnly={projectArchived}
+                  readOnly={projectArchived !== false}
                 />
               )}
 
@@ -619,7 +619,7 @@ function ImageView() {
                   onGroupChanged={(newGroupId) => {
                     setImage(prev => prev ? { ...prev, group_id: newGroupId } : prev);
                   }}
-                  readOnly={projectArchived}
+                  readOnly={projectArchived !== false}
                 />
               )}
 
@@ -630,7 +630,7 @@ function ImageView() {
                 loading={loading}
                 setLoading={setLoading}
                 setError={setError}
-                readOnly={projectArchived}
+                readOnly={projectArchived !== false}
               />
 
 
@@ -639,7 +639,7 @@ function ImageView() {
                 loading={loading}
                 setLoading={setLoading}
                 setError={setError}
-                readOnly={projectArchived}
+                readOnly={projectArchived !== false}
               />
 
               <ImageMetadata
@@ -732,7 +732,7 @@ function ImageView() {
           </div>
 
           {/* Keep deletion controls at the bottom for all to see (hidden for archived projects) */}
-          {!projectArchived && (
+          {projectArchived === false && (
             <ImageDeletionControls
               projectId={projectId}
               image={image}
