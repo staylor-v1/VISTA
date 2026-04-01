@@ -16,6 +16,7 @@ import utils.crud as crud
 router = APIRouter(tags=["Inspection Workbench"])
 
 WORKSPACE_STATE_KEY_PREFIX = "inspection_workbench.workspace_state"
+PROJECT_CONFIGURATION_KEY = "inspection_workbench.project_configuration"
 ANNOTATIONS_METADATA_KEY = "annotations"
 
 
@@ -58,6 +59,34 @@ def _part_annotations(part) -> List[dict]:
     metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
     annotations = metadata.get(ANNOTATIONS_METADATA_KEY)
     return list(annotations) if isinstance(annotations, list) else []
+
+
+def _default_project_configuration() -> dict:
+    return {
+        "image_modalities": [
+            {
+                "id": "visual",
+                "label": "Visual",
+                "calibration_required": False,
+                "example_image_uploaded": False,
+            }
+        ],
+        "part_views": [
+            {"id": "front", "label": "Front", "required_modalities": ["visual"], "source": "manual"},
+            {"id": "back", "label": "Back", "required_modalities": ["visual"], "source": "manual"},
+        ],
+        "defect_types": [],
+        "process_settings": {
+            "require_disposition_on_submit": True,
+            "require_measurement_for_critical": False,
+            "require_second_reviewer_for_reject": False,
+        },
+        "display_settings": {
+            "default_colormap": "grayscale",
+            "anomaly_colormap": "viridis",
+            "grayscale_base_image": True,
+        },
+    }
 
 
 @router.post(
@@ -450,5 +479,56 @@ async def update_inspection_workspace_state(
         "project_id": project_id,
         "user_email": current_user.email,
         "state": safe_state,
+        "updated_at": updated.updated_at,
+    }
+
+
+@router.get(
+    "/projects/{project_id}/configuration",
+    response_model=schemas.InspectionProjectConfigurationResponse,
+)
+async def get_project_configuration(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    metadata = await crud.get_project_metadata_by_key(
+        db=db,
+        project_id=project_id,
+        key=PROJECT_CONFIGURATION_KEY,
+    )
+    raw_config = metadata.value if metadata and isinstance(metadata.value, dict) else _default_project_configuration()
+    return {
+        "project_id": project_id,
+        "config": raw_config,
+        "updated_at": metadata.updated_at if metadata else None,
+    }
+
+
+@router.put(
+    "/projects/{project_id}/configuration",
+    response_model=schemas.InspectionProjectConfigurationResponse,
+)
+async def update_project_configuration(
+    project_id: uuid.UUID,
+    payload: schemas.InspectionProjectConfigurationPayload,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    updated = await crud.create_or_update_project_metadata(
+        db=db,
+        metadata=schemas.ProjectMetadataCreate(
+            project_id=project_id,
+            key=PROJECT_CONFIGURATION_KEY,
+            value=payload.config.model_dump(),
+        ),
+        created_by=current_user.email,
+    )
+    persisted = updated.value if isinstance(updated.value, dict) else _default_project_configuration()
+    return {
+        "project_id": project_id,
+        "config": persisted,
         "updated_at": updated.updated_at,
     }
