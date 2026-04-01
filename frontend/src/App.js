@@ -242,12 +242,11 @@ function App() {
     setToast(null);
   };
 
+  // Fetch the current user once on mount
   useEffect(() => {
-    // Fetch the current user
     fetch('/api/users/me')
       .then(response => {
         if (!response.ok) {
-          // If we get a 401, it's expected when authentication is disabled
           if (response.status === 401) {
             console.log("Authentication is disabled or user is not logged in");
             return null;
@@ -264,9 +263,13 @@ function App() {
       .catch(err => {
         console.error("Failed to fetch current user:", err);
       });
+  }, []);
 
-    // Fetch projects from the API (non-archived only on initial load)
-    fetch('/api/projects/')
+  // Fetch projects from the API (runs on mount and when archive toggle changes)
+  useEffect(() => {
+    setLoading(true);
+    const url = showArchived ? '/api/projects/?include_archived=true' : '/api/projects/';
+    fetch(url)
       .then(response => {
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
@@ -282,16 +285,16 @@ function App() {
         showToast(`Failed to fetch projects: ${err.message}`, 'error');
         setLoading(false);
       });
-  }, []); // Empty dependency array means this effect runs once on mount
+  }, [showArchived]);
 
   // Log component renders for debugging
   console.log("App render count:", ++renderCount);
-  
+
   // Handle project creation form submission
   const handleCreateProject = useCallback((projectData) => {
     console.log("Creating project:", projectData);
     setLoading(true);
-    
+
     fetch('/api/projects/', {
       method: 'POST',
       headers: {
@@ -301,11 +304,9 @@ function App() {
     })
       .then(response => {
         if (!response.ok) {
-          // Parse the error response
           return response.json().then(errorData => {
             throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
           }).catch(jsonError => {
-            // If parsing JSON fails, use a generic error message
             throw new Error(`HTTP error! status: ${response.status}`);
           });
         }
@@ -313,12 +314,9 @@ function App() {
       })
       .then(data => {
         console.log("Project created successfully:", data);
-        // Add the new project to the projects list
         setProjects(prev => [...prev, data]);
-        // Close modal
         setShowModal(false);
         setLoading(false);
-        // Show success toast
         showToast(`Project "${data.name}" created successfully!`, 'success');
       })
       .catch(err => {
@@ -327,18 +325,6 @@ function App() {
         setLoading(false);
       });
   }, []);
-
-  // Re-fetch project list when archive visibility changes
-  useEffect(() => {
-    const url = showArchived ? '/api/projects/?include_archived=true' : '/api/projects/';
-    fetch(url)
-      .then(response => {
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        return response.json();
-      })
-      .then(data => setProjects(data))
-      .catch(err => console.error("Failed to refresh projects:", err));
-  }, [showArchived]);
 
   // Handle archive/unarchive toggle from ProjectItem
   const handleArchiveToggle = useCallback((updatedProject) => {
