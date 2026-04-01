@@ -202,6 +202,56 @@ class InspectionAnnotationListResponse(BaseModel):
     part_id: uuid.UUID
     annotations: List[InspectionAnnotation]
 
+
+class InspectionProjectModalityConfig(BaseModel):
+    id: str = Field(..., min_length=1, max_length=64)
+    label: str = Field(..., min_length=1, max_length=128)
+    calibration_required: bool = False
+    example_image_uploaded: bool = False
+
+
+class InspectionProjectPartViewConfig(BaseModel):
+    id: str = Field(..., min_length=1, max_length=64)
+    label: str = Field(..., min_length=1, max_length=128)
+    required_modalities: List[str] = Field(default_factory=list)
+    source: str = Field(default="manual", pattern=r"^(manual|auto)$")
+
+
+class InspectionProjectDefectTypeConfig(BaseModel):
+    name: str = Field(..., min_length=1, max_length=128)
+    color: str = Field(default="#ef4444", min_length=4, max_length=16)
+    definition: Optional[str] = Field(default=None, max_length=2000)
+
+
+class InspectionProjectProcessSettingsConfig(BaseModel):
+    require_disposition_on_submit: bool = True
+    require_measurement_for_critical: bool = False
+    require_second_reviewer_for_reject: bool = False
+
+
+class InspectionProjectDisplaySettingsConfig(BaseModel):
+    default_colormap: str = Field(default="grayscale", min_length=1, max_length=64)
+    anomaly_colormap: str = Field(default="viridis", min_length=1, max_length=64)
+    grayscale_base_image: bool = True
+
+
+class InspectionProjectConfiguration(BaseModel):
+    image_modalities: List[InspectionProjectModalityConfig] = Field(default_factory=list)
+    part_views: List[InspectionProjectPartViewConfig] = Field(default_factory=list)
+    defect_types: List[InspectionProjectDefectTypeConfig] = Field(default_factory=list)
+    process_settings: InspectionProjectProcessSettingsConfig = Field(default_factory=InspectionProjectProcessSettingsConfig)
+    display_settings: InspectionProjectDisplaySettingsConfig = Field(default_factory=InspectionProjectDisplaySettingsConfig)
+
+
+class InspectionProjectConfigurationPayload(BaseModel):
+    config: InspectionProjectConfiguration
+
+
+class InspectionProjectConfigurationResponse(BaseModel):
+    project_id: uuid.UUID
+    config: InspectionProjectConfiguration
+    updated_at: Optional[datetime] = None
+
 # ImageGroup schemas
 class ImageGroupBase(BaseModel):
     identifier: str = Field(..., min_length=1, max_length=255)
