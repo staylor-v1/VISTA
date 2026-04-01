@@ -109,6 +109,13 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [inspectorViewport, setInspectorViewport] = useState({ zoom: 1, panX: 0, panY: 0 });
   const [annotations, setAnnotations] = useState([]);
   const [annotationsLoading, setAnnotationsLoading] = useState(false);
+  const [editingAnnotationId, setEditingAnnotationId] = useState(null);
+  const [annotationEditDraft, setAnnotationEditDraft] = useState({
+    defect_class: '',
+    modality: '',
+    comment: '',
+    disposition: 'open',
+  });
   const [annotationDraft, setAnnotationDraft] = useState({
     defect_class: '',
     modality: '',
@@ -602,6 +609,50 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     }
   };
 
+  const startAnnotationEdit = (annotation) => {
+    setEditingAnnotationId(annotation.id);
+    setAnnotationEditDraft({
+      defect_class: annotation.defect_class || '',
+      modality: annotation.modality || '',
+      comment: annotation.comment || '',
+      disposition: annotation.disposition || 'open',
+    });
+  };
+
+  const cancelAnnotationEdit = () => {
+    setEditingAnnotationId(null);
+    setAnnotationEditDraft({
+      defect_class: '',
+      modality: '',
+      comment: '',
+      disposition: 'open',
+    });
+  };
+
+  const updateAnnotationDetails = async (annotationId) => {
+    if (!selectedPart?.id || !annotationEditDraft.defect_class.trim()) return;
+    try {
+      const resp = await fetch(`/api/projects/${projectId}/parts/${selectedPart.id}/annotations/${annotationId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          defect_class: annotationEditDraft.defect_class.trim(),
+          modality: (annotationEditDraft.modality || enabledModalities[0] || modalityOptions[0] || 'visual').trim(),
+          comment: annotationEditDraft.comment.trim() || null,
+          disposition: annotationEditDraft.disposition,
+        }),
+      });
+      if (!resp.ok) {
+        throw new Error(`Failed to update annotation (${resp.status})`);
+      }
+      const updated = await resp.json();
+      setAnnotations((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      cancelAnnotationEdit();
+    } catch (err) {
+      setError(err.message || 'Failed to update annotation');
+    }
+  };
+
   return (
     <section className="workbench-panel" aria-label="Inspection Workbench">
       <div className="workbench-header">
@@ -914,21 +965,69 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                         ) : (
                           annotations.map((annotation) => (
                             <li key={annotation.id}>
-                              <span>
-                                {annotation.defect_class} • {annotation.modality} • {annotation.disposition}
-                                {annotation.hidden ? ' • Hidden' : ' • Visible'}
-                                {' • '}
-                                {annotation.updated_by || annotation.created_by || 'unknown'}
-                                {' @ '}
-                                {(annotation.updated_at || annotation.created_at || '').slice(0, 19).replace('T', ' ')}
-                              </span>
-                              <button
-                                type="button"
-                                className="btn btn-secondary btn-sm"
-                                onClick={() => updateAnnotationVisibility(annotation.id, !annotation.hidden)}
-                              >
-                                {annotation.hidden ? 'Show' : 'Hide'}
-                              </button>
+                              {editingAnnotationId === annotation.id ? (
+                                <div className="measurement-fields">
+                                  <input
+                                    type="text"
+                                    aria-label="Edit annotation defect class"
+                                    value={annotationEditDraft.defect_class}
+                                    onChange={(event) => setAnnotationEditDraft((prev) => ({ ...prev, defect_class: event.target.value }))}
+                                  />
+                                  <input
+                                    type="text"
+                                    aria-label="Edit annotation modality"
+                                    value={annotationEditDraft.modality}
+                                    onChange={(event) => setAnnotationEditDraft((prev) => ({ ...prev, modality: event.target.value }))}
+                                  />
+                                  <select
+                                    aria-label="Edit annotation disposition"
+                                    value={annotationEditDraft.disposition}
+                                    onChange={(event) => setAnnotationEditDraft((prev) => ({ ...prev, disposition: event.target.value }))}
+                                  >
+                                    <option value="open">Open</option>
+                                    <option value="accepted">Accepted</option>
+                                    <option value="rejected">Rejected</option>
+                                    <option value="needs_info">Needs Info</option>
+                                  </select>
+                                  <input
+                                    type="text"
+                                    aria-label="Edit annotation comment"
+                                    value={annotationEditDraft.comment}
+                                    onChange={(event) => setAnnotationEditDraft((prev) => ({ ...prev, comment: event.target.value }))}
+                                  />
+                                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => updateAnnotationDetails(annotation.id)}>
+                                    Save
+                                  </button>
+                                  <button type="button" className="btn btn-secondary btn-sm" onClick={cancelAnnotationEdit}>
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <>
+                                  <span>
+                                    {annotation.defect_class} • {annotation.modality} • {annotation.disposition}
+                                    {annotation.hidden ? ' • Hidden' : ' • Visible'}
+                                    {' • '}
+                                    {annotation.updated_by || annotation.created_by || 'unknown'}
+                                    {' @ '}
+                                    {(annotation.updated_at || annotation.created_at || '').slice(0, 19).replace('T', ' ')}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="btn btn-secondary btn-sm"
+                                    onClick={() => startAnnotationEdit(annotation)}
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn btn-secondary btn-sm"
+                                    onClick={() => updateAnnotationVisibility(annotation.id, !annotation.hidden)}
+                                  >
+                                    {annotation.hidden ? 'Show' : 'Hide'}
+                                  </button>
+                                </>
+                              )}
                             </li>
                           ))
                         )}

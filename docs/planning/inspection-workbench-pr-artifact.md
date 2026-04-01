@@ -190,10 +190,12 @@ When preparing upstream PRs:
 - Persisted annotations in part metadata (`metadata.annotations`) to avoid schema migration during this milestone.
 - Added pytest API coverage in existing test suite for three simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) verifying create/edit/hide/show and audit metadata.
 
-#### PR-10 milestone 2 (in progress in artifact branch)
+#### PR-10 milestone 2 (implemented in artifact branch)
 - Added inspection workbench frontend annotation controls with unified payload inputs (`defect_class`, `modality`, `comment`, `disposition`, `measurements`, `bbox`) and create action against existing PR-10 milestone-1 backend APIs.
 - Added in-panel annotation audit rendering (`updated_by`, `updated_at`) plus hide/show toggles mapped to `PATCH /annotations/{annotation_id}`.
 - Extended existing React Testing Library suite to validate three progressive simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) for create + hide/show + audit metadata visibility.
+- Added in-panel annotation edit workflow for existing records with save/cancel controls and PATCH updates for `defect_class`, `modality`, `comment`, and `disposition`.
+- Extended existing React Testing Library coverage to verify annotation edit + save flows while preserving hide/show + audit metadata assertions across all project types and progressive synthetic user scenarios.
 
 ### PR-11 — project configuration surface
 - Add Project Configuration tab sections for:
