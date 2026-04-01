@@ -137,3 +137,78 @@ def test_archived_project_blocks_class_creation(client):
     )
     assert r2.status_code == 403
     assert "archived" in r2.json()["detail"].lower()
+
+
+def test_archived_project_blocks_group_creation(client):
+    """Group creation should be blocked for archived projects."""
+    r = client.post("/api/projects/", json={"name": "GroupArchTest", "description": "", "meta_group_id": "g1"})
+    assert r.status_code == 201
+    pid = r.json()["id"]
+    client.patch(f"/api/projects/{pid}/archive")
+
+    r2 = client.post(
+        f"/api/projects/{pid}/groups",
+        json={"identifier": "grp1", "project_id": pid},
+    )
+    assert r2.status_code == 403
+    assert "archived" in r2.json()["detail"].lower()
+
+
+def test_archived_project_blocks_comment_creation(client):
+    """Comment creation should be blocked for archived projects."""
+    import io
+
+    # Create project and upload an image before archiving
+    r = client.post("/api/projects/", json={"name": "CommentArchTest", "description": "", "meta_group_id": "g1"})
+    assert r.status_code == 201
+    pid = r.json()["id"]
+
+    fake_image = io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+    img_resp = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("test.png", fake_image, "image/png")},
+    )
+    assert img_resp.status_code == 201
+    image_id = img_resp.json()["id"]
+
+    # Archive the project
+    client.patch(f"/api/projects/{pid}/archive")
+
+    # Attempt to add a comment
+    r2 = client.post(
+        f"/api/images/{image_id}/comments",
+        json={"text": "This should be blocked"},
+    )
+    assert r2.status_code == 403
+    assert "archived" in r2.json()["detail"].lower()
+
+
+def test_archived_project_blocks_image_deletion(client):
+    """Image deletion should be blocked for archived projects."""
+    import io
+
+    r = client.post("/api/projects/", json={"name": "DelArchTest", "description": "", "meta_group_id": "g1"})
+    assert r.status_code == 201
+    pid = r.json()["id"]
+
+    fake_image = io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+    img_resp = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("test.png", fake_image, "image/png")},
+    )
+    assert img_resp.status_code == 201
+    image_id = img_resp.json()["id"]
+
+    # Archive the project
+    client.patch(f"/api/projects/{pid}/archive")
+
+    # Attempt to delete the image
+    import json
+    r2 = client.request(
+        "DELETE",
+        f"/api/projects/{pid}/images/{image_id}",
+        content=json.dumps({"reason": "Testing archive block"}),
+        headers={"Content-Type": "application/json"},
+    )
+    assert r2.status_code == 403
+    assert "archived" in r2.json()["detail"].lower()

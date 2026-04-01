@@ -120,6 +120,12 @@ async def archive_project(
     # can be archived by any group member, since there is no creator to enforce ownership.
 
     result = await crud.archive_project(db=db, project_id=project_id, archived_by=current_user.email)
+
+    # Invalidate project list cache for all common pagination patterns
+    cache = Cache()
+    for pattern_limit in [10, 20, 50, 100]:
+        await cache.delete(f"projects:user:{current_user.email}:skip:0:limit:{pattern_limit}")
+
     return result
 
 
@@ -147,4 +153,10 @@ async def unarchive_project(
     # can be unarchived by any group member, since there is no creator to enforce ownership.
 
     result = await crud.unarchive_project(db=db, project_id=project_id, unarchived_by=current_user.email)
+
+    # Invalidate project list cache for all common pagination patterns
+    cache = Cache()
+    for pattern_limit in [10, 20, 50, 100]:
+        await cache.delete(f"projects:user:{current_user.email}:skip:0:limit:{pattern_limit}")
+
     return result

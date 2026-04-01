@@ -162,7 +162,7 @@ async def get_accessible_projects_for_user(
     user: User,
     skip: int = 0,
     limit: int = 100,
-    include_archived: bool = True,
+    include_archived: bool = False,
 ) -> List[models.Project]:
     """Return projects the user can access based on group membership."""
     all_projects = await crud.get_all_projects(db, skip, limit, include_archived=include_archived)

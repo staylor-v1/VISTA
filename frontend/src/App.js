@@ -265,8 +265,8 @@ function App() {
         console.error("Failed to fetch current user:", err);
       });
 
-    // Fetch projects from the API
-    fetch('/api/projects/?include_archived=true')
+    // Fetch projects from the API (non-archived only on initial load)
+    fetch('/api/projects/')
       .then(response => {
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
@@ -328,13 +328,32 @@ function App() {
       });
   }, []);
 
+  // Re-fetch project list when archive visibility changes
+  useEffect(() => {
+    const url = showArchived ? '/api/projects/?include_archived=true' : '/api/projects/';
+    fetch(url)
+      .then(response => {
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        return response.json();
+      })
+      .then(data => setProjects(data))
+      .catch(err => console.error("Failed to refresh projects:", err));
+  }, [showArchived]);
+
   // Handle archive/unarchive toggle from ProjectItem
   const handleArchiveToggle = useCallback((updatedProject) => {
-    setProjects(prev => prev.map(p => p.id === updatedProject.id ? updatedProject : p));
-  }, []);
+    setProjects(prev => {
+      // If the project was just archived and we are not showing archived, remove it
+      if (updatedProject.is_archived && !showArchived) {
+        return prev.filter(p => p.id !== updatedProject.id);
+      }
+      // Otherwise update it in place
+      return prev.map(p => p.id === updatedProject.id ? updatedProject : p);
+    });
+  }, [showArchived]);
 
   const HomePage = () => {
-    const visibleProjects = showArchived ? projects : projects.filter(p => !p.is_archived);
+    const visibleProjects = projects;
 
     return (
     <div className="App">
