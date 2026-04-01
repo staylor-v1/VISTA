@@ -540,3 +540,175 @@ def test_part_annotations_support_progressive_users_with_audit_trail(client, pro
         assert len(returned_annotations) == 1
         assert returned_annotations[0]["id"] == annotation_id
         assert returned_annotations[0]["hidden"] is True
+
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_project_configuration_round_trip_supports_progressive_users(client, project_type):
+    scenarios = [
+        {
+            "email": f"config-basic-{project_type.lower()}@example.com",
+            "group": f"{project_type.lower()}-config-basic",
+            "payload": {
+                "image_modalities": [
+                    {
+                        "id": "visual",
+                        "label": "Visual",
+                        "calibration_required": False,
+                        "example_image_uploaded": False,
+                    }
+                ],
+                "part_views": [
+                    {"id": "front", "label": "Front", "required_modalities": ["visual"], "source": "manual"}
+                ],
+                "defect_types": [
+                    {"name": "scratch", "color": "#ef4444", "definition": "Linear visible surface scratch"}
+                ],
+                "process_settings": {
+                    "require_disposition_on_submit": True,
+                    "require_measurement_for_critical": False,
+                    "require_second_reviewer_for_reject": False,
+                },
+                "display_settings": {
+                    "default_colormap": "grayscale",
+                    "anomaly_colormap": "viridis",
+                    "grayscale_base_image": True,
+                },
+            },
+        },
+        {
+            "email": f"config-intermediate-{project_type.lower()}@example.com",
+            "group": f"{project_type.lower()}-config-intermediate",
+            "payload": {
+                "image_modalities": [
+                    {
+                        "id": "visual",
+                        "label": "Visual",
+                        "calibration_required": False,
+                        "example_image_uploaded": True,
+                    },
+                    {
+                        "id": "infrared",
+                        "label": "Infrared",
+                        "calibration_required": True,
+                        "example_image_uploaded": False,
+                    },
+                ],
+                "part_views": [
+                    {
+                        "id": "front",
+                        "label": "Front",
+                        "required_modalities": ["visual", "infrared"],
+                        "source": "manual",
+                    },
+                    {"id": "top", "label": "Top", "required_modalities": ["visual"], "source": "auto"},
+                ],
+                "defect_types": [
+                    {"name": "void_cluster", "color": "#8b5cf6", "definition": "Cluster of internal voids"},
+                    {"name": "inclusion", "color": "#f59e0b", "definition": "Foreign inclusion in substrate"},
+                ],
+                "process_settings": {
+                    "require_disposition_on_submit": True,
+                    "require_measurement_for_critical": True,
+                    "require_second_reviewer_for_reject": False,
+                },
+                "display_settings": {
+                    "default_colormap": "grayscale",
+                    "anomaly_colormap": "magma",
+                    "grayscale_base_image": True,
+                },
+            },
+        },
+        {
+            "email": f"config-advanced-{project_type.lower()}@example.com",
+            "group": f"{project_type.lower()}-config-advanced",
+            "payload": {
+                "image_modalities": [
+                    {
+                        "id": "visual",
+                        "label": "Visual",
+                        "calibration_required": False,
+                        "example_image_uploaded": True,
+                    },
+                    {
+                        "id": "infrared",
+                        "label": "Infrared",
+                        "calibration_required": True,
+                        "example_image_uploaded": True,
+                    },
+                    {
+                        "id": "uv",
+                        "label": "UV",
+                        "calibration_required": True,
+                        "example_image_uploaded": True,
+                    },
+                ],
+                "part_views": [
+                    {
+                        "id": "front",
+                        "label": "Front",
+                        "required_modalities": ["visual", "infrared", "uv"],
+                        "source": "manual",
+                    },
+                    {
+                        "id": "sagittal",
+                        "label": "Sagittal",
+                        "required_modalities": ["infrared", "uv"],
+                        "source": "auto",
+                    },
+                    {"id": "axial", "label": "Axial", "required_modalities": ["uv"], "source": "auto"},
+                ],
+                "defect_types": [
+                    {"name": "delamination", "color": "#dc2626", "definition": "Layer separation"},
+                    {"name": "porosity", "color": "#0284c7", "definition": "Distributed pore network"},
+                    {"name": "burn_through", "color": "#7c3aed", "definition": "Material burn-through"},
+                ],
+                "process_settings": {
+                    "require_disposition_on_submit": True,
+                    "require_measurement_for_critical": True,
+                    "require_second_reviewer_for_reject": True,
+                },
+                "display_settings": {
+                    "default_colormap": "grayscale",
+                    "anomaly_colormap": "turbo",
+                    "grayscale_base_image": False,
+                },
+            },
+        },
+    ]
+
+    for scenario in scenarios:
+        headers = {
+            "X-User-Id": scenario["email"],
+            "X-User-Groups": f"[\"{scenario['group']}\"]",
+        }
+        project_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": f"{project_type} config workflow {scenario['group']}",
+                "description": "project configuration workflow",
+                "meta_group_id": scenario["group"],
+                "project_type": project_type,
+            },
+            headers=headers,
+        )
+        assert project_resp.status_code == 201, project_resp.text
+        project_id = project_resp.json()["id"]
+
+        initial_resp = client.get(f"/api/projects/{project_id}/configuration", headers=headers)
+        assert initial_resp.status_code == 200, initial_resp.text
+        initial_config = initial_resp.json()["config"]
+        assert "image_modalities" in initial_config
+        assert "part_views" in initial_config
+        assert "defect_types" in initial_config
+
+        save_resp = client.put(
+            f"/api/projects/{project_id}/configuration",
+            json={"config": scenario["payload"]},
+            headers=headers,
+        )
+        assert save_resp.status_code == 200, save_resp.text
+        assert save_resp.json()["config"] == scenario["payload"]
+
+        reload_resp = client.get(f"/api/projects/{project_id}/configuration", headers=headers)
+        assert reload_resp.status_code == 200, reload_resp.text
+        assert reload_resp.json()["config"] == scenario["payload"]

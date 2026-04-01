@@ -31,7 +31,7 @@ This file is the execution artifact for the orchestrated migration so the combin
 - [x] PR-08 implemented in current working branch.
 - [~] PR-09 in progress (milestone 1 landed: inspector modalities/quick-switch/measurement capture controls).
 - [~] PR-10 in progress (milestone 1 started: backend annotation payload + audit metadata endpoints).
-- [ ] PR-11 not started.
+- [~] PR-11 in progress (milestone 1 started: backend project-configuration API baseline).
 - [ ] PR-12 not started.
 
 ## PR-02 scope record (implemented)
@@ -207,6 +207,14 @@ When preparing upstream PRs:
   - copy configuration from existing project.
 - Ensure project configuration options are available across project types unless explicitly constrained by product requirements.
 - Acceptance: form/API round-trip tests plus migration-safe defaults for existing projects.
+
+#### PR-11 milestone 1 (implemented in artifact branch)
+- Added inspection workbench backend project-configuration endpoints:
+  - `GET /api/projects/{project_id}/configuration`
+  - `PUT /api/projects/{project_id}/configuration`
+- Added migration-safe default configuration payload for existing projects with no persisted config metadata.
+- Added strongly typed configuration schemas covering modalities, part views, defect types, process settings, and display settings.
+- Added pytest API coverage in the existing test framework for three progressive simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) to verify configuration read/write round-trip behavior.
 
 ### PR-12 — hardening + discrepancy workflows + governance closeout
 - Add delete-project flow with restricted access + explicit warning confirmation UX (if not completed in PR-07).
