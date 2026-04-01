@@ -236,7 +236,7 @@ async def get_all_projects(db: AsyncSession, skip: int = 0, limit: int = 100, in
     """
     query = select(models.Project)
     if not include_archived:
-        query = query.where(models.Project.is_archived == False)
+        query = query.where(models.Project.is_archived.is_(False))
     result = await db.execute(
         query
         .offset(skip)
