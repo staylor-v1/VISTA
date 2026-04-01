@@ -269,8 +269,10 @@ function ImageView() {
     
     loadImageData();
     loadClasses();
+  }, [imageId, projectId, loadImageData, loadClasses]);
 
-    // Fetch project archive status
+  // Fetch project archive status (only when projectId changes, not on every image navigation)
+  useEffect(() => {
     if (projectId) {
       fetch(`/api/projects/${projectId}`)
         .then(r => r.ok ? r.json() : null)
@@ -279,7 +281,7 @@ function ImageView() {
         })
         .catch(() => {});
     }
-  }, [imageId, projectId, loadImageData, loadClasses]);
+  }, [projectId]);
 
   // Load project images for navigation once we know the current image's group
   useEffect(() => {
