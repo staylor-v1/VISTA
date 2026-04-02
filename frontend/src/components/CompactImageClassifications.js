@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 
-function CompactImageClassifications({ imageId, classes, loading, setLoading, setError, onClassificationsChange }) {
+function CompactImageClassifications({ imageId, classes, loading, setLoading, setError, onClassificationsChange, readOnly = false }) {
   const [imageClassifications, setImageClassifications] = useState([]);
   const [showHelp, setShowHelp] = useState(false);
 
@@ -177,7 +177,8 @@ function CompactImageClassifications({ imageId, classes, loading, setLoading, se
   // Handle keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e) => {
-      // Ignore if user is typing in an input field
+      // Ignore if project is archived or user is typing in an input field
+      if (readOnly) return;
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
         return;
       }
@@ -211,7 +212,7 @@ function CompactImageClassifications({ imageId, classes, loading, setLoading, se
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [hotkeyMap, handleClassifyImage, showHelp]);
+  }, [hotkeyMap, handleClassifyImage, showHelp, readOnly]);
 
   return (
     <div className="compact-classifications">
@@ -221,13 +222,14 @@ function CompactImageClassifications({ imageId, classes, loading, setLoading, se
             const hotkey = hotkeyMap.get(cls.id);
             const selected = isClassSelected(cls.id);
             return (
-              <button 
+              <button
                 key={cls.id}
-                type="button" 
+                type="button"
                 className={`compact-class-btn ${selected ? 'selected' : ''}`}
-                onClick={() => handleClassifyImage(cls.id)}
+                onClick={() => { if (!readOnly) handleClassifyImage(cls.id); }}
+                disabled={readOnly}
                 data-class-id={cls.id}
-                title={`${cls.description || cls.name}${hotkey ? ` - Press '${hotkey}'` : ''}`}
+                title={readOnly ? 'Project is archived (read-only)' : `${cls.description || cls.name}${hotkey ? ` - Press '${hotkey}'` : ''}`}
               >
                 {cls.name} {hotkey && <span className="hotkey">({hotkey})</span>}
               </button>

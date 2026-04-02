@@ -14,7 +14,7 @@ const STATUS_COLORS = {
   reject_confirmed: '#dc2626',
 };
 
-function ReviewPanel({ imageId }) {
+function ReviewPanel({ imageId, readOnly = false }) {
   const [reviews, setReviews] = useState([]);
   const [currentStatus, setCurrentStatus] = useState('unreviewed');
   const [loading, setLoading] = useState(true);
@@ -150,7 +150,7 @@ function ReviewPanel({ imageId }) {
       <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.5rem' }}>
         <button
           onClick={() => submitReview('pass')}
-          disabled={submitting || loading}
+          disabled={submitting || loading || readOnly}
           style={{
             flex: 1,
             padding: '0.5rem 0.75rem',
@@ -169,7 +169,7 @@ function ReviewPanel({ imageId }) {
         </button>
         <button
           onClick={() => submitReview('reject_pending')}
-          disabled={submitting || loading}
+          disabled={submitting || loading || readOnly}
           style={{
             flex: 1,
             padding: '0.5rem 0.75rem',
@@ -211,7 +211,7 @@ function ReviewPanel({ imageId }) {
               onChange={() => {
                 submitReview('reject_confirmed');
               }}
-              disabled={submitting}
+              disabled={submitting || readOnly}
               style={{ cursor: 'pointer' }}
             />
             <span style={{ fontWeight: 500 }}>
@@ -230,7 +230,7 @@ function ReviewPanel({ imageId }) {
       )}
 
       {/* Reset to unreviewed */}
-      {currentStatus !== 'unreviewed' && reviews.length > 0 && (
+      {currentStatus !== 'unreviewed' && reviews.length > 0 && !readOnly && (
         <button
           onClick={() => revokeReview(reviews[0].id)}
           disabled={submitting}
