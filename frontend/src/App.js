@@ -444,13 +444,6 @@ function App() {
                 </span>
               </div>
             </div>
-            {visibleProjects.length === 0 && (
-              <div className="card text-center">
-                <div className="card-content">
-                  <p style={{ color: 'var(--gray-500)' }}>All projects are archived. Toggle "Show archived" to view them.</p>
-                </div>
-              </div>
-            )}
             <div className="projects-grid">
               {visibleProjects.map(project => (
                 <ProjectItem
