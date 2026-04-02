@@ -398,27 +398,7 @@ function App() {
           </div>
         )}
         
-        {!loading && projects.length === 0 && (
-          <div className="card text-center">
-            <div className="card-content">
-              <div style={{ fontSize: '4rem', marginBottom: 'var(--space-4)' }}>+</div>
-              <h3 style={{ marginBottom: 'var(--space-4)', color: 'var(--gray-600)' }}>
-                No projects yet
-              </h3>
-              <p style={{ color: 'var(--gray-500)', marginBottom: 'var(--space-6)' }}>
-                Get started by creating your first image management project
-              </p>
-              <button 
-                className="btn btn-primary btn-large"
-                onClick={() => setShowModal(true)}
-              >
-                Create Your First Project
-              </button>
-            </div>
-          </div>
-        )}
-        
-        {!loading && projects.length > 0 && (
+        {!loading && (
           <>
             <div className="flex justify-between items-center mb-6">
               <h2 style={{ margin: 0, color: 'var(--gray-900)', fontSize: '1.5rem', fontWeight: '600' }}>
@@ -444,16 +424,37 @@ function App() {
                 </span>
               </div>
             </div>
-            <div className="projects-grid">
-              {visibleProjects.map(project => (
-                <ProjectItem
-                  key={project.id}
-                  project={project}
-                  currentUser={currentUser}
-                  onArchiveToggle={handleArchiveToggle}
-                />
-              ))}
-            </div>
+            {visibleProjects.length === 0 ? (
+              <div className="card text-center">
+                <div className="card-content">
+                  <h3 style={{ marginBottom: 'var(--space-4)', color: 'var(--gray-600)' }}>
+                    {showArchived ? 'No projects yet' : 'No active projects'}
+                  </h3>
+                  <p style={{ color: 'var(--gray-500)', marginBottom: 'var(--space-6)' }}>
+                    {showArchived
+                      ? 'Get started by creating your first image management project'
+                      : 'All projects may be archived. Toggle "Show archived" above, or create a new project.'}
+                  </p>
+                  <button
+                    className="btn btn-primary btn-large"
+                    onClick={() => setShowModal(true)}
+                  >
+                    Create New Project
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="projects-grid">
+                {visibleProjects.map(project => (
+                  <ProjectItem
+                    key={project.id}
+                    project={project}
+                    currentUser={currentUser}
+                    onArchiveToggle={handleArchiveToggle}
+                  />
+                ))}
+              </div>
+            )}
           </>
         )}
       </div>
