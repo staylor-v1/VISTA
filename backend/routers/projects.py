@@ -6,7 +6,7 @@ import utils.crud as crud
 from core import schemas
 from core.database import get_db
 from core.group_auth_helper import is_user_in_group
-from utils.dependencies import get_current_user
+from utils.dependencies import get_current_user, require_proxy_user
 from aiocache import Cache
 
 router = APIRouter(
@@ -145,3 +145,49 @@ async def update_existing_project(
         await cache.delete(cache_key)
 
     return updated
+
+
+@router.delete("/{project_id}", response_model=schemas.ProjectDeleteResponse)
+async def delete_existing_project(
+    project_id: uuid.UUID,
+    payload: schemas.ProjectDeleteRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(require_proxy_user),
+):
+    """
+    Delete a project after explicit user confirmation.
+    Requires proxy-authenticated user context and exact confirmation phrase:
+    ``DELETE <project_name>``.
+    """
+    db_project = await crud.get_project(db=db, project_id=project_id)
+    if db_project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    if not is_user_in_group(current_user.email, db_project.meta_group_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"User '{current_user.email}' does not have access to delete project '{project_id}' (group '{db_project.meta_group_id}').",
+        )
+
+    expected_phrase = f"DELETE {db_project.name}"
+    if payload.confirmation_phrase != expected_phrase:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Confirmation phrase mismatch. Expected '{expected_phrase}'.",
+        )
+
+    deleted = await crud.delete_project(db=db, project_id=project_id, deleted_by=current_user.email)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    cache = Cache()
+    cache_patterns = [
+        f"projects:user:{current_user.email}:skip:0:limit:100",
+        f"projects:user:{current_user.email}:skip:0:limit:50",
+        f"projects:user:{current_user.email}:skip:0:limit:20",
+        f"projects:user:{current_user.email}:skip:0:limit:10",
+    ]
+    for cache_key in cache_patterns:
+        await cache.delete(cache_key)
+
+    return schemas.ProjectDeleteResponse(project_id=project_id, deleted=True, deleted_by=current_user.email)
