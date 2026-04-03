@@ -206,6 +206,26 @@ function mockWorkbenchFetch({ batches, parts, workspaceState = {} }) {
   let annotationSeq = 0;
 
   global.fetch = jest.fn((url, options = {}) => {
+    if (url.includes('/export-bundle-json')) {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          project: { id: 'proj-1', project_type: 'PT1' },
+          summary: {
+            images: { total: mutableParts.length, total_bytes: mutableParts.length * 2048 },
+            annotations: {
+              total: Object.values(annotationsByPart).reduce((acc, entries) => acc + entries.length, 0),
+            },
+            overlays: {
+              segmentation_runs: mutableParts.reduce(
+                (acc, part) => acc + (Array.isArray(part.metadata?.segmentation_runs) ? part.metadata.segmentation_runs.length : 0),
+                0,
+              ),
+            },
+          },
+        }),
+      });
+    }
     if (url.includes('/workspace-state') && (!options.method || options.method === 'GET')) {
       return Promise.resolve({ ok: true, json: async () => ({ state: workspaceState }) });
     }
@@ -323,6 +343,10 @@ describe('InspectionWorkbenchPanel', () => {
 
       await waitFor(() => {
         expect(screen.getByText(`Batches: ${scenario.batches.length}`)).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByTestId('request-export-bundle-summary'));
+      await waitFor(() => {
+        expect(screen.getByTestId('export-bundle-summary-result')).toHaveTextContent(/Export summary ready:/);
       });
       expect(screen.getByText(`Parts: ${scenario.parts.length}`)).toBeInTheDocument();
       expect(screen.getByText(new RegExp(projectType))).toBeInTheDocument();
