@@ -801,3 +801,148 @@ def test_project_configuration_rejects_invalid_hotkeys(client, project_type):
         headers=headers,
     )
     assert save_resp.status_code == 422, save_resp.text
+
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_bulk_ingest_supports_progressive_users_with_discrepancy_counters(client, project_type):
+    scenarios = [
+        {
+            "name": "basic",
+            "group": f"{project_type.lower()}-ingest-basic",
+            "payload": {
+                "batches": [
+                    {
+                        "name": "batch-basic-a",
+                        "description": "Basic ingest",
+                        "parts": [
+                            {"serial_number": "SN-BASIC-001", "display_name": "Basic Housing 1"},
+                        ],
+                    }
+                ]
+            },
+            "expected": {
+                "batches_received": 1,
+                "parts_received": 1,
+                "batches_created": 1,
+                "parts_created": 1,
+                "parts_skipped_existing": 0,
+                "parts_skipped_discrepancy": 0,
+            },
+        },
+        {
+            "name": "intermediate",
+            "group": f"{project_type.lower()}-ingest-intermediate",
+            "payload": {
+                "batches": [
+                    {
+                        "name": "batch-mid-a",
+                        "description": "Mid ingest A",
+                        "parts": [
+                            {"serial_number": "SN-MID-001", "display_name": "Mid Housing 1"},
+                            {"serial_number": "SN-MID-002", "display_name": "Mid Housing 2"},
+                        ],
+                    },
+                    {
+                        "name": "batch-mid-b",
+                        "description": "Mid ingest B",
+                        "parts": [
+                            {"serial_number": "SN-MID-001", "display_name": "Mid Housing Duplicate"},
+                        ],
+                    },
+                ]
+            },
+            "expected": {
+                "batches_received": 2,
+                "parts_received": 3,
+                "batches_created": 2,
+                "parts_created": 2,
+                "parts_skipped_existing": 0,
+                "parts_skipped_discrepancy": 1,
+            },
+            "expected_discrepancy_codes": {"duplicate_serial_in_payload"},
+        },
+        {
+            "name": "advanced",
+            "group": f"{project_type.lower()}-ingest-advanced",
+            "seed_first": {
+                "batches": [
+                    {
+                        "name": "batch-seed",
+                        "description": "Seed",
+                        "parts": [
+                            {"serial_number": "SN-ADV-EXISTING", "display_name": "Existing Seed Part"},
+                            {"serial_number": "SN-ADV-CONFLICT", "display_name": "Conflict Seed Part"},
+                        ],
+                    }
+                ]
+            },
+            "payload": {
+                "batches": [
+                    {
+                        "name": "batch-seed",
+                        "description": "Seed",
+                        "parts": [
+                            {"serial_number": "SN-ADV-EXISTING", "display_name": "Existing Same Batch"},
+                        ],
+                    },
+                    {
+                        "name": "batch-adv-b",
+                        "description": "Advanced ingest",
+                        "parts": [
+                            {"serial_number": "SN-ADV-CONFLICT", "display_name": "Cross-Batch Conflict"},
+                            {"serial_number": "SN-ADV-NEW-001", "display_name": "Advanced New Part"},
+                        ],
+                    },
+                ]
+            },
+            "expected": {
+                "batches_received": 2,
+                "parts_received": 3,
+                "batches_created": 1,
+                "parts_created": 1,
+                "parts_skipped_existing": 1,
+                "parts_skipped_discrepancy": 1,
+            },
+            "expected_discrepancy_codes": {"serial_already_assigned_to_other_batch"},
+        },
+    ]
+
+    for scenario in scenarios:
+        headers = {
+            "X-User-Id": f"{scenario['name']}-{project_type.lower()}@example.com",
+            "X-User-Groups": f"[\"{scenario['group']}\"]",
+        }
+        project_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": f"{project_type} ingest workflow {scenario['name']}",
+                "description": "bulk ingest discrepancy workflow",
+                "meta_group_id": scenario["group"],
+                "project_type": project_type,
+            },
+            headers=headers,
+        )
+        assert project_resp.status_code == 201, project_resp.text
+        project_id = project_resp.json()["id"]
+
+        if scenario.get("seed_first"):
+            seed_resp = client.post(
+                f"/api/projects/{project_id}/ingest",
+                json=scenario["seed_first"],
+                headers=headers,
+            )
+            assert seed_resp.status_code == 200, seed_resp.text
+
+        ingest_resp = client.post(
+            f"/api/projects/{project_id}/ingest",
+            json=scenario["payload"],
+            headers=headers,
+        )
+        assert ingest_resp.status_code == 200, ingest_resp.text
+        payload = ingest_resp.json()
+        assert payload["project_id"] == project_id
+        assert payload["counters"] == scenario["expected"]
+
+        expected_codes = scenario.get("expected_discrepancy_codes", set())
+        discrepancy_codes = {entry["code"] for entry in payload["discrepancies"]}
+        assert discrepancy_codes == expected_codes
