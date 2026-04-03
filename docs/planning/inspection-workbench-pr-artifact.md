@@ -325,6 +325,16 @@ When preparing upstream PRs:
   - panel-layout controls render and mutate state,
   - adversarial dimensions are clamped before `PUT /workspace-state`.
 
+#### PR-12 milestone 4 (step 1 implemented in artifact branch)
+- Added backend bulk ingest endpoint:
+  - `POST /api/projects/{project_id}/ingest`
+- Added typed ingest payload/response schemas for batch + part records with discrepancy reporting and counters.
+- Implemented baseline discrepancy detection and part-organization validation:
+  - duplicate serial number entries within a single ingest payload,
+  - serial numbers already assigned to a different batch in the same project.
+- Preserved migration safety by reusing existing `inspection_batches` + `inspection_parts` persistence contracts (no new migration required).
+- Added backend pytest coverage in the existing test framework for three progressive synthetic users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) validating counters and discrepancy codes.
+
 #### PR-11 milestone 2 (step 1 implemented in artifact branch)
 - Added frontend **Project Configuration** tab in `Project` view so configuration workflows are first-class alongside `Inspection` and `Project Data`.
 - Added `ProjectConfigurationPanel` with backend round-trip wiring to existing PR-11 milestone-1 APIs:

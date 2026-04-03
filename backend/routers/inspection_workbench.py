@@ -596,3 +596,99 @@ async def update_project_configuration(
         "config": persisted,
         "updated_at": updated.updated_at,
     }
+
+
+@router.post(
+    "/projects/{project_id}/ingest",
+    response_model=schemas.InspectionBulkIngestResponse,
+)
+async def bulk_ingest_project_parts(
+    project_id: uuid.UUID,
+    payload: schemas.InspectionBulkIngestPayload,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+
+    existing_batches = await crud.list_inspection_batches(db=db, project_id=project_id)
+    batches_by_name = {batch.name: batch for batch in existing_batches}
+    existing_parts = await crud.list_inspection_parts(db=db, project_id=project_id)
+    parts_by_serial = {part.serial_number: part for part in existing_parts}
+
+    counters = {
+        "batches_received": len(payload.batches),
+        "parts_received": sum(len(batch.parts) for batch in payload.batches),
+        "batches_created": 0,
+        "parts_created": 0,
+        "parts_skipped_existing": 0,
+        "parts_skipped_discrepancy": 0,
+    }
+    discrepancies: List[dict] = []
+    payload_seen_serials: set[str] = set()
+
+    for ingest_batch in payload.batches:
+        target_batch = batches_by_name.get(ingest_batch.name)
+        if target_batch is None:
+            target_batch = await crud.create_inspection_batch(
+                db=db,
+                project_id=project_id,
+                batch=schemas.InspectionBatchCreate(
+                    name=ingest_batch.name,
+                    description=ingest_batch.description,
+                ),
+                created_by=current_user.email,
+            )
+            batches_by_name[ingest_batch.name] = target_batch
+            counters["batches_created"] += 1
+
+        for ingest_part in ingest_batch.parts:
+            serial_number = ingest_part.serial_number.strip()
+            if serial_number in payload_seen_serials:
+                counters["parts_skipped_discrepancy"] += 1
+                discrepancies.append(
+                    {
+                        "code": "duplicate_serial_in_payload",
+                        "batch_name": ingest_batch.name,
+                        "serial_number": serial_number,
+                        "message": "Serial number appears more than once in ingest payload",
+                    }
+                )
+                continue
+            payload_seen_serials.add(serial_number)
+
+            existing_part = parts_by_serial.get(serial_number)
+            if existing_part:
+                if existing_part.batch_id and existing_part.batch_id != target_batch.id:
+                    counters["parts_skipped_discrepancy"] += 1
+                    discrepancies.append(
+                        {
+                            "code": "serial_already_assigned_to_other_batch",
+                            "batch_name": ingest_batch.name,
+                            "serial_number": serial_number,
+                            "message": "Serial number already belongs to a different batch in this project",
+                        }
+                    )
+                    continue
+                counters["parts_skipped_existing"] += 1
+                continue
+
+            created_part = await crud.create_inspection_part(
+                db=db,
+                project_id=project_id,
+                part=schemas.InspectionPartCreate(
+                    batch_id=target_batch.id,
+                    serial_number=serial_number,
+                    display_name=ingest_part.display_name,
+                    metadata=ingest_part.metadata_json,
+                    review_state=ingest_part.review_state,
+                ),
+                created_by=current_user.email,
+            )
+            parts_by_serial[serial_number] = created_part
+            counters["parts_created"] += 1
+
+    return {
+        "project_id": project_id,
+        "counters": counters,
+        "discrepancies": discrepancies,
+    }
