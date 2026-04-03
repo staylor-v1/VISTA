@@ -286,6 +286,22 @@ When preparing upstream PRs:
   - correct phrase successfully deletes and removes project card from UI.
 - Artifact intent: this checkpoint commit can be cherry-picked as a clean PR focused strictly on PR-12 milestone-1 frontend governance UX while preserving previously landed backend policy constraints.
 
+#### PR-12 milestone 2 (step 1 implemented in artifact branch)
+- Added project-configuration schema support for configurable keyboard shortcuts in process settings:
+  - `process_settings.configurable_hotkeys.accept_classification`
+  - `process_settings.configurable_hotkeys.reject_classification`
+  - `process_settings.configurable_hotkeys.toggle_shortcut_help`
+- Added backend validation guardrails for configurable hotkeys:
+  - all three bindings are required,
+  - each binding must be a single alphanumeric key,
+  - key assignments must be unique to avoid collisions.
+- Added default configuration wiring so legacy projects receive migration-safe hotkey defaults (`a`, `r`, `h`) without schema migration.
+- Added frontend Project Configuration editing controls for hotkey bindings and preserved existing save contract (`PUT /api/projects/{project_id}/configuration`).
+- Extended existing automated coverage in current frameworks:
+  - backend pytest: progressive synthetic users (`basic`, `intermediate`, `advanced`) across `PT1/PT2/PT3` for configuration round-trip + invalid hotkey rejection,
+  - frontend RTL: progressive synthetic users across `PT1/PT2/PT3` for hotkey editing persistence.
+  - Playwright screenshot smoke + visual analytics recorded in `docs/planning/pr12-hotkeys-screenshot-analysis.md` (runtime screenshot artifact intentionally not committed).
+
 #### PR-11 milestone 2 (step 1 implemented in artifact branch)
 - Added frontend **Project Configuration** tab in `Project` view so configuration workflows are first-class alongside `Inspection` and `Project Data`.
 - Added `ProjectConfigurationPanel` with backend round-trip wiring to existing PR-11 milestone-1 APIs:

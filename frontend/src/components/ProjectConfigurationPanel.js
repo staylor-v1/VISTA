@@ -8,6 +8,11 @@ const EMPTY_CONFIG = {
     require_disposition_on_submit: true,
     require_measurement_for_critical: false,
     require_second_reviewer_for_reject: false,
+    configurable_hotkeys: {
+      accept_classification: 'a',
+      reject_classification: 'r',
+      toggle_shortcut_help: 'h',
+    },
   },
   display_settings: {
     default_colormap: 'grayscale',
@@ -201,6 +206,71 @@ function ProjectConfigurationPanel({ projectId }) {
               />
               Require disposition on submit
             </label>
+            <div className="workbench-controls-row">
+              <label htmlFor="hotkey-accept">Accept hotkey</label>
+              <input
+                id="hotkey-accept"
+                aria-label="Accept hotkey"
+                type="text"
+                maxLength={1}
+                value={config.process_settings?.configurable_hotkeys?.accept_classification || 'a'}
+                onChange={(event) => {
+                  const nextValue = event.target.value.toLowerCase();
+                  setConfig((previous) => ({
+                    ...previous,
+                    process_settings: {
+                      ...previous.process_settings,
+                      configurable_hotkeys: {
+                        ...(previous.process_settings?.configurable_hotkeys || {}),
+                        accept_classification: nextValue,
+                      },
+                    },
+                  }));
+                }}
+              />
+              <label htmlFor="hotkey-reject">Reject hotkey</label>
+              <input
+                id="hotkey-reject"
+                aria-label="Reject hotkey"
+                type="text"
+                maxLength={1}
+                value={config.process_settings?.configurable_hotkeys?.reject_classification || 'r'}
+                onChange={(event) => {
+                  const nextValue = event.target.value.toLowerCase();
+                  setConfig((previous) => ({
+                    ...previous,
+                    process_settings: {
+                      ...previous.process_settings,
+                      configurable_hotkeys: {
+                        ...(previous.process_settings?.configurable_hotkeys || {}),
+                        reject_classification: nextValue,
+                      },
+                    },
+                  }));
+                }}
+              />
+              <label htmlFor="hotkey-help">Help hotkey</label>
+              <input
+                id="hotkey-help"
+                aria-label="Help hotkey"
+                type="text"
+                maxLength={1}
+                value={config.process_settings?.configurable_hotkeys?.toggle_shortcut_help || 'h'}
+                onChange={(event) => {
+                  const nextValue = event.target.value.toLowerCase();
+                  setConfig((previous) => ({
+                    ...previous,
+                    process_settings: {
+                      ...previous.process_settings,
+                      configurable_hotkeys: {
+                        ...(previous.process_settings?.configurable_hotkeys || {}),
+                        toggle_shortcut_help: nextValue,
+                      },
+                    },
+                  }));
+                }}
+              />
+            </div>
           </section>
 
           <section className="part-detail-panel" aria-label="Defect types">
