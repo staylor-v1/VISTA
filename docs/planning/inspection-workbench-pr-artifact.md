@@ -27,7 +27,7 @@ This file is the execution artifact for the orchestrated migration so the combin
 - [x] PR-04 implemented in current working branch.
 - [x] PR-05 implemented in current working branch.
 - [x] PR-06 implemented in current working branch.
-- [~] PR-07 in progress (kept on original scope because implementation is already underway).
+- [x] PR-07 implemented in current working branch.
 - [x] PR-08 implemented in current working branch.
 - [~] PR-09 in progress (milestone 1 landed: inspector modalities/quick-switch/measurement capture controls).
 - [~] PR-10 in progress (milestone 1 started: backend annotation payload + audit metadata endpoints).
@@ -116,7 +116,7 @@ When preparing upstream PRs:
 - Extended existing React Testing Library suite to verify progressive synthetic users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) with persisted run summaries visible for non-basic scenarios before new invocations.
 - Expanded Playwright E2E fixture/scenario coverage so each project type now exercises three simulated users (`basic`, `intermediate`, `advanced`) with progressively complex data and verifies persisted run summaries in PT2/PT3 before invoking new ML actions.
 
-## PR-07 scope record (in progress)
+## PR-07 scope record (implemented)
 
 ### Milestone 1 — project-level JSON report export endpoint
 - Added backend endpoint `GET /api/projects/{project_id}/report-json` in the export router.
@@ -168,6 +168,14 @@ When preparing upstream PRs:
   - existing `bundle_summary` contract from `export-bundle-json`,
   - image reference records (`image_id`, `filename`, `object_storage_key`, `size_bytes`) for object-storage retrieval workflows.
 - Added pytest API coverage in the existing export suite for three progressive simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) validating zip delivery and manifest contract shape.
+
+### Milestone 4 — step 2 (frontend archive action + cross-type E2E)
+- Added Project Data export action in `InspectionWorkbenchPanel`:
+  - `Prepare Export Archive` button invokes `GET /api/projects/{project_id}/export-bundle`.
+  - Shows loading text during request and success alert with archive size/content-type metadata.
+  - Surfaces request failures with a user-visible inline error message.
+- Extended existing React Testing Library coverage to validate archive action behavior for three progressive simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`).
+- Extended Playwright E2E fixtures/specs to validate bundle archive initiation and in-panel success state for all project types and simulated users.
 
 ### PR-08 — UI exposure foundation (project type selection + visibility)
 
