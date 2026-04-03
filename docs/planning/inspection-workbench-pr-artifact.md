@@ -294,3 +294,11 @@ When preparing upstream PRs:
   - copy-from-existing flow via project list + source configuration fetch.
 - Added RTL automation in the existing test framework covering three simulated users (`basic`, `intermediate`, `advanced`) for each project type (`PT1`, `PT2`, `PT3`) with progressively complex synthetic configuration payloads.
 - Artifact intent: this checkpoint commit is structured to be cherry-picked as the first clean frontend PR for PR-11 milestone-2 UI surface, with subsequent PRs reserved for deeper section editing UX and validation hardening.
+
+#### PR-11 milestone 2 (step 2 implemented in artifact branch)
+- Added first section-editing workflow in `ProjectConfigurationPanel` for defect taxonomy management:
+  - add defect type rows,
+  - inline edit for `name`, `color`, and `definition`,
+  - remove defect type rows prior to save.
+- Preserved existing configuration API contract (`PUT /api/projects/{project_id}/configuration`) while expanding editable surface area with minimal schema risk.
+- Extended existing React Testing Library coverage with three progressive synthetic users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) to validate add/edit/remove workflows and persisted payload updates.
