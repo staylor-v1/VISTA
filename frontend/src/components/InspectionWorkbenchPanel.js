@@ -8,6 +8,11 @@ const DEFAULT_OVERLAY_LAYERS = [
   { id: 'voids', label: 'Voids', color: '#f59e0b' },
 ];
 const DEFAULT_MODALITIES = ['visual', 'infrared', 'uv'];
+const DEFAULT_INSPECTOR_HOTKEYS = {
+  accept_classification: 'a',
+  reject_classification: 'r',
+  toggle_shortcut_help: 'h',
+};
 const REVIEW_LABELS = {
   unreviewed: 'Unreviewed',
   in_review: 'In Review',
@@ -81,6 +86,16 @@ function clampRange(value, min, max, fallback) {
   return Math.min(max, Math.max(min, numeric));
 }
 
+function normalizeInspectorHotkeys(candidate) {
+  const normalized = { ...DEFAULT_INSPECTOR_HOTKEYS };
+  if (!candidate || typeof candidate !== 'object') return normalized;
+  Object.entries(DEFAULT_INSPECTOR_HOTKEYS).forEach(([binding, fallback]) => {
+    const raw = typeof candidate[binding] === 'string' ? candidate[binding].trim().toLowerCase() : fallback;
+    normalized[binding] = /^[a-z0-9]$/.test(raw) ? raw : fallback;
+  });
+  return normalized;
+}
+
 function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [batches, setBatches] = useState([]);
   const [parts, setParts] = useState([]);
@@ -135,6 +150,8 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     error: null,
     details: null,
   });
+  const [inspectorHotkeys, setInspectorHotkeys] = useState(DEFAULT_INSPECTOR_HOTKEYS);
+  const [shortcutHelpVisible, setShortcutHelpVisible] = useState(false);
 
   useEffect(() => {
     const loadWorkbenchData = async () => {
@@ -142,10 +159,11 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
         setLoading(true);
         setError(null);
 
-        const [batchResp, partResp, workspaceResp] = await Promise.all([
+        const [batchResp, partResp, workspaceResp, configResp] = await Promise.all([
           fetch(`/api/projects/${projectId}/batches`),
           fetch(`/api/projects/${projectId}/parts`),
           fetch(`/api/projects/${projectId}/workspace-state`),
+          fetch(`/api/projects/${projectId}/configuration`),
         ]);
         if (!batchResp.ok) {
           throw new Error(`Failed to load batches (${batchResp.status})`);
@@ -154,14 +172,19 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
           throw new Error(`Failed to load parts (${partResp.status})`);
         }
 
-        const [batchData, partData, workspaceData] = await Promise.all([
+        const [batchData, partData, workspaceData, configData] = await Promise.all([
           batchResp.json(),
           partResp.json(),
           workspaceResp.ok ? workspaceResp.json() : Promise.resolve({ state: {} }),
+          configResp.ok ? configResp.json() : Promise.resolve({}),
         ]);
         const safeBatches = Array.isArray(batchData) ? batchData : [];
         const safeParts = Array.isArray(partData) ? partData : [];
         const savedState = workspaceData?.state && typeof workspaceData.state === 'object' ? workspaceData.state : {};
+        const savedHotkeys = normalizeInspectorHotkeys(
+          configData?.configuration?.process_settings?.configurable_hotkeys,
+        );
+        setInspectorHotkeys(savedHotkeys);
         setWorkspaceHydration(savedState);
         setBatches(safeBatches);
         setParts(safeParts);
@@ -386,6 +409,32 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     viewportTransform,
     workspaceStateLoaded,
   ]);
+
+  useEffect(() => {
+    if (!selectedPart?.id) return undefined;
+    const handleInspectorHotkeys = (event) => {
+      const focusedTag = event.target?.tagName?.toLowerCase();
+      if (focusedTag === 'input' || focusedTag === 'textarea' || focusedTag === 'select' || event.defaultPrevented) {
+        return;
+      }
+      const key = (event.key || '').toLowerCase();
+      if (key === inspectorHotkeys.toggle_shortcut_help) {
+        event.preventDefault();
+        setShortcutHelpVisible((prev) => !prev);
+        return;
+      }
+      if (savingPartId === selectedPart.id) return;
+      if (key === inspectorHotkeys.accept_classification) {
+        event.preventDefault();
+        updatePartReviewState(selectedPart, 'pass');
+      } else if (key === inspectorHotkeys.reject_classification) {
+        event.preventDefault();
+        updatePartReviewState(selectedPart, 'reject_pending');
+      }
+    };
+    document.addEventListener('keydown', handleInspectorHotkeys);
+    return () => document.removeEventListener('keydown', handleInspectorHotkeys);
+  }, [inspectorHotkeys, savingPartId, selectedPart]);
 
   const reviewSummary = useMemo(() => {
     return parts.reduce(
@@ -873,6 +922,21 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                       </button>
                     </div>
                   </div>
+                  <p className="muted" data-testid="inspector-hotkey-hints">
+                    Hotkeys: pass ({inspectorHotkeys.accept_classification.toUpperCase()}), reject (
+                    {inspectorHotkeys.reject_classification.toUpperCase()}), shortcuts help (
+                    {inspectorHotkeys.toggle_shortcut_help.toUpperCase()}).
+                  </p>
+                  {shortcutHelpVisible && (
+                    <div className="workbench-notice" data-testid="shortcut-help-panel">
+                      <strong>Shortcut help</strong>
+                      <ul>
+                        <li>Mark Pass: {inspectorHotkeys.accept_classification.toUpperCase()}</li>
+                        <li>Flag Reject: {inspectorHotkeys.reject_classification.toUpperCase()}</li>
+                        <li>Toggle this help: {inspectorHotkeys.toggle_shortcut_help.toUpperCase()}</li>
+                      </ul>
+                    </div>
+                  )}
 
                   <div className="inspector-common-controls" data-testid="inspector-common-controls">
                     <div className="modality-controls">

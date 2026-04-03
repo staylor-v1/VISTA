@@ -4,7 +4,26 @@ This artifact captures the incremental work completed in this session so it can 
 
 ## Proposed incremental PR from this session
 
-1. **PR-12 milestone 2 step 1 — configurable hotkeys storage + validation baseline**
+1. **PR-12 milestone 2 step 2 — configurable hotkeys runtime binding in inspection workbench**
+   - Scope:
+    - Load `process_settings.configurable_hotkeys` during workbench initialization.
+    - Add keyboard handlers in `InspectionWorkbenchPanel` that map configured hotkeys to review actions:
+      - accept => `pass`,
+      - reject => `reject_pending`,
+      - help toggle => in-panel shortcut help visibility.
+    - Preserve existing review buttons and ensure keyboard handlers ignore text-entry focus targets.
+    - Add automated RTL coverage for progressive synthetic users across `PT1/PT2/PT3` verifying configured keyboard actions and help-panel toggling.
+   - Files:
+    - `frontend/src/components/InspectionWorkbenchPanel.js`
+    - `frontend/src/components/__tests__/InspectionWorkbenchPanel.test.js`
+    - `docs/planning/pr12-orchestrator-checklist.md`
+    - `docs/planning/pr12-split-artifact.md`
+   - Automated coverage:
+    - Existing frontend Jest/RTL framework:
+      - progressive synthetic-user matrix (`basic`, `intermediate`, `advanced`) across `PT1/PT2/PT3`,
+      - configurable hotkeys trigger pass/reject status updates and shortcut-help panel visibility.
+
+2. **PR-12 milestone 2 step 1 — configurable hotkeys storage + validation baseline**
    - Scope:
     - Extend project-configuration schema with `process_settings.configurable_hotkeys` and strict validation:
       - required bindings (`accept_classification`, `reject_classification`, `toggle_shortcut_help`),
@@ -35,7 +54,7 @@ This artifact captures the incremental work completed in this session so it can 
 
 ## Remaining PR-12 backlog after this checkpoint
 
-- Configurable hotkeys runtime binding in inspector keyboard handlers.
+- Shared runtime convergence between workbench configurable hotkeys and legacy compact-classification keyboard mappings on non-workbench screens.
 - Workspace-state hardening for panel open/resize/orientation persistence.
 - Ingest discrepancy counters/validation APIs and reportable discrepancy summaries.
 - Export bundle coverage for images/metadata/overlays/annotations + report options.
