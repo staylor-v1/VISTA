@@ -590,6 +590,162 @@ def test_project_json_report_forbidden_for_non_group_member(client):
     assert report_resp.status_code == 403
 
 
+def test_project_bundle_json_supports_progressive_users_per_project_type(client):
+    import json as _json
+
+    project_types = ("PT1", "PT2", "PT3")
+    scenarios = (
+        {
+            "user": "basic",
+            "level": 1,
+            "part_count": 1,
+            "image_count": 1,
+            "overlay_layers": ["mask_base"],
+            "annotation_count": 1,
+            "segmentation_runs": 1,
+            "measurement_runs": 1,
+        },
+        {
+            "user": "intermediate",
+            "level": 2,
+            "part_count": 2,
+            "image_count": 2,
+            "overlay_layers": ["mask_base", "heatmap"],
+            "annotation_count": 2,
+            "segmentation_runs": 2,
+            "measurement_runs": 2,
+        },
+        {
+            "user": "advanced",
+            "level": 3,
+            "part_count": 3,
+            "image_count": 3,
+            "overlay_layers": ["mask_base", "heatmap", "depth"],
+            "annotation_count": 3,
+            "segmentation_runs": 3,
+            "measurement_runs": 3,
+        },
+    )
+
+    for project_type in project_types:
+        for scenario in scenarios:
+            group = f"bundle-json-{project_type}-{scenario['user']}"
+            headers = {"X-Forwarded-Email": f"{scenario['user']}@{group}.test"}
+            project_resp = client.post(
+                "/api/projects/",
+                json={
+                    "name": f"Bundle JSON {project_type} {scenario['user']}",
+                    "description": "bundle export coverage",
+                    "meta_group_id": group,
+                    "project_type": project_type,
+                },
+                headers=headers,
+            )
+            assert project_resp.status_code == 201, project_resp.text
+            project_id = project_resp.json()["id"]
+
+            total_annotations = 0
+            total_overlay_layers = 0
+            total_segmentation_runs = 0
+            total_measurement_runs = 0
+
+            for idx in range(scenario["part_count"]):
+                batch_resp = client.post(
+                    f"/api/projects/{project_id}/batches",
+                    json={"name": f"batch-{idx}", "description": f"batch {idx}"},
+                    headers=headers,
+                )
+                assert batch_resp.status_code == 201, batch_resp.text
+                batch_id = batch_resp.json()["id"]
+
+                annotations = [
+                    {
+                        "id": f"ann-{idx}-{annotation_idx}",
+                        "defect_class": "scratch",
+                        "modality": "rgb",
+                        "comment": f"annotation-{annotation_idx}",
+                    }
+                    for annotation_idx in range(scenario["annotation_count"])
+                ]
+                segmentation_runs = [
+                    {"overlay_id": f"overlay-{idx}-{run_idx}"}
+                    for run_idx in range(scenario["segmentation_runs"])
+                ]
+                measurement_runs = [
+                    {"run_id": f"measure-{idx}-{run_idx}"}
+                    for run_idx in range(scenario["measurement_runs"])
+                ]
+                part_metadata = {
+                    "overlay_layers": scenario["overlay_layers"],
+                    "annotations": annotations,
+                    "segmentation_runs": segmentation_runs,
+                    "measurement_runs": measurement_runs,
+                }
+                total_annotations += len(annotations)
+                total_overlay_layers += len(scenario["overlay_layers"])
+                total_segmentation_runs += len(segmentation_runs)
+                total_measurement_runs += len(measurement_runs)
+
+                part_resp = client.post(
+                    f"/api/projects/{project_id}/parts",
+                    json={
+                        "serial_number": f"{project_type}-{scenario['level']}-{idx}",
+                        "display_name": f"part-{idx}",
+                        "batch_id": batch_id,
+                        "metadata": part_metadata,
+                    },
+                    headers=headers,
+                )
+                assert part_resp.status_code == 201, part_resp.text
+
+            for image_idx in range(scenario["image_count"]):
+                files = {
+                    "file": (
+                        f"{project_type}_{scenario['user']}_{image_idx}.png",
+                        b"synthetic-image-data",
+                        "image/png",
+                    )
+                }
+                image_resp = client.post(
+                    f"/api/projects/{project_id}/images",
+                    files=files,
+                    data={"metadata": _json.dumps({"slot": image_idx, "scenario": scenario["user"]})},
+                    headers=headers,
+                )
+                assert image_resp.status_code == 201, image_resp.text
+
+            bundle_resp = client.get(f"/api/projects/{project_id}/export-bundle-json", headers=headers)
+            assert bundle_resp.status_code == 200, bundle_resp.text
+            payload = bundle_resp.json()
+            assert payload["project"]["project_type"] == project_type
+            assert payload["bundle_summary"]["images"]["total"] == scenario["image_count"]
+            assert payload["bundle_summary"]["parts"]["total"] == scenario["part_count"]
+            assert payload["bundle_summary"]["annotations"]["total"] == total_annotations
+            assert payload["bundle_summary"]["overlays"]["configured_layers"] == total_overlay_layers
+            assert payload["bundle_summary"]["overlays"]["segmentation_runs"] == total_segmentation_runs
+            assert payload["bundle_summary"]["measurements"]["ai_runs"] == total_measurement_runs
+            assert payload["bundle_summary"]["images"]["total_bytes"] > 0
+
+
+def test_project_bundle_json_forbidden_for_non_group_member(client):
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": "Bundle JSON Access",
+            "description": "access check",
+            "meta_group_id": "bundle-json-private",
+            "project_type": "PT2",
+        },
+    )
+    assert project_resp.status_code == 201
+    project_id = project_resp.json()["id"]
+
+    with patch("routers.export.is_user_in_group", return_value=False):
+        bundle_resp = client.get(f"/api/projects/{project_id}/export-bundle-json")
+
+    assert bundle_resp.status_code == 403
+
+
 # ---------------------------------------------------------------------------
 # Unit tests for _build_workbook helper
 # ---------------------------------------------------------------------------

@@ -304,6 +304,77 @@ async def export_project_report_json(
     return JSONResponse(content=report_payload)
 
 
+@router.get("/projects/{project_id}/export-bundle-json")
+async def export_project_bundle_json(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    db_project = await _get_project_with_export_access(
+        project_id=project_id,
+        db=db,
+        current_user=current_user,
+    )
+
+    image_totals_result = await db.execute(
+        select(
+            _func.count().label("total_images"),
+            _func.coalesce(_func.sum(models.DataInstance.size_bytes), 0).label("total_image_bytes"),
+        )
+        .select_from(models.DataInstance)
+        .where(models.DataInstance.project_id == project_id)
+        .where(models.DataInstance.deleted_at.is_(None))
+    )
+    image_totals = image_totals_result.one()
+
+    part_metadata_result = await db.execute(
+        select(models.InspectionPart.metadata_json)
+        .where(models.InspectionPart.project_id == project_id)
+    )
+    part_metadata_rows = part_metadata_result.scalars().all()
+
+    annotations_count = 0
+    overlay_layer_count = 0
+    segmentation_run_count = 0
+    measurement_run_count = 0
+
+    for metadata in part_metadata_rows:
+        metadata_obj = metadata if isinstance(metadata, dict) else {}
+        annotations_count += len(metadata_obj.get("annotations") or [])
+        overlay_layer_count += len(metadata_obj.get("overlay_layers") or [])
+        segmentation_run_count += len(metadata_obj.get("segmentation_runs") or [])
+        measurement_run_count += len(metadata_obj.get("measurement_runs") or [])
+
+    bundle_payload = {
+        "project": {
+            "id": str(db_project.id),
+            "name": db_project.name,
+            "project_type": db_project.project_type,
+            "meta_group_id": db_project.meta_group_id,
+        },
+        "bundle_summary": {
+            "images": {
+                "total": image_totals.total_images,
+                "total_bytes": image_totals.total_image_bytes,
+            },
+            "parts": {
+                "total": len(part_metadata_rows),
+            },
+            "annotations": {
+                "total": annotations_count,
+            },
+            "overlays": {
+                "configured_layers": overlay_layer_count,
+                "segmentation_runs": segmentation_run_count,
+            },
+            "measurements": {
+                "ai_runs": measurement_run_count,
+            },
+        },
+    }
+    return JSONResponse(content=bundle_payload)
+
+
 def _build_workbook(project_name: str, rows: list[dict], meta_keys: list[str]):
     """Build an openpyxl Workbook from the collected row data.
 
