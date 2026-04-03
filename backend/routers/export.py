@@ -328,22 +328,84 @@ async def export_project_bundle_json(
     image_totals = image_totals_result.one()
 
     part_metadata_result = await db.execute(
-        select(models.InspectionPart.metadata_json)
+        select(
+            models.InspectionPart.id,
+            models.InspectionPart.serial_number,
+            models.InspectionPart.display_name,
+            models.InspectionPart.metadata_json,
+        )
         .where(models.InspectionPart.project_id == project_id)
     )
-    part_metadata_rows = part_metadata_result.scalars().all()
+    part_metadata_rows = part_metadata_result.all()
 
     annotations_count = 0
     overlay_layer_count = 0
     segmentation_run_count = 0
     measurement_run_count = 0
+    annotation_records = []
+    part_discrepancy_summaries = []
 
-    for metadata in part_metadata_rows:
+    for part_id, serial_number, display_name, metadata in part_metadata_rows:
         metadata_obj = metadata if isinstance(metadata, dict) else {}
-        annotations_count += len(metadata_obj.get("annotations") or [])
-        overlay_layer_count += len(metadata_obj.get("overlay_layers") or [])
-        segmentation_run_count += len(metadata_obj.get("segmentation_runs") or [])
-        measurement_run_count += len(metadata_obj.get("measurement_runs") or [])
+        annotations = metadata_obj.get("annotations") or []
+        overlay_layers = metadata_obj.get("overlay_layers") or []
+        segmentation_runs = metadata_obj.get("segmentation_runs") or []
+        measurement_runs = metadata_obj.get("measurement_runs") or []
+
+        annotations_count += len(annotations)
+        overlay_layer_count += len(overlay_layers)
+        segmentation_run_count += len(segmentation_runs)
+        measurement_run_count += len(measurement_runs)
+
+        incomplete_annotations = 0
+        for annotation in annotations:
+            annotation_obj = annotation if isinstance(annotation, dict) else {}
+            if not annotation_obj.get("defect_class") or not annotation_obj.get("modality"):
+                incomplete_annotations += 1
+            annotation_records.append(
+                {
+                    "part_id": str(part_id),
+                    "part_serial_number": serial_number,
+                    "annotation_id": annotation_obj.get("id"),
+                    "defect_class": annotation_obj.get("defect_class"),
+                    "modality": annotation_obj.get("modality"),
+                    "disposition": annotation_obj.get("disposition"),
+                    "hidden": bool(annotation_obj.get("hidden", False)),
+                }
+            )
+
+        missing_measurement_ids = 0
+        for measurement in measurement_runs:
+            measurement_obj = measurement if isinstance(measurement, dict) else {}
+            if not measurement_obj.get("run_id"):
+                missing_measurement_ids += 1
+
+        discrepancy_codes = []
+        if segmentation_runs and not overlay_layers:
+            discrepancy_codes.append("missing_overlay_layers")
+        if incomplete_annotations:
+            discrepancy_codes.append("incomplete_annotation_fields")
+        if missing_measurement_ids:
+            discrepancy_codes.append("measurement_run_missing_run_id")
+
+        part_discrepancy_summaries.append(
+            {
+                "part_id": str(part_id),
+                "serial_number": serial_number,
+                "display_name": display_name,
+                "counts": {
+                    "annotations": len(annotations),
+                    "overlay_layers": len(overlay_layers),
+                    "segmentation_runs": len(segmentation_runs),
+                    "measurement_runs": len(measurement_runs),
+                    "incomplete_annotations": incomplete_annotations,
+                    "measurement_runs_missing_run_id": missing_measurement_ids,
+                },
+                "discrepancy_codes": discrepancy_codes,
+            }
+        )
+
+    discrepancy_total = sum(1 for summary in part_discrepancy_summaries if summary["discrepancy_codes"])
 
     bundle_payload = {
         "project": {
@@ -362,6 +424,7 @@ async def export_project_bundle_json(
             },
             "annotations": {
                 "total": annotations_count,
+                "records": annotation_records,
             },
             "overlays": {
                 "configured_layers": overlay_layer_count,
@@ -369,6 +432,10 @@ async def export_project_bundle_json(
             },
             "measurements": {
                 "ai_runs": measurement_run_count,
+            },
+            "discrepancies": {
+                "parts_with_discrepancies": discrepancy_total,
+                "per_part": part_discrepancy_summaries,
             },
         },
     }
