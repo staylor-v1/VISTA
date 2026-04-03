@@ -206,6 +206,13 @@ function mockWorkbenchFetch({ batches, parts, workspaceState = {} }) {
   let annotationSeq = 0;
 
   global.fetch = jest.fn((url, options = {}) => {
+    if (url.includes('/export-bundle') && !url.includes('/export-bundle-json')) {
+      return Promise.resolve({
+        ok: true,
+        headers: { get: (name) => (name.toLowerCase() === 'content-type' ? 'application/zip' : null) },
+        blob: async () => new Blob(['synthetic-bundle']),
+      });
+    }
     if (url.includes('/export-bundle-json')) {
       return Promise.resolve({
         ok: true,
@@ -347,6 +354,11 @@ describe('InspectionWorkbenchPanel', () => {
       fireEvent.click(screen.getByTestId('request-export-bundle-summary'));
       await waitFor(() => {
         expect(screen.getByTestId('export-bundle-summary-result')).toHaveTextContent(/Export summary ready:/);
+      });
+      fireEvent.click(screen.getByTestId('request-export-bundle-archive'));
+      await waitFor(() => {
+        expect(screen.getByTestId('export-bundle-archive-result')).toHaveTextContent(/Export archive ready:/);
+        expect(screen.getByTestId('export-bundle-archive-result')).toHaveTextContent(/application\/zip/);
       });
       expect(screen.getByText(`Parts: ${scenario.parts.length}`)).toBeInTheDocument();
       expect(screen.getByText(new RegExp(projectType))).toBeInTheDocument();
