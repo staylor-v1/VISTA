@@ -667,6 +667,8 @@ def test_project_bundle_json_supports_progressive_users_per_project_type(client)
                     }
                     for annotation_idx in range(scenario["annotation_count"])
                 ]
+                if scenario["level"] > 1 and idx == 0:
+                    annotations[0]["modality"] = ""
                 segmentation_runs = [
                     {"overlay_id": f"overlay-{idx}-{run_idx}"}
                     for run_idx in range(scenario["segmentation_runs"])
@@ -721,10 +723,14 @@ def test_project_bundle_json_supports_progressive_users_per_project_type(client)
             assert payload["bundle_summary"]["images"]["total"] == scenario["image_count"]
             assert payload["bundle_summary"]["parts"]["total"] == scenario["part_count"]
             assert payload["bundle_summary"]["annotations"]["total"] == total_annotations
+            assert len(payload["bundle_summary"]["annotations"]["records"]) == total_annotations
             assert payload["bundle_summary"]["overlays"]["configured_layers"] == total_overlay_layers
             assert payload["bundle_summary"]["overlays"]["segmentation_runs"] == total_segmentation_runs
             assert payload["bundle_summary"]["measurements"]["ai_runs"] == total_measurement_runs
             assert payload["bundle_summary"]["images"]["total_bytes"] > 0
+            assert len(payload["bundle_summary"]["discrepancies"]["per_part"]) == scenario["part_count"]
+            expected_discrepancy_parts = 1 if scenario["level"] > 1 else 0
+            assert payload["bundle_summary"]["discrepancies"]["parts_with_discrepancies"] == expected_discrepancy_parts
 
 
 def test_project_bundle_json_forbidden_for_non_group_member(client):
