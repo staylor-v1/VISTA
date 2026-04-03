@@ -2,6 +2,7 @@
 import io
 import uuid
 import json as _json
+import zipfile
 import pytest
 from unittest.mock import patch
 
@@ -750,6 +751,103 @@ def test_project_bundle_json_forbidden_for_non_group_member(client):
         bundle_resp = client.get(f"/api/projects/{project_id}/export-bundle-json")
 
     assert bundle_resp.status_code == 403
+
+
+def test_project_bundle_archive_supports_progressive_users_per_project_type(client):
+    project_types = ("PT1", "PT2", "PT3")
+    scenarios = (
+        {
+            "user": "basic",
+            "level": 1,
+            "part_count": 1,
+            "image_count": 1,
+        },
+        {
+            "user": "intermediate",
+            "level": 2,
+            "part_count": 2,
+            "image_count": 2,
+        },
+        {
+            "user": "advanced",
+            "level": 3,
+            "part_count": 3,
+            "image_count": 3,
+        },
+    )
+
+    for project_type in project_types:
+        for scenario in scenarios:
+            group = f"bundle-archive-{project_type}-{scenario['user']}"
+            headers = {"X-Forwarded-Email": f"{scenario['user']}@{group}.test"}
+
+            project_resp = client.post(
+                "/api/projects/",
+                json={
+                    "name": f"Bundle Archive {project_type} {scenario['user']}",
+                    "description": "bundle archive coverage",
+                    "meta_group_id": group,
+                    "project_type": project_type,
+                },
+                headers=headers,
+            )
+            assert project_resp.status_code == 201, project_resp.text
+            project_id = project_resp.json()["id"]
+
+            for idx in range(scenario["part_count"]):
+                batch_resp = client.post(
+                    f"/api/projects/{project_id}/batches",
+                    json={"name": f"batch-{idx}", "description": f"batch {idx}"},
+                    headers=headers,
+                )
+                assert batch_resp.status_code == 201, batch_resp.text
+                batch_id = batch_resp.json()["id"]
+
+                part_resp = client.post(
+                    f"/api/projects/{project_id}/parts",
+                    json={
+                        "serial_number": f"{project_type}-{scenario['level']}-{idx}",
+                        "display_name": f"part-{idx}",
+                        "batch_id": batch_id,
+                        "metadata": {
+                            "synthetic_level": scenario["level"],
+                            "annotations": [{"id": f"ann-{idx}", "defect_class": "scratch", "modality": "rgb"}],
+                        },
+                    },
+                    headers=headers,
+                )
+                assert part_resp.status_code == 201, part_resp.text
+
+            for image_idx in range(scenario["image_count"]):
+                files = {
+                    "file": (
+                        f"{project_type}_{scenario['user']}_{image_idx}.png",
+                        b"synthetic-image-data",
+                        "image/png",
+                    )
+                }
+                image_resp = client.post(
+                    f"/api/projects/{project_id}/images",
+                    files=files,
+                    data={"metadata": _json.dumps({"slot": image_idx, "scenario": scenario["user"]})},
+                    headers=headers,
+                )
+                assert image_resp.status_code == 201, image_resp.text
+
+            bundle_resp = client.get(f"/api/projects/{project_id}/export-bundle", headers=headers)
+            assert bundle_resp.status_code == 200, bundle_resp.text
+            assert bundle_resp.headers["content-type"].startswith("application/zip")
+            assert ".zip" in bundle_resp.headers.get("content-disposition", "")
+
+            with zipfile.ZipFile(io.BytesIO(bundle_resp.content)) as archive:
+                names = archive.namelist()
+                assert "export-manifest.json" in names
+                manifest = _json.loads(archive.read("export-manifest.json").decode("utf-8"))
+
+            assert manifest["project"]["project_type"] == project_type
+            assert manifest["bundle_summary"]["parts"]["total"] == scenario["part_count"]
+            assert manifest["bundle_summary"]["images"]["total"] == scenario["image_count"]
+            assert len(manifest["image_references"]) == scenario["image_count"]
 
 
 # ---------------------------------------------------------------------------
