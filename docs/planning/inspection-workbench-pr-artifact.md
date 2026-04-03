@@ -245,6 +245,16 @@ When preparing upstream PRs:
   - successful deletion with exact phrase,
   - API key auth rejection for governance boundary hardening.
 
+#### PR-12 milestone 1 (step 2 implemented in artifact branch)
+- Added dashboard delete-project warning UX with explicit typed confirmation phrase and destructive-action modal:
+  - project card menu now includes `Delete`,
+  - modal requires typed phrase `DELETE <project_name>`,
+  - frontend calls existing governance endpoint `DELETE /api/projects/{project_id}` with `confirmation_phrase`.
+- Added existing-framework frontend automation (`App.test.js`) for three progressive synthetic users (`basic`, `intermediate`, `advanced`) across each project type (`PT1`, `PT2`, `PT3`) validating:
+  - wrong confirmation phrase surfaces backend error,
+  - correct phrase successfully deletes and removes project card from UI.
+- Artifact intent: this checkpoint commit can be cherry-picked as a clean PR focused strictly on PR-12 milestone-1 frontend governance UX while preserving previously landed backend policy constraints.
+
 #### PR-11 milestone 2 (step 1 implemented in artifact branch)
 - Added frontend **Project Configuration** tab in `Project` view so configuration workflows are first-class alongside `Inspection` and `Project Data`.
 - Added `ProjectConfigurationPanel` with backend round-trip wiring to existing PR-11 milestone-1 APIs:
