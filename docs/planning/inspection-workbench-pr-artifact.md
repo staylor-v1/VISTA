@@ -136,6 +136,16 @@ When preparing upstream PRs:
   - React Testing Library assertions for persistence requests during sequential workflows.
   - Playwright assertions that persisted state API writes occur during end-to-end project data interactions.
 
+### Milestone 3 — export bundle JSON summary baseline
+- Added backend endpoint `GET /api/projects/{project_id}/export-bundle-json`.
+- Export bundle summary currently includes project metadata plus aggregate counters for:
+  - images (`total`, `total_bytes`),
+  - parts (`total`),
+  - annotations (`total` from part metadata),
+  - overlays (`configured_layers`, `segmentation_runs` from part metadata),
+  - measurements (`ai_runs` from part metadata).
+- Added pytest API coverage in the existing export test suite for three progressive simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) with progressively denser synthetic metadata workflows.
+
 ### PR-08 — UI exposure foundation (project type selection + visibility)
 
 ### Milestone 1 — create-project project-type selection
