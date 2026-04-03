@@ -91,6 +91,39 @@ describe('ProjectConfigurationPanel', () => {
           );
         });
       });
+
+      test(`supports defect type add/edit/remove for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config);
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Defect type name 1')).toBeInTheDocument());
+
+        fireEvent.click(screen.getByRole('button', { name: 'Add Defect Type' }));
+        fireEvent.change(screen.getByLabelText(`Defect type name ${config.defect_types.length + 1}`), {
+          target: { value: `Escalated ${projectType} ${syntheticUser}` },
+        });
+        fireEvent.change(screen.getByLabelText(`Defect type color ${config.defect_types.length + 1}`), {
+          target: { value: '#22c55e' },
+        });
+        fireEvent.change(screen.getByLabelText(`Defect type definition ${config.defect_types.length + 1}`), {
+          target: { value: 'Added during synthetic edit workflow' },
+        });
+
+        fireEvent.click(screen.getByLabelText('Remove defect type 1'));
+        fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+
+        await waitFor(() => {
+          expect(global.fetch).toHaveBeenCalledWith(
+            '/api/projects/proj-1/configuration',
+            expect.objectContaining({
+              method: 'PUT',
+              body: expect.stringContaining(`Escalated ${projectType} ${syntheticUser}`),
+            }),
+          );
+        });
+      });
     });
   });
 
