@@ -326,3 +326,12 @@ When preparing upstream PRs:
   - persisted payload capture for both save and copy actions.
 - Extended shared E2E fixture routing with project-configuration mocks (`GET/PUT /api/projects/{project_id}/configuration`) and deterministic source-project metadata to exercise copy flows.
 - Generated runtime screenshot artifact (`frontend/artifacts/pr11-project-configuration.png`, intentionally not committed) and recorded visual analytics in `docs/planning/pr11-screenshot-analysis.md`.
+
+#### PR-11 milestone 2 (step 4 implemented in artifact branch)
+- Expanded `ProjectConfigurationPanel` section editing UX for image modalities:
+  - add modality rows,
+  - inline edit for modality `label` and `id`,
+  - toggle `calibration_required` and `example_image_uploaded`,
+  - remove modality rows before save.
+- Preserved the existing configuration API contract (`PUT /api/projects/{project_id}/configuration`) and reused current payload shape without schema migration.
+- Extended existing React Testing Library coverage for all project types (`PT1`, `PT2`, `PT3`) and progressive synthetic users (`basic`, `intermediate`, `advanced`) to validate modality add/edit/remove flows and persisted payload updates.
