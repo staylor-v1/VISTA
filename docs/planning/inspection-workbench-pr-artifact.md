@@ -146,6 +146,13 @@ When preparing upstream PRs:
   - measurements (`ai_runs` from part metadata).
 - Added pytest API coverage in the existing export test suite for three progressive simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) with progressively denser synthetic metadata workflows.
 
+### Milestone 3 — step 2 (frontend summary action wiring)
+- Added Project Data export action in `InspectionWorkbenchPanel`:
+  - `Export Bundle Summary` button invokes `GET /api/projects/{project_id}/export-bundle-json`.
+  - Shows loading text during request and success alert with image/annotation/segmentation summary counts.
+  - Surfaces request failures with user-visible inline error message.
+- Extended existing React Testing Library coverage to validate the new export action for three progressive simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) while preserving existing workbench flows.
+
 ### PR-08 — UI exposure foundation (project type selection + visibility)
 
 ### Milestone 1 — create-project project-type selection
