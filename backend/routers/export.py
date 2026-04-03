@@ -2,6 +2,7 @@ import uuid
 import io
 import json
 import logging
+import zipfile
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -440,6 +441,75 @@ async def export_project_bundle_json(
         },
     }
     return JSONResponse(content=bundle_payload)
+
+
+@router.get("/projects/{project_id}/export-bundle")
+async def export_project_bundle_archive(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    db_project = await _get_project_with_export_access(
+        project_id=project_id,
+        db=db,
+        current_user=current_user,
+    )
+
+    bundle_json_response = await export_project_bundle_json(
+        project_id=project_id,
+        db=db,
+        current_user=current_user,
+    )
+    bundle_payload = json.loads(bundle_json_response.body.decode("utf-8"))
+
+    image_refs_result = await db.execute(
+        select(
+            models.DataInstance.id,
+            models.DataInstance.filename,
+            models.DataInstance.object_storage_key,
+            models.DataInstance.size_bytes,
+        )
+        .where(models.DataInstance.project_id == project_id)
+        .where(models.DataInstance.deleted_at.is_(None))
+        .order_by(models.DataInstance.created_at.asc())
+    )
+    image_refs = [
+        {
+            "image_id": str(row.id),
+            "filename": row.filename,
+            "object_storage_key": row.object_storage_key,
+            "size_bytes": row.size_bytes,
+        }
+        for row in image_refs_result
+    ]
+
+    manifest_payload = {
+        "project": bundle_payload["project"],
+        "bundle_summary": bundle_payload["bundle_summary"],
+        "image_references": image_refs,
+    }
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "export-manifest.json",
+            json.dumps(manifest_payload, indent=2, sort_keys=True),
+        )
+    buffer.seek(0)
+
+    safe_name = "".join(
+        c if c.isalnum() or c in (" ", "-", "_") else "_"
+        for c in db_project.name
+    ).strip()
+    filename = f"{safe_name}_export_bundle.zip"
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
 
 
 def _build_workbook(project_name: str, rows: list[dict], meta_keys: list[str]):
