@@ -32,7 +32,7 @@ This file is the execution artifact for the orchestrated migration so the combin
 - [~] PR-09 in progress (milestone 1 landed: inspector modalities/quick-switch/measurement capture controls).
 - [~] PR-10 in progress (milestone 1 started: backend annotation payload + audit metadata endpoints).
 - [~] PR-11 in progress (milestone 1 started: backend project-configuration API baseline).
-- [ ] PR-12 not started.
+- [~] PR-12 in progress (milestone 1 started: delete-project governance API hardening baseline).
 
 ## PR-02 scope record (implemented)
 
@@ -224,6 +224,16 @@ When preparing upstream PRs:
 - Add export bundle coverage for images/metadata/overlays/annotations and PDF report options.
 - Close gaps with cross-type red-team scenarios (PT1/PT2/PT3) and stabilize with blue-team fixes.
 - Acceptance: end-to-end matrix with adversarial cases, authorization checks, performance sanity checks, and release checklist sign-off.
+
+#### PR-12 milestone 1 (step 1 implemented in artifact branch)
+- Added backend delete-project governance endpoint:
+  - `DELETE /api/projects/{project_id}` with explicit confirmation payload.
+- Enforced explicit warning confirmation phrase contract (`DELETE <project_name>`) to reduce accidental destructive operations.
+- Enforced proxy-authentication-only boundary for delete-project flow (`require_proxy_user`), rejecting API-key authenticated requests.
+- Added pytest coverage in the existing backend framework for three progressive synthetic users (`basic`, `intermediate`, `advanced`) across each project type (`PT1`, `PT2`, `PT3`) validating:
+  - confirmation phrase mismatch rejection,
+  - successful deletion with exact phrase,
+  - API key auth rejection for governance boundary hardening.
 
 #### PR-11 milestone 2 (step 1 implemented in artifact branch)
 - Added frontend **Project Configuration** tab in `Project` view so configuration workflows are first-class alongside `Inspection` and `Project Data`.

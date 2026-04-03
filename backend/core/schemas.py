@@ -56,6 +56,17 @@ class ProjectUpdate(BaseModel):
             return v.strip().upper()
         return v
 
+
+class ProjectDeleteRequest(BaseModel):
+    confirmation_phrase: str = Field(..., min_length=1, max_length=512)
+
+
+class ProjectDeleteResponse(BaseModel):
+    project_id: uuid.UUID
+    deleted: bool = True
+    deleted_by: EmailStr
+
+
 class Project(ProjectBase):
     id: uuid.UUID
     created_at: datetime
