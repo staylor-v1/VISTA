@@ -13,6 +13,12 @@ const DEFAULT_INSPECTOR_HOTKEYS = {
   reject_classification: 'r',
   toggle_shortcut_help: 'h',
 };
+const DEFAULT_PANEL_LAYOUT = {
+  part_list: { is_open: true, width_px: 320, height_px: 420, orientation: 'vertical' },
+  inspector: { is_open: true, width_px: 360, height_px: 420, orientation: 'vertical' },
+  mpr_controls: { is_open: true, width_px: 360, height_px: 360, orientation: 'vertical' },
+};
+const PANEL_LAYOUT_KEYS = ['part_list', 'inspector', 'mpr_controls'];
 const REVIEW_LABELS = {
   unreviewed: 'Unreviewed',
   in_review: 'In Review',
@@ -96,6 +102,28 @@ function normalizeInspectorHotkeys(candidate) {
   return normalized;
 }
 
+function normalizePanelDimension(value, min, max, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(numeric)));
+}
+
+function normalizePanelLayout(candidate) {
+  const safeCandidate = candidate && typeof candidate === 'object' ? candidate : {};
+  return PANEL_LAYOUT_KEYS.reduce((acc, key) => {
+    const defaults = DEFAULT_PANEL_LAYOUT[key];
+    const current = safeCandidate[key] && typeof safeCandidate[key] === 'object' ? safeCandidate[key] : {};
+    const orientation = String(current.orientation || defaults.orientation).toLowerCase();
+    acc[key] = {
+      is_open: current.is_open !== false,
+      width_px: normalizePanelDimension(current.width_px, 220, 1200, defaults.width_px),
+      height_px: normalizePanelDimension(current.height_px, 220, 1400, defaults.height_px),
+      orientation: orientation === 'horizontal' ? 'horizontal' : 'vertical',
+    };
+    return acc;
+  }, {});
+}
+
 function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [batches, setBatches] = useState([]);
   const [parts, setParts] = useState([]);
@@ -152,6 +180,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   });
   const [inspectorHotkeys, setInspectorHotkeys] = useState(DEFAULT_INSPECTOR_HOTKEYS);
   const [shortcutHelpVisible, setShortcutHelpVisible] = useState(false);
+  const [panelLayout, setPanelLayout] = useState(DEFAULT_PANEL_LAYOUT);
 
   useEffect(() => {
     const loadWorkbenchData = async () => {
@@ -181,6 +210,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
         const safeBatches = Array.isArray(batchData) ? batchData : [];
         const safeParts = Array.isArray(partData) ? partData : [];
         const savedState = workspaceData?.state && typeof workspaceData.state === 'object' ? workspaceData.state : {};
+        setPanelLayout(normalizePanelLayout(savedState.panel_layout));
         const savedHotkeys = normalizeInspectorHotkeys(
           configData?.configuration?.process_settings?.configurable_hotkeys,
         );
@@ -211,6 +241,19 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
 
     loadWorkbenchData();
   }, [projectId]);
+
+  const updatePanelLayout = (panelKey, updates) => {
+    setPanelLayout((prev) => {
+      const next = normalizePanelLayout({
+        ...prev,
+        [panelKey]: {
+          ...(prev[panelKey] || DEFAULT_PANEL_LAYOUT[panelKey]),
+          ...updates,
+        },
+      });
+      return next;
+    });
+  };
 
   const filteredParts = useMemo(() => {
     let output = [...parts];
@@ -381,6 +424,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                 measurements: measurementEntries,
                 viewport_transform: inspectorViewport,
               },
+              panel_layout: panelLayout,
             },
           }),
         });
@@ -400,6 +444,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     loading,
     measurementEntries,
     inspectorViewport,
+    panelLayout,
     projectId,
     projectType,
     selectedBatchId,
@@ -939,6 +984,58 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                   )}
 
                   <div className="inspector-common-controls" data-testid="inspector-common-controls">
+                    <div className="workspace-panel-layout" data-testid="panel-layout-controls">
+                      <strong>Workspace panels</strong>
+                      {PANEL_LAYOUT_KEYS.map((panelKey) => {
+                        const config = panelLayout[panelKey] || DEFAULT_PANEL_LAYOUT[panelKey];
+                        const panelLabel = panelKey.replace('_', ' ');
+                        return (
+                          <div className="measurement-fields" key={panelKey} data-testid={`panel-layout-row-${panelKey}`}>
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={config.is_open}
+                                onChange={(event) => updatePanelLayout(panelKey, { is_open: event.target.checked })}
+                              />
+                              {` ${panelLabel} open`}
+                            </label>
+                            <label>
+                              Width
+                              <input
+                                type="number"
+                                value={config.width_px}
+                                onChange={(event) => updatePanelLayout(panelKey, { width_px: event.target.value })}
+                                min={220}
+                                max={1200}
+                                aria-label={`${panelLabel} width`}
+                              />
+                            </label>
+                            <label>
+                              Height
+                              <input
+                                type="number"
+                                value={config.height_px}
+                                onChange={(event) => updatePanelLayout(panelKey, { height_px: event.target.value })}
+                                min={220}
+                                max={1400}
+                                aria-label={`${panelLabel} height`}
+                              />
+                            </label>
+                            <label>
+                              Orientation
+                              <select
+                                value={config.orientation}
+                                onChange={(event) => updatePanelLayout(panelKey, { orientation: event.target.value })}
+                                aria-label={`${panelLabel} orientation`}
+                              >
+                                <option value="vertical">Vertical</option>
+                                <option value="horizontal">Horizontal</option>
+                              </select>
+                            </label>
+                          </div>
+                        );
+                      })}
+                    </div>
                     <div className="modality-controls">
                       <strong>Modalities</strong>
                       <div className="modality-list">

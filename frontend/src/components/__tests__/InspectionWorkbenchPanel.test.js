@@ -12,6 +12,11 @@ const scenarioByUser = [
       selected_batch_id: 'batch-basic',
       defect_filter: 'all',
       sort_mode: 'defect_desc',
+      panel_layout: {
+        part_list: { is_open: true, width_px: 300, height_px: 410, orientation: 'vertical' },
+        inspector: { is_open: true, width_px: 340, height_px: 400, orientation: 'vertical' },
+        mpr_controls: { is_open: false, width_px: 330, height_px: 350, orientation: 'horizontal' },
+      },
     },
     batches: [{ id: 'batch-basic', name: 'Batch Basic' }],
     parts: [
@@ -57,6 +62,11 @@ const scenarioByUser = [
         contrast_percent: 115,
         active_overlay_ids: ['porosity'],
         cursor_probe: { x: 60, y: 45 },
+      },
+      panel_layout: {
+        part_list: { is_open: true, width_px: 360, height_px: 520, orientation: 'vertical' },
+        inspector: { is_open: false, width_px: 410, height_px: 500, orientation: 'horizontal' },
+        mpr_controls: { is_open: true, width_px: 390, height_px: 380, orientation: 'horizontal' },
       },
     },
     batches: [
@@ -138,6 +148,11 @@ const scenarioByUser = [
         contrast_percent: 110,
         active_overlay_ids: ['segmentation', 'porosity'],
         cursor_probe: { x: 55, y: 48 },
+      },
+      panel_layout: {
+        part_list: { is_open: 'yes', width_px: -25, height_px: 9999, orientation: 'diagonal' },
+        inspector: { is_open: true, width_px: 260, height_px: 460, orientation: 'vertical' },
+        mpr_controls: { is_open: true, width_px: '400', height_px: '420', orientation: 'horizontal' },
       },
     },
     batches: [
@@ -382,6 +397,10 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getByText(`Parts: ${scenario.parts.length}`)).toBeInTheDocument();
       expect(screen.getByText(new RegExp(projectType))).toBeInTheDocument();
       expect(screen.getByTestId('inspector-common-controls')).toBeInTheDocument();
+      expect(screen.getByTestId('panel-layout-controls')).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText('part list width'), { target: { value: '9999' } });
+      fireEvent.change(screen.getByLabelText('part list height'), { target: { value: '100' } });
+      fireEvent.change(screen.getByLabelText('part list orientation'), { target: { value: 'horizontal' } });
 
       fireEvent.change(screen.getByPlaceholderText('label'), { target: { value: `${scenario.user}-length` } });
       fireEvent.change(screen.getByPlaceholderText('value'), { target: { value: '12.6' } });
@@ -511,6 +530,14 @@ describe('InspectionWorkbenchPanel', () => {
       await waitFor(() => {
         expect(workspaceTracker.getWorkspaceSaves().length).toBeGreaterThan(0);
       });
+      const lastWorkspaceSave = workspaceTracker.getWorkspaceSaves().at(-1);
+      expect(lastWorkspaceSave?.state?.panel_layout?.part_list).toEqual(
+        expect.objectContaining({
+          width_px: 1200,
+          height_px: 220,
+          orientation: 'horizontal',
+        }),
+      );
 
       unmount();
     }
