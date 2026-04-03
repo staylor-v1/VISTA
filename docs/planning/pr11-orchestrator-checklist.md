@@ -1,25 +1,21 @@
 # PR-11 Orchestrator Checklist
 
 ## Current milestone
-- **PR-11 milestone 2 / step 3**: frontend E2E coverage for Project Configuration save/copy/edit workflows across PT1/PT2/PT3 progressive synthetic users.
+- **PR-11 milestone 2 / step 4**: expand Project Configuration section editing UX for image modalities across PT1/PT2/PT3 progressive synthetic users.
 
 ## Files changed in this step
-- `frontend/e2e/fixtures/inspectionWorkbenchMocks.js`
-- `frontend/e2e/specs/inspection-workbench.spec.js`
-- `docs/planning/inspection-workbench-pr-artifact.md`
+- `frontend/src/components/ProjectConfigurationPanel.js`
+- `frontend/src/components/__tests__/ProjectConfigurationPanel.test.js`
 - `docs/planning/pr11-orchestrator-checklist.md`
-- `docs/planning/pr11-screenshot-analysis.md`
 
 ## Tests
 - [x] `cd frontend && npm test -- --runInBand src/components/__tests__/ProjectConfigurationPanel.test.js`
-- [x] `cd frontend && npx playwright install --with-deps chromium`
-- [x] `cd frontend && npx playwright test e2e/specs/inspection-workbench.spec.js --grep "PR-11 project configuration"`
 
 ## Remaining PR-11 milestones
 - [x] Add Project UI tab for **Project Configuration** with sectioned forms.
 - [x] Wire frontend API integration for configuration load/save.
 - [x] Add copy-configuration workflow from existing project.
-- [~] Expand section editing UX/validation beyond defect types (modalities, part views, process/display guardrails).
+- [~] Expand section editing UX/validation beyond defect types (part views and additional process/display guardrails still pending).
 - [x] Add frontend E2E coverage for Project Configuration save/copy/edit flows across PT1/PT2/PT3 progressive synthetic users.
 
 ## Risks / blockers

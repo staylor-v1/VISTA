@@ -86,7 +86,7 @@ describe('ProjectConfigurationPanel', () => {
 
         await waitFor(() => expect(screen.getByTestId('project-configuration-summary')).toBeInTheDocument());
 
-        expect(screen.getByRole('heading', { name: 'Image Modalities' })).toBeInTheDocument();
+        expect(screen.getAllByRole('heading', { name: 'Image Modalities' }).length).toBeGreaterThan(0);
         fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
 
         await waitFor(() => {
@@ -125,6 +125,38 @@ describe('ProjectConfigurationPanel', () => {
             expect.objectContaining({
               method: 'PUT',
               body: expect.stringContaining(`Escalated ${projectType} ${syntheticUser}`),
+            }),
+          );
+        });
+      });
+
+      test(`supports image modality add/edit/remove for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config);
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Image modality label 1')).toBeInTheDocument());
+
+        fireEvent.click(screen.getByRole('button', { name: 'Add Modality' }));
+        fireEvent.change(screen.getByLabelText(`Image modality label ${config.image_modalities.length + 1}`), {
+          target: { value: `Synthetic ${projectType} ${syntheticUser}` },
+        });
+        fireEvent.change(screen.getByLabelText(`Image modality id ${config.image_modalities.length + 1}`), {
+          target: { value: `${projectType.toLowerCase()}-${syntheticUser}-custom` },
+        });
+        fireEvent.click(screen.getByLabelText(`Image modality calibration required ${config.image_modalities.length + 1}`));
+        fireEvent.click(screen.getByLabelText(`Image modality example uploaded ${config.image_modalities.length + 1}`));
+
+        fireEvent.click(screen.getByLabelText('Remove image modality 1'));
+        fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+
+        await waitFor(() => {
+          expect(global.fetch).toHaveBeenCalledWith(
+            '/api/projects/proj-1/configuration',
+            expect.objectContaining({
+              method: 'PUT',
+              body: expect.stringContaining(`Synthetic ${projectType} ${syntheticUser}`),
             }),
           );
         });
