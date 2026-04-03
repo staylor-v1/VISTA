@@ -80,6 +80,11 @@ def _default_project_configuration() -> dict:
             "require_disposition_on_submit": True,
             "require_measurement_for_critical": False,
             "require_second_reviewer_for_reject": False,
+            "configurable_hotkeys": {
+                "accept_classification": "a",
+                "reject_classification": "r",
+                "toggle_shortcut_help": "h",
+            },
         },
         "display_settings": {
             "default_colormap": "grayscale",

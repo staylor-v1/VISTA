@@ -238,6 +238,32 @@ class InspectionProjectProcessSettingsConfig(BaseModel):
     require_disposition_on_submit: bool = True
     require_measurement_for_critical: bool = False
     require_second_reviewer_for_reject: bool = False
+    configurable_hotkeys: Dict[str, str] = Field(
+        default_factory=lambda: {
+            "accept_classification": "a",
+            "reject_classification": "r",
+            "toggle_shortcut_help": "h",
+        }
+    )
+
+    @field_validator("configurable_hotkeys")
+    @classmethod
+    def validate_configurable_hotkeys(cls, value: Dict[str, str]) -> Dict[str, str]:
+        required_keys = {"accept_classification", "reject_classification", "toggle_shortcut_help"}
+        if not required_keys.issubset(value.keys()):
+            missing = ", ".join(sorted(required_keys - set(value.keys())))
+            raise ValueError(f"configurable_hotkeys missing required keys: {missing}")
+        normalized: Dict[str, str] = {}
+        for binding, hotkey in value.items():
+            if not isinstance(hotkey, str):
+                raise ValueError(f"Hotkey for '{binding}' must be a string")
+            trimmed = hotkey.strip().lower()
+            if len(trimmed) != 1 or not trimmed.isalnum():
+                raise ValueError(f"Hotkey for '{binding}' must be a single alphanumeric character")
+            normalized[binding] = trimmed
+        if len(set(normalized.values())) != len(normalized):
+            raise ValueError("configurable_hotkeys must use unique key bindings")
+        return normalized
 
 
 class InspectionProjectDisplaySettingsConfig(BaseModel):
