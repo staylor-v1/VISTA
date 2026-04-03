@@ -125,6 +125,11 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     measurement_value: '',
     bbox: { x: '', y: '', width: '', height: '' },
   });
+  const [bundleExport, setBundleExport] = useState({
+    loading: false,
+    error: null,
+    payload: null,
+  });
 
   useEffect(() => {
     const loadWorkbenchData = async () => {
@@ -653,6 +658,20 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     }
   };
 
+  const requestExportBundleSummary = async () => {
+    try {
+      setBundleExport({ loading: true, error: null, payload: null });
+      const resp = await fetch(`/api/projects/${projectId}/export-bundle-json`);
+      if (!resp.ok) {
+        throw new Error(`Failed to generate export bundle summary (${resp.status})`);
+      }
+      const payload = await resp.json();
+      setBundleExport({ loading: false, error: null, payload });
+    } catch (err) {
+      setBundleExport({ loading: false, error: err.message || 'Failed to generate export bundle summary', payload: null });
+    }
+  };
+
   return (
     <section className="workbench-panel" aria-label="Inspection Workbench">
       <div className="workbench-header">
@@ -660,10 +679,29 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
         <p>
           Inspection workbench for <strong>{projectType || 'PT1'}</strong> projects.
         </p>
+        <div className="workbench-detail-actions">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            data-testid="request-export-bundle-summary"
+            disabled={bundleExport.loading}
+            onClick={requestExportBundleSummary}
+          >
+            {bundleExport.loading ? 'Preparing Export Summary…' : 'Export Bundle Summary'}
+          </button>
+        </div>
       </div>
 
       {loading && <div className="loading-text">Loading inspection workbench…</div>}
       {error && <div className="alert alert-error">{error}</div>}
+      {bundleExport.error && <div className="alert alert-error">{bundleExport.error}</div>}
+      {bundleExport.payload && (
+        <div className="alert alert-success" data-testid="export-bundle-summary-result">
+          Export summary ready: {bundleExport.payload?.summary?.images?.total || 0} images,{' '}
+          {bundleExport.payload?.summary?.annotations?.total || 0} annotations,{' '}
+          {bundleExport.payload?.summary?.overlays?.segmentation_runs || 0} segmentation runs.
+        </div>
+      )}
 
       {!loading && !error && (
         <>
