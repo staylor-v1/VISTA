@@ -7,6 +7,7 @@ const projectTypes = ['PT1', 'PT2', 'PT3'];
 const scenarioByUser = [
   {
     user: 'basic',
+    hotkeys: { accept_classification: 'q', reject_classification: 'w', toggle_shortcut_help: 'e' },
     workspaceState: {
       selected_batch_id: 'batch-basic',
       defect_filter: 'all',
@@ -44,6 +45,7 @@ const scenarioByUser = [
   },
   {
     user: 'intermediate',
+    hotkeys: { accept_classification: 's', reject_classification: 'd', toggle_shortcut_help: 'f' },
     workspaceState: {
       selected_batch_id: 'batch-mid-a',
       defect_filter: 'critical_only',
@@ -124,6 +126,7 @@ const scenarioByUser = [
   },
   {
     user: 'advanced',
+    hotkeys: { accept_classification: 'z', reject_classification: 'x', toggle_shortcut_help: 'c' },
     workspaceState: {
       selected_batch_id: 'batch-adv-a',
       defect_filter: 'has_defects',
@@ -197,7 +200,7 @@ const scenarioByUser = [
   },
 ];
 
-function mockWorkbenchFetch({ batches, parts, workspaceState = {} }) {
+function mockWorkbenchFetch({ batches, parts, workspaceState = {}, hotkeys }) {
   let mutableParts = [...parts];
   const savedWorkspaceStates = [];
   const annotationsByPart = Object.fromEntries(
@@ -235,6 +238,22 @@ function mockWorkbenchFetch({ batches, parts, workspaceState = {} }) {
     }
     if (url.includes('/workspace-state') && (!options.method || options.method === 'GET')) {
       return Promise.resolve({ ok: true, json: async () => ({ state: workspaceState }) });
+    }
+    if (url.includes('/configuration')) {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          configuration: {
+            process_settings: {
+              configurable_hotkeys: hotkeys || {
+                accept_classification: 'a',
+                reject_classification: 'r',
+                toggle_shortcut_help: 'h',
+              },
+            },
+          },
+        }),
+      });
     }
     if (url.includes('/workspace-state') && options.method === 'PUT') {
       savedWorkspaceStates.push(JSON.parse(options.body || '{}'));
@@ -493,6 +512,37 @@ describe('InspectionWorkbenchPanel', () => {
         expect(workspaceTracker.getWorkspaceSaves().length).toBeGreaterThan(0);
       });
 
+      unmount();
+    }
+  });
+
+  test.each(projectTypes)('applies configurable inspector hotkeys for %s', async (projectType) => {
+    for (const scenario of scenarioByUser) {
+      const workspaceTracker = mockWorkbenchFetch(scenario);
+      const { unmount } = render(<InspectionWorkbenchPanel projectId="proj-1" projectType={projectType} />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('inspector-hotkey-hints')).toHaveTextContent(
+          new RegExp(`pass \\(${scenario.hotkeys.accept_classification.toUpperCase()}\\)`),
+        );
+      });
+
+      fireEvent.keyDown(document, { key: scenario.hotkeys.toggle_shortcut_help });
+      expect(screen.getByTestId('shortcut-help-panel')).toHaveTextContent('Shortcut help');
+
+      fireEvent.keyDown(document, { key: scenario.hotkeys.accept_classification });
+      await waitFor(() => {
+        expect(screen.getByText(/Passed: \d+/)).toBeInTheDocument();
+      });
+
+      fireEvent.keyDown(document, { key: scenario.hotkeys.reject_classification });
+      await waitFor(() => {
+        expect(screen.getByText(/Rejected: \d+/)).toBeInTheDocument();
+      });
+
+      await waitFor(() => {
+        expect(workspaceTracker.getWorkspaceSaves().length).toBeGreaterThan(0);
+      });
       unmount();
     }
   });
