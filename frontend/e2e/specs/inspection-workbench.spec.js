@@ -12,7 +12,7 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
   for (const simulatedUser of simulatedUsers) {
     test.describe(`Inspection Workbench E2E (${projectType}) ${simulatedUser}`, () => {
       test(`renders project data workflow for ${projectType} ${simulatedUser}`, async ({ page }) => {
-        const { projectId, getWorkspaceStates, getExportBundleArchiveRequests } = await mockInspectionWorkbenchRoutes(page, { type: projectType, scenario: simulatedUser });
+        const { projectId, getWorkspaceStates, getExportBundleArchiveRequests, getIngestValidationRequests } = await mockInspectionWorkbenchRoutes(page, { type: projectType, scenario: simulatedUser });
 
         await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
         await page.getByRole('tab', { name: 'Project Data' }).click();
@@ -22,6 +22,8 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
         await expect(page.getByTestId('inspector-common-controls')).toBeVisible();
         await page.getByTestId('request-export-bundle-archive').click();
         await expect(page.getByTestId('export-bundle-archive-result')).toContainText('Export archive ready');
+        await page.getByTestId('request-ingest-validation').click();
+        await expect(page.getByTestId('ingest-validation-result')).toContainText('Ingest validation complete');
         const measurementCapture = page.locator('.measurement-capture');
         await measurementCapture.getByPlaceholder('label', { exact: true }).fill(`${simulatedUser}-distance`);
         await measurementCapture.getByPlaceholder('value', { exact: true }).fill('12.5');
@@ -84,6 +86,7 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
 
         await expect.poll(() => getWorkspaceStates().length).toBeGreaterThan(0);
         await expect.poll(() => getExportBundleArchiveRequests().length).toBeGreaterThan(0);
+        await expect.poll(() => getIngestValidationRequests().length).toBeGreaterThan(0);
       });
     });
   }
