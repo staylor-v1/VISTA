@@ -161,6 +161,14 @@ When preparing upstream PRs:
   - measurement runs missing `run_id`.
 - Extended existing pytest export coverage to verify discrepancy summary behavior for progressive synthetic users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) while preserving prior aggregate assertions.
 
+### Milestone 4 — step 1 (downloadable bundle archive baseline)
+- Added backend endpoint `GET /api/projects/{project_id}/export-bundle` that returns a zip archive.
+- Archive currently contains `export-manifest.json` with:
+  - project identity/type metadata,
+  - existing `bundle_summary` contract from `export-bundle-json`,
+  - image reference records (`image_id`, `filename`, `object_storage_key`, `size_bytes`) for object-storage retrieval workflows.
+- Added pytest API coverage in the existing export suite for three progressive simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) validating zip delivery and manifest contract shape.
+
 ### PR-08 — UI exposure foundation (project type selection + visibility)
 
 ### Milestone 1 — create-project project-type selection
