@@ -251,6 +251,36 @@ function mockWorkbenchFetch({ batches, parts, workspaceState = {}, hotkeys }) {
         }),
       });
     }
+    if (url.includes('/ingest') && options.method === 'POST') {
+      const payload = JSON.parse(options.body || '{}');
+      const partsReceived = Array.isArray(payload.batches)
+        ? payload.batches.reduce((acc, batch) => acc + (Array.isArray(batch.parts) ? batch.parts.length : 0), 0)
+        : 0;
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          project_id: 'proj-1',
+          counters: {
+            batches_received: Array.isArray(payload.batches) ? payload.batches.length : 0,
+            parts_received: partsReceived,
+            batches_created: 0,
+            parts_created: 0,
+            parts_skipped_existing: partsReceived,
+            parts_skipped_discrepancy: scenarioNameIncludesAdvanced(payload) ? 1 : 0,
+          },
+          discrepancies: scenarioNameIncludesAdvanced(payload)
+            ? [
+              {
+                code: 'duplicate_serial_in_payload',
+                batch_name: payload.batches?.[0]?.name || 'batch',
+                serial_number: payload.batches?.[0]?.parts?.[0]?.serial_number || null,
+                message: 'Synthetic duplicate for advanced scenario',
+              },
+            ]
+            : [],
+        }),
+      });
+    }
     if (url.includes('/workspace-state') && (!options.method || options.method === 'GET')) {
       return Promise.resolve({ ok: true, json: async () => ({ state: workspaceState }) });
     }
@@ -372,6 +402,11 @@ function mockWorkbenchFetch({ batches, parts, workspaceState = {}, hotkeys }) {
   };
 }
 
+function scenarioNameIncludesAdvanced(payload) {
+  const group = payload?.batches?.[0]?.description || '';
+  return /adv/i.test(group);
+}
+
 describe('InspectionWorkbenchPanel', () => {
   afterEach(() => {
     delete global.fetch;
@@ -394,6 +429,17 @@ describe('InspectionWorkbenchPanel', () => {
         expect(screen.getByTestId('export-bundle-archive-result')).toHaveTextContent(/Export archive ready:/);
         expect(screen.getByTestId('export-bundle-archive-result')).toHaveTextContent(/application\/zip/);
       });
+      fireEvent.click(screen.getByTestId('request-ingest-validation'));
+      await waitFor(() => {
+        expect(screen.getByTestId('ingest-validation-result')).toHaveTextContent(/Ingest validation complete:/);
+      });
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('/ingest'),
+        expect.objectContaining({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
       expect(screen.getByText(`Parts: ${scenario.parts.length}`)).toBeInTheDocument();
       expect(screen.getByText(new RegExp(projectType))).toBeInTheDocument();
       expect(screen.getByTestId('inspector-common-controls')).toBeInTheDocument();
