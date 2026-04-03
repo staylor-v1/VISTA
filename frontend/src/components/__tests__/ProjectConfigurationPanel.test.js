@@ -199,6 +199,49 @@ describe('ProjectConfigurationPanel', () => {
           );
         });
       });
+
+      test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config);
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Part view label 1')).toBeInTheDocument());
+
+        fireEvent.click(screen.getByRole('button', { name: 'Add Part View' }));
+        fireEvent.change(screen.getByLabelText(`Part view label ${config.part_views.length + 1}`), {
+          target: { value: `Expanded ${projectType} ${syntheticUser}` },
+        });
+        fireEvent.change(screen.getByLabelText(`Part view id ${config.part_views.length + 1}`), {
+          target: { value: `${projectType.toLowerCase()}-${syntheticUser}-expanded-view` },
+        });
+        fireEvent.change(screen.getByLabelText(`Part view required modalities ${config.part_views.length + 1}`), {
+          target: { value: 'visual, uv, ir' },
+        });
+        fireEvent.change(screen.getByLabelText(`Part view source ${config.part_views.length + 1}`), {
+          target: { value: 'auto' },
+        });
+
+        fireEvent.click(screen.getByLabelText('Remove part view 1'));
+        fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+
+        await waitFor(() => {
+          expect(global.fetch).toHaveBeenCalledWith(
+            '/api/projects/proj-1/configuration',
+            expect.objectContaining({
+              method: 'PUT',
+              body: expect.stringContaining(`Expanded ${projectType} ${syntheticUser}`),
+            }),
+          );
+          expect(global.fetch).toHaveBeenCalledWith(
+            '/api/projects/proj-1/configuration',
+            expect.objectContaining({
+              method: 'PUT',
+              body: expect.stringContaining('"required_modalities":["visual","uv","ir"]'),
+            }),
+          );
+        });
+      });
     });
   });
 

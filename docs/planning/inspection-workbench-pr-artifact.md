@@ -335,3 +335,12 @@ When preparing upstream PRs:
   - remove modality rows before save.
 - Preserved the existing configuration API contract (`PUT /api/projects/{project_id}/configuration`) and reused current payload shape without schema migration.
 - Extended existing React Testing Library coverage for all project types (`PT1`, `PT2`, `PT3`) and progressive synthetic users (`basic`, `intermediate`, `advanced`) to validate modality add/edit/remove flows and persisted payload updates.
+
+#### PR-11 milestone 2 (step 5 implemented in artifact branch)
+- Expanded `ProjectConfigurationPanel` section editing UX for part views:
+  - add part-view rows,
+  - inline edit for part-view `label` and `id`,
+  - edit comma-separated `required_modalities` with normalized persisted arrays,
+  - toggle `source` (`manual`/`auto`) and remove part-view rows before save.
+- Preserved the existing configuration API contract (`PUT /api/projects/{project_id}/configuration`) and reused current payload shape without schema migration.
+- Extended existing React Testing Library coverage for all project types (`PT1`, `PT2`, `PT3`) and progressive synthetic users (`basic`, `intermediate`, `advanced`) to validate part-view add/edit/remove flows and persisted payload updates.
