@@ -289,6 +289,45 @@ class InspectionProjectConfigurationResponse(BaseModel):
     config: InspectionProjectConfiguration
     updated_at: Optional[datetime] = None
 
+
+class InspectionIngestPartRecord(BaseModel):
+    serial_number: str = Field(..., min_length=1, max_length=255)
+    display_name: Optional[str] = Field(default=None, max_length=255)
+    metadata_json: Optional[Dict[str, Any]] = Field(
+        default=None,
+        validation_alias="metadata",
+        serialization_alias="metadata",
+    )
+    review_state: str = Field(default="unreviewed", pattern=r"^(unreviewed|in_review|pass|reject_pending|reject_confirmed)$")
+
+    @field_validator("serial_number")
+    @classmethod
+    def strip_serial_number(cls, v: str) -> str:
+        return v.strip()
+
+
+class InspectionIngestBatchRecord(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    parts: List[InspectionIngestPartRecord] = Field(default_factory=list)
+
+
+class InspectionBulkIngestPayload(BaseModel):
+    batches: List[InspectionIngestBatchRecord] = Field(default_factory=list)
+
+
+class InspectionIngestDiscrepancy(BaseModel):
+    code: str
+    batch_name: str
+    serial_number: Optional[str] = None
+    message: str
+
+
+class InspectionBulkIngestResponse(BaseModel):
+    project_id: uuid.UUID
+    counters: Dict[str, int]
+    discrepancies: List[InspectionIngestDiscrepancy] = Field(default_factory=list)
+
 # ImageGroup schemas
 class ImageGroupBase(BaseModel):
     identifier: str = Field(..., min_length=1, max_length=255)
