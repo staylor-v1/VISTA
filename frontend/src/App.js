@@ -248,8 +248,62 @@ const EditProjectModal = memo(function EditProjectModal({ project, onClose, onSu
   );
 });
 
+const DeleteProjectModal = memo(function DeleteProjectModal({ project, onClose, onConfirm }) {
+  const [confirmationPhrase, setConfirmationPhrase] = useState('');
+  const expectedPhrase = project ? `DELETE ${project.name}` : '';
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!project) return;
+    onConfirm(project, confirmationPhrase);
+  };
+
+  if (!project) return null;
+
+  return (
+    <div className="modal">
+      <div className="modal-content">
+        <div className="modal-header">
+          <h3>Delete Project</h3>
+          <span className="close" onClick={onClose}>&times;</span>
+        </div>
+        <div className="modal-body">
+          <p>
+            This action permanently deletes <strong>{project.name}</strong> and related project data.
+          </p>
+          <p>
+            To confirm, type <code>{expectedPhrase}</code>.
+          </p>
+          <form id="delete-project-form" onSubmit={handleSubmit}>
+            <div className="form-group">
+              <label htmlFor="delete_confirmation_phrase">Confirmation phrase *</label>
+              <input
+                id="delete_confirmation_phrase"
+                type="text"
+                className="form-control"
+                value={confirmationPhrase}
+                onChange={(e) => setConfirmationPhrase(e.target.value)}
+                placeholder={expectedPhrase}
+                required
+              />
+            </div>
+          </form>
+        </div>
+        <div className="modal-footer">
+          <button type="button" className="btn btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" form="delete-project-form" className="btn btn-danger btn-large">
+            Delete Project
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 // Memoized ProjectItem component to prevent unnecessary re-renders
-const ProjectItem = memo(function ProjectItem({ project, onEdit }) {
+const ProjectItem = memo(function ProjectItem({ project, onEdit, onDelete }) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
@@ -288,6 +342,18 @@ const ProjectItem = memo(function ProjectItem({ project, onEdit }) {
                   }}
                 >
                   Edit
+                </button>
+                <button
+                  type="button"
+                  className="project-card-menu-item"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setMenuOpen(false);
+                    onDelete(project);
+                  }}
+                >
+                  Delete
                 </button>
               </div>
             )}
@@ -331,6 +397,7 @@ function App() {
   const [toast, setToast] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [editingProject, setEditingProject] = useState(null);
+  const [deletingProject, setDeletingProject] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
   // const [newProject, setNewProject] = useState({  // Commented out - not currently used
   //   name: '',
@@ -474,6 +541,40 @@ function App() {
       });
   }, [editingProject]);
 
+  const handleDeleteProject = useCallback((project) => {
+    setDeletingProject(project);
+  }, []);
+
+  const handleConfirmDeleteProject = useCallback((project, confirmationPhrase) => {
+    if (!project) return;
+    setLoading(true);
+
+    fetch(`/api/projects/${project.id}`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ confirmation_phrase: confirmationPhrase }),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+        }
+      })
+      .then(() => {
+        setProjects((prev) => prev.filter((candidate) => candidate.id !== project.id));
+        setDeletingProject(null);
+        setLoading(false);
+        showToast(`Project "${project.name}" deleted successfully.`, 'success');
+      })
+      .catch((err) => {
+        console.error('Failed to delete project:', err);
+        showToast(err.message, 'error');
+        setLoading(false);
+      });
+  }, []);
+
 
   const HomePage = () => (
     <div className="App">
@@ -566,7 +667,7 @@ function App() {
             </div>
             <div className="projects-grid">
               {projects.map(project => (
-                <ProjectItem key={project.id} project={project} onEdit={handleEditProject} />
+                <ProjectItem key={project.id} project={project} onEdit={handleEditProject} onDelete={handleDeleteProject} />
               ))}
             </div>
           </>
@@ -586,6 +687,13 @@ function App() {
           project={editingProject}
           onClose={() => setEditingProject(null)}
           onSubmit={handleUpdateProject}
+        />
+      )}
+      {deletingProject && (
+        <DeleteProjectModal
+          project={deletingProject}
+          onClose={() => setDeletingProject(null)}
+          onConfirm={handleConfirmDeleteProject}
         />
       )}
     </div>
