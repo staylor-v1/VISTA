@@ -130,6 +130,11 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     error: null,
     payload: null,
   });
+  const [bundleArchive, setBundleArchive] = useState({
+    loading: false,
+    error: null,
+    details: null,
+  });
 
   useEffect(() => {
     const loadWorkbenchData = async () => {
@@ -672,6 +677,28 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     }
   };
 
+  const requestExportBundleArchive = async () => {
+    try {
+      setBundleArchive({ loading: true, error: null, details: null });
+      const resp = await fetch(`/api/projects/${projectId}/export-bundle`);
+      if (!resp.ok) {
+        throw new Error(`Failed to generate export bundle archive (${resp.status})`);
+      }
+      const archiveBlob = await resp.blob();
+      const contentType = resp.headers.get('content-type') || 'application/octet-stream';
+      setBundleArchive({
+        loading: false,
+        error: null,
+        details: {
+          sizeBytes: archiveBlob.size,
+          contentType,
+        },
+      });
+    } catch (err) {
+      setBundleArchive({ loading: false, error: err.message || 'Failed to generate export bundle archive', details: null });
+    }
+  };
+
   return (
     <section className="workbench-panel" aria-label="Inspection Workbench">
       <div className="workbench-header">
@@ -689,17 +716,32 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
           >
             {bundleExport.loading ? 'Preparing Export Summary…' : 'Export Bundle Summary'}
           </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            data-testid="request-export-bundle-archive"
+            disabled={bundleArchive.loading}
+            onClick={requestExportBundleArchive}
+          >
+            {bundleArchive.loading ? 'Preparing Export Archive…' : 'Prepare Export Archive'}
+          </button>
         </div>
       </div>
 
       {loading && <div className="loading-text">Loading inspection workbench…</div>}
       {error && <div className="alert alert-error">{error}</div>}
       {bundleExport.error && <div className="alert alert-error">{bundleExport.error}</div>}
+      {bundleArchive.error && <div className="alert alert-error">{bundleArchive.error}</div>}
       {bundleExport.payload && (
         <div className="alert alert-success" data-testid="export-bundle-summary-result">
           Export summary ready: {bundleExport.payload?.summary?.images?.total || 0} images,{' '}
           {bundleExport.payload?.summary?.annotations?.total || 0} annotations,{' '}
           {bundleExport.payload?.summary?.overlays?.segmentation_runs || 0} segmentation runs.
+        </div>
+      )}
+      {bundleArchive.details && (
+        <div className="alert alert-success" data-testid="export-bundle-archive-result">
+          Export archive ready: {bundleArchive.details.sizeBytes} bytes ({bundleArchive.details.contentType}).
         </div>
       )}
 
