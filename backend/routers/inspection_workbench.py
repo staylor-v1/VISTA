@@ -18,6 +18,26 @@ router = APIRouter(tags=["Inspection Workbench"])
 WORKSPACE_STATE_KEY_PREFIX = "inspection_workbench.workspace_state"
 PROJECT_CONFIGURATION_KEY = "inspection_workbench.project_configuration"
 ANNOTATIONS_METADATA_KEY = "annotations"
+WORKSPACE_PANEL_LAYOUT_DEFAULTS = {
+    "part_list": {
+        "is_open": True,
+        "width_px": 320,
+        "height_px": 420,
+        "orientation": "vertical",
+    },
+    "inspector": {
+        "is_open": True,
+        "width_px": 360,
+        "height_px": 420,
+        "orientation": "vertical",
+    },
+    "mpr_controls": {
+        "is_open": True,
+        "width_px": 360,
+        "height_px": 360,
+        "orientation": "vertical",
+    },
+}
 
 
 async def _get_project_with_access_check(
@@ -59,6 +79,45 @@ def _part_annotations(part) -> List[dict]:
     metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
     annotations = metadata.get(ANNOTATIONS_METADATA_KEY)
     return list(annotations) if isinstance(annotations, list) else []
+
+
+def _normalize_panel_dimension(value: object, *, fallback: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(minimum, min(maximum, parsed))
+
+
+def _normalize_workspace_state(raw_state: object) -> dict:
+    safe_state = raw_state.copy() if isinstance(raw_state, dict) else {}
+    raw_layout = safe_state.get("panel_layout")
+    normalized_layout = {}
+    for panel_key, defaults in WORKSPACE_PANEL_LAYOUT_DEFAULTS.items():
+        candidate = raw_layout.get(panel_key) if isinstance(raw_layout, dict) else {}
+        if not isinstance(candidate, dict):
+            candidate = {}
+        orientation = str(candidate.get("orientation", defaults["orientation"])).lower()
+        if orientation not in {"vertical", "horizontal"}:
+            orientation = defaults["orientation"]
+        normalized_layout[panel_key] = {
+            "is_open": bool(candidate.get("is_open", defaults["is_open"])),
+            "width_px": _normalize_panel_dimension(
+                candidate.get("width_px"),
+                fallback=defaults["width_px"],
+                minimum=220,
+                maximum=1200,
+            ),
+            "height_px": _normalize_panel_dimension(
+                candidate.get("height_px"),
+                fallback=defaults["height_px"],
+                minimum=220,
+                maximum=1400,
+            ),
+            "orientation": orientation,
+        }
+    safe_state["panel_layout"] = normalized_layout
+    return safe_state
 
 
 def _default_project_configuration() -> dict:
@@ -449,7 +508,7 @@ async def get_inspection_workspace_state(
         key=metadata_key,
     )
     raw_state = metadata.value if metadata else {}
-    safe_state = raw_state if isinstance(raw_state, dict) else {}
+    safe_state = _normalize_workspace_state(raw_state)
     return {
         "project_id": project_id,
         "user_email": current_user.email,
@@ -475,11 +534,11 @@ async def update_inspection_workspace_state(
         metadata=schemas.ProjectMetadataCreate(
             project_id=project_id,
             key=metadata_key,
-            value=payload.state,
+            value=_normalize_workspace_state(payload.state),
         ),
         created_by=current_user.email,
     )
-    safe_state = updated.value if isinstance(updated.value, dict) else {}
+    safe_state = _normalize_workspace_state(updated.value)
     return {
         "project_id": project_id,
         "user_email": current_user.email,
