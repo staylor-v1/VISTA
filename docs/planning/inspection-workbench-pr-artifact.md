@@ -335,6 +335,17 @@ When preparing upstream PRs:
 - Preserved migration safety by reusing existing `inspection_batches` + `inspection_parts` persistence contracts (no new migration required).
 - Added backend pytest coverage in the existing test framework for three progressive synthetic users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) validating counters and discrepancy codes.
 
+#### PR-12 milestone 4 (step 2 implemented in artifact branch)
+- Added frontend Project Data ingest-validation action in `InspectionWorkbenchPanel`:
+  - `Run Ingest Validation` button invokes existing `POST /api/projects/{project_id}/ingest`.
+  - Uses bounded synthetic payload derived from current batch/part context to validate discrepancy/counter contract wiring without schema changes.
+  - Renders inline success summary for created/skipped/discrepancy counts and preserves existing error surfacing behavior.
+- Extended existing React Testing Library matrix coverage for three simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) validating:
+  - ingest action request wiring (`POST /ingest`),
+  - in-panel ingest validation result rendering continuity alongside existing export controls.
+- Extended Playwright E2E matrix (`Inspection Workbench E2E`) across `PT1/PT2/PT3` progressive synthetic users to assert ingest action invocation and success rendering.
+- Recorded screenshot-based visual analytics in `docs/planning/pr12-ingest-screenshot-analysis.md` using runtime artifact `frontend/artifacts/pr09-inspector-modalities-measurements.png` (binary intentionally not committed).
+
 #### PR-11 milestone 2 (step 1 implemented in artifact branch)
 - Added frontend **Project Configuration** tab in `Project` view so configuration workflows are first-class alongside `Inspection` and `Project Data`.
 - Added `ProjectConfigurationPanel` with backend round-trip wiring to existing PR-11 milestone-1 APIs:
