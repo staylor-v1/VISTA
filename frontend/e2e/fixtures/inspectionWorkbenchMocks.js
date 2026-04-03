@@ -180,9 +180,42 @@ function createMockData(scenario = 'advanced') {
 
 async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'advanced' } = {}) {
   const { batches, parts, workspaceState } = createMockData(scenario);
+  const configurationByProjectId = {
+    [projectId]: {
+      image_modalities: [{ id: `${type.toLowerCase()}-${scenario}-visual`, label: 'Visual', calibration_required: false }],
+      part_views: [{ id: `${type.toLowerCase()}-${scenario}-front`, label: 'Front', required_modalities: ['visual'], source: 'manual' }],
+      defect_types: [{ name: `${scenario}-surface`, color: '#ef4444', definition: 'Synthetic defect taxonomy baseline' }],
+      process_settings: {
+        require_disposition_on_submit: true,
+        require_measurement_for_critical: scenario !== 'basic',
+        require_second_reviewer_for_reject: scenario === 'advanced',
+      },
+      display_settings: {
+        default_colormap: scenario === 'basic' ? 'grayscale' : 'magma',
+        anomaly_colormap: 'viridis',
+        grayscale_base_image: true,
+      },
+    },
+    'proj-copy': {
+      image_modalities: [{ id: `${type.toLowerCase()}-${scenario}-copied-visual`, label: 'Copied Visual', calibration_required: true }],
+      part_views: [{ id: `${type.toLowerCase()}-${scenario}-copied-top`, label: 'Top', required_modalities: ['visual'], source: 'auto' }],
+      defect_types: [{ name: `${scenario}-copied-defect`, color: '#22c55e', definition: 'Copied synthetic defect definition' }],
+      process_settings: {
+        require_disposition_on_submit: true,
+        require_measurement_for_critical: true,
+        require_second_reviewer_for_reject: true,
+      },
+      display_settings: {
+        default_colormap: 'viridis',
+        anomaly_colormap: 'magma',
+        grayscale_base_image: true,
+      },
+    },
+  };
   let mutableParts = [...parts];
   const savedWorkspaceStates = [];
   const exportBundleArchiveRequests = [];
+  const savedConfigurations = [];
 
   await page.route('**/api/**', async (route) => {
     const url = route.request().url();
@@ -208,6 +241,17 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
     }
     if (url.endsWith(`/api/projects/${projectId}/metadata-dict`)) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+      return;
+    }
+    if (url.endsWith('/api/projects') || url.endsWith('/api/projects/')) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          { id: projectId, name: `Inspection Workbench ${type}`, project_type: type },
+          { id: 'proj-copy', name: `Template ${type} ${scenario}`, project_type: type },
+        ]),
+      });
       return;
     }
     if (url.endsWith(`/api/projects/${projectId}/classes`)) {
@@ -250,6 +294,28 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
         status: 200,
         headers: { 'content-type': 'application/zip' },
         body: 'synthetic-zip-bundle',
+      });
+      return;
+    }
+    if (url.match(/\/api\/projects\/[^/]+\/configuration$/) && method === 'GET') {
+      const targetProjectId = url.split('/').at(-2);
+      const config = configurationByProjectId[targetProjectId];
+      await route.fulfill({
+        status: config ? 200 : 404,
+        contentType: 'application/json',
+        body: JSON.stringify(config ? { project_id: targetProjectId, config } : { detail: 'config not found' }),
+      });
+      return;
+    }
+    if (url.match(/\/api\/projects\/[^/]+\/configuration$/) && method === 'PUT') {
+      const targetProjectId = url.split('/').at(-2);
+      const payload = route.request().postDataJSON() || {};
+      configurationByProjectId[targetProjectId] = payload.config || {};
+      savedConfigurations.push({ projectId: targetProjectId, payload });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ project_id: targetProjectId, config: configurationByProjectId[targetProjectId] }),
       });
       return;
     }
@@ -309,6 +375,7 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
     getParts: () => mutableParts,
     getWorkspaceStates: () => savedWorkspaceStates,
     getExportBundleArchiveRequests: () => exportBundleArchiveRequests,
+    getSavedConfigurations: () => savedConfigurations,
   };
 }
 
