@@ -5,6 +5,7 @@ const { mockInspectionWorkbenchRoutes } = require('../fixtures/inspectionWorkben
 const screenshotPath = path.resolve(__dirname, '../../artifacts/pr04-mpr-workbench.png');
 const pr08ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr08-project-type-visibility.png');
 const pr09ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr09-inspector-modalities-measurements.png');
+const pr11ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr11-project-configuration.png');
 const simulatedUsers = ['basic', 'intermediate', 'advanced'];
 
 for (const projectType of ['PT1', 'PT2', 'PT3']) {
@@ -191,4 +192,58 @@ test.describe('PR-08 project type UI exposure smoke', () => {
       await expect(page.getByText(`Type: ${projectType}`)).toBeVisible();
     });
   }
+});
+
+for (const projectType of ['PT1', 'PT2', 'PT3']) {
+  for (const simulatedUser of simulatedUsers) {
+    test.describe(`PR-11 project configuration E2E (${projectType}) ${simulatedUser}`, () => {
+      test(`saves, edits, and copies configuration for ${projectType} ${simulatedUser}`, async ({ page }) => {
+        const { projectId, getSavedConfigurations } = await mockInspectionWorkbenchRoutes(page, {
+          type: projectType,
+          scenario: simulatedUser,
+        });
+        const defectLabel = `Escalated ${projectType} ${simulatedUser}`;
+
+        await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
+        await page.getByRole('tab', { name: 'Project Configuration' }).click();
+
+        await expect(page.getByRole('heading', { name: 'Project Configuration' })).toBeVisible();
+        await expect(page.getByTestId('project-configuration-summary')).toBeVisible();
+
+        await page.getByRole('button', { name: 'Add Defect Type' }).click();
+        const newDefectIndex = 2;
+        await page.getByLabel(`Defect type name ${newDefectIndex}`).fill(defectLabel);
+        await page.getByLabel(`Defect type color ${newDefectIndex}`).fill('#0ea5e9');
+        await page.getByLabel(`Defect type definition ${newDefectIndex}`).fill('Synthetic E2E defect type update');
+
+        await page.getByLabel('Default colormap').selectOption(simulatedUser === 'basic' ? 'magma' : 'viridis');
+        await page.getByRole('button', { name: 'Save Configuration' }).click();
+        await expect(page.getByText('Configuration saved.')).toBeVisible();
+
+        await page.getByLabel('Source project').selectOption('proj-copy');
+        await page.getByRole('button', { name: 'Copy from Project' }).click();
+        await expect(page.getByText('Configuration copied from existing project.')).toBeVisible();
+        await expect(page.getByLabel('Defect type name 1')).toHaveValue(`${simulatedUser}-copied-defect`);
+
+        await expect.poll(() => getSavedConfigurations().length).toBeGreaterThanOrEqual(2);
+        await expect.poll(() => getSavedConfigurations().some(
+          ({ payload }) => JSON.stringify(payload).includes(defectLabel),
+        )).toBeTruthy();
+      });
+    });
+  }
+}
+
+test.describe('PR-11 project configuration screenshot artifact', () => {
+  test('captures PT3 advanced project configuration screenshot', async ({ page }) => {
+    const { projectId } = await mockInspectionWorkbenchRoutes(page, { type: 'PT3', scenario: 'advanced' });
+    await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
+    await page.getByRole('tab', { name: 'Project Configuration' }).click();
+    await expect(page.getByRole('heading', { name: 'Project Configuration' })).toBeVisible();
+    await page.getByRole('button', { name: 'Add Defect Type' }).click();
+    await page.getByLabel('Defect type name 2').fill('Screenshot Defect');
+    const panel = page.locator('section[aria-label="Project Configuration"]');
+    await expect(panel).toBeVisible();
+    await panel.screenshot({ path: pr11ScreenshotPath });
+  });
 });

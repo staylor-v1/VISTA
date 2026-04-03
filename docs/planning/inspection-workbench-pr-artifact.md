@@ -302,3 +302,11 @@ When preparing upstream PRs:
   - remove defect type rows prior to save.
 - Preserved existing configuration API contract (`PUT /api/projects/{project_id}/configuration`) while expanding editable surface area with minimal schema risk.
 - Extended existing React Testing Library coverage with three progressive synthetic users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) to validate add/edit/remove workflows and persisted payload updates.
+
+#### PR-11 milestone 2 (step 3 implemented in artifact branch)
+- Added Playwright E2E coverage for Project Configuration workflows across all project types (`PT1`, `PT2`, `PT3`) and progressive synthetic users (`basic`, `intermediate`, `advanced`) validating:
+  - configuration save after defect-type edits,
+  - copy-from-existing-project workflow and UI rehydration,
+  - persisted payload capture for both save and copy actions.
+- Extended shared E2E fixture routing with project-configuration mocks (`GET/PUT /api/projects/{project_id}/configuration`) and deterministic source-project metadata to exercise copy flows.
+- Generated runtime screenshot artifact (`frontend/artifacts/pr11-project-configuration.png`, intentionally not committed) and recorded visual analytics in `docs/planning/pr11-screenshot-analysis.md`.
