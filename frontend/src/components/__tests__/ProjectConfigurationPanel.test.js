@@ -29,6 +29,11 @@ function makeConfig(projectType, syntheticUser) {
       require_disposition_on_submit: true,
       require_measurement_for_critical: complexity > 1,
       require_second_reviewer_for_reject: complexity > 2,
+      configurable_hotkeys: {
+        accept_classification: complexity === 1 ? 'a' : complexity === 2 ? 's' : 'z',
+        reject_classification: complexity === 1 ? 'r' : complexity === 2 ? 'd' : 'x',
+        toggle_shortcut_help: complexity === 1 ? 'h' : complexity === 2 ? 'f' : 'c',
+      },
     },
     display_settings: {
       default_colormap: complexity > 1 ? 'magma' : 'grayscale',
@@ -120,6 +125,44 @@ describe('ProjectConfigurationPanel', () => {
             expect.objectContaining({
               method: 'PUT',
               body: expect.stringContaining(`Escalated ${projectType} ${syntheticUser}`),
+            }),
+          );
+        });
+      });
+
+      test(`supports configurable hotkeys edits for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config);
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Accept hotkey')).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText('Accept hotkey'), { target: { value: 'q' } });
+        fireEvent.change(screen.getByLabelText('Reject hotkey'), { target: { value: 'w' } });
+        fireEvent.change(screen.getByLabelText('Help hotkey'), { target: { value: 'e' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+
+        await waitFor(() => {
+          expect(global.fetch).toHaveBeenCalledWith(
+            '/api/projects/proj-1/configuration',
+            expect.objectContaining({
+              method: 'PUT',
+              body: expect.stringContaining('"accept_classification":"q"'),
+            }),
+          );
+          expect(global.fetch).toHaveBeenCalledWith(
+            '/api/projects/proj-1/configuration',
+            expect.objectContaining({
+              method: 'PUT',
+              body: expect.stringContaining('"reject_classification":"w"'),
+            }),
+          );
+          expect(global.fetch).toHaveBeenCalledWith(
+            '/api/projects/proj-1/configuration',
+            expect.objectContaining({
+              method: 'PUT',
+              body: expect.stringContaining('"toggle_shortcut_help":"e"'),
             }),
           );
         });

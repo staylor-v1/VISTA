@@ -4,27 +4,38 @@ This artifact captures the incremental work completed in this session so it can 
 
 ## Proposed incremental PR from this session
 
-1. **PR-12 milestone 1 step 2 — frontend delete-project governance UX**
+1. **PR-12 milestone 2 step 1 — configurable hotkeys storage + validation baseline**
    - Scope:
-     - Add `Delete` action to dashboard project-card menu.
-     - Add destructive confirmation modal requiring exact phrase `DELETE <project_name>`.
-     - Wire deletion request to existing backend governance API (`DELETE /api/projects/{project_id}` with `confirmation_phrase` payload).
-     - Remove deleted project from dashboard state on success and preserve backend error messaging on failure.
+    - Extend project-configuration schema with `process_settings.configurable_hotkeys` and strict validation:
+      - required bindings (`accept_classification`, `reject_classification`, `toggle_shortcut_help`),
+      - single alphanumeric characters,
+      - unique key assignments.
+    - Extend default configuration payload to include hotkey defaults (`a`, `r`, `h`).
+    - Add Project Configuration UI controls for hotkey editing and persistence via existing `PUT /configuration` contract.
+    - Add automated backend/frontend coverage for progressive synthetic users across `PT1/PT2/PT3`.
    - Files:
-     - `frontend/src/App.js`
-     - `frontend/src/App.test.js`
+    - `backend/core/schemas.py`
+    - `backend/routers/inspection_workbench.py`
+    - `backend/tests/test_inspection_workbench_router.py`
+    - `frontend/src/components/ProjectConfigurationPanel.js`
+    - `frontend/src/components/__tests__/ProjectConfigurationPanel.test.js`
    - Automated coverage:
-     - Existing frontend Jest/RTL framework.
-     - Progressive synthetic-user matrix (`basic`, `intermediate`, `advanced`) for each project type (`PT1`, `PT2`, `PT3`) validating invalid phrase rejection + successful deletion.
+    - Existing backend pytest framework:
+      - round-trip configuration for progressive synthetic users (`basic`, `intermediate`, `advanced`) across `PT1/PT2/PT3`,
+      - invalid hotkey payload rejection (`422`) across `PT1/PT2/PT3`.
+    - Existing frontend Jest/RTL framework:
+      - progressive synthetic-user matrix (`basic`, `intermediate`, `advanced`) across `PT1/PT2/PT3` verifying hotkey edit persistence in save payload.
+    - Playwright visual smoke:
+      - project-configuration screenshot capture + visual analytics notes in `docs/planning/pr12-hotkeys-screenshot-analysis.md` (binary screenshot intentionally not committed).
 
 ## Cherry-pick guidance
 
-- Keep this PR isolated from backend governance endpoint changes (already captured in previous PR-12 milestone-1 step-1 artifact commit).
+- Keep this PR isolated from runtime inspector keyboard binding migration (next PR-12 milestone).
 - Keep docs-only milestone bookkeeping changes in a separate follow-up commit if maintainers prefer code-only PRs.
 
 ## Remaining PR-12 backlog after this checkpoint
 
-- Configurable hotkeys storage + validation and UI plumbing.
+- Configurable hotkeys runtime binding in inspector keyboard handlers.
 - Workspace-state hardening for panel open/resize/orientation persistence.
 - Ingest discrepancy counters/validation APIs and reportable discrepancy summaries.
 - Export bundle coverage for images/metadata/overlays/annotations + report options.
