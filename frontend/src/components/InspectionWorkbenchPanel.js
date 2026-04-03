@@ -178,6 +178,11 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     error: null,
     details: null,
   });
+  const [ingestResult, setIngestResult] = useState({
+    loading: false,
+    error: null,
+    payload: null,
+  });
   const [inspectorHotkeys, setInspectorHotkeys] = useState(DEFAULT_INSPECTOR_HOTKEYS);
   const [shortcutHelpVisible, setShortcutHelpVisible] = useState(false);
   const [panelLayout, setPanelLayout] = useState(DEFAULT_PANEL_LAYOUT);
@@ -793,6 +798,42 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     }
   };
 
+  const requestIngestValidation = async () => {
+    const syntheticPayload = {
+      batches: batches.slice(0, 1).map((batch) => ({
+        name: batch.name,
+        description: `Validation run for ${batch.name}`,
+        parts: parts
+          .filter((part) => part.batch_id === batch.id)
+          .slice(0, 3)
+          .map((part) => ({
+            serial_number: part.serial_number,
+            display_name: part.display_name,
+            review_state: part.review_state || 'unreviewed',
+            metadata: {
+              source: 'project-data-ingest-validation',
+              existing_part_id: part.id,
+            },
+          })),
+      })),
+    };
+    try {
+      setIngestResult({ loading: true, error: null, payload: null });
+      const resp = await fetch(`/api/projects/${projectId}/ingest`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(syntheticPayload),
+      });
+      if (!resp.ok) {
+        throw new Error(`Failed to run ingest validation (${resp.status})`);
+      }
+      const payload = await resp.json();
+      setIngestResult({ loading: false, error: null, payload });
+    } catch (err) {
+      setIngestResult({ loading: false, error: err.message || 'Failed to run ingest validation', payload: null });
+    }
+  };
+
   return (
     <section className="workbench-panel" aria-label="Inspection Workbench">
       <div className="workbench-header">
@@ -819,6 +860,15 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
           >
             {bundleArchive.loading ? 'Preparing Export Archive…' : 'Prepare Export Archive'}
           </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            data-testid="request-ingest-validation"
+            disabled={ingestResult.loading || batches.length === 0 || parts.length === 0}
+            onClick={requestIngestValidation}
+          >
+            {ingestResult.loading ? 'Running Ingest Validation…' : 'Run Ingest Validation'}
+          </button>
         </div>
       </div>
 
@@ -826,6 +876,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
       {error && <div className="alert alert-error">{error}</div>}
       {bundleExport.error && <div className="alert alert-error">{bundleExport.error}</div>}
       {bundleArchive.error && <div className="alert alert-error">{bundleArchive.error}</div>}
+      {ingestResult.error && <div className="alert alert-error">{ingestResult.error}</div>}
       {bundleExport.payload && (
         <div className="alert alert-success" data-testid="export-bundle-summary-result">
           Export summary ready: {bundleExport.payload?.summary?.images?.total || 0} images,{' '}
@@ -836,6 +887,13 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
       {bundleArchive.details && (
         <div className="alert alert-success" data-testid="export-bundle-archive-result">
           Export archive ready: {bundleArchive.details.sizeBytes} bytes ({bundleArchive.details.contentType}).
+        </div>
+      )}
+      {ingestResult.payload && (
+        <div className="alert alert-success" data-testid="ingest-validation-result">
+          Ingest validation complete: created {ingestResult.payload?.counters?.parts_created || 0} parts, skipped{' '}
+          {ingestResult.payload?.counters?.parts_skipped_existing || 0} existing, discrepancies{' '}
+          {(ingestResult.payload?.discrepancies || []).length}.
         </div>
       )}
 
