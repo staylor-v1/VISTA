@@ -244,4 +244,91 @@ describe('project type UI exposure', () => {
       );
     });
   });
+
+  test.each(projectTypes.flatMap((projectType) => simulatedUsers.map((userScenario) => ({ projectType, userScenario }))))(
+    'requires explicit delete confirmation phrase for $projectType $userScenario.label simulated workflow',
+    async ({ projectType, userScenario }) => {
+      global.fetch = jest.fn((input, init = {}) => {
+        const url = typeof input === 'string' ? input : input.url;
+        const method = (init.method || 'GET').toUpperCase();
+        const projectName = `${projectType} ${userScenario.label} delete target`;
+        const expectedPhrase = `DELETE ${projectName}`;
+
+        if (url.endsWith('/api/users/me')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ email: `${userScenario.label}-${projectType.toLowerCase()}@example.com` }),
+          });
+        }
+
+        if (url.endsWith('/api/projects/') && method === 'GET') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ([
+              {
+                id: `project-${projectType.toLowerCase()}-${userScenario.label}`,
+                name: projectName,
+                description: `complexity-${userScenario.complexity}`,
+                meta_group_id: `${projectType.toLowerCase()}-${userScenario.label}-group`,
+                project_type: projectType,
+              },
+            ]),
+          });
+        }
+
+        if (url.endsWith(`/api/projects/project-${projectType.toLowerCase()}-${userScenario.label}`) && method === 'DELETE') {
+          const payload = JSON.parse(init.body || '{}');
+          if (payload.confirmation_phrase !== expectedPhrase) {
+            return Promise.resolve({
+              ok: false,
+              status: 400,
+              json: async () => ({ detail: `Invalid confirmation phrase. Expected '${expectedPhrase}'.` }),
+            });
+          }
+          return Promise.resolve({
+            ok: true,
+            status: 204,
+            json: async () => ({}),
+          });
+        }
+
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      const user = userEvent.setup();
+      render(
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      );
+
+      await screen.findByText(new RegExp(`${projectType} ${userScenario.label} delete target`));
+      await user.click(screen.getByRole('button', { name: new RegExp(`Project options for ${projectType} ${userScenario.label} delete target`) }));
+      await user.click(screen.getByRole('button', { name: 'Delete' }));
+
+      await user.type(screen.getByLabelText('Confirmation phrase *'), 'DELETE wrong phrase');
+      await user.click(screen.getByRole('button', { name: 'Delete Project' }));
+      expect(await screen.findByText(/Invalid confirmation phrase/i)).toBeInTheDocument();
+
+      const refreshedPhraseInput = screen.getByLabelText('Confirmation phrase *');
+      await user.clear(refreshedPhraseInput);
+      await user.type(refreshedPhraseInput, `DELETE ${projectType} ${userScenario.label} delete target`);
+      await user.click(screen.getByRole('button', { name: 'Delete Project' }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          `/api/projects/project-${projectType.toLowerCase()}-${userScenario.label}`,
+          expect.objectContaining({
+            method: 'DELETE',
+            body: expect.stringContaining(`DELETE ${projectType} ${userScenario.label} delete target`),
+          })
+        );
+      });
+      await waitFor(() => {
+        expect(screen.queryByRole('heading', { name: `${projectType} ${userScenario.label} delete target` })).not.toBeInTheDocument();
+      });
+    }
+  );
 });
