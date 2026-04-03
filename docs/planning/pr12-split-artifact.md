@@ -4,7 +4,26 @@ This artifact captures the incremental work completed in this session so it can 
 
 ## Proposed incremental PR from this session
 
-1. **PR-12 milestone 3 step 1 — workspace-state panel-layout hardening baseline**
+1. **PR-12 milestone 3 step 2 — frontend panel-layout controls + persistence wiring**
+   - Scope:
+    - Add `InspectionWorkbenchPanel` controls for each persisted panel contract (`part_list`, `inspector`, `mpr_controls`):
+      - open/closed toggle,
+      - width/height numeric controls,
+      - orientation selector (`vertical`/`horizontal`).
+    - Normalize panel-layout values client-side before persistence to keep payloads aligned with backend clamp/normalization guardrails.
+    - Persist normalized `panel_layout` through existing `PUT /api/projects/{project_id}/workspace-state` saves without changing API contracts.
+    - Extend existing RTL matrix coverage for progressive synthetic users across `PT1/PT2/PT3`, including adversarial width/height values and orientation updates.
+   - Files:
+    - `frontend/src/components/InspectionWorkbenchPanel.js`
+    - `frontend/src/components/__tests__/InspectionWorkbenchPanel.test.js`
+    - `docs/planning/pr12-orchestrator-checklist.md`
+    - `docs/planning/pr12-split-artifact.md`
+   - Automated coverage:
+    - Existing frontend Jest/RTL framework:
+      - progressive synthetic-user matrix (`basic`, `intermediate`, `advanced`) across `PT1/PT2/PT3`,
+      - red-team oversized/undersized panel dimensions normalized by blue-team clamping before persistence.
+
+2. **PR-12 milestone 3 step 1 — workspace-state panel-layout hardening baseline**
    - Scope:
     - Add backend workspace-state normalization for panel layout contracts (`part_list`, `inspector`, `mpr_controls`).
     - Clamp persisted panel dimensions to safe ranges and normalize invalid orientation values to migration-safe defaults.
@@ -20,7 +39,7 @@ This artifact captures the incremental work completed in this session so it can 
       - progressive synthetic-user scenarios (`basic`, `intermediate`, `advanced`) across `PT1/PT2/PT3`,
       - red-team malformed panel-layout payloads normalized by blue-team guardrails (dimension clamps + orientation fallback).
 
-2. **PR-12 milestone 2 step 2 — configurable hotkeys runtime binding in inspection workbench**
+3. **PR-12 milestone 2 step 2 — configurable hotkeys runtime binding in inspection workbench**
    - Scope:
     - Load `process_settings.configurable_hotkeys` during workbench initialization.
     - Add keyboard handlers in `InspectionWorkbenchPanel` that map configured hotkeys to review actions:
@@ -39,7 +58,7 @@ This artifact captures the incremental work completed in this session so it can 
       - progressive synthetic-user matrix (`basic`, `intermediate`, `advanced`) across `PT1/PT2/PT3`,
       - configurable hotkeys trigger pass/reject status updates and shortcut-help panel visibility.
 
-3. **PR-12 milestone 2 step 1 — configurable hotkeys storage + validation baseline**
+4. **PR-12 milestone 2 step 1 — configurable hotkeys storage + validation baseline**
    - Scope:
     - Extend project-configuration schema with `process_settings.configurable_hotkeys` and strict validation:
       - required bindings (`accept_classification`, `reject_classification`, `toggle_shortcut_help`),
@@ -71,7 +90,7 @@ This artifact captures the incremental work completed in this session so it can 
 ## Remaining PR-12 backlog after this checkpoint
 
 - Shared runtime convergence between workbench configurable hotkeys and legacy compact-classification keyboard mappings on non-workbench screens.
-- Workspace-state hardening follow-up: frontend draggable panel open/resize/orientation controls + persisted panel-collapse UX.
+- Workspace-state hardening follow-up: draggable panel-resize interactions and dock/undock ergonomics.
 - Ingest discrepancy counters/validation APIs and reportable discrepancy summaries.
 - Export bundle coverage for images/metadata/overlays/annotations + report options.
 - Red-team / blue-team cross-type adversarial matrix and governance closeout.
