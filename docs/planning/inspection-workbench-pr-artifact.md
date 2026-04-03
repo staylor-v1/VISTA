@@ -312,6 +312,19 @@ When preparing upstream PRs:
 - Added visible hotkey-hint summary in the selected part header for discoverability.
 - Extended existing React Testing Library coverage for progressive synthetic users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) to verify configured hotkeys trigger expected review transitions and help-panel visibility.
 
+#### PR-12 milestone 3 (step 2 implemented in artifact branch)
+- Added workspace panel-layout controls in `InspectionWorkbenchPanel` for all persisted panel contracts:
+  - open/closed toggles for `part_list`, `inspector`, and `mpr_controls`,
+  - width/height numeric inputs with safe bounds,
+  - orientation selector (`vertical`/`horizontal`).
+- Added frontend normalization guardrails to keep panel-layout payloads migration-safe before persistence:
+  - width clamp `220..1200`,
+  - height clamp `220..1400`,
+  - orientation fallback to `vertical` when invalid.
+- Extended existing React Testing Library coverage for progressive synthetic users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) validating:
+  - panel-layout controls render and mutate state,
+  - adversarial dimensions are clamped before `PUT /workspace-state`.
+
 #### PR-11 milestone 2 (step 1 implemented in artifact branch)
 - Added frontend **Project Configuration** tab in `Project` view so configuration workflows are first-class alongside `Inspection` and `Project Data`.
 - Added `ProjectConfigurationPanel` with backend round-trip wiring to existing PR-11 milestone-1 APIs:
