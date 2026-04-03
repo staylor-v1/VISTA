@@ -153,6 +153,14 @@ When preparing upstream PRs:
   - Surfaces request failures with user-visible inline error message.
 - Extended existing React Testing Library coverage to validate the new export action for three progressive simulated users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) while preserving existing workbench flows.
 
+### Milestone 3 — step 3 (annotation records + discrepancy summaries)
+- Expanded backend `GET /api/projects/{project_id}/export-bundle-json` payload to include explicit annotation records in addition to aggregate counters.
+- Added per-part discrepancy summaries based on export metadata consistency checks:
+  - missing overlay layers when segmentation runs exist,
+  - incomplete annotation fields (`defect_class`/`modality`),
+  - measurement runs missing `run_id`.
+- Extended existing pytest export coverage to verify discrepancy summary behavior for progressive synthetic users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) while preserving prior aggregate assertions.
+
 ### PR-08 — UI exposure foundation (project type selection + visibility)
 
 ### Milestone 1 — create-project project-type selection
