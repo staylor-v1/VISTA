@@ -215,6 +215,7 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
   let mutableParts = [...parts];
   const savedWorkspaceStates = [];
   const exportBundleArchiveRequests = [];
+  const ingestValidationRequests = [];
   const savedConfigurations = [];
 
   await page.route('**/api/**', async (route) => {
@@ -297,6 +298,30 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
       });
       return;
     }
+    if (url.endsWith(`/api/projects/${projectId}/ingest`) && method === 'POST') {
+      const payload = route.request().postDataJSON() || {};
+      ingestValidationRequests.push(payload);
+      const partsReceived = Array.isArray(payload.batches)
+        ? payload.batches.reduce((acc, batch) => acc + (Array.isArray(batch.parts) ? batch.parts.length : 0), 0)
+        : 0;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          project_id: projectId,
+          counters: {
+            batches_received: Array.isArray(payload.batches) ? payload.batches.length : 0,
+            parts_received: partsReceived,
+            batches_created: 0,
+            parts_created: 0,
+            parts_skipped_existing: partsReceived,
+            parts_skipped_discrepancy: 0,
+          },
+          discrepancies: [],
+        }),
+      });
+      return;
+    }
     if (url.match(/\/api\/projects\/[^/]+\/configuration$/) && method === 'GET') {
       const targetProjectId = url.split('/').at(-2);
       const config = configurationByProjectId[targetProjectId];
@@ -375,6 +400,7 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
     getParts: () => mutableParts,
     getWorkspaceStates: () => savedWorkspaceStates,
     getExportBundleArchiveRequests: () => exportBundleArchiveRequests,
+    getIngestValidationRequests: () => ingestValidationRequests,
     getSavedConfigurations: () => savedConfigurations,
   };
 }
