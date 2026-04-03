@@ -224,3 +224,12 @@ When preparing upstream PRs:
 - Add export bundle coverage for images/metadata/overlays/annotations and PDF report options.
 - Close gaps with cross-type red-team scenarios (PT1/PT2/PT3) and stabilize with blue-team fixes.
 - Acceptance: end-to-end matrix with adversarial cases, authorization checks, performance sanity checks, and release checklist sign-off.
+
+#### PR-11 milestone 2 (step 1 implemented in artifact branch)
+- Added frontend **Project Configuration** tab in `Project` view so configuration workflows are first-class alongside `Inspection` and `Project Data`.
+- Added `ProjectConfigurationPanel` with backend round-trip wiring to existing PR-11 milestone-1 APIs:
+  - `GET /api/projects/{project_id}/configuration`
+  - `PUT /api/projects/{project_id}/configuration`
+  - copy-from-existing flow via project list + source configuration fetch.
+- Added RTL automation in the existing test framework covering three simulated users (`basic`, `intermediate`, `advanced`) for each project type (`PT1`, `PT2`, `PT3`) with progressively complex synthetic configuration payloads.
+- Artifact intent: this checkpoint commit is structured to be cherry-picked as the first clean frontend PR for PR-11 milestone-2 UI surface, with subsequent PRs reserved for deeper section editing UX and validation hardening.

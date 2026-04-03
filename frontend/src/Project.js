@@ -10,6 +10,7 @@ import ImageGallery from './components/ImageGallery';
 import GroupedImagesPage from './components/GroupedImagesPage';
 import ReviewStatusSummary from './components/ReviewStatusSummary';
 import InspectionWorkbenchPanel from './components/InspectionWorkbenchPanel';
+import ProjectConfigurationPanel from './components/ProjectConfigurationPanel';
 import { downloadExcel } from './utils/downloadExcel';
 
 function Project() {
@@ -303,10 +304,20 @@ function Project() {
               >
                 Project Data
               </button>
+              <button
+                className={`project-tab ${activeTab === 'project-configuration' ? 'active' : ''}`}
+                onClick={() => setActiveTab('project-configuration')}
+                role="tab"
+                aria-selected={activeTab === 'project-configuration'}
+              >
+                Project Configuration
+              </button>
             </div>
 
             {activeTab === 'project-data' ? (
               <InspectionWorkbenchPanel projectId={id} projectType={project?.project_type} />
+            ) : activeTab === 'project-configuration' ? (
+              <ProjectConfigurationPanel projectId={id} />
             ) : (
               <>
             {/* Review Status Summary + group search */}
