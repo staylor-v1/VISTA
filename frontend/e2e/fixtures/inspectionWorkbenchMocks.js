@@ -182,6 +182,7 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
   const { batches, parts, workspaceState } = createMockData(scenario);
   let mutableParts = [...parts];
   const savedWorkspaceStates = [];
+  const exportBundleArchiveRequests = [];
 
   await page.route('**/api/**', async (route) => {
     const url = route.request().url();
@@ -243,6 +244,15 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
       });
       return;
     }
+    if (url.endsWith(`/api/projects/${projectId}/export-bundle`) && method === 'GET') {
+      exportBundleArchiveRequests.push({ scenario, type });
+      await route.fulfill({
+        status: 200,
+        headers: { 'content-type': 'application/zip' },
+        body: 'synthetic-zip-bundle',
+      });
+      return;
+    }
     if (url.includes(`/api/projects/${projectId}/parts/`) && method === 'PATCH') {
       const partId = url.split('/').pop();
       const payload = route.request().postDataJSON();
@@ -298,6 +308,7 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
     projectId,
     getParts: () => mutableParts,
     getWorkspaceStates: () => savedWorkspaceStates,
+    getExportBundleArchiveRequests: () => exportBundleArchiveRequests,
   };
 }
 
