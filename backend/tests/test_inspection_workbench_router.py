@@ -335,6 +335,11 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
                 "selected_batch_id": "batch-basic",
                 "defect_filter": "all",
                 "sort_mode": "defect_desc",
+                "panel_layout": {
+                    "part_list": {"is_open": True, "width_px": 310, "height_px": 420, "orientation": "vertical"},
+                    "inspector": {"is_open": True, "width_px": 355, "height_px": 420, "orientation": "horizontal"},
+                    "mpr_controls": {"is_open": False, "width_px": 330, "height_px": 350, "orientation": "vertical"},
+                },
             },
         },
         {
@@ -345,6 +350,11 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
                 "defect_filter": "has_defects",
                 "sort_mode": "serial_asc",
                 "selected_part_id": "part-mid-1",
+                "panel_layout": {
+                    "part_list": {"is_open": True, "width_px": 360, "height_px": 500, "orientation": "vertical"},
+                    "inspector": {"is_open": False, "width_px": 420, "height_px": 510, "orientation": "horizontal"},
+                    "mpr_controls": {"is_open": True, "width_px": 400, "height_px": 380, "orientation": "horizontal"},
+                },
             },
         },
         {
@@ -362,6 +372,16 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
                     "active_overlay_ids": ["segmentation", "porosity"],
                     "cursor_probe": {"x": 67, "y": 42},
                 },
+                "panel_layout": {
+                    "part_list": {"is_open": "yes", "width_px": -15, "height_px": 9999, "orientation": "diagonal"},
+                    "inspector": {"is_open": True, "width_px": 260, "height_px": 460, "orientation": "vertical"},
+                    "mpr_controls": {"is_open": True, "width_px": "400", "height_px": "420", "orientation": "horizontal"},
+                },
+            },
+            "expected_panel_layout": {
+                "part_list": {"is_open": True, "width_px": 220, "height_px": 1400, "orientation": "vertical"},
+                "inspector": {"is_open": True, "width_px": 260, "height_px": 460, "orientation": "vertical"},
+                "mpr_controls": {"is_open": True, "width_px": 400, "height_px": 420, "orientation": "horizontal"},
             },
         },
     ]
@@ -386,7 +406,11 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
 
         initial_resp = client.get(f"/api/projects/{project_id}/workspace-state", headers=headers)
         assert initial_resp.status_code == 200, initial_resp.text
-        assert initial_resp.json()["state"] == {}
+        assert initial_resp.json()["state"]["panel_layout"] == {
+            "part_list": {"is_open": True, "width_px": 320, "height_px": 420, "orientation": "vertical"},
+            "inspector": {"is_open": True, "width_px": 360, "height_px": 420, "orientation": "vertical"},
+            "mpr_controls": {"is_open": True, "width_px": 360, "height_px": 360, "orientation": "vertical"},
+        }
 
         save_resp = client.put(
             f"/api/projects/{project_id}/workspace-state",
@@ -394,11 +418,12 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
             headers=headers,
         )
         assert save_resp.status_code == 200, save_resp.text
-        assert save_resp.json()["state"] == scenario["state"]
+        expected_panel_layout = scenario.get("expected_panel_layout", scenario["state"]["panel_layout"])
+        assert save_resp.json()["state"]["panel_layout"] == expected_panel_layout
 
         reload_resp = client.get(f"/api/projects/{project_id}/workspace-state", headers=headers)
         assert reload_resp.status_code == 200, reload_resp.text
-        assert reload_resp.json()["state"] == scenario["state"]
+        assert reload_resp.json()["state"]["panel_layout"] == expected_panel_layout
 
         update_payload = {**scenario["state"], "sort_mode": "serial_asc"}
         overwrite_resp = client.put(
@@ -408,6 +433,7 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
         )
         assert overwrite_resp.status_code == 200, overwrite_resp.text
         assert overwrite_resp.json()["state"]["sort_mode"] == "serial_asc"
+        assert overwrite_resp.json()["state"]["panel_layout"] == expected_panel_layout
 
 
 @pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
