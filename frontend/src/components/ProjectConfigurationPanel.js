@@ -124,6 +124,37 @@ function ProjectConfigurationPanel({ projectId }) {
     }));
   };
 
+  const addImageModality = () => {
+    setConfig((previous) => ({
+      ...previous,
+      image_modalities: [
+        ...(previous.image_modalities || []),
+        {
+          id: '',
+          label: '',
+          calibration_required: false,
+          example_image_uploaded: false,
+        },
+      ],
+    }));
+  };
+
+  const updateImageModality = (index, patch) => {
+    setConfig((previous) => ({
+      ...previous,
+      image_modalities: (previous.image_modalities || []).map((modality, modalityIndex) =>
+        modalityIndex === index ? { ...modality, ...patch } : modality,
+      ),
+    }));
+  };
+
+  const removeImageModality = (index) => {
+    setConfig((previous) => ({
+      ...previous,
+      image_modalities: (previous.image_modalities || []).filter((_, modalityIndex) => modalityIndex !== index),
+    }));
+  };
+
   const copyConfiguration = async () => {
     if (!copySourceProjectId) return;
 
@@ -271,6 +302,71 @@ function ProjectConfigurationPanel({ projectId }) {
                 }}
               />
             </div>
+          </section>
+
+          <section className="part-detail-panel" aria-label="Image modalities">
+            <h3>Image Modalities</h3>
+            <p>Manage modality definitions and calibration requirements for this project.</p>
+            <div className="workbench-controls-row">
+              <button className="btn btn-secondary" type="button" onClick={addImageModality} disabled={saving}>
+                Add Modality
+              </button>
+            </div>
+            {(config.image_modalities || []).length === 0 ? (
+              <p>No image modalities configured yet.</p>
+            ) : (
+              (config.image_modalities || []).map((modality, index) => (
+                <div className="workbench-controls-row" key={`image-modality-${index}`}>
+                  <label htmlFor={`image-modality-label-${index}`}>Label</label>
+                  <input
+                    id={`image-modality-label-${index}`}
+                    aria-label={`Image modality label ${index + 1}`}
+                    type="text"
+                    value={modality.label || ''}
+                    onChange={(event) => updateImageModality(index, { label: event.target.value })}
+                  />
+                  <label htmlFor={`image-modality-id-${index}`}>Identifier</label>
+                  <input
+                    id={`image-modality-id-${index}`}
+                    aria-label={`Image modality id ${index + 1}`}
+                    type="text"
+                    value={modality.id || ''}
+                    onChange={(event) => updateImageModality(index, { id: event.target.value })}
+                  />
+                  <label>
+                    <input
+                      type="checkbox"
+                      aria-label={`Image modality calibration required ${index + 1}`}
+                      checked={Boolean(modality.calibration_required)}
+                      onChange={(event) =>
+                        updateImageModality(index, { calibration_required: event.target.checked })
+                      }
+                    />
+                    Calibration required
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      aria-label={`Image modality example uploaded ${index + 1}`}
+                      checked={Boolean(modality.example_image_uploaded)}
+                      onChange={(event) =>
+                        updateImageModality(index, { example_image_uploaded: event.target.checked })
+                      }
+                    />
+                    Example uploaded
+                  </label>
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    aria-label={`Remove image modality ${index + 1}`}
+                    onClick={() => removeImageModality(index)}
+                    disabled={saving}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))
+            )}
           </section>
 
           <section className="part-detail-panel" aria-label="Defect types">
