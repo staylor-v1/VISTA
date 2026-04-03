@@ -567,6 +567,11 @@ def test_project_configuration_round_trip_supports_progressive_users(client, pro
                     "require_disposition_on_submit": True,
                     "require_measurement_for_critical": False,
                     "require_second_reviewer_for_reject": False,
+                    "configurable_hotkeys": {
+                        "accept_classification": "a",
+                        "reject_classification": "r",
+                        "toggle_shortcut_help": "h",
+                    },
                 },
                 "display_settings": {
                     "default_colormap": "grayscale",
@@ -610,6 +615,11 @@ def test_project_configuration_round_trip_supports_progressive_users(client, pro
                     "require_disposition_on_submit": True,
                     "require_measurement_for_critical": True,
                     "require_second_reviewer_for_reject": False,
+                    "configurable_hotkeys": {
+                        "accept_classification": "s",
+                        "reject_classification": "d",
+                        "toggle_shortcut_help": "f",
+                    },
                 },
                 "display_settings": {
                     "default_colormap": "grayscale",
@@ -666,6 +676,11 @@ def test_project_configuration_round_trip_supports_progressive_users(client, pro
                     "require_disposition_on_submit": True,
                     "require_measurement_for_critical": True,
                     "require_second_reviewer_for_reject": True,
+                    "configurable_hotkeys": {
+                        "accept_classification": "z",
+                        "reject_classification": "x",
+                        "toggle_shortcut_help": "c",
+                    },
                 },
                 "display_settings": {
                     "default_colormap": "grayscale",
@@ -712,3 +727,51 @@ def test_project_configuration_round_trip_supports_progressive_users(client, pro
         reload_resp = client.get(f"/api/projects/{project_id}/configuration", headers=headers)
         assert reload_resp.status_code == 200, reload_resp.text
         assert reload_resp.json()["config"] == scenario["payload"]
+
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_project_configuration_rejects_invalid_hotkeys(client, project_type):
+    headers = {
+        "X-User-Id": f"config-hotkey-invalid-{project_type.lower()}@example.com",
+        "X-User-Groups": f"[\"{project_type.lower()}-config-hotkey-invalid\"]",
+    }
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": f"{project_type} config hotkey invalid",
+            "description": "project configuration hotkey validation",
+            "meta_group_id": f"{project_type.lower()}-config-hotkey-invalid",
+            "project_type": project_type,
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+
+    invalid_payload = {
+        "image_modalities": [],
+        "part_views": [],
+        "defect_types": [],
+        "process_settings": {
+            "require_disposition_on_submit": True,
+            "require_measurement_for_critical": False,
+            "require_second_reviewer_for_reject": False,
+            "configurable_hotkeys": {
+                "accept_classification": "ab",
+                "reject_classification": "r",
+                "toggle_shortcut_help": "h",
+            },
+        },
+        "display_settings": {
+            "default_colormap": "grayscale",
+            "anomaly_colormap": "viridis",
+            "grayscale_base_image": True,
+        },
+    }
+
+    save_resp = client.put(
+        f"/api/projects/{project_id}/configuration",
+        json={"config": invalid_payload},
+        headers=headers,
+    )
+    assert save_resp.status_code == 422, save_resp.text
