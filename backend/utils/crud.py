@@ -273,6 +273,21 @@ async def update_project(
     return db_project
 
 
+async def delete_project(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    deleted_by: Optional[str] = None,
+) -> bool:
+    db_project = await get_project(db, project_id)
+    if db_project is None:
+        return False
+
+    await db.delete(db_project)
+    await db.commit()
+    log_db_operation("DELETE", "projects", project_id, deleted_by or "system", {})
+    return True
+
+
 async def create_inspection_batch(
     db: AsyncSession,
     project_id: uuid.UUID,
