@@ -302,6 +302,16 @@ When preparing upstream PRs:
   - frontend RTL: progressive synthetic users across `PT1/PT2/PT3` for hotkey editing persistence.
   - Playwright screenshot smoke + visual analytics recorded in `docs/planning/pr12-hotkeys-screenshot-analysis.md` (runtime screenshot artifact intentionally not committed).
 
+#### PR-12 milestone 2 (step 2 implemented in artifact branch)
+- Added runtime workbench hotkey binding support by loading `process_settings.configurable_hotkeys` from project configuration during `InspectionWorkbenchPanel` initialization.
+- Added keyboard handler behavior for configured keys:
+  - accept hotkey => mark selected part as `pass`,
+  - reject hotkey => mark selected part as `reject_pending`,
+  - help hotkey => toggle shortcut-help panel visibility in the inspection header.
+- Added guardrail logic so configured hotkeys are ignored while text-entry controls (`input`, `textarea`, `select`) are focused.
+- Added visible hotkey-hint summary in the selected part header for discoverability.
+- Extended existing React Testing Library coverage for progressive synthetic users (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) to verify configured hotkeys trigger expected review transitions and help-panel visibility.
+
 #### PR-11 milestone 2 (step 1 implemented in artifact branch)
 - Added frontend **Project Configuration** tab in `Project` view so configuration workflows are first-class alongside `Inspection` and `Project Data`.
 - Added `ProjectConfigurationPanel` with backend round-trip wiring to existing PR-11 milestone-1 APIs:
