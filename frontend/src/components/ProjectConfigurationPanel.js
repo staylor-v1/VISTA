@@ -155,6 +155,37 @@ function ProjectConfigurationPanel({ projectId }) {
     }));
   };
 
+  const addPartView = () => {
+    setConfig((previous) => ({
+      ...previous,
+      part_views: [
+        ...(previous.part_views || []),
+        {
+          id: '',
+          label: '',
+          required_modalities: [],
+          source: 'manual',
+        },
+      ],
+    }));
+  };
+
+  const updatePartView = (index, patch) => {
+    setConfig((previous) => ({
+      ...previous,
+      part_views: (previous.part_views || []).map((partView, partViewIndex) =>
+        partViewIndex === index ? { ...partView, ...patch } : partView,
+      ),
+    }));
+  };
+
+  const removePartView = (index) => {
+    setConfig((previous) => ({
+      ...previous,
+      part_views: (previous.part_views || []).filter((_, partViewIndex) => partViewIndex !== index),
+    }));
+  };
+
   const copyConfiguration = async () => {
     if (!copySourceProjectId) return;
 
@@ -411,6 +442,74 @@ function ProjectConfigurationPanel({ projectId }) {
                     type="button"
                     aria-label={`Remove defect type ${index + 1}`}
                     onClick={() => removeDefectType(index)}
+                    disabled={saving}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))
+            )}
+          </section>
+
+          <section className="part-detail-panel" aria-label="Part views">
+            <h3>Part Views</h3>
+            <p>Configure external/internal views and required modalities for each view.</p>
+            <div className="workbench-controls-row">
+              <button className="btn btn-secondary" type="button" onClick={addPartView} disabled={saving}>
+                Add Part View
+              </button>
+            </div>
+            {(config.part_views || []).length === 0 ? (
+              <p>No part views configured yet.</p>
+            ) : (
+              (config.part_views || []).map((partView, index) => (
+                <div className="workbench-controls-row" key={`part-view-${index}`}>
+                  <label htmlFor={`part-view-label-${index}`}>Label</label>
+                  <input
+                    id={`part-view-label-${index}`}
+                    aria-label={`Part view label ${index + 1}`}
+                    type="text"
+                    value={partView.label || ''}
+                    onChange={(event) => updatePartView(index, { label: event.target.value })}
+                  />
+                  <label htmlFor={`part-view-id-${index}`}>Identifier</label>
+                  <input
+                    id={`part-view-id-${index}`}
+                    aria-label={`Part view id ${index + 1}`}
+                    type="text"
+                    value={partView.id || ''}
+                    onChange={(event) => updatePartView(index, { id: event.target.value })}
+                  />
+                  <label htmlFor={`part-view-required-modalities-${index}`}>Required modalities</label>
+                  <input
+                    id={`part-view-required-modalities-${index}`}
+                    aria-label={`Part view required modalities ${index + 1}`}
+                    type="text"
+                    value={(partView.required_modalities || []).join(', ')}
+                    onChange={(event) =>
+                      updatePartView(index, {
+                        required_modalities: event.target.value
+                          .split(',')
+                          .map((value) => value.trim())
+                          .filter(Boolean),
+                      })
+                    }
+                  />
+                  <label htmlFor={`part-view-source-${index}`}>Source</label>
+                  <select
+                    id={`part-view-source-${index}`}
+                    aria-label={`Part view source ${index + 1}`}
+                    value={partView.source || 'manual'}
+                    onChange={(event) => updatePartView(index, { source: event.target.value })}
+                  >
+                    <option value="manual">manual</option>
+                    <option value="auto">auto</option>
+                  </select>
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    aria-label={`Remove part view ${index + 1}`}
+                    onClick={() => removePartView(index)}
                     disabled={saving}
                   >
                     Remove
