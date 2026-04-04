@@ -30,7 +30,7 @@ This file is the execution artifact for the orchestrated migration so the combin
 - [x] PR-06 implemented in current working branch.
 - [x] PR-07 implemented in current working branch.
 - [x] PR-08 implemented in current working branch.
-- [~] PR-09 in progress (milestone 1 landed: inspector modalities/quick-switch/measurement capture controls).
+- [x] PR-09 implemented in current working branch.
 - [~] PR-10 in progress (milestone 1 started: backend annotation payload + audit metadata endpoints).
 - [~] PR-11 in progress (milestone 1 started: backend project-configuration API baseline).
 - [~] PR-12 in progress (milestone 1 started: delete-project governance API hardening baseline).
@@ -215,6 +215,12 @@ When preparing upstream PRs:
 - Extended existing React Testing Library scenarios (three simulated users per project type) to assert:
   - viewport controls mutate state correctly,
   - PT2/PT3 MPR navigation assertions remain scoped to 3D pane controls.
+
+
+#### PR-09 milestone 2 (step 2 implemented in artifact branch)
+- Extended Playwright E2E `Inspection Workbench E2E` matrix across all project types (`PT1`, `PT2`, `PT3`) and progressive simulated users (`basic`, `intermediate`, `advanced`) to assert shared inspector viewport controls directly in browser workflow.
+- Added end-to-end assertions for `Inspector viewport` interactions (`Zoom +`, `Pan →`) and visible viewport state readout updates without regressing PT2/PT3 MPR controls.
+- Added E2E verification that persisted workspace-state writes include `state.inspector.viewport_transform` payload after viewport interaction, closing PR-09 acceptance for common-control component + E2E coverage.
 
 ### PR-10 — annotations + audit trail metadata
 - Expand annotations to include defect class, modality, comment, disposition, measurements, bbox, hide/show.

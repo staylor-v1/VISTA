@@ -31,6 +31,12 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
         await expect(page.getByTestId('manual-measurement-list')).toContainText(`${simulatedUser}-distance: 12.5mm`);
         await page.getByTestId('toggle-image-visibility').click();
         await expect(page.getByTestId('toggle-image-visibility')).toContainText(/Show image|Hide image/);
+        const inspectorNavControls = page.getByTestId('inspector-nav-controls');
+        await expect(inspectorNavControls).toBeVisible();
+        await inspectorNavControls.getByRole('button', { name: 'Zoom +' }).click();
+        await inspectorNavControls.getByRole('button', { name: 'Pan →' }).click();
+        await expect(page.getByTestId('inspector-viewport-state')).toContainText(/Zoom 1\.10x|Zoom 1\.35x|Zoom 1\.40x/);
+        await expect(page.getByTestId('inspector-viewport-state')).toContainText(/Pan \(10, 0\)|Pan \(16, -12\)|Pan \(21, -14\)/);
 
         if (simulatedUser === 'basic') {
           await expect(page.getByText('Batches: 1')).toBeVisible();
@@ -85,6 +91,14 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
         }
 
         await expect.poll(() => getWorkspaceStates().length).toBeGreaterThan(0);
+        await expect.poll(() => {
+          const states = getWorkspaceStates();
+          return states[states.length - 1]?.state?.inspector?.viewport_transform || null;
+        }).toEqual(expect.objectContaining({
+          zoom: expect.any(Number),
+          panX: expect.any(Number),
+          panY: expect.any(Number),
+        }));
         await expect.poll(() => getExportBundleArchiveRequests().length).toBeGreaterThan(0);
         await expect.poll(() => getIngestValidationRequests().length).toBeGreaterThan(0);
       });
