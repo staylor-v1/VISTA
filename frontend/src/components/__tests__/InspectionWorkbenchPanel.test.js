@@ -258,7 +258,7 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
       const metadataNormalizationByUser = {
         basic: {},
         intermediate: { segmentation_runs: 1 },
-        advanced: { segmentation_runs: 1, measurement_runs: 1 },
+        advanced: { segmentation_runs: 1, measurement_runs: 1, '': 2, 'legacy value[]': 3 },
       };
       return Promise.resolve({
         ok: true,
@@ -432,6 +432,13 @@ function scenarioNameIncludesAdvanced(payload) {
   return /adv/i.test(group);
 }
 
+function toTriageFieldToken(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '') || 'unknown-field';
+}
+
 describe('InspectionWorkbenchPanel', () => {
   afterEach(() => {
     delete global.fetch;
@@ -461,7 +468,7 @@ describe('InspectionWorkbenchPanel', () => {
           /Metadata normalization:/,
         );
         const triageField = 'segmentation_runs';
-        fireEvent.click(screen.getByTestId(`normalization-triage-${triageField}`));
+        fireEvent.click(screen.getByTestId(`normalization-triage-${toTriageFieldToken(triageField)}`));
         expect(screen.getByTestId('normalization-triage-active')).toHaveTextContent(
           new RegExp(`Filtering parts with mixed ${triageField} values`),
         );
@@ -644,6 +651,52 @@ describe('InspectionWorkbenchPanel', () => {
 
       unmount();
     }
+  });
+
+  test('hardens unknown normalization categories and filtered empty-state guidance', async () => {
+    const scenario = scenarioByUser.find((entry) => entry.user === 'advanced');
+    mockWorkbenchFetch({
+      ...scenario,
+      parts: scenario.parts.map((part) =>
+        part.id === 'part-adv-1'
+          ? {
+            ...part,
+            metadata: {
+              ...part.metadata,
+              segmentation_runs: ['legacy-entry', ...(Array.isArray(part.metadata?.segmentation_runs) ? part.metadata.segmentation_runs : [])],
+            },
+          }
+          : part
+      ),
+      workspaceState: {
+        ...scenario.workspaceState,
+        selected_batch_id: 'batch-adv-b',
+        defect_filter: 'critical_only',
+      },
+    });
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Batches: 2')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByTestId('project-data-export-mode'), { target: { value: 'report_json' } });
+    fireEvent.click(screen.getByTestId('run-project-data-export-action'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-report-normalization-summary')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('project-report-normalization-summary')).toHaveTextContent(/segmentation_runs \(1\)/);
+    fireEvent.click(screen.getByTestId(`normalization-triage-${toTriageFieldToken('segmentation_runs')}`));
+    await waitFor(() => {
+      expect(screen.getByTestId('normalization-triage-empty-guidance')).toHaveTextContent(
+        'Triage matches exist for segmentation_runs, but they are hidden by the active batch/defect filters.',
+      );
+    });
+
+    fireEvent.click(screen.getByTestId('normalization-triage-clear'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('normalization-triage-active')).not.toBeInTheDocument();
+    });
   });
 
   test.each(projectTypes)('applies configurable inspector hotkeys for %s', async (projectType) => {
