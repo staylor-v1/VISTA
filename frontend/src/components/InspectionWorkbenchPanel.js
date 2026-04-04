@@ -26,6 +26,11 @@ const REVIEW_LABELS = {
   reject_pending: 'Reject Pending',
   reject_confirmed: 'Reject Confirmed',
 };
+const EXPORT_ACTIONS = {
+  bundle_summary: 'bundle_summary',
+  bundle_archive: 'bundle_archive',
+  report_json: 'report_json',
+};
 
 function getDefectCount(part) {
   const defects = part?.metadata?.defects;
@@ -178,6 +183,12 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     error: null,
     details: null,
   });
+  const [reportExport, setReportExport] = useState({
+    loading: false,
+    error: null,
+    payload: null,
+  });
+  const [exportAction, setExportAction] = useState(EXPORT_ACTIONS.bundle_summary);
   const [ingestResult, setIngestResult] = useState({
     loading: false,
     error: null,
@@ -834,6 +845,35 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     }
   };
 
+  const runProjectDataExportAction = async () => {
+    setBundleExport((prev) => ({ ...prev, error: null }));
+    setBundleArchive((prev) => ({ ...prev, error: null }));
+    setReportExport((prev) => ({ ...prev, error: null }));
+    if (!Object.values(EXPORT_ACTIONS).includes(exportAction)) {
+      setReportExport({ loading: false, error: 'Select a valid export/report mode.', payload: null });
+      return;
+    }
+    if (exportAction === EXPORT_ACTIONS.bundle_summary) {
+      await requestExportBundleSummary();
+      return;
+    }
+    if (exportAction === EXPORT_ACTIONS.bundle_archive) {
+      await requestExportBundleArchive();
+      return;
+    }
+    try {
+      setReportExport({ loading: true, error: null, payload: null });
+      const resp = await fetch(`/api/projects/${projectId}/report-json`);
+      if (!resp.ok) {
+        throw new Error(`Failed to generate report (${resp.status})`);
+      }
+      const payload = await resp.json();
+      setReportExport({ loading: false, error: null, payload });
+    } catch (err) {
+      setReportExport({ loading: false, error: err.message || 'Failed to generate report', payload: null });
+    }
+  };
+
   return (
     <section className="workbench-panel" aria-label="Inspection Workbench">
       <div className="workbench-header">
@@ -842,6 +882,31 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
           Inspection workbench for <strong>{projectType || 'PT1'}</strong> projects.
         </p>
         <div className="workbench-detail-actions">
+          <label htmlFor="projectDataExportMode" className="form-label">
+            Export/report mode
+          </label>
+          <select
+            id="projectDataExportMode"
+            className="form-control"
+            data-testid="project-data-export-mode"
+            value={exportAction}
+            onChange={(e) => setExportAction(e.target.value)}
+          >
+            <option value={EXPORT_ACTIONS.bundle_summary}>Export bundle summary</option>
+            <option value={EXPORT_ACTIONS.bundle_archive}>Export bundle archive</option>
+            <option value={EXPORT_ACTIONS.report_json}>Project report JSON</option>
+          </select>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            data-testid="run-project-data-export-action"
+            disabled={bundleExport.loading || bundleArchive.loading || reportExport.loading}
+            onClick={runProjectDataExportAction}
+          >
+            {bundleExport.loading || bundleArchive.loading || reportExport.loading
+              ? 'Running Export/Report…'
+              : 'Run Export/Report'}
+          </button>
           <button
             type="button"
             className="btn btn-secondary"
@@ -876,6 +941,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
       {error && <div className="alert alert-error">{error}</div>}
       {bundleExport.error && <div className="alert alert-error">{bundleExport.error}</div>}
       {bundleArchive.error && <div className="alert alert-error">{bundleArchive.error}</div>}
+      {reportExport.error && <div className="alert alert-error">{reportExport.error}</div>}
       {ingestResult.error && <div className="alert alert-error">{ingestResult.error}</div>}
       {bundleExport.payload && (
         <div className="alert alert-success" data-testid="export-bundle-summary-result">
@@ -887,6 +953,12 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
       {bundleArchive.details && (
         <div className="alert alert-success" data-testid="export-bundle-archive-result">
           Export archive ready: {bundleArchive.details.sizeBytes} bytes ({bundleArchive.details.contentType}).
+        </div>
+      )}
+      {reportExport.payload && (
+        <div className="alert alert-success" data-testid="project-report-result">
+          Report ready: {reportExport.payload?.summary?.total_parts || 0} parts,{' '}
+          {reportExport.payload?.summary?.reviewed_parts || 0} reviewed.
         </div>
       )}
       {ingestResult.payload && (
