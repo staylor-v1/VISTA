@@ -79,6 +79,27 @@ function hasDroppedMetadataField(part, field) {
   return value.some((item) => !item || typeof item !== 'object' || Array.isArray(item));
 }
 
+function normalizeSavedMeasurements(measurements) {
+  if (!Array.isArray(measurements)) return [];
+  return measurements
+    .filter((entry) => entry && typeof entry === 'object')
+    .map((entry) => {
+      const label = typeof entry.label === 'string' ? entry.label.trim() : '';
+      const value = typeof entry.value === 'string'
+        ? entry.value.trim()
+        : Number.isFinite(entry.value)
+          ? String(entry.value)
+          : '';
+      if (!label || !value) return null;
+      return {
+        id: entry.id ? String(entry.id) : '',
+        label,
+        value,
+      };
+    })
+    .filter(Boolean);
+}
+
 function getDefectCount(part) {
   const defects = part?.metadata?.defects;
   if (Array.isArray(defects)) return defects.length;
@@ -498,7 +519,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     setSelectedViewName(savedInspector.view_name ? String(savedInspector.view_name) : '');
     setImageEnabled(typeof savedInspector.image_enabled === 'boolean' ? savedInspector.image_enabled : true);
     setShortcutHelpVisible(savedInspector.shortcut_help_visible === true);
-    setMeasurementEntries(Array.isArray(savedInspector.measurements) ? savedInspector.measurements : []);
+    setMeasurementEntries(normalizeSavedMeasurements(savedInspector.measurements));
     const savedInspectorViewport = savedInspector.viewport_transform || {};
     setInspectorViewport({
       zoom: clampRange(savedInspectorViewport.zoom, 0.5, 4, 1),
