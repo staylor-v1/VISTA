@@ -134,6 +134,7 @@ Existing planning docs currently focus on auth architecture and test remediation
 
 ## Incremental execution status (2026-04-04)
 
-- **Next unimplemented PR slice after PR-13 closeout:** expose report metadata-normalization telemetry in Project Data so operators can triage dropped malformed metadata entries without leaving the UI.
-- **Target PR label:** PR-14 milestone 1 step 1.
-- **Acceptance target:** report mode in Project Data renders dropped non-object metadata counters when present and keeps baseline behavior for projects with no normalization drops.
+- **Completed this session:** PR-14 milestone 1 step 2 (Playwright matrix + screenshot analytics for report metadata-normalization telemetry).
+- **Next unimplemented PR slice:** extend Project Data normalization telemetry into actionable discrepancy triage links/filters.
+- **Target PR label:** PR-14 milestone 2 step 1.
+- **Acceptance target:** operators can click normalization categories and immediately filter/locate affected parts/metadata fields without leaving Project Data.

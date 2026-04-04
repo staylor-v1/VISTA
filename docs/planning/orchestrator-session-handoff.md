@@ -37,6 +37,6 @@ A task is done only when:
 
 ## Active session pointer (2026-04-04)
 
-- **Current milestone:** PR-14 milestone 1 step 1 (Project Data report normalization telemetry surface).
-- **Scope boundary for first implementation step:** frontend-only rendering of existing `report-json` telemetry contract (`summary.metadata_normalization.dropped_non_object_items`).
-- **Required tests:** existing React Testing Library matrix across project types (`PT1`,`PT2`,`PT3`) and progressive synthetic users (`basic`,`intermediate`,`advanced`).
+- **Current milestone:** PR-14 milestone 1 step 2 complete (Project Data report normalization telemetry E2E + screenshot analytics).
+- **Next scope boundary:** PR-14 milestone 2 step 1 should add actionable discrepancy triage links/filters on top of existing telemetry banner without changing backend contracts.
+- **Required tests for next step:** keep existing React Testing Library + Playwright PT matrix (`PT1`,`PT2`,`PT3`) and progressive synthetic users (`basic`,`intermediate`,`advanced`) green while adding targeted telemetry-action assertions.
