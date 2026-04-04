@@ -245,3 +245,11 @@ PR-15 execution has been flattened so each function-level change maps to one sub
   - `PR-16-M5`: hardened Project Configuration clone UX to show explicit empty-state guidance when no compatible same-type source projects are available, and fixed the PT1/PT2/PT3 synthetic-user clone test matrix to validate type filtering against each active project type.
 - **Replay/submission artifact:** `docs/planning/pr16-m5-replay-artifact.md`.
 - **Next unimplemented PR slice:** open `PR-16-M6+` only after explicit feature-contract approval.
+
+
+## Incremental execution status (2026-04-04, PR-16-M6 clone error-detail surfacing + stale-source hardening)
+
+- **Completed PR slices:**
+  - `PR-16-M6`: surfaced backend clone API `detail` errors in Project Configuration UI, reset stale clone source selections when compatibility-filtered options change, and tightened clone-button disable guards.
+- **Replay/submission artifact:** `docs/planning/pr16-m6-replay-artifact.md`.
+- **Next unimplemented PR slice:** open `PR-16-M7+` only after explicit feature-contract approval.
