@@ -30,7 +30,7 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
           await expect(page.getByTestId('project-report-normalization-summary')).toHaveCount(0);
         } else {
           await expect(page.getByTestId('project-report-normalization-summary')).toContainText('Metadata normalization');
-          await page.getByTestId('normalization-triage-segmentation_runs').click();
+          await page.getByTestId('normalization-triage-segmentation-runs').click();
           await expect(page.getByTestId('normalization-triage-active')).toContainText(
             'Filtering parts with mixed segmentation_runs values',
           );
@@ -39,6 +39,15 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
             await expect(triageRows.first()).toBeVisible();
           } else {
             await expect(page.getByText('No parts found for the current filters.')).toBeVisible();
+          }
+          if (simulatedUser === 'advanced') {
+            await page.getByLabel('Batch').selectOption('batch-adv-b');
+            await page.getByLabel('Defect filter').selectOption('critical_only');
+            await expect(page.getByTestId('normalization-triage-empty-guidance')).toContainText(
+              'Triage matches exist for segmentation_runs, but they are hidden by the active batch/defect filters.',
+            );
+            await page.getByLabel('Batch').selectOption('batch-adv-a');
+            await page.getByLabel('Defect filter').selectOption('all');
           }
           await page.getByTestId('normalization-triage-clear').click();
           await expect(page.getByTestId('normalization-triage-active')).toHaveCount(0);
