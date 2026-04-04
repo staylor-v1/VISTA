@@ -154,6 +154,23 @@ function normalizeInspectorHotkeys(candidate) {
   return normalized;
 }
 
+function validateInspectorHotkeysDraft(candidate) {
+  const normalized = {};
+  const usedKeys = new Set();
+  for (const binding of Object.keys(DEFAULT_INSPECTOR_HOTKEYS)) {
+    const raw = String(candidate?.[binding] || '').trim().toLowerCase();
+    if (!/^[a-z0-9]$/.test(raw)) {
+      return { valid: false, message: 'Hotkeys must be single alphanumeric characters.', normalized: null };
+    }
+    if (usedKeys.has(raw)) {
+      return { valid: false, message: 'Hotkeys must use unique key bindings.', normalized: null };
+    }
+    usedKeys.add(raw);
+    normalized[binding] = raw;
+  }
+  return { valid: true, message: '', normalized };
+}
+
 function normalizePanelDimension(value, min, max, fallback) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return fallback;
@@ -242,6 +259,9 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     payload: null,
   });
   const [inspectorHotkeys, setInspectorHotkeys] = useState(DEFAULT_INSPECTOR_HOTKEYS);
+  const [inspectorHotkeyDraft, setInspectorHotkeyDraft] = useState(DEFAULT_INSPECTOR_HOTKEYS);
+  const [hotkeySaveState, setHotkeySaveState] = useState({ loading: false, message: null, severity: null });
+  const [projectConfiguration, setProjectConfiguration] = useState(null);
   const [shortcutHelpVisible, setShortcutHelpVisible] = useState(false);
   const [panelLayout, setPanelLayout] = useState(DEFAULT_PANEL_LAYOUT);
   const [normalizationTriageField, setNormalizationTriageField] = useState('');
@@ -279,10 +299,13 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
         const safeParts = Array.isArray(partData) ? partData : [];
         const savedState = workspaceData?.state && typeof workspaceData.state === 'object' ? workspaceData.state : {};
         setPanelLayout(normalizePanelLayout(savedState.panel_layout));
+        const resolvedConfig = configData?.config && typeof configData.config === 'object' ? configData.config : {};
+        setProjectConfiguration(resolvedConfig);
         const savedHotkeys = normalizeInspectorHotkeys(
-          configData?.configuration?.process_settings?.configurable_hotkeys,
+          resolvedConfig?.process_settings?.configurable_hotkeys,
         );
         setInspectorHotkeys(savedHotkeys);
+        setInspectorHotkeyDraft(savedHotkeys);
         setWorkspaceHydration(savedState);
         setBatches(safeBatches);
         setParts(safeParts);
@@ -309,6 +332,49 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
 
     loadWorkbenchData();
   }, [projectId]);
+
+  const saveInspectorHotkeys = async () => {
+    const validation = validateInspectorHotkeysDraft(inspectorHotkeyDraft);
+    if (!validation.valid) {
+      setHotkeySaveState({ loading: false, message: validation.message, severity: 'error' });
+      return;
+    }
+
+    const nextConfig = {
+      ...(projectConfiguration && typeof projectConfiguration === 'object' ? projectConfiguration : {}),
+      process_settings: {
+        ...((projectConfiguration && projectConfiguration.process_settings) || {}),
+        configurable_hotkeys: validation.normalized,
+      },
+    };
+
+    try {
+      setHotkeySaveState({ loading: true, message: null, severity: null });
+      const resp = await fetch(`/api/projects/${projectId}/configuration`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: nextConfig }),
+      });
+      if (!resp.ok) {
+        throw new Error(`Failed to save hotkeys (${resp.status})`);
+      }
+      const payload = await resp.json();
+      const persistedConfig = payload?.config && typeof payload.config === 'object' ? payload.config : nextConfig;
+      const persistedHotkeys = normalizeInspectorHotkeys(
+        persistedConfig?.process_settings?.configurable_hotkeys,
+      );
+      setProjectConfiguration(persistedConfig);
+      setInspectorHotkeys(persistedHotkeys);
+      setInspectorHotkeyDraft(persistedHotkeys);
+      setHotkeySaveState({ loading: false, message: 'Hotkeys saved for this project.', severity: 'success' });
+    } catch (err) {
+      setHotkeySaveState({
+        loading: false,
+        message: err?.message || 'Failed to save hotkeys.',
+        severity: 'error',
+      });
+    }
+  };
 
   const updatePanelLayout = (panelKey, updates) => {
     setPanelLayout((prev) => {
@@ -1217,6 +1283,71 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                   )}
 
                   <div className="inspector-common-controls" data-testid="inspector-common-controls">
+                    <div className="workspace-panel-layout" data-testid="hotkey-controls">
+                      <strong>Configurable hotkeys</strong>
+                      <div className="measurement-fields">
+                        <label>
+                          Mark pass key
+                          <input
+                            aria-label="Hotkey pass"
+                            type="text"
+                            maxLength={1}
+                            value={inspectorHotkeyDraft.accept_classification}
+                            onChange={(event) => {
+                              const value = String(event.target.value || '').trim().toLowerCase();
+                              setInspectorHotkeyDraft((prev) => ({ ...prev, accept_classification: value }));
+                              if (hotkeySaveState.message) {
+                                setHotkeySaveState({ loading: false, message: null, severity: null });
+                              }
+                            }}
+                          />
+                        </label>
+                        <label>
+                          Reject key
+                          <input
+                            aria-label="Hotkey reject"
+                            type="text"
+                            maxLength={1}
+                            value={inspectorHotkeyDraft.reject_classification}
+                            onChange={(event) => {
+                              const value = String(event.target.value || '').trim().toLowerCase();
+                              setInspectorHotkeyDraft((prev) => ({ ...prev, reject_classification: value }));
+                              if (hotkeySaveState.message) {
+                                setHotkeySaveState({ loading: false, message: null, severity: null });
+                              }
+                            }}
+                          />
+                        </label>
+                        <label>
+                          Help key
+                          <input
+                            aria-label="Hotkey help"
+                            type="text"
+                            maxLength={1}
+                            value={inspectorHotkeyDraft.toggle_shortcut_help}
+                            onChange={(event) => {
+                              const value = String(event.target.value || '').trim().toLowerCase();
+                              setInspectorHotkeyDraft((prev) => ({ ...prev, toggle_shortcut_help: value }));
+                              if (hotkeySaveState.message) {
+                                setHotkeySaveState({ loading: false, message: null, severity: null });
+                              }
+                            }}
+                          />
+                        </label>
+                        <button
+                          className="btn btn-secondary"
+                          onClick={saveInspectorHotkeys}
+                          disabled={hotkeySaveState.loading}
+                        >
+                          {hotkeySaveState.loading ? 'Saving hotkeys…' : 'Save Hotkeys'}
+                        </button>
+                      </div>
+                      {hotkeySaveState.message && (
+                        <p className={hotkeySaveState.severity === 'error' ? 'error-message' : 'muted'}>
+                          {hotkeySaveState.message}
+                        </p>
+                      )}
+                    </div>
                     <div className="workspace-panel-layout" data-testid="panel-layout-controls">
                       <strong>Workspace panels</strong>
                       {PANEL_LAYOUT_KEYS.map((panelKey) => {
