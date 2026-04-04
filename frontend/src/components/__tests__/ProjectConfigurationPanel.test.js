@@ -55,7 +55,7 @@ function mockFetch(config) {
       });
     }
 
-    if (url.includes('/api/projects/proj-copy/configuration')) {
+    if (url.includes('/configuration/clone') && options.method === 'POST') {
       return Promise.resolve({ ok: true, json: async () => ({ config: { ...config, defect_types: [] } }) });
     }
 
@@ -280,19 +280,30 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
     });
   });
 
-  test('copies configuration from an existing project', async () => {
-    const config = makeConfig('PT2', 'advanced');
-    mockFetch(config);
+  projectTypes.forEach((projectType) => {
+    syntheticUsers.forEach((syntheticUser) => {
+      test(`copies configuration via clone endpoint for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config);
 
-    render(<ProjectConfigurationPanel projectId="proj-1" />);
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
 
-    await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
+        await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
 
-    fireEvent.change(screen.getByLabelText('Source project'), { target: { value: 'proj-copy' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Copy from Project' }));
+        fireEvent.change(screen.getByLabelText('Source project'), { target: { value: 'proj-copy' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Copy from Project' }));
 
-    await waitFor(() => {
-      expect(screen.getByText('Configuration copied from existing project.')).toBeInTheDocument();
+        await waitFor(() => {
+          expect(global.fetch).toHaveBeenCalledWith(
+            '/api/projects/proj-1/configuration/clone',
+            expect.objectContaining({
+              method: 'POST',
+              body: JSON.stringify({ source_project_id: 'proj-copy' }),
+            }),
+          );
+          expect(screen.getByText('Configuration copied from existing project.')).toBeInTheDocument();
+        });
+      });
     });
   });
 });
