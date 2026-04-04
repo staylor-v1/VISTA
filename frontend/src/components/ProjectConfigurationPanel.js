@@ -1,5 +1,81 @@
 import React, { useEffect, useMemo, useState } from 'react';
 
+
+function isSingleAlphanumeric(value) {
+  return /^[a-z0-9]$/i.test((value || '').trim());
+}
+
+function normalizeLower(value) {
+  return (value || '').trim().toLowerCase();
+}
+
+function validateConfiguration(config) {
+  const errors = [];
+
+  const modalities = (config.image_modalities || []).map((modality) => ({
+    id: normalizeLower(modality.id),
+    label: (modality.label || '').trim(),
+  }));
+  const modalityIds = modalities.map((modality) => modality.id).filter(Boolean);
+  const duplicateModalityIds = modalityIds.filter((id, index) => modalityIds.indexOf(id) !== index);
+
+  if (modalities.some((modality) => !modality.id || !modality.label)) {
+    errors.push('Each image modality requires both identifier and label.');
+  }
+  if (duplicateModalityIds.length > 0) {
+    errors.push('Image modality identifiers must be unique.');
+  }
+
+  const partViews = (config.part_views || []).map((view) => ({
+    id: normalizeLower(view.id),
+    label: (view.label || '').trim(),
+    required_modalities: (view.required_modalities || []).map(normalizeLower).filter(Boolean),
+  }));
+  const partViewIds = partViews.map((view) => view.id).filter(Boolean);
+  const duplicatePartViewIds = partViewIds.filter((id, index) => partViewIds.indexOf(id) !== index);
+
+  if (partViews.some((view) => !view.id || !view.label)) {
+    errors.push('Each part view requires both identifier and label.');
+  }
+  if (duplicatePartViewIds.length > 0) {
+    errors.push('Part view identifiers must be unique.');
+  }
+
+  const unknownModalityReference = partViews.some((view) =>
+    view.required_modalities.some((requiredModality) => !modalityIds.includes(requiredModality)),
+  );
+  if (unknownModalityReference) {
+    errors.push('Part views can only require modalities configured in Image Modalities.');
+  }
+
+  const defectTypes = (config.defect_types || []).map((defectType) => ({
+    name: (defectType.name || '').trim(),
+    color: (defectType.color || '').trim(),
+  }));
+  if (defectTypes.some((defectType) => !defectType.name)) {
+    errors.push('Each defect type requires a name.');
+  }
+  if (defectTypes.some((defectType) => !/^#[0-9a-fA-F]{6}$/.test(defectType.color))) {
+    errors.push('Defect type colors must be valid 6-digit hex values (for example #ef4444).');
+  }
+
+  const hotkeys = config.process_settings?.configurable_hotkeys || {};
+  const hotkeyValues = [
+    normalizeLower(hotkeys.accept_classification),
+    normalizeLower(hotkeys.reject_classification),
+    normalizeLower(hotkeys.toggle_shortcut_help),
+  ];
+
+  if (hotkeyValues.some((hotkeyValue) => !isSingleAlphanumeric(hotkeyValue))) {
+    errors.push('Hotkeys must be single alphanumeric characters.');
+  }
+  if (new Set(hotkeyValues).size !== hotkeyValues.length) {
+    errors.push('Hotkeys must be unique across accept, reject, and help actions.');
+  }
+
+  return errors;
+}
+
 const EMPTY_CONFIG = {
   image_modalities: [],
   part_views: [],
@@ -75,6 +151,13 @@ function ProjectConfigurationPanel({ projectId }) {
   );
 
   const saveConfiguration = async () => {
+    const validationErrors = validateConfiguration(config);
+    if (validationErrors.length > 0) {
+      setError(validationErrors.join(' '));
+      setStatusMessage('');
+      return;
+    }
+
     try {
       setSaving(true);
       setError(null);
