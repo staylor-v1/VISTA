@@ -435,3 +435,16 @@ When preparing upstream PRs:
   - introduced strict metadata normalization helper so export records only consume list-of-dict structures for `annotations`, `overlay_layers`, `segmentation_runs`, and `measurement_runs`.
   - prevents malformed scalar/object metadata payloads from creating invalid record counts or malformed record entries.
 - Added red-team adversarial cross-type backend tests (`PT1`, `PT2`, `PT3`) that submit intentionally malformed metadata shapes and verify normalized zeroed summaries/records without endpoint failure.
+
+#### PR-13 milestone 3 (step 2 implemented in artifact branch)
+- Extended normalization telemetry for mixed-list adversarial metadata payloads:
+  - backend helper now records dropped non-object list entries while preserving accepted dict records.
+  - `export-bundle-json` per-part discrepancy summary now includes:
+    - `counts.dropped_non_object_metadata_items`,
+    - discrepancy code `metadata_items_dropped_non_object` when dropped items are detected.
+- Expanded `report-json` summary with metadata normalization telemetry:
+  - `summary.metadata_normalization.dropped_non_object_items` keyed by metadata field (`annotations`, `overlay_layers`, `segmentation_runs`, `measurement_runs`).
+- Added red-team/blue-team backend regression coverage across all project types (`PT1`, `PT2`, `PT3`) with progressive synthetic users (`basic`, `intermediate`, `advanced`) to confirm:
+  - mixed-list payloads are normalized safely,
+  - dropped-item counts are surfaced consistently,
+  - report summary counts remain coherent under adversarial metadata input.
