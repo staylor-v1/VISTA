@@ -30,6 +30,18 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
           await expect(page.getByTestId('project-report-normalization-summary')).toHaveCount(0);
         } else {
           await expect(page.getByTestId('project-report-normalization-summary')).toContainText('Metadata normalization');
+          await page.getByTestId('normalization-triage-segmentation_runs').click();
+          await expect(page.getByTestId('normalization-triage-active')).toContainText(
+            'Filtering parts with mixed segmentation_runs values',
+          );
+          const triageRows = page.locator('[data-testid=\"part-review-state\"]');
+          if (await triageRows.count()) {
+            await expect(triageRows.first()).toBeVisible();
+          } else {
+            await expect(page.getByText('No parts found for the current filters.')).toBeVisible();
+          }
+          await page.getByTestId('normalization-triage-clear').click();
+          await expect(page.getByTestId('normalization-triage-active')).toHaveCount(0);
         }
         await page.getByTestId('request-ingest-validation').click();
         await expect(page.getByTestId('ingest-validation-result')).toContainText('Ingest validation complete');
