@@ -275,24 +275,18 @@ function ProjectConfigurationPanel({ projectId }) {
     try {
       setSaving(true);
       setError(null);
-      const sourceResp = await fetch(`/api/projects/${copySourceProjectId}/configuration`);
-      if (!sourceResp.ok) {
-        throw new Error(`Failed to load source configuration (${sourceResp.status})`);
-      }
-      const sourceData = await sourceResp.json();
-      const copiedConfig = sourceData?.config || EMPTY_CONFIG;
-      setConfig(copiedConfig);
-
-      const persistResp = await fetch(`/api/projects/${projectId}/configuration`, {
-        method: 'PUT',
+      const cloneResp = await fetch(`/api/projects/${projectId}/configuration/clone`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config: copiedConfig }),
+        body: JSON.stringify({ source_project_id: copySourceProjectId }),
       });
 
-      if (!persistResp.ok) {
-        throw new Error(`Failed to persist copied configuration (${persistResp.status})`);
+      if (!cloneResp.ok) {
+        throw new Error(`Failed to copy project configuration (${cloneResp.status})`);
       }
 
+      const cloneData = await cloneResp.json();
+      setConfig(cloneData?.config || EMPTY_CONFIG);
       setStatusMessage('Configuration copied from existing project.');
     } catch (err) {
       setError(err.message || 'Failed to copy project configuration');
