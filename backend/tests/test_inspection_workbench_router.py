@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import patch
 
 
 @pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
@@ -891,6 +892,118 @@ def test_project_configuration_rejects_invalid_hotkeys(client, project_type):
     )
     assert save_resp.status_code == 422, save_resp.text
 
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_project_configuration_clone_supports_progressive_users(client, project_type):
+    scenarios = [
+        {"name": "basic", "view_id": "front", "hotkeys": {"accept_classification": "a", "reject_classification": "r", "toggle_shortcut_help": "h"}},
+        {"name": "intermediate", "view_id": "top", "hotkeys": {"accept_classification": "s", "reject_classification": "d", "toggle_shortcut_help": "f"}},
+        {"name": "advanced", "view_id": "axial", "hotkeys": {"accept_classification": "z", "reject_classification": "x", "toggle_shortcut_help": "c"}},
+    ]
+
+    for index, scenario in enumerate(scenarios, start=1):
+        email = f"clone-{scenario['name']}-{project_type.lower()}@example.com"
+        group = f"{project_type.lower()}-clone-{scenario['name']}"
+        headers = {"X-User-Id": email, "X-User-Groups": f"[\"{group}\"]"}
+
+        source_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": f"{project_type} clone source {scenario['name']}",
+                "description": "source config for clone",
+                "meta_group_id": group,
+                "project_type": project_type,
+            },
+            headers=headers,
+        )
+        target_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": f"{project_type} clone target {scenario['name']}",
+                "description": "target config for clone",
+                "meta_group_id": group,
+                "project_type": project_type,
+            },
+            headers=headers,
+        )
+        assert source_resp.status_code == 201, source_resp.text
+        assert target_resp.status_code == 201, target_resp.text
+        source_project_id = source_resp.json()["id"]
+        target_project_id = target_resp.json()["id"]
+
+        source_payload = {
+            "image_modalities": [{"id": "visual", "label": "Visual", "calibration_required": index > 1, "example_image_uploaded": True}],
+            "part_views": [{"id": scenario["view_id"], "label": scenario["view_id"].title(), "required_modalities": ["visual"], "source": "manual"}],
+            "defect_types": [{"name": f"defect_{scenario['name']}", "color": "#ef4444", "definition": f"Synthetic {scenario['name']} defect"}],
+            "process_settings": {
+                "require_disposition_on_submit": True,
+                "require_measurement_for_critical": index >= 2,
+                "require_second_reviewer_for_reject": index == 3,
+                "configurable_hotkeys": scenario["hotkeys"],
+            },
+            "display_settings": {"default_colormap": "grayscale", "anomaly_colormap": "viridis", "grayscale_base_image": index < 3},
+        }
+        save_resp = client.put(
+            f"/api/projects/{source_project_id}/configuration",
+            json={"config": source_payload},
+            headers=headers,
+        )
+        assert save_resp.status_code == 200, save_resp.text
+
+        clone_resp = client.post(
+            f"/api/projects/{target_project_id}/configuration/clone",
+            json={"source_project_id": source_project_id},
+            headers=headers,
+        )
+        assert clone_resp.status_code == 200, clone_resp.text
+        clone_payload = clone_resp.json()
+        assert clone_payload["project_id"] == target_project_id
+        assert clone_payload["source_project_id"] == source_project_id
+        assert clone_payload["config"] == source_payload
+
+        target_get_resp = client.get(f"/api/projects/{target_project_id}/configuration", headers=headers)
+        assert target_get_resp.status_code == 200, target_get_resp.text
+        assert target_get_resp.json()["config"] == source_payload
+
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_project_configuration_clone_requires_access_to_source_project(client, project_type):
+    source_headers = {"X-User-Id": f"clone-source-{project_type.lower()}@example.com", "X-User-Groups": f"[\"{project_type.lower()}-clone-source\"]"}
+    target_headers = {"X-User-Id": f"clone-target-{project_type.lower()}@example.com", "X-User-Groups": f"[\"{project_type.lower()}-clone-target\"]"}
+
+    source_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": f"{project_type} clone access source",
+            "description": "source access control",
+            "meta_group_id": f"{project_type.lower()}-clone-source",
+            "project_type": project_type,
+        },
+        headers=source_headers,
+    )
+    target_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": f"{project_type} clone access target",
+            "description": "target access control",
+            "meta_group_id": f"{project_type.lower()}-clone-target",
+            "project_type": project_type,
+        },
+        headers=target_headers,
+    )
+    assert source_resp.status_code == 201, source_resp.text
+    assert target_resp.status_code == 201, target_resp.text
+    source_project_id = source_resp.json()["id"]
+    target_project_id = target_resp.json()["id"]
+
+    with patch("routers.inspection_workbench.is_user_in_group", return_value=False):
+        clone_resp = client.post(
+            f"/api/projects/{target_project_id}/configuration/clone",
+            json={"source_project_id": source_project_id},
+            headers=target_headers,
+        )
+    assert clone_resp.status_code == 403, clone_resp.text
+    assert "does not have access to project" in clone_resp.json()["detail"]
 
 @pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
 def test_bulk_ingest_supports_progressive_users_with_discrepancy_counters(client, project_type):

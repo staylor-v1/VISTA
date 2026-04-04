@@ -61,3 +61,9 @@ A task is done only when:
   - `uv run pytest -q backend/tests/test_inspection_workbench_router.py`,
   - `npm test -- --runInBand src/components/__tests__/InspectionWorkbenchPanel.test.js`,
   - broader frontend/backend suites when scope expands.
+
+## Active follow-on pointer (2026-04-04)
+
+- **Next unimplemented planned slice:** `PR-16-M1` (Feature request A5) — clone project configuration from an existing accessible project.
+- **Contract added for PR-16-M1:** `POST /api/projects/{project_id}/configuration/clone` with request body `{ "source_project_id": "<uuid>" }`.
+- **Replay artifact for clean incremental submission after inspection:** `docs/planning/pr16-split-artifact.md`.
