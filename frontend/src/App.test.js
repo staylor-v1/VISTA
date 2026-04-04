@@ -9,6 +9,9 @@ test('renders image management platform header', () => {
     if (url.endsWith('/api/users/me')) {
       return Promise.resolve({ ok: false, status: 401, json: async () => ({ detail: 'Unauthorized' }) });
     }
+    if (url.endsWith('/api/users/me/groups')) {
+      return Promise.resolve({ ok: true, status: 200, json: async () => [] });
+    }
     if (url.endsWith('/api/projects/')) {
       return Promise.resolve({ ok: true, status: 200, json: async () => [] });
     }
@@ -41,6 +44,13 @@ describe('project type UI exposure', () => {
           ok: true,
           status: 200,
           json: async () => ({ email: `${userScenario.label}-${projectType.toLowerCase()}@example.com` }),
+        });
+      }
+      if (url.endsWith('/api/users/me/groups')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => [`${projectType.toLowerCase()}-${userScenario.label}-group`],
         });
       }
 
@@ -128,6 +138,13 @@ describe('project type UI exposure', () => {
           json: async () => ({ email: 'pt2-user@example.com' }),
         });
       }
+      if (url.endsWith('/api/users/me/groups')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ['pt2-group'],
+        });
+      }
 
       if (url.endsWith('/api/projects/') && method === 'GET') {
         return Promise.resolve({
@@ -180,6 +197,13 @@ describe('project type UI exposure', () => {
           ok: true,
           status: 200,
           json: async () => ({ email: 'editor@example.com' }),
+        });
+      }
+      if (url.endsWith('/api/users/me/groups')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ['g1'],
         });
       }
 
@@ -248,6 +272,7 @@ describe('project type UI exposure', () => {
   test.each(projectTypes.flatMap((projectType) => simulatedUsers.map((userScenario) => ({ projectType, userScenario }))))(
     'requires explicit delete confirmation phrase for $projectType $userScenario.label simulated workflow',
     async ({ projectType, userScenario }) => {
+      let isDeleted = false;
       global.fetch = jest.fn((input, init = {}) => {
         const url = typeof input === 'string' ? input : input.url;
         const method = (init.method || 'GET').toUpperCase();
@@ -261,12 +286,19 @@ describe('project type UI exposure', () => {
             json: async () => ({ email: `${userScenario.label}-${projectType.toLowerCase()}@example.com` }),
           });
         }
+        if (url.endsWith('/api/users/me/groups')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => [`${projectType.toLowerCase()}-${userScenario.label}-group`],
+          });
+        }
 
         if (url.endsWith('/api/projects/') && method === 'GET') {
           return Promise.resolve({
             ok: true,
             status: 200,
-            json: async () => ([
+            json: async () => (isDeleted ? [] : [
               {
                 id: `project-${projectType.toLowerCase()}-${userScenario.label}`,
                 name: projectName,
@@ -287,6 +319,7 @@ describe('project type UI exposure', () => {
               json: async () => ({ detail: `Invalid confirmation phrase. Expected '${expectedPhrase}'.` }),
             });
           }
+          isDeleted = true;
           return Promise.resolve({
             ok: true,
             status: 204,
@@ -308,14 +341,17 @@ describe('project type UI exposure', () => {
       await user.click(screen.getByRole('button', { name: new RegExp(`Project options for ${projectType} ${userScenario.label} delete target`) }));
       await user.click(screen.getByRole('button', { name: 'Delete' }));
 
+      expect(screen.getByRole('button', { name: 'Delete Project' })).toBeDisabled();
+      const deleteProjectButton = screen.getByRole('button', { name: 'Delete Project' });
       await user.type(screen.getByLabelText('Confirmation phrase *'), 'DELETE wrong phrase');
-      await user.click(screen.getByRole('button', { name: 'Delete Project' }));
-      expect(await screen.findByText(/Invalid confirmation phrase/i)).toBeInTheDocument();
+      await user.click(screen.getByLabelText(/I understand this is irreversible/i));
+      expect(deleteProjectButton).toBeDisabled();
 
       const refreshedPhraseInput = screen.getByLabelText('Confirmation phrase *');
       await user.clear(refreshedPhraseInput);
       await user.type(refreshedPhraseInput, `DELETE ${projectType} ${userScenario.label} delete target`);
-      await user.click(screen.getByRole('button', { name: 'Delete Project' }));
+      expect(deleteProjectButton).toBeEnabled();
+      await user.click(deleteProjectButton);
 
       await waitFor(() => {
         expect(global.fetch).toHaveBeenCalledWith(
@@ -327,8 +363,62 @@ describe('project type UI exposure', () => {
         );
       });
       await waitFor(() => {
-        expect(screen.queryByRole('heading', { name: `${projectType} ${userScenario.label} delete target` })).not.toBeInTheDocument();
+        expect(screen.queryByText(`${projectType} ${userScenario.label} delete target`)).not.toBeInTheDocument();
       });
+    }
+  );
+
+  test.each(projectTypes.flatMap((projectType) => simulatedUsers.map((userScenario) => ({ projectType, userScenario }))))(
+    'disables delete menu action when user lacks group authorization for $projectType $userScenario.label workflow',
+    async ({ projectType, userScenario }) => {
+      global.fetch = jest.fn((input, init = {}) => {
+        const url = typeof input === 'string' ? input : input.url;
+        const method = (init.method || 'GET').toUpperCase();
+
+        if (url.endsWith('/api/users/me')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ({ email: `${userScenario.label}-${projectType.toLowerCase()}@example.com` }),
+          });
+        }
+        if (url.endsWith('/api/users/me/groups')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => [`${projectType.toLowerCase()}-other-group`],
+          });
+        }
+        if (url.endsWith('/api/projects/') && method === 'GET') {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => ([
+              {
+                id: `project-${projectType.toLowerCase()}-${userScenario.label}`,
+                name: `${projectType} ${userScenario.label} restricted project`,
+                description: `complexity-${userScenario.complexity}`,
+                meta_group_id: `${projectType.toLowerCase()}-${userScenario.label}-group`,
+                project_type: projectType,
+              },
+            ]),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+      });
+
+      const user = userEvent.setup();
+      render(
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      );
+
+      await screen.findByText(`${projectType} ${userScenario.label} restricted project`);
+      await user.click(screen.getByRole('button', { name: new RegExp(`Project options for ${projectType} ${userScenario.label} restricted project`) }));
+      const deleteMenuItem = screen.getByRole('button', { name: 'Delete' });
+      expect(deleteMenuItem).toBeDisabled();
+      expect(deleteMenuItem).toHaveAttribute('title', 'You do not have access to delete this project.');
     }
   );
 });
