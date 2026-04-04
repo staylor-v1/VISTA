@@ -154,6 +154,16 @@ function ProjectConfigurationPanel({ projectId }) {
     loadConfiguration();
   }, [projectId]);
 
+  useEffect(() => {
+    if (!copySourceProjectId) {
+      return;
+    }
+    const stillAvailable = availableProjects.some((project) => project.id === copySourceProjectId);
+    if (!stillAvailable) {
+      setCopySourceProjectId('');
+    }
+  }, [availableProjects, copySourceProjectId]);
+
   const hasConfiguration = useMemo(
     () =>
       config.image_modalities.length > 0 ||
@@ -293,11 +303,11 @@ function ProjectConfigurationPanel({ projectId }) {
         body: JSON.stringify({ source_project_id: copySourceProjectId }),
       });
 
+      const cloneData = await cloneResp.json();
       if (!cloneResp.ok) {
-        throw new Error(`Failed to copy project configuration (${cloneResp.status})`);
+        throw new Error(cloneData?.detail || `Failed to copy project configuration (${cloneResp.status})`);
       }
 
-      const cloneData = await cloneResp.json();
       setConfig(cloneData?.config || EMPTY_CONFIG);
       setStatusMessage('Configuration copied from existing project.');
     } catch (err) {
@@ -661,7 +671,7 @@ function ProjectConfigurationPanel({ projectId }) {
               <button
                 className="btn btn-secondary"
                 type="button"
-                disabled={!copySourceProjectId || saving}
+                disabled={!copySourceProjectId || !hasCompatibleCopySources || saving}
                 onClick={copyConfiguration}
               >
                 Copy from Project
