@@ -106,3 +106,17 @@ A task is done only when:
   - `uv run pytest -q backend/tests/test_inspection_workbench_router.py`,
   - `npm test -- --runInBand src/components/__tests__/InspectionWorkbenchPanel.test.js`,
   - existing broader frontend/backend suites when scope expands.
+
+## Active session pointer (2026-04-04, update 6)
+
+- **Current milestone:** PR-15 milestone 1 step 3 (part 2 / step 3) complete (workspace-backed inspector modality/view persistence hardening).
+- **Delivered in milestone:**
+  - Normalized workspace payloads to enforce list semantics for `inspector.modalities`.
+  - Normalized workspace payloads to enforce string semantics for `inspector.view_name`.
+  - Expanded PT1/PT2/PT3 progressive synthetic-user tests across backend router and frontend workbench suites for strict modality/view persistence typing.
+- **Replay artifact for clean incremental PRs:** `docs/planning/pr15-split-artifact.md`.
+- **Next scope boundary:** PR-15 milestone 1 step 3 (part 2 / step 4) to persist additional cross-surface workspace preferences while preserving step 1/2/3 coverage.
+- **Required tests for next step:** preserve green status for:
+  - `uv run pytest -q backend/tests/test_inspection_workbench_router.py`,
+  - `npm test -- --runInBand src/components/__tests__/InspectionWorkbenchPanel.test.js`,
+  - existing broader frontend/backend suites when scope expands.
