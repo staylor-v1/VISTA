@@ -106,6 +106,7 @@ function ProjectConfigurationPanel({ projectId }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [statusMessage, setStatusMessage] = useState('');
+  const hasCompatibleCopySources = availableProjects.length > 0;
 
   useEffect(() => {
     const loadConfiguration = async () => {
@@ -638,10 +639,16 @@ function ProjectConfigurationPanel({ projectId }) {
                 ? ` Only ${currentProjectType} source projects are listed.`
                 : ''}
             </p>
+            {!hasCompatibleCopySources && (
+              <p className="muted" data-testid="no-compatible-copy-sources">
+                No compatible source projects are available yet.
+              </p>
+            )}
             <div className="workbench-controls-row">
               <select
                 aria-label="Source project"
                 value={copySourceProjectId}
+                disabled={!hasCompatibleCopySources}
                 onChange={(event) => setCopySourceProjectId(event.target.value)}
               >
                 <option value="">Select project</option>
