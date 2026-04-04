@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import patch
 
 
 PROJECT_TYPES = ["PT1", "PT2", "PT3"]
@@ -73,3 +74,29 @@ def test_delete_project_rejects_api_key_auth_for_progressive_users(client, proje
         assert delete_resp.status_code == 403
         assert "proxy authentication" in delete_resp.json()["detail"]
 
+
+@pytest.mark.parametrize("project_type", PROJECT_TYPES)
+def test_delete_project_rejects_group_unauthorized_user_for_progressive_users(client, project_type):
+    for scenario in SYNTHETIC_USERS:
+        project_name = f"{project_type}-{scenario['suffix']}-Restricted"
+        create_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": project_name,
+                "description": f"{scenario['label']} unauthorized delete path",
+                "meta_group_id": "data-scientists",
+                "project_type": project_type,
+            },
+        )
+        assert create_resp.status_code == 201
+        project_id = create_resp.json()["id"]
+
+        with patch("routers.projects.is_user_in_group", return_value=False):
+            delete_resp = client.request(
+                "DELETE",
+                f"/api/projects/{project_id}",
+                json={"confirmation_phrase": f"DELETE {project_name}"},
+            )
+
+        assert delete_resp.status_code == 403
+        assert "does not have access to delete project" in delete_resp.json()["detail"]

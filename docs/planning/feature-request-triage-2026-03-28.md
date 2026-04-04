@@ -134,7 +134,13 @@ Existing planning docs currently focus on auth architecture and test remediation
 
 ## Incremental execution status (2026-04-04)
 
-- **Completed this session:** PR-14 milestone 2 step 2 (red-team/blue-team hardening for adversarial metadata normalization categories and filtered empty-state triage guidance).
-- **Next unimplemented PR slice:** PR-15 milestone 1 step 1 (project deletion authorization + explicit warning UX on Start screen).
-- **Target PR label:** PR-15 milestone 1 step 1.
-- **Acceptance target:** project deletion actions remain role-gated end-to-end, with explicit irreversible-action confirmation and regression-safe project-list refresh.
+- **Completed this session:** PR-15 milestone 1 step 1 (Start screen project deletion authorization + irreversible confirmation UX + project-list refresh hardening).
+- **Delivered scope highlights:**
+  - Dashboard delete action is now role-gated in UI using user group memberships.
+  - Delete modal now requires both exact phrase match and irreversible-action acknowledgment before enabling the destructive action.
+  - Post-delete workflow now refreshes project list from backend to prevent stale local-state regressions.
+  - Added PT1/PT2/PT3 × progressive synthetic user coverage in frontend and backend tests for authorized and unauthorized delete paths.
+- **Artifact for clean PR replay:** `docs/planning/pr15-split-artifact.md`.
+- **Next unimplemented PR slice:** PR-15 milestone 1 step 2 (to be selected from Epic 7 backlog after product confirmation).
+- **Target PR label:** PR-15 milestone 1 step 2 (TBD).
+- **Acceptance target for next slice:** preserve delete-governance behavior while extending adjacent Epic 7 governance/personalization scope.
