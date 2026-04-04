@@ -335,7 +335,7 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
                 "selected_batch_id": "batch-basic",
                 "defect_filter": "all",
                 "sort_mode": "defect_desc",
-                "inspector": {"shortcut_help_visible": False},
+                "inspector": {"shortcut_help_visible": False, "normalization_triage_field": ""},
                 "panel_layout": {
                     "part_list": {"is_open": True, "width_px": 310, "height_px": 420, "orientation": "vertical"},
                     "inspector": {"is_open": True, "width_px": 355, "height_px": 420, "orientation": "horizontal"},
@@ -351,7 +351,7 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
                 "defect_filter": "has_defects",
                 "sort_mode": "serial_asc",
                 "selected_part_id": "part-mid-1",
-                "inspector": {"shortcut_help_visible": True},
+                "inspector": {"shortcut_help_visible": True, "normalization_triage_field": "segmentation_runs"},
                 "panel_layout": {
                     "part_list": {"is_open": True, "width_px": 360, "height_px": 500, "orientation": "vertical"},
                     "inspector": {"is_open": False, "width_px": 420, "height_px": 510, "orientation": "horizontal"},
@@ -374,7 +374,7 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
                     "active_overlay_ids": ["segmentation", "porosity"],
                     "cursor_probe": {"x": 67, "y": 42},
                 },
-                "inspector": {"shortcut_help_visible": "yes"},
+                "inspector": {"shortcut_help_visible": "yes", "normalization_triage_field": 42},
                 "panel_layout": {
                     "part_list": {"is_open": "yes", "width_px": -15, "height_px": 9999, "orientation": "diagonal"},
                     "inspector": {"is_open": True, "width_px": 260, "height_px": 460, "orientation": "vertical"},
@@ -387,6 +387,7 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
                 "mpr_controls": {"is_open": True, "width_px": 400, "height_px": 420, "orientation": "horizontal"},
             },
             "expected_shortcut_help_visible": False,
+            "expected_normalization_triage_field": "",
         },
     ]
 
@@ -428,12 +429,18 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
             "expected_shortcut_help_visible",
             scenario["state"].get("inspector", {}).get("shortcut_help_visible"),
         )
+        expected_normalization_triage_field = scenario.get(
+            "expected_normalization_triage_field",
+            scenario["state"].get("inspector", {}).get("normalization_triage_field", ""),
+        )
         assert save_resp.json()["state"]["inspector"]["shortcut_help_visible"] == expected_shortcut_help_visible
+        assert save_resp.json()["state"]["inspector"]["normalization_triage_field"] == expected_normalization_triage_field
 
         reload_resp = client.get(f"/api/projects/{project_id}/workspace-state", headers=headers)
         assert reload_resp.status_code == 200, reload_resp.text
         assert reload_resp.json()["state"]["panel_layout"] == expected_panel_layout
         assert reload_resp.json()["state"]["inspector"]["shortcut_help_visible"] == expected_shortcut_help_visible
+        assert reload_resp.json()["state"]["inspector"]["normalization_triage_field"] == expected_normalization_triage_field
 
         update_payload = {**scenario["state"], "sort_mode": "serial_asc"}
         overwrite_resp = client.put(
