@@ -496,7 +496,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
       : [];
     setEnabledModalities(savedModalities.length > 0 ? savedModalities : getModalities(selectedPart).slice(0, 1));
     setSelectedViewName(savedInspector.view_name ? String(savedInspector.view_name) : '');
-    setImageEnabled(savedInspector.image_enabled !== false);
+    setImageEnabled(typeof savedInspector.image_enabled === 'boolean' ? savedInspector.image_enabled : true);
     setShortcutHelpVisible(savedInspector.shortcut_help_visible === true);
     setMeasurementEntries(Array.isArray(savedInspector.measurements) ? savedInspector.measurements : []);
     const savedInspectorViewport = savedInspector.viewport_transform || {};
