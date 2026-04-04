@@ -157,3 +157,16 @@ A task is done only when:
 - Replay/submission artifact:
   - `docs/planning/pr16-m5-replay-artifact.md`
 - Next implementation boundary: open `PR-16-M6+` only after explicit feature-contract approval.
+
+
+## Session update (2026-04-04, PR-16-M6 clone error-detail surfacing + stale-source hardening)
+
+- Started and completed `PR-16-M6` after explicit operator direction to continue from the next unimplemented milestone.
+- Delivered:
+  - Clone failure UX now surfaces backend-provided `detail` messages for actionable remediation.
+  - Copy-source state now clears stale selections when compatibility-filtered source options change.
+  - Clone action is explicitly disabled when no compatible source projects are available.
+- Progressive synthetic-user matrix coverage preserved (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3` with clone-error rendering assertions.
+- Replay/submission artifact:
+  - `docs/planning/pr16-m6-replay-artifact.md`
+- Next implementation boundary: open `PR-16-M7+` only after explicit feature-contract approval.
