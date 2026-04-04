@@ -170,3 +170,14 @@ A task is done only when:
 - Replay/submission artifact:
   - `docs/planning/pr16-m6-replay-artifact.md`
 - Next implementation boundary: open `PR-16-M7+` only after explicit feature-contract approval.
+
+## Session update (2026-04-04, PR-16-M7 clone-feedback reset hardening)
+
+- Started and completed `PR-16-M7` under explicit next-unimplemented-slice direction.
+- Delivered:
+  - Clone action now clears stale success/error alerts at clone start.
+  - Changing clone source selection now clears prior alerts to prevent stale feedback carry-over.
+- Progressive synthetic-user coverage preserved (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3` with alert-reset assertions.
+- Replay/submission artifact:
+  - `docs/planning/pr16-m7-replay-artifact.md`
+- Next implementation boundary: open `PR-16-M8+` only after explicit feature-contract approval.
