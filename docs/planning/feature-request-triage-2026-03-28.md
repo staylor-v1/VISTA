@@ -144,3 +144,14 @@ Existing planning docs currently focus on auth architecture and test remediation
 - **Next unimplemented PR slice:** PR-15 milestone 1 step 2 (to be selected from Epic 7 backlog after product confirmation).
 - **Target PR label:** PR-15 milestone 1 step 2 (TBD).
 - **Acceptance target for next slice:** preserve delete-governance behavior while extending adjacent Epic 7 governance/personalization scope.
+
+## Incremental execution status (2026-04-04, update 2)
+
+- **Completed this session:** PR-15 milestone 1 step 2 (Configurable inspector hotkeys UX + server-backed persistence wiring).
+- **Delivered scope highlights:**
+  - Inspection workbench now hydrates configurable hotkeys from `/api/projects/{id}/configuration` using the canonical `config` contract.
+  - Added in-workbench hotkey editor with validation (single alphanumeric, unique bindings) and explicit save action.
+  - Hotkey save persists to project configuration endpoint and immediately updates active keyboard shortcuts + help text.
+  - Added PT1/PT2/PT3 × progressive synthetic user coverage for hotkey-save success and validation failure paths.
+- **Artifact for clean PR replay:** `docs/planning/pr15-split-artifact.md`.
+- **Next unimplemented PR slice:** PR-15 milestone 1 step 3 (select next Epic 7 scope: server-backed cross-surface workspace preferences or deletion-governance follow-on UX copy).
