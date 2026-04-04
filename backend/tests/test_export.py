@@ -727,7 +727,9 @@ def test_project_bundle_json_supports_progressive_users_per_project_type(client)
             assert len(payload["bundle_summary"]["annotations"]["records"]) == total_annotations
             assert payload["bundle_summary"]["overlays"]["configured_layers"] == total_overlay_layers
             assert payload["bundle_summary"]["overlays"]["segmentation_runs"] == total_segmentation_runs
+            assert len(payload["bundle_summary"]["overlays"]["records"]) == total_overlay_layers
             assert payload["bundle_summary"]["measurements"]["ai_runs"] == total_measurement_runs
+            assert len(payload["bundle_summary"]["measurements"]["records"]) == total_measurement_runs
             assert payload["bundle_summary"]["images"]["total_bytes"] > 0
             assert len(payload["bundle_summary"]["discrepancies"]["per_part"]) == scenario["part_count"]
             expected_discrepancy_parts = 1 if scenario["level"] > 1 else 0
@@ -812,6 +814,8 @@ def test_project_bundle_archive_supports_progressive_users_per_project_type(clie
                         "metadata": {
                             "synthetic_level": scenario["level"],
                             "annotations": [{"id": f"ann-{idx}", "defect_class": "scratch", "modality": "rgb"}],
+                            "overlay_layers": [{"id": f"overlay-{idx}", "label": "Mask", "color": "#22c55e"}],
+                            "measurement_runs": [{"run_id": f"measure-{idx}", "status": "completed"}],
                         },
                     },
                     headers=headers,
@@ -847,6 +851,8 @@ def test_project_bundle_archive_supports_progressive_users_per_project_type(clie
             assert manifest["project"]["project_type"] == project_type
             assert manifest["bundle_summary"]["parts"]["total"] == scenario["part_count"]
             assert manifest["bundle_summary"]["images"]["total"] == scenario["image_count"]
+            assert len(manifest["bundle_summary"]["overlays"]["records"]) == scenario["part_count"]
+            assert len(manifest["bundle_summary"]["measurements"]["records"]) == scenario["part_count"]
             assert len(manifest["image_references"]) == scenario["image_count"]
 
 
