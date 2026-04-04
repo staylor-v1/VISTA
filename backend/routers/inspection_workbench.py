@@ -700,6 +700,47 @@ async def update_project_configuration(
 
 
 @router.post(
+    "/projects/{project_id}/configuration/clone",
+    response_model=schemas.InspectionProjectConfigurationCloneResponse,
+)
+async def clone_project_configuration(
+    project_id: uuid.UUID,
+    payload: schemas.InspectionProjectConfigurationCloneRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    await _get_project_with_access_check(project_id=payload.source_project_id, db=db, current_user=current_user)
+
+    source_metadata = await crud.get_project_metadata_by_key(
+        db=db,
+        project_id=payload.source_project_id,
+        key=PROJECT_CONFIGURATION_KEY,
+    )
+    source_config = (
+        source_metadata.value
+        if source_metadata and isinstance(source_metadata.value, dict)
+        else _default_project_configuration()
+    )
+    updated = await crud.create_or_update_project_metadata(
+        db=db,
+        metadata=schemas.ProjectMetadataCreate(
+            project_id=project_id,
+            key=PROJECT_CONFIGURATION_KEY,
+            value=source_config,
+        ),
+        created_by=current_user.email,
+    )
+    persisted = updated.value if isinstance(updated.value, dict) else _default_project_configuration()
+    return {
+        "project_id": project_id,
+        "source_project_id": payload.source_project_id,
+        "config": persisted,
+        "updated_at": updated.updated_at,
+    }
+
+
+@router.post(
     "/projects/{project_id}/ingest",
     response_model=schemas.InspectionBulkIngestResponse,
 )

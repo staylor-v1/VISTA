@@ -290,6 +290,17 @@ class InspectionProjectConfigurationResponse(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class InspectionProjectConfigurationCloneRequest(BaseModel):
+    source_project_id: uuid.UUID
+
+
+class InspectionProjectConfigurationCloneResponse(BaseModel):
+    project_id: uuid.UUID
+    source_project_id: uuid.UUID
+    config: InspectionProjectConfiguration
+    updated_at: Optional[datetime] = None
+
+
 class InspectionIngestPartRecord(BaseModel):
     serial_number: str = Field(..., min_length=1, max_length=255)
     display_name: Optional[str] = Field(default=None, max_length=255)
