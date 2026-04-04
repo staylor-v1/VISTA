@@ -143,6 +143,7 @@ PR-15 execution has been flattened so each function-level change maps to one sub
   - `PR-15-M4`: Workspace-backed normalization-triage persistence.
   - `PR-15-M5`: Workspace-backed inspector image-visibility persistence.
   - `PR-15-M6`: Workspace-backed inspector modality/view persistence hardening.
+  - `PR-15-M7`: Workspace-backed inspector viewport-transform persistence hardening.
 - **Artifact for clean replay and submission order:** `docs/planning/pr15-split-artifact.md`.
-- **Next unimplemented PR slice:** `PR-15-M7` (to be selected from Epic 7 backlog for remaining cross-surface preferences).
+- **Next unimplemented PR slice:** `PR-15-M8` (to be selected from Epic 7 backlog for remaining cross-surface preferences).
 - **Planning rule going forward:** keep labels flat (`PR-15-M#`) and avoid step/part/sub-step hierarchy unless a milestone must be split for hard technical coupling.
