@@ -412,3 +412,14 @@ When preparing upstream PRs:
 - Preserved prior aggregate counters/discrepancy summaries to maintain backward-compatible contracts for existing callers.
 - Ensured `GET /api/projects/{project_id}/export-bundle` manifest carries the enriched bundle summary contract by reusing the JSON payload shape.
 - Extended existing backend pytest progressive synthetic-user matrix (`basic`, `intermediate`, `advanced`) across `PT1`, `PT2`, and `PT3` for both bundle JSON and bundle archive endpoints.
+
+#### PR-13 milestone 2 (step 1 implemented in artifact branch)
+- Added Project Data export/report mode controls in `InspectionWorkbenchPanel`:
+  - mode selector options (`bundle_summary`, `bundle_archive`, `report_json`),
+  - unified action trigger (`Run Export/Report`) that routes to existing backend APIs.
+- Added client-side validation guardrail for unsupported export/report mode values to prevent invalid requests.
+- Added report success surface for JSON report mode while preserving existing bundle summary/archive success states.
+- Extended existing React Testing Library progressive synthetic-user matrix (`basic`, `intermediate`, `advanced`) across all project types (`PT1`, `PT2`, `PT3`) to verify:
+  - mode selection and action routing,
+  - JSON report success rendering,
+  - invalid mode validation behavior.
