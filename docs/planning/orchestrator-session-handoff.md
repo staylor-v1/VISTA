@@ -129,3 +129,13 @@ A task is done only when:
   - `uv run pytest -q backend/tests/test_inspection_workbench_router.py`
   - `cd frontend && npm test -- --runInBand src/components/__tests__/InspectionWorkbenchPanel.test.js`
 - `PR-16-M3+` remains contract-gated; no implicit carry-over scope is authorized.
+
+## Session update (2026-04-04, PR-16-M3 start and delivery)
+
+- Started and completed `PR-16-M3` after explicit operator direction to continue the next milestone.
+- Delivered clone-type compatibility hardening:
+  - Backend clone API now rejects cross-project-type clone attempts.
+  - Frontend Project Configuration copy picker now lists only same-type source projects.
+- Added/validated progressive synthetic-user coverage (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3` for the new guard behavior.
+- Replay/submission artifact:
+  - `docs/planning/pr16-m3-replay-artifact.md`

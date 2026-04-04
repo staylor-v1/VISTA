@@ -100,6 +100,7 @@ const EMPTY_CONFIG = {
 function ProjectConfigurationPanel({ projectId }) {
   const [config, setConfig] = useState(EMPTY_CONFIG);
   const [availableProjects, setAvailableProjects] = useState([]);
+  const [currentProjectType, setCurrentProjectType] = useState('');
   const [copySourceProjectId, setCopySourceProjectId] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -127,9 +128,19 @@ function ProjectConfigurationPanel({ projectId }) {
 
         if (projectsResp.ok) {
           const projectsData = await projectsResp.json();
-          const filtered = Array.isArray(projectsData)
-            ? projectsData.filter((project) => project.id !== projectId)
-            : [];
+          const projectList = Array.isArray(projectsData) ? projectsData : [];
+          const currentProject = projectList.find((project) => project.id === projectId);
+          const targetProjectType = currentProject?.project_type || '';
+          setCurrentProjectType(targetProjectType);
+          const filtered = projectList.filter((project) => {
+            if (project.id === projectId) {
+              return false;
+            }
+            if (!targetProjectType) {
+              return true;
+            }
+            return project.project_type === targetProjectType;
+          });
           setAvailableProjects(filtered);
         }
       } catch (err) {
@@ -621,7 +632,12 @@ function ProjectConfigurationPanel({ projectId }) {
 
           <section className="part-detail-panel" aria-label="Copy configuration">
             <h3>Copy Configuration</h3>
-            <p>Copy settings from another project into this one.</p>
+            <p>
+              Copy settings from another project into this one.
+              {currentProjectType
+                ? ` Only ${currentProjectType} source projects are listed.`
+                : ''}
+            </p>
             <div className="workbench-controls-row">
               <select
                 aria-label="Source project"
