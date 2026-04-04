@@ -131,3 +131,9 @@ Existing planning docs currently focus on auth architecture and test remediation
 
 - Existing capabilities should be treated as **partial foundations** for this plan, not final equivalents of the requested PT workflows.
 - PT2 and PT3 currently share the same viewer requirements and can likely share one technical implementation with mode-specific configuration.
+
+## Incremental execution status (2026-04-04)
+
+- **Next unimplemented PR slice after PR-13 closeout:** expose report metadata-normalization telemetry in Project Data so operators can triage dropped malformed metadata entries without leaving the UI.
+- **Target PR label:** PR-14 milestone 1 step 1.
+- **Acceptance target:** report mode in Project Data renders dropped non-object metadata counters when present and keeps baseline behavior for projects with no normalization drops.
