@@ -206,3 +206,11 @@ PR-15 execution has been flattened so each function-level change maps to one sub
   - `PR-16-M2`: Project Configuration UI now clones from existing project via `POST /api/projects/{project_id}/configuration/clone` instead of client-side GET+PUT chaining.
 - **Replay/submission artifact:** `docs/planning/pr16-m2-replay-artifact.md`.
 - **Next unimplemented PR slice:** none currently planned; open `PR-16-M3+` only after explicit feature-contract approval.
+
+
+## Orchestrator execution sync (2026-04-04, next-unimplemented-execution-request)
+
+- Re-validated planned-slice status across triage + handoff docs: no unfinished planned slices remain through `PR-16-M2`.
+- Created an execution artifact for post-inspection clean replay and scope-boundary control:
+  - `docs/planning/orchestrator-next-unimplemented-pr-execution-2026-04-04.md`
+- Next implementation is blocked on explicit feature-contract approval for `PR-16-M3+`; no hidden carry-over work is authorized.
