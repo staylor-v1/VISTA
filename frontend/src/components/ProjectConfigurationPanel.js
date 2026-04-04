@@ -297,6 +297,7 @@ function ProjectConfigurationPanel({ projectId }) {
     try {
       setSaving(true);
       setError(null);
+      setStatusMessage('');
       const cloneResp = await fetch(`/api/projects/${projectId}/configuration/clone`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -311,6 +312,7 @@ function ProjectConfigurationPanel({ projectId }) {
       setConfig(cloneData?.config || EMPTY_CONFIG);
       setStatusMessage('Configuration copied from existing project.');
     } catch (err) {
+      setStatusMessage('');
       setError(err.message || 'Failed to copy project configuration');
     } finally {
       setSaving(false);
@@ -659,7 +661,11 @@ function ProjectConfigurationPanel({ projectId }) {
                 aria-label="Source project"
                 value={copySourceProjectId}
                 disabled={!hasCompatibleCopySources}
-                onChange={(event) => setCopySourceProjectId(event.target.value)}
+                onChange={(event) => {
+                  setCopySourceProjectId(event.target.value);
+                  setError(null);
+                  setStatusMessage('');
+                }}
               >
                 <option value="">Select project</option>
                 {availableProjects.map((project) => (
