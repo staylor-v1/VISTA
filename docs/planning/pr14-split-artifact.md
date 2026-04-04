@@ -59,3 +59,31 @@ This artifact tracks the first incremental PR slice after PR-13 closeout.
    - Automated coverage:
      - `cd frontend && npm test -- --runInBand src/components/__tests__/InspectionWorkbenchPanel.test.js`
      - `cd frontend && npx playwright test e2e/specs/inspection-workbench.spec.js --grep "Inspection Workbench E2E"`
+
+4. **PR-14 milestone 2 step 2 — adversarial normalization hardening + filtered empty-state guidance**
+   - Scope:
+     - Normalize/report unknown normalization categories safely in telemetry chips without breaking triage actions.
+     - Keep field-chip triage selectors stable for known fields while hardening generated ids for adversarial field names.
+     - Add filtered empty-state guidance so operators know when triage matches exist but are hidden by current batch/defect filters.
+     - Keep backend response contracts unchanged.
+   - Files:
+     - `frontend/src/components/InspectionWorkbenchPanel.js`
+     - `frontend/src/components/__tests__/InspectionWorkbenchPanel.test.js`
+     - `frontend/e2e/fixtures/inspectionWorkbenchMocks.js`
+     - `frontend/e2e/specs/inspection-workbench.spec.js`
+     - `docs/planning/feature-request-triage-2026-03-28.md`
+     - `docs/planning/orchestrator-session-handoff.md`
+     - `docs/planning/pr14-orchestrator-checklist.md`
+     - `docs/planning/pr14-screenshot-analysis.md`
+
+## Clean incremental PR replay artifact
+
+After validation of the combined app state, replay clean PRs in this order:
+
+1. `PR-14-m2-step1` — actionable discrepancy triage filters/links.
+2. `PR-14-m2-step2` — adversarial normalization hardening + filtered empty-state guidance.
+
+Each replay PR should include:
+- focused diff for one milestone,
+- matching Jest + Playwright evidence for PT matrix (`PT1/PT2/PT3`) and progressive synthetic users (`basic`,`intermediate`,`advanced`),
+- updated living checklist pointer in `docs/planning/orchestrator-session-handoff.md`.
