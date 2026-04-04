@@ -147,3 +147,13 @@ A task is done only when:
   - `docs/planning/pr16-m4-replay-artifact.md`
 - Guardrail verification for this slice preserved required project-configuration/backend coverage, including progressive synthetic users (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3`.
 - Next implementation boundary: open `PR-16-M5+` only after explicit feature-contract approval.
+
+## Session update (2026-04-04, PR-16-M5 clone-source UX hardening + matrix correction)
+
+- Started and completed `PR-16-M5` after explicit operator direction to run the next unimplemented PR slice.
+- Delivered:
+  - Project Configuration clone section now shows an explicit empty-state message and disables source selection when no same-type source projects are available.
+  - Frontend test harness now varies current-project type correctly for each `PT1`/`PT2`/`PT3` loop, preserving progressive synthetic-user coverage (`basic`, `intermediate`, `advanced`) with stricter type-filter assertions.
+- Replay/submission artifact:
+  - `docs/planning/pr16-m5-replay-artifact.md`
+- Next implementation boundary: open `PR-16-M6+` only after explicit feature-contract approval.
