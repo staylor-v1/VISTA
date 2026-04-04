@@ -43,9 +43,9 @@ function makeConfig(projectType, syntheticUser) {
   };
 }
 
-function mockFetch(config, projectType) {
+function mockFetch(config, projectType, mockOptions = {}) {
   const alternateProjectType = projectType === 'PT1' ? 'PT2' : 'PT1';
-  global.fetch = jest.fn((url, options = {}) => {
+  global.fetch = jest.fn((url, requestOptions = {}) => {
     if (url === '/api/projects') {
       return Promise.resolve({
         ok: true,
@@ -57,11 +57,18 @@ function mockFetch(config, projectType) {
       });
     }
 
-    if (url.includes('/configuration/clone') && options.method === 'POST') {
+    if (url.includes('/configuration/clone') && requestOptions.method === 'POST') {
+      if (mockOptions.cloneFailureDetail) {
+        return Promise.resolve({
+          ok: false,
+          status: 400,
+          json: async () => ({ detail: mockOptions.cloneFailureDetail }),
+        });
+      }
       return Promise.resolve({ ok: true, json: async () => ({ config: { ...config, defect_types: [] } }) });
     }
 
-    if (url.includes('/configuration') && options.method === 'PUT') {
+    if (url.includes('/configuration') && requestOptions.method === 'PUT') {
       return Promise.resolve({ ok: true, json: async () => ({ config }) });
     }
 
@@ -307,6 +314,25 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
         });
       });
 
+
+      test(`surfaces clone API detail errors for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        const cloneFailureDetail = `Source project is not compatible with ${projectType}`;
+        mockFetch(config, projectType, { cloneFailureDetail });
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText('Source project'), { target: { value: 'proj-copy' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Copy from Project' }));
+
+        await waitFor(() => {
+          expect(screen.getByText(cloneFailureDetail)).toBeInTheDocument();
+        });
+        expect(screen.queryByText('Configuration copied from existing project.')).not.toBeInTheDocument();
+      });
+
       test(`filters copy source projects by matching project type for ${projectType} ${syntheticUser} synthetic user`, async () => {
         const config = makeConfig(projectType, syntheticUser);
         mockFetch(config, projectType);
@@ -325,7 +351,7 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
         mockFetch(config, projectType);
         const originalFetch = global.fetch;
         const incompatibleType = projectType === 'PT1' ? 'PT2' : 'PT1';
-        global.fetch = jest.fn((url, options = {}) => {
+        global.fetch = jest.fn((url, requestOptions = {}) => {
           if (url === '/api/projects') {
             return Promise.resolve({
               ok: true,
@@ -335,7 +361,7 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
               ],
             });
           }
-          return originalFetch(url, options);
+          return originalFetch(url, requestOptions);
         });
 
         render(<ProjectConfigurationPanel projectId="proj-1" />);
