@@ -146,8 +146,13 @@ PR-15 execution has been flattened so each function-level change maps to one sub
   - `PR-15-M7`: Workspace-backed inspector viewport-transform persistence hardening.
   - `PR-15-M8`: Workspace-backed inspector manual-measurement persistence hardening.
 - **Artifacts for clean replay and submission order:** `docs/planning/pr15-split-artifact.md`, `docs/planning/pr15-m8-replay-artifact.md`.
-- **Next unimplemented PR slice:** none in current PR-15 backlog (define `PR-15-M9+` only when new Epic 7 cross-surface preference scope is approved).
+- **Next unimplemented PR slice:** `PR-16-M1` — project configuration cloning API (`POST /api/projects/{project_id}/configuration/clone`) to unlock request **A5**.
 - **Planning rule going forward:** keep labels flat (`PR-15-M#`) and avoid step/part/sub-step hierarchy unless a milestone must be split for hard technical coupling.
+
+## New incremental series: PR-16 (2026-04-04)
+
+- `PR-16-M1` (this slice): add server contract for cloning a project's inspection configuration from another accessible project.
+- Replay/submit artifact: `docs/planning/pr16-split-artifact.md`.
 
 
 ## Orchestrator closeout artifact index (2026-04-04)
