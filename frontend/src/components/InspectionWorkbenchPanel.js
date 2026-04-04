@@ -492,6 +492,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     setEnabledModalities(savedModalities.length > 0 ? savedModalities : getModalities(selectedPart).slice(0, 1));
     setSelectedViewName(savedInspector.view_name ? String(savedInspector.view_name) : '');
     setImageEnabled(savedInspector.image_enabled !== false);
+    setShortcutHelpVisible(savedInspector.shortcut_help_visible === true);
     setMeasurementEntries(Array.isArray(savedInspector.measurements) ? savedInspector.measurements : []);
     const savedInspectorViewport = savedInspector.viewport_transform || {};
     setInspectorViewport({
@@ -562,6 +563,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                 modalities: enabledModalities,
                 view_name: activeViewName || '',
                 image_enabled: imageEnabled,
+                shortcut_help_visible: shortcutHelpVisible,
                 measurements: measurementEntries,
                 viewport_transform: inspectorViewport,
               },
@@ -582,6 +584,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     defectFilter,
     enabledModalities,
     imageEnabled,
+    shortcutHelpVisible,
     loading,
     measurementEntries,
     inspectorViewport,
