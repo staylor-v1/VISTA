@@ -429,3 +429,9 @@ When preparing upstream PRs:
   - mode selection and action routing,
   - JSON report success rendering,
   - invalid mode validation behavior.
+
+#### PR-13 milestone 3 (step 1 implemented in artifact branch)
+- Applied blue-team hardening in backend bundle export normalization:
+  - introduced strict metadata normalization helper so export records only consume list-of-dict structures for `annotations`, `overlay_layers`, `segmentation_runs`, and `measurement_runs`.
+  - prevents malformed scalar/object metadata payloads from creating invalid record counts or malformed record entries.
+- Added red-team adversarial cross-type backend tests (`PT1`, `PT2`, `PT3`) that submit intentionally malformed metadata shapes and verify normalized zeroed summaries/records without endpoint failure.
