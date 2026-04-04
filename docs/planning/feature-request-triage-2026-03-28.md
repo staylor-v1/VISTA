@@ -183,3 +183,19 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - Created an execution-ready artifact for post-inspection upstream submission sequencing:
   - `docs/planning/orchestrator-next-pr-execution-artifact-2026-04-04.md`
 - Added explicit next-start rule: open `PR-16-M2+` only from a newly approved contract; no hidden carry-over scope is authorized.
+
+
+## Orchestrator execution sync (2026-04-04, artifact-refresh)
+
+- Revalidated both planning sources (`feature-request-triage-2026-03-28.md` and `orchestrator-session-handoff.md`) for unfinished slices: none remain in approved `PR-15`/`PR-16` scope.
+- Added refreshed post-inspection replay/submission runbook artifact:
+  - `docs/planning/orchestrator-post-inspection-pr-submission-artifact-2026-04-04-v2.md`
+- Next feature implementation boundary is unchanged: open `PR-16-M2+` only after explicit feature-contract approval.
+
+## Orchestrator execution sync (2026-04-04, unified-planning-refresh)
+
+- Consolidated cross-series PR planning into one umbrella doc:
+  - `docs/planning/orchestrator-unified-pr-planning-2026-04-04.md`
+- This unified doc now serves as the first-stop source for replay/submission planning across `PR-07` through `PR-16`.
+- Existing per-series split/checklist artifacts remain as slice-level detail and evidence.
+
