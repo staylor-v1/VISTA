@@ -6,6 +6,7 @@ const screenshotPath = path.resolve(__dirname, '../../artifacts/pr04-mpr-workben
 const pr08ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr08-project-type-visibility.png');
 const pr09ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr09-inspector-modalities-measurements.png');
 const pr11ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr11-project-configuration.png');
+const pr14ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr14-report-normalization-advanced.png');
 const simulatedUsers = ['basic', 'intermediate', 'advanced'];
 
 for (const projectType of ['PT1', 'PT2', 'PT3']) {
@@ -22,6 +23,14 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
         await expect(page.getByTestId('inspector-common-controls')).toBeVisible();
         await page.getByTestId('request-export-bundle-archive').click();
         await expect(page.getByTestId('export-bundle-archive-result')).toContainText('Export archive ready');
+        await page.getByTestId('project-data-export-mode').selectOption('report_json');
+        await page.getByTestId('run-project-data-export-action').click();
+        await expect(page.getByTestId('project-report-result')).toContainText('Report ready');
+        if (simulatedUser === 'basic') {
+          await expect(page.getByTestId('project-report-normalization-summary')).toHaveCount(0);
+        } else {
+          await expect(page.getByTestId('project-report-normalization-summary')).toContainText('Metadata normalization');
+        }
         await page.getByTestId('request-ingest-validation').click();
         await expect(page.getByTestId('ingest-validation-result')).toContainText('Ingest validation complete');
         const measurementCapture = page.locator('.measurement-capture');
@@ -262,5 +271,19 @@ test.describe('PR-11 project configuration screenshot artifact', () => {
     const panel = page.locator('section[aria-label="Project Configuration"]');
     await expect(panel).toBeVisible();
     await panel.screenshot({ path: pr11ScreenshotPath });
+  });
+});
+
+test.describe('PR-14 report normalization screenshot artifact', () => {
+  test('captures PT3 advanced report normalization telemetry screenshot', async ({ page }) => {
+    const { projectId } = await mockInspectionWorkbenchRoutes(page, { type: 'PT3', scenario: 'advanced' });
+    await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
+    await page.getByRole('tab', { name: 'Project Data' }).click();
+    await page.getByTestId('project-data-export-mode').selectOption('report_json');
+    await page.getByTestId('run-project-data-export-action').click();
+    await expect(page.getByTestId('project-report-normalization-summary')).toContainText('Metadata normalization');
+    const panel = page.locator('section[aria-label="Inspection Workbench"]');
+    await expect(panel).toBeVisible();
+    await panel.screenshot({ path: pr14ScreenshotPath });
   });
 });

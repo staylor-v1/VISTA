@@ -21,7 +21,22 @@ This artifact tracks the first incremental PR slice after PR-13 closeout.
        - progressive synthetic-user matrix (`basic`, `intermediate`, `advanced`) across `PT1`, `PT2`, `PT3`.
        - assertions for report mode success plus conditional normalization telemetry banner visibility.
 
+2. **PR-14 milestone 1 step 2 — E2E matrix coverage + screenshot analytics**
+   - Scope:
+     - Extend Playwright mocks with `GET /api/projects/{project_id}/report-json` telemetry payloads for progressive synthetic users.
+     - Assert Project Data report mode behavior in the existing PT1/PT2/PT3 × (`basic`,`intermediate`,`advanced`) matrix.
+     - Capture a runtime screenshot artifact for advanced telemetry state and document visual analytics output.
+   - Files:
+     - `frontend/e2e/fixtures/inspectionWorkbenchMocks.js`
+     - `frontend/e2e/specs/inspection-workbench.spec.js`
+     - `docs/planning/pr14-orchestrator-checklist.md`
+     - `docs/planning/pr14-split-artifact.md`
+     - `docs/planning/pr14-screenshot-analysis.md`
+   - Automated coverage:
+     - `npx playwright test e2e/specs/inspection-workbench.spec.js --grep "Inspection Workbench E2E"`
+     - `npx playwright test e2e/specs/inspection-workbench.spec.js --grep "PR-14 report normalization screenshot artifact"`
+
 ## Remaining PR-14 backlog after this checkpoint
 
-- Add Playwright E2E coverage and screenshot analytics for report telemetry banner states.
 - Validate UX copy for discrepancy triage actions with product/design.
+- Extend report telemetry banner into actionable triage filters/links that deep-link into dropped-metadata categories.

@@ -180,6 +180,11 @@ function createMockData(scenario = 'advanced') {
 
 async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'advanced' } = {}) {
   const { batches, parts, workspaceState } = createMockData(scenario);
+  const metadataNormalizationByScenario = {
+    basic: {},
+    intermediate: { annotations: 1 },
+    advanced: { annotations: 2, segmentation_runs: 1, measurement_runs: 1 },
+  };
   const configurationByProjectId = {
     [projectId]: {
       image_modalities: [{ id: `${type.toLowerCase()}-${scenario}-visual`, label: 'Visual', calibration_required: false }],
@@ -295,6 +300,25 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
         status: 200,
         headers: { 'content-type': 'application/zip' },
         body: 'synthetic-zip-bundle',
+      });
+      return;
+    }
+    if (url.endsWith(`/api/projects/${projectId}/report-json`) && method === 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          project: { id: projectId, project_type: type },
+          summary: {
+            total_images: mutableParts.length,
+            total_batches: batches.length,
+            total_parts: mutableParts.length,
+            reviewed_parts: mutableParts.filter((part) => ['pass', 'reject_pending', 'reject_confirmed'].includes(part.review_state)).length,
+            metadata_normalization: {
+              dropped_non_object_items: metadataNormalizationByScenario[scenario] || {},
+            },
+          },
+        }),
       });
       return;
     }
