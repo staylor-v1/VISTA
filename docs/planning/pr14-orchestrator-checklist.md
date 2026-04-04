@@ -1,7 +1,7 @@
 # PR-14 Orchestrator Living Checklist (2026-04-04)
 
 ## Current milestone
-- **PR-14 milestone 2 / step 1**: actionable discrepancy triage links/filters from report metadata-normalization telemetry.
+- **PR-14 milestone 2 / step 2**: red-team/blue-team hardening for adversarial normalization categories + filtered empty-state guidance.
 
 ## Files changed in this step
 - `frontend/src/components/InspectionWorkbenchPanel.js`
@@ -20,7 +20,7 @@
 ## Remaining PR-14 milestones
 - [x] Add report telemetry surfacing to E2E matrix and visual analytics notes.
 - [x] Extend report telemetry surface with actionable links/filters for discrepancy triage workflow.
-- [ ] Red-team/blue-team hardening for unknown normalization fields and filtered empty-state UX copy.
+- [x] Red-team/blue-team hardening for unknown normalization fields and filtered empty-state UX copy.
 
 ## Risks / blockers
-- Triage filtering relies on mixed array values being present in part metadata; counters may report categories whose matching records are outside the active batch/defect filters.
+- Unknown normalization categories now render safely as non-breaking triage chips, but backend taxonomy naming remains unconstrained and may require product copy standardization later.
