@@ -341,6 +341,7 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
                     "image_enabled": True,
                     "modalities": ["visual"],
                     "view_name": "front",
+                    "viewport_transform": {"zoom": 1.2, "panX": 14, "panY": -10},
                 },
                 "panel_layout": {
                     "part_list": {"is_open": True, "width_px": 310, "height_px": 420, "orientation": "vertical"},
@@ -363,6 +364,7 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
                     "image_enabled": False,
                     "modalities": ["infrared", "uv"],
                     "view_name": "left",
+                    "viewport_transform": {"zoom": 2.6, "panX": -40, "panY": 85},
                 },
                 "panel_layout": {
                     "part_list": {"is_open": True, "width_px": 360, "height_px": 500, "orientation": "vertical"},
@@ -392,6 +394,7 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
                     "image_enabled": "no",
                     "modalities": "not-a-list",
                     "view_name": 99,
+                    "viewport_transform": {"zoom": "fast", "panX": 999, "panY": -999},
                 },
                 "panel_layout": {
                     "part_list": {"is_open": "yes", "width_px": -15, "height_px": 9999, "orientation": "diagonal"},
@@ -409,6 +412,7 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
             "expected_image_enabled": True,
             "expected_modalities": [],
             "expected_view_name": "",
+            "expected_viewport_transform": {"zoom": 1.0, "panX": 200, "panY": -200},
         },
     ]
 
@@ -469,8 +473,13 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
             "expected_view_name",
             scenario["state"].get("inspector", {}).get("view_name", ""),
         )
+        expected_viewport_transform = scenario.get(
+            "expected_viewport_transform",
+            scenario["state"].get("inspector", {}).get("viewport_transform", {"zoom": 1.0, "panX": 0, "panY": 0}),
+        )
         assert save_resp.json()["state"]["inspector"]["modalities"] == expected_modalities
         assert save_resp.json()["state"]["inspector"]["view_name"] == expected_view_name
+        assert save_resp.json()["state"]["inspector"]["viewport_transform"] == expected_viewport_transform
 
         reload_resp = client.get(f"/api/projects/{project_id}/workspace-state", headers=headers)
         assert reload_resp.status_code == 200, reload_resp.text
@@ -480,6 +489,7 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
         assert reload_resp.json()["state"]["inspector"]["image_enabled"] == expected_image_enabled
         assert reload_resp.json()["state"]["inspector"]["modalities"] == expected_modalities
         assert reload_resp.json()["state"]["inspector"]["view_name"] == expected_view_name
+        assert reload_resp.json()["state"]["inspector"]["viewport_transform"] == expected_viewport_transform
 
         update_payload = {**scenario["state"], "sort_mode": "serial_asc"}
         overwrite_resp = client.put(
