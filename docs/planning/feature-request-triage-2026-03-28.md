@@ -134,7 +134,7 @@ Existing planning docs currently focus on auth architecture and test remediation
 
 ## Incremental execution status (2026-04-04)
 
-- **Completed this session:** PR-14 milestone 1 step 2 (Playwright matrix + screenshot analytics for report metadata-normalization telemetry).
-- **Next unimplemented PR slice:** extend Project Data normalization telemetry into actionable discrepancy triage links/filters.
-- **Target PR label:** PR-14 milestone 2 step 1.
-- **Acceptance target:** operators can click normalization categories and immediately filter/locate affected parts/metadata fields without leaving Project Data.
+- **Completed this session:** PR-14 milestone 2 step 1 (Project Data normalization telemetry now exposes actionable discrepancy triage links/filters).
+- **Next unimplemented PR slice:** PR-14 milestone 2 step 2 red-team/blue-team hardening for adversarial metadata normalization categories and empty-state UX copy.
+- **Target PR label:** PR-14 milestone 2 step 2.
+- **Acceptance target:** triage actions remain stable for unknown normalization fields and continue to guide operators when no affected parts match active batch/defect filters.
