@@ -69,3 +69,10 @@ A task is done only when:
   - `PR-16-M1a` — self-clone rejection guard (`source_project_id` must differ from route `project_id`) with dedicated cross-project-type regression tests.
 - **Replay artifacts for clean incremental PR submission:** `docs/planning/pr16-split-artifact.md`, `docs/planning/pr16-m1-replay-artifact.md`.
 - **Next scope boundary:** no open PR-16 slice; define `PR-16-M2+` only after explicit approval of the next feature contract.
+
+## Session update (2026-04-04, closeout refresh)
+
+- Re-validated open-slice status: no unfinished planned slices remain in `PR-15` or `PR-16`.
+- Added post-inspection clean replay/submission artifact:
+  - `docs/planning/orchestrator-post-inspection-pr-submission-artifact-2026-04-04.md`
+- Required synthetic-user/project-type coverage remains satisfied by backend and frontend suites in this closeout pass.
