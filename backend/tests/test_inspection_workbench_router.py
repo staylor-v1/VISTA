@@ -1033,6 +1033,57 @@ def test_project_configuration_clone_rejects_same_source_and_target_project(clie
     assert clone_resp.status_code == 400, clone_resp.text
     assert clone_resp.json()["detail"] == "source_project_id must be different from project_id"
 
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_project_configuration_clone_rejects_cross_project_type_sources_progressive_users(client, project_type):
+    scenarios = [
+        {"name": "basic"},
+        {"name": "intermediate"},
+        {"name": "advanced"},
+    ]
+    source_type_by_target = {"PT1": "PT2", "PT2": "PT3", "PT3": "PT1"}
+    source_project_type = source_type_by_target[project_type]
+
+    for scenario in scenarios:
+        group = f"{project_type.lower()}-clone-type-guard-{scenario['name']}"
+        headers = {
+            "X-User-Id": f"{project_type.lower()}-{scenario['name']}-clone-type-guard@example.com",
+            "X-User-Groups": f"[\"{group}\"]",
+        }
+        target_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": f"{project_type} target {scenario['name']}",
+                "description": "target project for type guard",
+                "meta_group_id": group,
+                "project_type": project_type,
+            },
+            headers=headers,
+        )
+        source_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": f"{source_project_type} source {scenario['name']}",
+                "description": "cross type source project",
+                "meta_group_id": group,
+                "project_type": source_project_type,
+            },
+            headers=headers,
+        )
+        assert target_resp.status_code == 201, target_resp.text
+        assert source_resp.status_code == 201, source_resp.text
+
+        clone_resp = client.post(
+            f"/api/projects/{target_resp.json()['id']}/configuration/clone",
+            json={"source_project_id": source_resp.json()["id"]},
+            headers=headers,
+        )
+        assert clone_resp.status_code == 400, clone_resp.text
+        assert (
+            clone_resp.json()["detail"]
+            == "source_project_id must belong to a project with the same project_type as the target project"
+        )
+
 @pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
 def test_bulk_ingest_supports_progressive_users_with_discrepancy_counters(client, project_type):
     scenarios = [

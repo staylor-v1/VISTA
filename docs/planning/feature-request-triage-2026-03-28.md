@@ -214,3 +214,21 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - Created an execution artifact for post-inspection clean replay and scope-boundary control:
   - `docs/planning/orchestrator-next-unimplemented-pr-execution-2026-04-04.md`
 - Next implementation is blocked on explicit feature-contract approval for `PR-16-M3+`; no hidden carry-over work is authorized.
+
+## Orchestrator execution sync (2026-04-04, PR-queue reconciliation refresh)
+
+- Re-ran planning reconciliation for the two source-of-truth docs:
+  - `docs/planning/feature-request-triage-2026-03-28.md`
+  - `docs/planning/orchestrator-session-handoff.md`
+- Outcome: there is still no unimplemented planned slice through approved scope (`PR-16` complete through `PR-16-M2`).
+- Execution artifact for post-inspection replay + clean upstream submission sequencing:
+  - `docs/planning/orchestrator-next-pr-execution-artifact-2026-04-04-v2.md`
+- Scope gate remains unchanged: begin `PR-16-M3+` only after explicit feature-contract approval.
+
+## Incremental execution status (2026-04-04, PR-16-M3 clone type-compatibility hardening)
+
+- **Completed PR slices:**
+  - `PR-16-M3`: clone-flow hardening enforces same-`project_type` source/target compatibility and filters frontend copy-source options to matching project type.
+- **Why this unblocked progress:** explicit operator approval was provided to proceed beyond prior contract-gating language; this slice starts `PR-16-M3` with a concrete backend+frontend contract.
+- **Replay/submission artifact:** `docs/planning/pr16-m3-replay-artifact.md`.
+- **Next unimplemented PR slice:** open `PR-16-M4+` from the next approved feature contract or continue the approved `PR-16` stream.
