@@ -119,3 +119,23 @@ A task is done only when:
 - Added operator artifact for post-inspection replay order and living checklist state:
   - `docs/planning/orchestrator-next-unimplemented-pr-execution-2026-04-04.md`
 - Enforcement remains: require explicit feature-contract approval before beginning `PR-16-M3+`.
+
+## Session update (2026-04-04, PR-queue reconciliation refresh)
+
+- Re-ran cross-doc queue reconciliation and confirmed no unfinished planned slices in approved scope (`PR-15` complete; `PR-16` complete through `PR-16-M2`).
+- Produced execution artifact for post-inspection replay/submission and strict next-scope admission controls:
+  - `docs/planning/orchestrator-next-pr-execution-artifact-2026-04-04-v2.md`
+- Required guardrail suites re-validated in this refresh run:
+  - `uv run pytest -q backend/tests/test_inspection_workbench_router.py`
+  - `cd frontend && npm test -- --runInBand src/components/__tests__/InspectionWorkbenchPanel.test.js`
+- `PR-16-M3+` remains contract-gated; no implicit carry-over scope is authorized.
+
+## Session update (2026-04-04, PR-16-M3 start and delivery)
+
+- Started and completed `PR-16-M3` after explicit operator direction to continue the next milestone.
+- Delivered clone-type compatibility hardening:
+  - Backend clone API now rejects cross-project-type clone attempts.
+  - Frontend Project Configuration copy picker now lists only same-type source projects.
+- Added/validated progressive synthetic-user coverage (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3` for the new guard behavior.
+- Replay/submission artifact:
+  - `docs/planning/pr16-m3-replay-artifact.md`
