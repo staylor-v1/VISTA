@@ -244,6 +244,63 @@ async def export_project_excel(
     )
 
 
+def _normalize_part_artifact_records(part_id, serial_number, annotations, overlay_layers, measurement_runs):
+    annotation_records = []
+    overlay_records = []
+    measurement_records = []
+    incomplete_annotations = 0
+    missing_measurement_ids = 0
+
+    for annotation in annotations:
+        annotation_obj = annotation if isinstance(annotation, dict) else {}
+        if not annotation_obj.get("defect_class") or not annotation_obj.get("modality"):
+            incomplete_annotations += 1
+        annotation_records.append(
+            {
+                "part_id": str(part_id),
+                "part_serial_number": serial_number,
+                "annotation_id": annotation_obj.get("id"),
+                "defect_class": annotation_obj.get("defect_class"),
+                "modality": annotation_obj.get("modality"),
+                "disposition": annotation_obj.get("disposition"),
+                "hidden": bool(annotation_obj.get("hidden", False)),
+            }
+        )
+
+    for overlay in overlay_layers:
+        overlay_obj = overlay if isinstance(overlay, dict) else {}
+        overlay_records.append(
+            {
+                "part_id": str(part_id),
+                "part_serial_number": serial_number,
+                "overlay_id": overlay_obj.get("id"),
+                "label": overlay_obj.get("label"),
+                "color": overlay_obj.get("color"),
+            }
+        )
+
+    for measurement in measurement_runs:
+        measurement_obj = measurement if isinstance(measurement, dict) else {}
+        if not measurement_obj.get("run_id"):
+            missing_measurement_ids += 1
+        measurement_records.append(
+            {
+                "part_id": str(part_id),
+                "part_serial_number": serial_number,
+                "run_id": measurement_obj.get("run_id"),
+                "status": measurement_obj.get("status"),
+            }
+        )
+
+    return {
+        "annotation_records": annotation_records,
+        "overlay_records": overlay_records,
+        "measurement_records": measurement_records,
+        "incomplete_annotations": incomplete_annotations,
+        "missing_measurement_ids": missing_measurement_ids,
+    }
+
+
 @router.get("/projects/{project_id}/report-json")
 async def export_project_report_json(
     project_id: uuid.UUID,
@@ -344,6 +401,8 @@ async def export_project_bundle_json(
     segmentation_run_count = 0
     measurement_run_count = 0
     annotation_records = []
+    overlay_records = []
+    measurement_records = []
     part_discrepancy_summaries = []
 
     for part_id, serial_number, display_name, metadata in part_metadata_rows:
@@ -358,28 +417,19 @@ async def export_project_bundle_json(
         segmentation_run_count += len(segmentation_runs)
         measurement_run_count += len(measurement_runs)
 
-        incomplete_annotations = 0
-        for annotation in annotations:
-            annotation_obj = annotation if isinstance(annotation, dict) else {}
-            if not annotation_obj.get("defect_class") or not annotation_obj.get("modality"):
-                incomplete_annotations += 1
-            annotation_records.append(
-                {
-                    "part_id": str(part_id),
-                    "part_serial_number": serial_number,
-                    "annotation_id": annotation_obj.get("id"),
-                    "defect_class": annotation_obj.get("defect_class"),
-                    "modality": annotation_obj.get("modality"),
-                    "disposition": annotation_obj.get("disposition"),
-                    "hidden": bool(annotation_obj.get("hidden", False)),
-                }
-            )
+        normalized_records = _normalize_part_artifact_records(
+            part_id=part_id,
+            serial_number=serial_number,
+            annotations=annotations,
+            overlay_layers=overlay_layers,
+            measurement_runs=measurement_runs,
+        )
+        annotation_records.extend(normalized_records["annotation_records"])
+        overlay_records.extend(normalized_records["overlay_records"])
+        measurement_records.extend(normalized_records["measurement_records"])
 
-        missing_measurement_ids = 0
-        for measurement in measurement_runs:
-            measurement_obj = measurement if isinstance(measurement, dict) else {}
-            if not measurement_obj.get("run_id"):
-                missing_measurement_ids += 1
+        incomplete_annotations = normalized_records["incomplete_annotations"]
+        missing_measurement_ids = normalized_records["missing_measurement_ids"]
 
         discrepancy_codes = []
         if segmentation_runs and not overlay_layers:
@@ -430,9 +480,11 @@ async def export_project_bundle_json(
             "overlays": {
                 "configured_layers": overlay_layer_count,
                 "segmentation_runs": segmentation_run_count,
+                "records": overlay_records,
             },
             "measurements": {
                 "ai_runs": measurement_run_count,
+                "records": measurement_records,
             },
             "discrepancies": {
                 "parts_with_discrepancies": discrepancy_total,
