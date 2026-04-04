@@ -32,6 +32,14 @@ const EXPORT_ACTIONS = {
   report_json: 'report_json',
 };
 
+function getDroppedMetadataItemsSummary(reportPayload) {
+  const droppedItems = reportPayload?.summary?.metadata_normalization?.dropped_non_object_items;
+  if (!droppedItems || typeof droppedItems !== 'object') return [];
+  return Object.entries(droppedItems)
+    .filter(([, value]) => Number(value) > 0)
+    .map(([field, value]) => ({ field, value: Number(value) }));
+}
+
 function getDefectCount(part) {
   const defects = part?.metadata?.defects;
   if (Array.isArray(defects)) return defects.length;
@@ -197,6 +205,10 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [inspectorHotkeys, setInspectorHotkeys] = useState(DEFAULT_INSPECTOR_HOTKEYS);
   const [shortcutHelpVisible, setShortcutHelpVisible] = useState(false);
   const [panelLayout, setPanelLayout] = useState(DEFAULT_PANEL_LAYOUT);
+  const droppedMetadataItemsSummary = useMemo(
+    () => getDroppedMetadataItemsSummary(reportExport.payload),
+    [reportExport.payload],
+  );
 
   useEffect(() => {
     const loadWorkbenchData = async () => {
@@ -959,6 +971,12 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
         <div className="alert alert-success" data-testid="project-report-result">
           Report ready: {reportExport.payload?.summary?.total_parts || 0} parts,{' '}
           {reportExport.payload?.summary?.reviewed_parts || 0} reviewed.
+        </div>
+      )}
+      {droppedMetadataItemsSummary.length > 0 && (
+        <div className="alert alert-warning" data-testid="project-report-normalization-summary">
+          <strong>Metadata normalization:</strong>{' '}
+          {droppedMetadataItemsSummary.map((item) => `${item.field} (${item.value})`).join(', ')}
         </div>
       )}
       {ingestResult.payload && (
