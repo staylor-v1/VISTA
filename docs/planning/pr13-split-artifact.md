@@ -66,6 +66,28 @@ This artifact tracks incremental PR slices for the next unimplemented orchestrat
      - `docs/planning/pr13-orchestrator-checklist.md`
      - `docs/planning/pr13-split-artifact.md`
      - `docs/planning/inspection-workbench-pr-artifact.md`
+  - Automated coverage:
+    - Existing backend pytest framework:
+      - `pytest backend/tests/test_export.py -k "bundle_json and adversarial_non_list_metadata_shapes"`
+
+## Proposed incremental PR from this session (milestone 3 step 2)
+
+1. **PR-13 milestone 3 step 2 — mixed-list adversarial normalization + report telemetry closeout**
+   - Scope:
+     - Extend backend metadata normalization to return dropped-item counts for list fields that contain non-object elements.
+     - Add discrepancy telemetry to `GET /api/projects/{project_id}/export-bundle-json`:
+       - `counts.dropped_non_object_metadata_items` per part,
+       - discrepancy code `metadata_items_dropped_non_object` when any dropped items are detected.
+     - Extend `GET /api/projects/{project_id}/report-json` with normalization summary telemetry:
+       - `summary.metadata_normalization.dropped_non_object_items` keyed by metadata array field.
+     - Add cross-type red-team/blue-team tests across `PT1`, `PT2`, `PT3` and progressive synthetic users (`basic`, `intermediate`, `advanced`) covering mixed list payloads and report summary normalization counts.
+   - Files:
+     - `backend/routers/export.py`
+     - `backend/tests/test_export.py`
+     - `docs/planning/pr13-orchestrator-checklist.md`
+     - `docs/planning/pr13-split-artifact.md`
+     - `docs/planning/inspection-workbench-pr-artifact.md`
    - Automated coverage:
      - Existing backend pytest framework:
-       - `pytest backend/tests/test_export.py -k "bundle_json and adversarial_non_list_metadata_shapes"`
+       - `pytest backend/tests/test_export.py -k "bundle_json and (adversarial_non_list_metadata_shapes or dropped_non_object_metadata_items)"`
+       - `pytest backend/tests/test_export.py -k "report_json and metadata_normalization and (PT1 or PT2 or PT3)"`
