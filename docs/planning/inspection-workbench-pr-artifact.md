@@ -18,6 +18,7 @@ This file is the execution artifact for the orchestrated migration so the combin
 10. **PR-10 — annotations + audit trail metadata**
 11. **PR-11 — project configuration surface (modalities/views/defect/process/display/copy-config)**
 12. **PR-12 — hardening: discrepancy detection, regression/e2e matrix, governance closeout**
+13. **PR-13 — export/report completion + adversarial matrix closeout**
 
 ## Execution Log
 
@@ -33,6 +34,7 @@ This file is the execution artifact for the orchestrated migration so the combin
 - [~] PR-10 in progress (milestone 1 started: backend annotation payload + audit metadata endpoints).
 - [~] PR-11 in progress (milestone 1 started: backend project-configuration API baseline).
 - [~] PR-12 in progress (milestone 1 started: delete-project governance API hardening baseline).
+- [~] PR-13 in progress (milestone 1 started: export bundle record completeness for overlays/measurements).
 
 ## PR-02 scope record (implemented)
 
@@ -399,3 +401,14 @@ When preparing upstream PRs:
   - defect-type hex-color format enforcement,
   - configurable hotkey uniqueness and single alphanumeric-key requirements.
 - Extended existing React Testing Library matrix (three progressive synthetic users across `PT1`/`PT2`/`PT3`) to verify invalid configurations are blocked locally and surfaced with actionable errors.
+
+
+### PR-13 — export/report completion + adversarial matrix closeout
+
+#### PR-13 milestone 1 (implemented in artifact branch)
+- Expanded backend `GET /api/projects/{project_id}/export-bundle-json` payload with normalized record arrays for:
+  - `bundle_summary.overlays.records`
+  - `bundle_summary.measurements.records`
+- Preserved prior aggregate counters/discrepancy summaries to maintain backward-compatible contracts for existing callers.
+- Ensured `GET /api/projects/{project_id}/export-bundle` manifest carries the enriched bundle summary contract by reusing the JSON payload shape.
+- Extended existing backend pytest progressive synthetic-user matrix (`basic`, `intermediate`, `advanced`) across `PT1`, `PT2`, and `PT3` for both bundle JSON and bundle archive endpoints.
