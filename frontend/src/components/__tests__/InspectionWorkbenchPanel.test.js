@@ -215,7 +215,7 @@ const scenarioByUser = [
   },
 ];
 
-function mockWorkbenchFetch({ batches, parts, workspaceState = {}, hotkeys }) {
+function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys }) {
   let mutableParts = [...parts];
   const savedWorkspaceStates = [];
   const annotationsByPart = Object.fromEntries(
@@ -252,6 +252,11 @@ function mockWorkbenchFetch({ batches, parts, workspaceState = {}, hotkeys }) {
       });
     }
     if (url.includes('/report-json')) {
+      const metadataNormalizationByUser = {
+        basic: {},
+        intermediate: { annotations: 1 },
+        advanced: { annotations: 2, segmentation_runs: 1, measurement_runs: 1 },
+      };
       return Promise.resolve({
         ok: true,
         json: async () => ({
@@ -261,6 +266,9 @@ function mockWorkbenchFetch({ batches, parts, workspaceState = {}, hotkeys }) {
             total_batches: batches.length,
             total_parts: mutableParts.length,
             reviewed_parts: mutableParts.filter((part) => ['pass', 'reject_pending', 'reject_confirmed'].includes(part.review_state)).length,
+            metadata_normalization: {
+              dropped_non_object_items: metadataNormalizationByUser[user] || {},
+            },
           },
         }),
       });
@@ -443,6 +451,13 @@ describe('InspectionWorkbenchPanel', () => {
       await waitFor(() => {
         expect(screen.getByTestId('project-report-result')).toHaveTextContent(/Report ready:/);
       });
+      if (scenario.user === 'basic') {
+        expect(screen.queryByTestId('project-report-normalization-summary')).not.toBeInTheDocument();
+      } else {
+        expect(screen.getByTestId('project-report-normalization-summary')).toHaveTextContent(
+          /Metadata normalization:/,
+        );
+      }
       fireEvent.change(screen.getByTestId('project-data-export-mode'), { target: { value: 'bundle_archive' } });
       fireEvent.click(screen.getByTestId('run-project-data-export-action'));
       await waitFor(() => {
