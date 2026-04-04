@@ -221,6 +221,7 @@ const scenarioByUser = [
 function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys }) {
   let mutableParts = [...parts];
   const savedWorkspaceStates = [];
+  const savedConfigurations = [];
   const annotationsByPart = Object.fromEntries(
     mutableParts.map((part) => [part.id, Array.isArray(part.metadata?.annotations) ? [...part.metadata.annotations] : []]),
   );
@@ -309,11 +310,11 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
     if (url.includes('/workspace-state') && (!options.method || options.method === 'GET')) {
       return Promise.resolve({ ok: true, json: async () => ({ state: workspaceState }) });
     }
-    if (url.includes('/configuration')) {
+    if (url.includes('/configuration') && (!options.method || options.method === 'GET')) {
       return Promise.resolve({
         ok: true,
         json: async () => ({
-          configuration: {
+          config: {
             process_settings: {
               configurable_hotkeys: hotkeys || {
                 accept_classification: 'a',
@@ -323,6 +324,14 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
             },
           },
         }),
+      });
+    }
+    if (url.includes('/configuration') && options.method === 'PUT') {
+      const payload = JSON.parse(options.body || '{}');
+      savedConfigurations.push(payload);
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ config: payload.config || {} }),
       });
     }
     if (url.includes('/workspace-state') && options.method === 'PUT') {
@@ -424,6 +433,7 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
 
   return {
     getWorkspaceSaves: () => savedWorkspaceStates,
+    getConfigurationSaves: () => savedConfigurations,
   };
 }
 
@@ -725,6 +735,43 @@ describe('InspectionWorkbenchPanel', () => {
 
       await waitFor(() => {
         expect(workspaceTracker.getWorkspaceSaves().length).toBeGreaterThan(0);
+      });
+      unmount();
+    }
+  });
+
+  test.each(projectTypes)('saves configurable hotkeys for progressive %s workflows', async (projectType) => {
+    for (const scenario of scenarioByUser) {
+      const workspaceTracker = mockWorkbenchFetch(scenario);
+      const { unmount } = render(<InspectionWorkbenchPanel projectId="proj-1" projectType={projectType} />);
+
+      await waitFor(() => {
+        expect(screen.getByLabelText('Hotkey pass')).toHaveValue(scenario.hotkeys.accept_classification);
+      });
+
+      fireEvent.change(screen.getByLabelText('Hotkey pass'), { target: { value: '1' } });
+      fireEvent.change(screen.getByLabelText('Hotkey reject'), { target: { value: '1' } });
+      fireEvent.change(screen.getByLabelText('Hotkey help'), { target: { value: '2' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save Hotkeys' }));
+      await waitFor(() => {
+        expect(screen.getByText('Hotkeys must use unique key bindings.')).toBeInTheDocument();
+      });
+
+      fireEvent.change(screen.getByLabelText('Hotkey pass'), { target: { value: 'v' } });
+      fireEvent.change(screen.getByLabelText('Hotkey reject'), { target: { value: 'b' } });
+      fireEvent.change(screen.getByLabelText('Hotkey help'), { target: { value: 'n' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save Hotkeys' }));
+      await waitFor(() => {
+        expect(screen.getByText('Hotkeys saved for this project.')).toBeInTheDocument();
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId('inspector-hotkey-hints')).toHaveTextContent(/pass \(V\), reject \(B\), shortcuts help \(N\)/);
+      });
+      const savedConfigPayload = workspaceTracker.getConfigurationSaves().at(-1);
+      expect(savedConfigPayload.config.process_settings.configurable_hotkeys).toEqual({
+        accept_classification: 'v',
+        reject_classification: 'b',
+        toggle_shortcut_help: 'n',
       });
       unmount();
     }

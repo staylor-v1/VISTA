@@ -20,14 +20,31 @@ This artifact captures the combined implementation state for PR-15 milestone 1 s
      - `docs/planning/pr15-split-artifact.md`
    - Automated coverage:
      - `cd /workspace/VISTA && uv run pytest -q backend/tests/test_projects_router.py`
-     - `cd /workspace/VISTA/frontend && npm test -- --runInBand src/App.test.js`
-     - `cd /workspace/VISTA/frontend && npx playwright test e2e/specs/inspection-workbench.spec.js --grep "Inspection Workbench E2E"`
+   - `cd /workspace/VISTA/frontend && npm test -- --runInBand src/App.test.js`
+   - `cd /workspace/VISTA/frontend && npx playwright test e2e/specs/inspection-workbench.spec.js --grep "Inspection Workbench E2E"`
+
+2. **PR-15 milestone 1 step 2 — Configurable inspector hotkeys persistence**
+   - Scope:
+     - Fix inspection workbench configuration hydration to consume backend `config` response contract.
+     - Add hotkey editor controls in inspector workspace with uniqueness + single-character validation.
+     - Persist hotkey bindings to project configuration endpoint and apply persisted bindings immediately to runtime shortcuts/help text.
+     - Add PT1/PT2/PT3 progressive synthetic-user Jest coverage for invalid and valid hotkey-save workflows.
+   - Files:
+     - `frontend/src/components/InspectionWorkbenchPanel.js`
+     - `frontend/src/components/__tests__/InspectionWorkbenchPanel.test.js`
+     - `docs/planning/feature-request-triage-2026-03-28.md`
+     - `docs/planning/orchestrator-session-handoff.md`
+     - `docs/planning/pr15-orchestrator-checklist.md`
+     - `docs/planning/pr15-split-artifact.md`
+   - Automated coverage:
+     - `cd /workspace/VISTA/frontend && npm test -- --runInBand src/components/__tests__/InspectionWorkbenchPanel.test.js`
 
 ## Clean incremental PR replay artifact
 
 After validation of the combined app state, replay clean PRs in this order:
 
 1. `PR-15-m1-step1` — Start screen deletion governance hardening.
+2. `PR-15-m1-step2` — Configurable inspector hotkeys persistence.
 
 Replay PR requirements:
 - keep diff focused to milestone scope only,
@@ -37,5 +54,5 @@ Replay PR requirements:
 
 ## Remaining PR-15 backlog after this checkpoint
 
-- Select and scope PR-15 milestone 1 step 2 from Epic 7 (`per-user workspace persistence`, `configurable hotkeys`, or `project deletion governance follow-on UX`).
+- Select and scope PR-15 milestone 1 step 3 from Epic 7 (`per-user workspace persistence` cross-surface rollout, additional configurable hotkey governance, or deletion-governance follow-on UX).
 - Define explicit acceptance tests for the selected step before implementation.
