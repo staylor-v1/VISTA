@@ -19,6 +19,9 @@ const scenarioByUser = [
         inspector: { is_open: true, width_px: 340, height_px: 400, orientation: 'vertical' },
         mpr_controls: { is_open: false, width_px: 330, height_px: 350, orientation: 'horizontal' },
       },
+      inspector: {
+        shortcut_help_visible: false,
+      },
     },
     batches: [{ id: 'batch-basic', name: 'Batch Basic' }],
     parts: [
@@ -69,6 +72,9 @@ const scenarioByUser = [
         part_list: { is_open: true, width_px: 360, height_px: 520, orientation: 'vertical' },
         inspector: { is_open: false, width_px: 410, height_px: 500, orientation: 'horizontal' },
         mpr_controls: { is_open: true, width_px: 390, height_px: 380, orientation: 'horizontal' },
+      },
+      inspector: {
+        shortcut_help_visible: true,
       },
     },
     batches: [
@@ -156,6 +162,9 @@ const scenarioByUser = [
         part_list: { is_open: 'yes', width_px: -25, height_px: 9999, orientation: 'diagonal' },
         inspector: { is_open: true, width_px: 260, height_px: 460, orientation: 'vertical' },
         mpr_controls: { is_open: true, width_px: '400', height_px: '420', orientation: 'horizontal' },
+      },
+      inspector: {
+        shortcut_help_visible: 'yes',
       },
     },
     batches: [
@@ -720,8 +729,18 @@ describe('InspectionWorkbenchPanel', () => {
         );
       });
 
+      if (scenario.workspaceState?.inspector?.shortcut_help_visible === true) {
+        expect(screen.getByTestId('shortcut-help-panel')).toBeInTheDocument();
+      } else {
+        expect(screen.queryByTestId('shortcut-help-panel')).not.toBeInTheDocument();
+      }
+
       fireEvent.keyDown(document, { key: scenario.hotkeys.toggle_shortcut_help });
-      expect(screen.getByTestId('shortcut-help-panel')).toHaveTextContent('Shortcut help');
+      if (scenario.workspaceState?.inspector?.shortcut_help_visible === true) {
+        expect(screen.queryByTestId('shortcut-help-panel')).not.toBeInTheDocument();
+      } else {
+        expect(screen.getByTestId('shortcut-help-panel')).toHaveTextContent('Shortcut help');
+      }
 
       fireEvent.keyDown(document, { key: scenario.hotkeys.accept_classification });
       await waitFor(() => {
@@ -736,6 +755,10 @@ describe('InspectionWorkbenchPanel', () => {
       await waitFor(() => {
         expect(workspaceTracker.getWorkspaceSaves().length).toBeGreaterThan(0);
       });
+      const savedVisibilityStates = workspaceTracker
+        .getWorkspaceSaves()
+        .map((entry) => entry?.state?.inspector?.shortcut_help_visible);
+      expect(savedVisibilityStates.every((value) => typeof value === 'boolean')).toBe(true);
       unmount();
     }
   });
