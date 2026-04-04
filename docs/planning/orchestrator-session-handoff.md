@@ -64,3 +64,17 @@ A task is done only when:
   - frontend Jest matrix: dashboard governance + inspection workbench progressive workflows,
   - backend inspection workbench router suite (workspace/configuration/ingest/annotation),
   - Playwright PT1/PT2/PT3 synthetic workflow matrix.
+
+## Active session pointer (2026-04-04, update 3)
+
+- **Current milestone:** PR-15 milestone 1 step 3 (part 1) complete (server-backed inspector shortcut-help visibility persistence).
+- **Delivered in milestone:**
+  - Normalized workspace payloads to enforce boolean `inspector.shortcut_help_visible`.
+  - Hydrated shortcut-help panel state from persisted workspace data and included it in workspace autosave payloads.
+  - Expanded PT1/PT2/PT3 progressive synthetic-user tests across backend router and frontend workbench suites for the new workspace field.
+- **Replay artifact for clean incremental PRs:** `docs/planning/pr15-split-artifact.md`.
+- **Next scope boundary:** PR-15 milestone 1 step 3 (part 2) to extend additional cross-surface workspace preferences while preserving step 1/2/3(part1) coverage.
+- **Required tests for next step:** preserve green status for:
+  - `uv run pytest -q backend/tests/test_inspection_workbench_router.py`,
+  - `npm test -- --runInBand src/components/__tests__/InspectionWorkbenchPanel.test.js`,
+  - existing broader frontend/backend suites when scope expands.
