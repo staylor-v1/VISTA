@@ -17,7 +17,7 @@ function makeConfig(projectType, syntheticUser) {
     part_views: Array.from({ length: complexity + 1 }, (_, index) => ({
       id: `${projectType.toLowerCase()}-${syntheticUser}-view-${index + 1}`,
       label: `View ${index + 1}`,
-      required_modalities: ['visual'],
+      required_modalities: [`${projectType.toLowerCase()}-${syntheticUser}-modality-1`],
       source: index % 2 === 0 ? 'manual' : 'auto',
     })),
     defect_types: Array.from({ length: complexity }, (_, index) => ({
@@ -147,8 +147,10 @@ describe('ProjectConfigurationPanel', () => {
         });
         fireEvent.click(screen.getByLabelText(`Image modality calibration required ${config.image_modalities.length + 1}`));
         fireEvent.click(screen.getByLabelText(`Image modality example uploaded ${config.image_modalities.length + 1}`));
+        fireEvent.change(screen.getByLabelText('Part view required modalities 1'), {
+          target: { value: `${projectType.toLowerCase()}-${syntheticUser}-custom` },
+        });
 
-        fireEvent.click(screen.getByLabelText('Remove image modality 1'));
         fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
 
         await waitFor(() => {
@@ -200,7 +202,40 @@ describe('ProjectConfigurationPanel', () => {
         });
       });
 
-      test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} synthetic user`, async () => {
+      
+      test(`blocks save and shows validation errors for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config);
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Accept hotkey')).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText('Accept hotkey'), { target: { value: 'q' } });
+        fireEvent.change(screen.getByLabelText('Reject hotkey'), { target: { value: 'q' } });
+        fireEvent.change(screen.getByLabelText('Defect type color 1'), { target: { value: 'red' } });
+        fireEvent.change(screen.getByLabelText('Part view required modalities 1'), {
+          target: { value: 'nonexistent_modality' },
+        });
+
+        const putCallsBefore = global.fetch.mock.calls.filter(
+          ([url, options = {}]) => url === '/api/projects/proj-1/configuration' && options.method === 'PUT',
+        ).length;
+
+        fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+
+        await waitFor(() => {
+          expect(screen.getByText(/Hotkeys must be unique/)).toBeInTheDocument();
+          expect(screen.getByText(/Defect type colors must be valid/)).toBeInTheDocument();
+          expect(screen.getByText(/Part views can only require modalities/)).toBeInTheDocument();
+        });
+
+        const putCallsAfter = global.fetch.mock.calls.filter(
+          ([url, options = {}]) => url === '/api/projects/proj-1/configuration' && options.method === 'PUT',
+        ).length;
+        expect(putCallsAfter).toBe(putCallsBefore);
+      });
+test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} synthetic user`, async () => {
         const config = makeConfig(projectType, syntheticUser);
         mockFetch(config);
 
@@ -216,7 +251,7 @@ describe('ProjectConfigurationPanel', () => {
           target: { value: `${projectType.toLowerCase()}-${syntheticUser}-expanded-view` },
         });
         fireEvent.change(screen.getByLabelText(`Part view required modalities ${config.part_views.length + 1}`), {
-          target: { value: 'visual, uv, ir' },
+          target: { value: `${projectType.toLowerCase()}-${syntheticUser}-modality-1` },
         });
         fireEvent.change(screen.getByLabelText(`Part view source ${config.part_views.length + 1}`), {
           target: { value: 'auto' },
@@ -237,7 +272,7 @@ describe('ProjectConfigurationPanel', () => {
             '/api/projects/proj-1/configuration',
             expect.objectContaining({
               method: 'PUT',
-              body: expect.stringContaining('"required_modalities":["visual","uv","ir"]'),
+              body: expect.stringContaining(`"required_modalities":["${projectType.toLowerCase()}-${syntheticUser}-modality-1"]`),
             }),
           );
         });
