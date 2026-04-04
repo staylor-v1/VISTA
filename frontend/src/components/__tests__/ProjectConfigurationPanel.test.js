@@ -52,6 +52,7 @@ function mockFetch(config, projectType, mockOptions = {}) {
         json: async () => [
           { id: 'proj-1', name: 'Current Project', project_type: projectType },
           { id: 'proj-copy', name: 'Template Project', project_type: projectType },
+          { id: 'proj-copy-2', name: 'Template Project 2', project_type: projectType },
           { id: 'proj-cross-type', name: 'Cross-Type Project', project_type: alternateProjectType },
         ],
       });
@@ -330,6 +331,26 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
         await waitFor(() => {
           expect(screen.getByText(cloneFailureDetail)).toBeInTheDocument();
         });
+        expect(screen.queryByText('Configuration copied from existing project.')).not.toBeInTheDocument();
+      });
+
+      test(`clears clone status alerts when source project selection changes for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config, projectType);
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText('Source project'), { target: { value: 'proj-copy' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Copy from Project' }));
+
+        await waitFor(() => {
+          expect(screen.getByText('Configuration copied from existing project.')).toBeInTheDocument();
+        });
+
+        fireEvent.change(screen.getByLabelText('Source project'), { target: { value: 'proj-copy-2' } });
+
         expect(screen.queryByText('Configuration copied from existing project.')).not.toBeInTheDocument();
       });
 
