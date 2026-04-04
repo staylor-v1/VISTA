@@ -144,7 +144,16 @@ PR-15 execution has been flattened so each function-level change maps to one sub
   - `PR-15-M5`: Workspace-backed inspector image-visibility persistence.
   - `PR-15-M6`: Workspace-backed inspector modality/view persistence hardening.
   - `PR-15-M7`: Workspace-backed inspector viewport-transform persistence hardening.
-- `PR-15-M8`: Workspace-backed inspector manual-measurement persistence hardening.
+  - `PR-15-M8`: Workspace-backed inspector manual-measurement persistence hardening.
 - **Artifacts for clean replay and submission order:** `docs/planning/pr15-split-artifact.md`, `docs/planning/pr15-m8-replay-artifact.md`.
 - **Next unimplemented PR slice:** none in current PR-15 backlog (define `PR-15-M9+` only when new Epic 7 cross-surface preference scope is approved).
 - **Planning rule going forward:** keep labels flat (`PR-15-M#`) and avoid step/part/sub-step hierarchy unless a milestone must be split for hard technical coupling.
+
+
+## Orchestrator closeout artifact index (2026-04-04)
+
+- Clean replay order for submitted incremental PRs is maintained in:
+  - `docs/planning/pr15-split-artifact.md`
+  - `docs/planning/pr15-m8-replay-artifact.md`
+  - `docs/planning/orchestrator-clean-replay-index-2026-04-04.md`
+- Execution status for this plan segment: **no unfinished PR-15 slices remain**. New scope requires explicit PR-15-M9+ approval.

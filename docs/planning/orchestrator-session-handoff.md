@@ -52,8 +52,10 @@ A task is done only when:
   - Inspector hotkeys are editable, validated, persisted, and runtime-synchronized.
   - Workspace persistence now strictly normalizes/helpfully hydrates shortcut-help visibility, normalization triage field, image visibility, modalities, and selected view.
   - Workspace persistence now also strictly normalizes inspector viewport transform (`zoom`, `panX`, `panY`) with bounded numeric ranges.
-- Workspace persistence now strictly normalizes `inspector.measurements` into durable `{id,label,value}` tuples, filtering malformed entries for cross-surface hydration safety.
+  - Workspace persistence now strictly normalizes `inspector.measurements` into durable `{id,label,value}` tuples, filtering malformed entries for cross-surface hydration safety.
 - **Replay artifacts for clean incremental PRs:** `docs/planning/pr15-split-artifact.md`, `docs/planning/pr15-m8-replay-artifact.md`.
+
+- **Artifact index for post-inspection clean PR submission:** `docs/planning/orchestrator-clean-replay-index-2026-04-04.md`.
 - **Next scope boundary:** no open PR-15 slice; define `PR-15-M9+` only after approving additional Epic 7 preference contracts.
 - **Required tests for next slice:** preserve green status for:
   - `uv run pytest -q backend/tests/test_inspection_workbench_router.py`,
