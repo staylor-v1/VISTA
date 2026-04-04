@@ -154,6 +154,14 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - `PR-16-M1` (this slice): add server contract for cloning a project's inspection configuration from another accessible project.
 - Replay/submit artifact: `docs/planning/pr16-split-artifact.md`.
 
+## Incremental execution status (2026-04-04, updated)
+
+- **Completed PR slices:**
+  - `PR-16-M1`: project configuration cloning API contract and access guards.
+  - `PR-16-M1a`: clone self-target guard (`source_project_id != project_id`) and regression coverage across PT1/PT2/PT3.
+- **Replay/submit artifacts:** `docs/planning/pr16-split-artifact.md`, `docs/planning/pr16-m1-replay-artifact.md`.
+- **Next unimplemented PR slice:** none currently planned; open `PR-16-M2+` only after explicit feature-contract approval.
+
 
 ## Orchestrator closeout artifact index (2026-04-04)
 

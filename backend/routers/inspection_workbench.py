@@ -710,6 +710,11 @@ async def clone_project_configuration(
     current_user: schemas.User = Depends(get_current_user),
 ):
     await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    if payload.source_project_id == project_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="source_project_id must be different from project_id",
+        )
     await _get_project_with_access_check(project_id=payload.source_project_id, db=db, current_user=current_user)
 
     source_metadata = await crud.get_project_metadata_by_key(
