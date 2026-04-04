@@ -342,6 +342,9 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
                     "modalities": ["visual"],
                     "view_name": "front",
                     "viewport_transform": {"zoom": 1.2, "panX": 14, "panY": -10},
+                    "measurements": [
+                        {"id": "basic-length", "label": "Length", "value": "12.6"},
+                    ],
                 },
                 "panel_layout": {
                     "part_list": {"is_open": True, "width_px": 310, "height_px": 420, "orientation": "vertical"},
@@ -365,6 +368,10 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
                     "modalities": ["infrared", "uv"],
                     "view_name": "left",
                     "viewport_transform": {"zoom": 2.6, "panX": -40, "panY": 85},
+                    "measurements": [
+                        {"id": "mid-length", "label": "Crack length", "value": 10.2},
+                        {"id": "mid-area", "label": "Pore area", "value": "1.8"},
+                    ],
                 },
                 "panel_layout": {
                     "part_list": {"is_open": True, "width_px": 360, "height_px": 500, "orientation": "vertical"},
@@ -372,6 +379,10 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
                     "mpr_controls": {"is_open": True, "width_px": 400, "height_px": 380, "orientation": "horizontal"},
                 },
             },
+            "expected_measurements": [
+                {"id": "mid-length", "label": "Crack length", "value": "10.2"},
+                {"id": "mid-area", "label": "Pore area", "value": "1.8"},
+            ],
         },
         {
             "email": f"workspace-advanced-{project_type.lower()}@example.com",
@@ -395,6 +406,11 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
                     "modalities": "not-a-list",
                     "view_name": 99,
                     "viewport_transform": {"zoom": "fast", "panX": 999, "panY": -999},
+                    "measurements": [
+                        {"id": "adv-invalid-empty", "label": "  ", "value": "4.5"},
+                        {"id": "adv-invalid-missing", "label": "Depth"},
+                        "not-a-measurement-object",
+                    ],
                 },
                 "panel_layout": {
                     "part_list": {"is_open": "yes", "width_px": -15, "height_px": 9999, "orientation": "diagonal"},
@@ -413,6 +429,7 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
             "expected_modalities": [],
             "expected_view_name": "",
             "expected_viewport_transform": {"zoom": 1.0, "panX": 200, "panY": -200},
+            "expected_measurements": [],
         },
     ]
 
@@ -480,6 +497,11 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
         assert save_resp.json()["state"]["inspector"]["modalities"] == expected_modalities
         assert save_resp.json()["state"]["inspector"]["view_name"] == expected_view_name
         assert save_resp.json()["state"]["inspector"]["viewport_transform"] == expected_viewport_transform
+        expected_measurements = scenario.get(
+            "expected_measurements",
+            scenario["state"].get("inspector", {}).get("measurements", []),
+        )
+        assert save_resp.json()["state"]["inspector"]["measurements"] == expected_measurements
 
         reload_resp = client.get(f"/api/projects/{project_id}/workspace-state", headers=headers)
         assert reload_resp.status_code == 200, reload_resp.text
@@ -490,6 +512,7 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
         assert reload_resp.json()["state"]["inspector"]["modalities"] == expected_modalities
         assert reload_resp.json()["state"]["inspector"]["view_name"] == expected_view_name
         assert reload_resp.json()["state"]["inspector"]["viewport_transform"] == expected_viewport_transform
+        assert reload_resp.json()["state"]["inspector"]["measurements"] == expected_measurements
 
         update_payload = {**scenario["state"], "sort_mode": "serial_asc"}
         overwrite_resp = client.put(

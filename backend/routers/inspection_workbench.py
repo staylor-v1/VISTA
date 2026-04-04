@@ -45,6 +45,7 @@ WORKSPACE_INSPECTOR_DEFAULTS = {
     "modalities": [],
     "view_name": "",
     "viewport_transform": {"zoom": 1.0, "panX": 0, "panY": 0},
+    "measurements": [],
 }
 
 
@@ -184,6 +185,29 @@ def _normalize_workspace_state(raw_state: object) -> dict:
             maximum=200,
         ),
     }
+    measurements = inspector_candidate.get("measurements")
+    normalized_measurements = []
+    if isinstance(measurements, list):
+        for entry in measurements:
+            if not isinstance(entry, dict):
+                continue
+            label_raw = entry.get("label")
+            value_raw = entry.get("value")
+            label = str(label_raw).strip() if isinstance(label_raw, str) else ""
+            if isinstance(value_raw, (int, float)):
+                value = str(value_raw)
+            elif isinstance(value_raw, str):
+                value = value_raw.strip()
+            else:
+                value = ""
+            if not label or not value:
+                continue
+            measurement_id = str(entry.get("id") or "").strip()
+            normalized_measurements.append({
+                "id": measurement_id,
+                "label": label,
+                "value": value,
+            })
     safe_state["inspector"] = {
         **inspector_candidate,
         "shortcut_help_visible": normalized_shortcut_help_visible,
@@ -192,6 +216,7 @@ def _normalize_workspace_state(raw_state: object) -> dict:
         "modalities": normalized_modalities,
         "view_name": normalized_view_name,
         "viewport_transform": normalized_viewport_transform,
+        "measurements": normalized_measurements,
     }
     return safe_state
 
