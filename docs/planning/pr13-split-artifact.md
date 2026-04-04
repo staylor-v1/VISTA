@@ -52,3 +52,20 @@ This artifact tracks incremental PR slices for the next unimplemented orchestrat
 ## Remaining PR-13 backlog after this checkpoint
 
 - Red-team/blue-team adversarial coverage across project types and synthetic user complexity levels.
+
+## Proposed incremental PR from this session (milestone 3 step 1)
+
+1. **PR-13 milestone 3 step 1 — backend adversarial metadata-shape normalization**
+   - Scope:
+     - Harden `GET /api/projects/{project_id}/export-bundle-json` to normalize metadata arrays (`annotations`, `overlay_layers`, `segmentation_runs`, `measurement_runs`) by accepting only list-of-dict payloads.
+     - Prevent malformed scalar/object metadata from inflating counts or producing invalid normalized records.
+     - Extend backend pytest matrix with a red-team-style adversarial scenario for each project type (`PT1`, `PT2`, `PT3`) where malformed metadata shapes are intentionally submitted.
+   - Files:
+     - `backend/routers/export.py`
+     - `backend/tests/test_export.py`
+     - `docs/planning/pr13-orchestrator-checklist.md`
+     - `docs/planning/pr13-split-artifact.md`
+     - `docs/planning/inspection-workbench-pr-artifact.md`
+   - Automated coverage:
+     - Existing backend pytest framework:
+       - `pytest backend/tests/test_export.py -k "bundle_json and adversarial_non_list_metadata_shapes"`

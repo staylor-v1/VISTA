@@ -736,6 +736,65 @@ def test_project_bundle_json_supports_progressive_users_per_project_type(client)
             assert payload["bundle_summary"]["discrepancies"]["parts_with_discrepancies"] == expected_discrepancy_parts
 
 
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_project_bundle_json_ignores_adversarial_non_list_metadata_shapes(client, project_type):
+    group = f"bundle-json-adversarial-{project_type.lower()}"
+    headers = {"X-Forwarded-Email": f"adversary@{group}.test"}
+
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": f"Bundle JSON adversarial {project_type}",
+            "description": "adversarial metadata shape test",
+            "meta_group_id": group,
+            "project_type": project_type,
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+
+    batch_resp = client.post(
+        f"/api/projects/{project_id}/batches",
+        json={"name": "batch-0", "description": "adversarial batch"},
+        headers=headers,
+    )
+    assert batch_resp.status_code == 201, batch_resp.text
+    batch_id = batch_resp.json()["id"]
+
+    part_resp = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={
+            "serial_number": f"{project_type}-ADV-0001",
+            "display_name": "adversarial-part",
+            "batch_id": batch_id,
+            "metadata": {
+                "annotations": "not-a-list",
+                "overlay_layers": {"id": "overlay-1"},
+                "segmentation_runs": 404,
+                "measurement_runs": True,
+            },
+        },
+        headers=headers,
+    )
+    assert part_resp.status_code == 201, part_resp.text
+
+    bundle_resp = client.get(f"/api/projects/{project_id}/export-bundle-json", headers=headers)
+    assert bundle_resp.status_code == 200, bundle_resp.text
+    payload = bundle_resp.json()
+
+    assert payload["project"]["project_type"] == project_type
+    assert payload["bundle_summary"]["parts"]["total"] == 1
+    assert payload["bundle_summary"]["annotations"]["total"] == 0
+    assert payload["bundle_summary"]["overlays"]["configured_layers"] == 0
+    assert payload["bundle_summary"]["overlays"]["segmentation_runs"] == 0
+    assert payload["bundle_summary"]["measurements"]["ai_runs"] == 0
+    assert payload["bundle_summary"]["annotations"]["records"] == []
+    assert payload["bundle_summary"]["overlays"]["records"] == []
+    assert payload["bundle_summary"]["measurements"]["records"] == []
+    assert payload["bundle_summary"]["discrepancies"]["parts_with_discrepancies"] == 0
+
+
 def test_project_bundle_json_forbidden_for_non_group_member(client):
     project_resp = client.post(
         "/api/projects/",
@@ -1021,4 +1080,3 @@ class TestBuildWorkbook:
         assert ws.cell(row=1, column=5).quotePrefix is False
         # Fixed headers (Filename, etc.) should not have quotePrefix
         assert ws.cell(row=1, column=1).quotePrefix is False
-
