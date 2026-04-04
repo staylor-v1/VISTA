@@ -25,6 +25,7 @@ const scenarioByUser = [
         image_enabled: true,
         modalities: ['visual'],
         view_name: 'front',
+        measurements: [{ id: 'basic-length', label: 'Length', value: '12.6' }],
       },
     },
     batches: [{ id: 'batch-basic', name: 'Batch Basic' }],
@@ -83,6 +84,10 @@ const scenarioByUser = [
         image_enabled: false,
         modalities: ['infrared'],
         view_name: 'left',
+        measurements: [
+          { id: 'mid-length', label: 'Crack length', value: 10.2 },
+          { id: 'mid-area', label: 'Pore area', value: '1.8' },
+        ],
       },
     },
     batches: [
@@ -177,6 +182,11 @@ const scenarioByUser = [
         image_enabled: 'no',
         modalities: 'not-a-list',
         view_name: 45,
+        measurements: [
+          { id: 'adv-invalid-empty', label: ' ', value: '4.5' },
+          { id: 'adv-invalid-missing', label: 'Depth' },
+          'not-a-measurement',
+        ],
       },
     },
     batches: [
@@ -533,12 +543,23 @@ describe('InspectionWorkbenchPanel', () => {
       fireEvent.change(screen.getByLabelText('part list height'), { target: { value: '100' } });
       fireEvent.change(screen.getByLabelText('part list orientation'), { target: { value: 'horizontal' } });
 
+      if (scenario.user === 'advanced') {
+        expect(screen.getByTestId('manual-measurement-list')).toHaveTextContent('No measurements captured.');
+      } else if (scenario.user === 'basic') {
+        expect(screen.getByTestId('manual-measurement-list')).toHaveTextContent('Length: 12.6');
+      } else {
+        expect(screen.getByTestId('manual-measurement-list')).toHaveTextContent('Crack length: 10.2');
+      }
+
       fireEvent.change(screen.getByPlaceholderText('label'), { target: { value: `${scenario.user}-length` } });
       fireEvent.change(screen.getByPlaceholderText('value'), { target: { value: '12.6' } });
       fireEvent.click(screen.getByRole('button', { name: /save measurement/i }));
       expect(screen.getByTestId('manual-measurement-list')).toHaveTextContent(`${scenario.user}-length: 12.6mm`);
       fireEvent.click(screen.getByRole('button', { name: new RegExp(`Delete measurement ${scenario.user}-length`, 'i') }));
-      expect(screen.getByTestId('manual-measurement-list')).toHaveTextContent('No measurements captured.');
+      expect(screen.getByTestId('manual-measurement-list')).not.toHaveTextContent(`${scenario.user}-length: 12.6mm`);
+      if (scenario.user === 'advanced') {
+        expect(screen.getByTestId('manual-measurement-list')).toHaveTextContent('No measurements captured.');
+      }
       expect(screen.getByTestId('inspector-viewport-state')).toHaveTextContent(/Zoom 1\.\d{2}x|Zoom 1.00x/);
       const inspectorNav = screen.getByTestId('inspector-nav-controls');
       fireEvent.click(within(inspectorNav).getByRole('button', { name: 'Zoom +' }));
