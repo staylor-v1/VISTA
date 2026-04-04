@@ -131,6 +131,7 @@ const scenarioByUser = {
             { id: 'porosity', label: 'Porosity', color: '#8b5cf6' },
           ],
           segmentation_runs: [
+            'legacy-seg-entry',
             {
               run_id: 'seeded-seg-adv',
               axis: 'coronal',
@@ -185,7 +186,7 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
   const metadataNormalizationByScenario = {
     basic: {},
     intermediate: { segmentation_runs: 1 },
-    advanced: { segmentation_runs: 1, measurement_runs: 1 },
+    advanced: { segmentation_runs: 1, measurement_runs: 1, 'legacy value[]': 2 },
   };
   const configurationByProjectId = {
     [projectId]: {

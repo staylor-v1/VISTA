@@ -31,13 +31,44 @@ const EXPORT_ACTIONS = {
   bundle_archive: 'bundle_archive',
   report_json: 'report_json',
 };
+const KNOWN_NORMALIZATION_FIELDS = new Set([
+  'annotations',
+  'overlay_layers',
+  'segmentation_runs',
+  'measurement_runs',
+]);
+
+function toTriageFieldToken(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '') || 'unknown-field';
+}
 
 function getDroppedMetadataItemsSummary(reportPayload) {
   const droppedItems = reportPayload?.summary?.metadata_normalization?.dropped_non_object_items;
   if (!droppedItems || typeof droppedItems !== 'object') return [];
-  return Object.entries(droppedItems)
-    .filter(([, value]) => Number(value) > 0)
-    .map(([field, value]) => ({ field, value: Number(value) }));
+  const countersByField = Object.entries(droppedItems).reduce((acc, [rawField, value]) => {
+    const normalizedCount = Number(value);
+    if (!Number.isFinite(normalizedCount) || normalizedCount <= 0) return acc;
+    const normalizedField = String(rawField || '').trim();
+    const field = normalizedField || 'unknown_field';
+    const previous = acc.get(field) || 0;
+    acc.set(field, previous + normalizedCount);
+    return acc;
+  }, new Map());
+
+  return Array.from(countersByField.entries())
+    .map(([field, value]) => ({
+      field,
+      value,
+      token: toTriageFieldToken(field),
+      isKnown: KNOWN_NORMALIZATION_FIELDS.has(field),
+    }))
+    .sort((a, b) => {
+      if (b.value !== a.value) return b.value - a.value;
+      return a.field.localeCompare(b.field);
+    });
 }
 
 function hasDroppedMetadataField(part, field) {
@@ -315,6 +346,10 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
 
     return output;
   }, [parts, selectedBatchId, defectFilter, normalizationTriageField, sortMode]);
+  const normalizationTriageMatchCount = useMemo(() => {
+    if (!normalizationTriageField) return 0;
+    return parts.filter((part) => hasDroppedMetadataField(part, normalizationTriageField)).length;
+  }, [parts, normalizationTriageField]);
 
   const selectedPart = useMemo(
     () => filteredParts.find((part) => part.id === selectedPartId) || filteredParts[0] || null,
@@ -993,11 +1028,12 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
               <button
                 type="button"
                 className="btn btn-link"
-                data-testid={`normalization-triage-${item.field}`}
+                data-testid={`normalization-triage-${item.token}`}
                 onClick={() => setNormalizationTriageField(item.field)}
               >
                 {item.field} ({item.value})
               </button>
+              {!item.isKnown && <span className="muted"> (unknown category)</span>}
               {index < droppedMetadataItemsSummary.length - 1 ? ', ' : ''}
             </span>
           ))}
@@ -1085,7 +1121,16 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
           <div className="workbench-layout">
             <div className="workbench-list">
               {filteredParts.length === 0 ? (
-                <p className="muted">No parts found for the current filters.</p>
+                <div>
+                  <p className="muted">No parts found for the current filters.</p>
+                  {normalizationTriageField && (
+                    <p className="muted" data-testid="normalization-triage-empty-guidance">
+                      {normalizationTriageMatchCount > 0
+                        ? `Triage matches exist for ${normalizationTriageField}, but they are hidden by the active batch/defect filters.`
+                        : `No parts in this project contain mixed ${normalizationTriageField} metadata values.`}
+                    </p>
+                  )}
+                </div>
               ) : (
                 filteredParts.map((part) => {
                   const state = part.review_state || 'unreviewed';
