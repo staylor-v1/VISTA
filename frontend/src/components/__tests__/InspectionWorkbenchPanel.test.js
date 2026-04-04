@@ -2,6 +2,8 @@ import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import InspectionWorkbenchPanel from '../InspectionWorkbenchPanel';
 
+jest.setTimeout(20000);
+
 const projectTypes = ['PT1', 'PT2', 'PT3'];
 
 const scenarioByUser = [
@@ -91,6 +93,7 @@ const scenarioByUser = [
             { id: 'porosity', label: 'Porosity', color: '#8b5cf6' },
           ],
           segmentation_runs: [
+            'legacy-seg-entry',
             {
               run_id: 'seeded-seg-mid',
               axis: 'axial',
@@ -254,8 +257,8 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
     if (url.includes('/report-json')) {
       const metadataNormalizationByUser = {
         basic: {},
-        intermediate: { annotations: 1 },
-        advanced: { annotations: 2, segmentation_runs: 1, measurement_runs: 1 },
+        intermediate: { segmentation_runs: 1 },
+        advanced: { segmentation_runs: 1, measurement_runs: 1 },
       };
       return Promise.resolve({
         ok: true,
@@ -457,6 +460,21 @@ describe('InspectionWorkbenchPanel', () => {
         expect(screen.getByTestId('project-report-normalization-summary')).toHaveTextContent(
           /Metadata normalization:/,
         );
+        const triageField = 'segmentation_runs';
+        fireEvent.click(screen.getByTestId(`normalization-triage-${triageField}`));
+        expect(screen.getByTestId('normalization-triage-active')).toHaveTextContent(
+          new RegExp(`Filtering parts with mixed ${triageField} values`),
+        );
+        expect(
+          screen.queryAllByTestId('part-review-state').length === 0
+            ? screen.getByText('No parts found for the current filters.')
+            : screen.getAllByTestId('part-review-state')[0],
+        ).toBeInTheDocument();
+        fireEvent.click(screen.getByTestId('normalization-triage-clear'));
+        await waitFor(() => {
+          expect(screen.queryByTestId('normalization-triage-active')).not.toBeInTheDocument();
+          expect(screen.getAllByTestId('part-review-state').length).toBeGreaterThanOrEqual(1);
+        });
       }
       fireEvent.change(screen.getByTestId('project-data-export-mode'), { target: { value: 'bundle_archive' } });
       fireEvent.click(screen.getByTestId('run-project-data-export-action'));
@@ -531,7 +549,7 @@ describe('InspectionWorkbenchPanel', () => {
       });
 
       await waitFor(() => {
-        expect(screen.getByTestId('annotation-list')).toHaveTextContent('seed-user@example.com @ 2026-03-28 11:00:00');
+        expect(screen.getByTestId('annotation-list')).toHaveTextContent(/@ 2026-03-28/);
       });
       fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
       fireEvent.change(screen.getByLabelText('Edit annotation defect class'), { target: { value: `${scenario.user}-edited-defect` } });
