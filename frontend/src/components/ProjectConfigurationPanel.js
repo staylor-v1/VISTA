@@ -106,6 +106,7 @@ function ProjectConfigurationPanel({ projectId }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [statusMessage, setStatusMessage] = useState('');
+  const [copyingConfiguration, setCopyingConfiguration] = useState(false);
   const hasCompatibleCopySources = availableProjects.length > 0;
 
   useEffect(() => {
@@ -292,10 +293,10 @@ function ProjectConfigurationPanel({ projectId }) {
   };
 
   const copyConfiguration = async () => {
-    if (!copySourceProjectId) return;
+    if (!copySourceProjectId || copyingConfiguration) return;
 
     try {
-      setSaving(true);
+      setCopyingConfiguration(true);
       setError(null);
       setStatusMessage('');
       const cloneResp = await fetch(`/api/projects/${projectId}/configuration/clone`, {
@@ -315,7 +316,7 @@ function ProjectConfigurationPanel({ projectId }) {
       setStatusMessage('');
       setError(err.message || 'Failed to copy project configuration');
     } finally {
-      setSaving(false);
+      setCopyingConfiguration(false);
     }
   };
 
@@ -656,11 +657,11 @@ function ProjectConfigurationPanel({ projectId }) {
                 No compatible source projects are available yet.
               </p>
             )}
-            <div className="workbench-controls-row">
+            <div className="workbench-controls-row" aria-busy={copyingConfiguration}>
               <select
                 aria-label="Source project"
                 value={copySourceProjectId}
-                disabled={!hasCompatibleCopySources}
+                disabled={!hasCompatibleCopySources || copyingConfiguration}
                 onChange={(event) => {
                   setCopySourceProjectId(event.target.value);
                   setError(null);
@@ -677,10 +678,10 @@ function ProjectConfigurationPanel({ projectId }) {
               <button
                 className="btn btn-secondary"
                 type="button"
-                disabled={!copySourceProjectId || !hasCompatibleCopySources || saving}
+                disabled={!copySourceProjectId || !hasCompatibleCopySources || copyingConfiguration}
                 onClick={copyConfiguration}
               >
-                Copy from Project
+                {copyingConfiguration ? 'Copying...' : 'Copy from Project'}
               </button>
             </div>
           </section>
