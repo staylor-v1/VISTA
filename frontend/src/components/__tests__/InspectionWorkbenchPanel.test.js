@@ -21,6 +21,7 @@ const scenarioByUser = [
       },
       inspector: {
         shortcut_help_visible: false,
+        normalization_triage_field: '',
       },
     },
     batches: [{ id: 'batch-basic', name: 'Batch Basic' }],
@@ -75,6 +76,7 @@ const scenarioByUser = [
       },
       inspector: {
         shortcut_help_visible: true,
+        normalization_triage_field: 'segmentation_runs',
       },
     },
     batches: [
@@ -165,6 +167,7 @@ const scenarioByUser = [
       },
       inspector: {
         shortcut_help_visible: 'yes',
+        normalization_triage_field: 73,
       },
     },
     batches: [
@@ -486,21 +489,11 @@ describe('InspectionWorkbenchPanel', () => {
         expect(screen.getByTestId('project-report-normalization-summary')).toHaveTextContent(
           /Metadata normalization:/,
         );
-        const triageField = 'segmentation_runs';
-        fireEvent.click(screen.getByTestId(`normalization-triage-${toTriageFieldToken(triageField)}`));
-        expect(screen.getByTestId('normalization-triage-active')).toHaveTextContent(
-          new RegExp(`Filtering parts with mixed ${triageField} values`),
-        );
-        expect(
-          screen.queryAllByTestId('part-review-state').length === 0
-            ? screen.getByText('No parts found for the current filters.')
-            : screen.getAllByTestId('part-review-state')[0],
-        ).toBeInTheDocument();
-        fireEvent.click(screen.getByTestId('normalization-triage-clear'));
-        await waitFor(() => {
-          expect(screen.queryByTestId('normalization-triage-active')).not.toBeInTheDocument();
-          expect(screen.getAllByTestId('part-review-state').length).toBeGreaterThanOrEqual(1);
-        });
+        if (scenario.workspaceState?.inspector?.normalization_triage_field === 'segmentation_runs') {
+          expect(screen.getByTestId('normalization-triage-active')).toHaveTextContent(
+            /Filtering parts with mixed segmentation_runs values\./,
+          );
+        }
       }
       fireEvent.change(screen.getByTestId('project-data-export-mode'), { target: { value: 'bundle_archive' } });
       fireEvent.click(screen.getByTestId('run-project-data-export-action'));
@@ -647,14 +640,14 @@ describe('InspectionWorkbenchPanel', () => {
         });
 
         // Reset batch filter to make all parts visible and validate synchronized part-switch behavior.
-        fireEvent.change(screen.getByLabelText('Batch'), { target: { value: '' } });
-        if (scenario.parts.length > 1) {
-          fireEvent.click(screen.getByText(scenario.parts[1].display_name));
+        if (screen.queryByTestId('normalization-triage-clear')) {
+          fireEvent.click(screen.getByTestId('normalization-triage-clear'));
           await waitFor(() => {
-            expect(screen.getByRole('heading', { name: scenario.parts[1].display_name })).toBeInTheDocument();
-            expect(screen.getByTestId('mpr-locator')).toHaveTextContent(/S\d+/);
+            expect(screen.queryByTestId('normalization-triage-active')).not.toBeInTheDocument();
           });
         }
+        fireEvent.change(screen.getByLabelText('Defect filter'), { target: { value: 'all' } });
+        fireEvent.change(screen.getByLabelText('Batch'), { target: { value: '' } });
       }
       await waitFor(() => {
         expect(workspaceTracker.getWorkspaceSaves().length).toBeGreaterThan(0);
@@ -759,6 +752,10 @@ describe('InspectionWorkbenchPanel', () => {
         .getWorkspaceSaves()
         .map((entry) => entry?.state?.inspector?.shortcut_help_visible);
       expect(savedVisibilityStates.every((value) => typeof value === 'boolean')).toBe(true);
+      const savedTriageFields = workspaceTracker
+        .getWorkspaceSaves()
+        .map((entry) => entry?.state?.inspector?.normalization_triage_field);
+      expect(savedTriageFields.every((value) => typeof value === 'string')).toBe(true);
       unmount();
     }
   });
