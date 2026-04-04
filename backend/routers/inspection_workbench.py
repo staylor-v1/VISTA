@@ -41,6 +41,7 @@ WORKSPACE_PANEL_LAYOUT_DEFAULTS = {
 WORKSPACE_INSPECTOR_DEFAULTS = {
     "shortcut_help_visible": False,
     "normalization_triage_field": "",
+    "image_enabled": True,
 }
 
 
@@ -136,10 +137,17 @@ def _normalize_workspace_state(raw_state: object) -> dict:
         if isinstance(normalization_triage_field, str)
         else WORKSPACE_INSPECTOR_DEFAULTS["normalization_triage_field"]
     )
+    image_enabled = inspector_candidate.get("image_enabled")
+    normalized_image_enabled = (
+        image_enabled
+        if isinstance(image_enabled, bool)
+        else WORKSPACE_INSPECTOR_DEFAULTS["image_enabled"]
+    )
     safe_state["inspector"] = {
         **inspector_candidate,
         "shortcut_help_visible": normalized_shortcut_help_visible,
         "normalization_triage_field": normalized_triage_field,
+        "image_enabled": normalized_image_enabled,
     }
     return safe_state
 
