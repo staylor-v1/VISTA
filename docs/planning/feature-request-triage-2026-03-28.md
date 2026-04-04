@@ -132,66 +132,17 @@ Existing planning docs currently focus on auth architecture and test remediation
 - Existing capabilities should be treated as **partial foundations** for this plan, not final equivalents of the requested PT workflows.
 - PT2 and PT3 currently share the same viewer requirements and can likely share one technical implementation with mode-specific configuration.
 
-## Incremental execution status (2026-04-04)
+## Incremental execution status (2026-04-04, replanned)
 
-- **Completed this session:** PR-15 milestone 1 step 1 (Start screen project deletion authorization + irreversible confirmation UX + project-list refresh hardening).
-- **Delivered scope highlights:**
-  - Dashboard delete action is now role-gated in UI using user group memberships.
-  - Delete modal now requires both exact phrase match and irreversible-action acknowledgment before enabling the destructive action.
-  - Post-delete workflow now refreshes project list from backend to prevent stale local-state regressions.
-  - Added PT1/PT2/PT3 × progressive synthetic user coverage in frontend and backend tests for authorized and unauthorized delete paths.
-- **Artifact for clean PR replay:** `docs/planning/pr15-split-artifact.md`.
-- **Next unimplemented PR slice:** PR-15 milestone 1 step 2 (to be selected from Epic 7 backlog after product confirmation).
-- **Target PR label:** PR-15 milestone 1 step 2 (TBD).
-- **Acceptance target for next slice:** preserve delete-governance behavior while extending adjacent Epic 7 governance/personalization scope.
+PR-15 execution has been flattened so each function-level change maps to one submitted PR slice.
 
-## Incremental execution status (2026-04-04, update 2)
-
-- **Completed this session:** PR-15 milestone 1 step 2 (Configurable inspector hotkeys UX + server-backed persistence wiring).
-- **Delivered scope highlights:**
-  - Inspection workbench now hydrates configurable hotkeys from `/api/projects/{id}/configuration` using the canonical `config` contract.
-  - Added in-workbench hotkey editor with validation (single alphanumeric, unique bindings) and explicit save action.
-  - Hotkey save persists to project configuration endpoint and immediately updates active keyboard shortcuts + help text.
-  - Added PT1/PT2/PT3 × progressive synthetic user coverage for hotkey-save success and validation failure paths.
-- **Artifact for clean PR replay:** `docs/planning/pr15-split-artifact.md`.
-- **Next unimplemented PR slice:** PR-15 milestone 1 step 3 (select next Epic 7 scope: server-backed cross-surface workspace preferences or deletion-governance follow-on UX copy).
-
-## Incremental execution status (2026-04-04, update 3)
-
-- **Completed this session:** PR-15 milestone 1 step 3 (part 1) — persisted inspector shortcut-help visibility in server-backed workspace state.
-- **Delivered scope highlights:**
-  - Workspace-state normalization now hardens `inspector.shortcut_help_visible` into a strict boolean at API boundaries.
-  - Inspection workbench hydrates shortcut-help panel visibility from workspace state and persists visibility changes back to the server.
-  - Added PT1/PT2/PT3 × progressive synthetic-user coverage for shortcut-help hydration and workspace-state persistence semantics.
-- **Artifact for clean PR replay:** `docs/planning/pr15-split-artifact.md`.
-- **Next unimplemented PR slice:** PR-15 milestone 1 step 3 (part 2) — continue Epic 7 cross-surface workspace persistence rollout beyond shortcut-help visibility.
-
-## Incremental execution status (2026-04-04, update 4)
-
-- **Completed this session:** PR-15 milestone 1 step 3 (part 2 / step 1) — persisted normalization-triage field in server-backed workspace state.
-- **Delivered scope highlights:**
-  - Workspace-state normalization now hardens `inspector.normalization_triage_field` into a strict string at API boundaries.
-  - Inspection workbench hydrates normalization triage filter from workspace state and persists it in autosave payloads.
-  - Added PT1/PT2/PT3 × progressive synthetic-user coverage for normalization-triage hydration + workspace-state persistence semantics.
-- **Artifact for clean PR replay:** `docs/planning/pr15-split-artifact.md`.
-- **Next unimplemented PR slice:** PR-15 milestone 1 step 3 (part 2 / step 2) — continue Epic 7 workspace rollout for additional cross-surface preferences.
-
-## Incremental execution status (2026-04-04, update 5)
-
-- **Completed this session:** PR-15 milestone 1 step 3 (part 2 / step 2) — persisted inspector image-visibility preference in server-backed workspace state.
-- **Delivered scope highlights:**
-  - Workspace-state normalization now hardens `inspector.image_enabled` into a strict boolean at API boundaries.
-  - Inspection workbench hydrates image-visibility toggle state using strict boolean semantics from workspace state.
-  - Added PT1/PT2/PT3 × progressive synthetic-user coverage in backend and frontend tests for image-visibility hydration + persistence semantics.
-- **Artifact for clean PR replay:** `docs/planning/pr15-split-artifact.md`.
-- **Next unimplemented PR slice:** PR-15 milestone 1 step 3 (part 2 / step 3) — continue Epic 7 workspace rollout for remaining cross-surface preferences.
-
-## Incremental execution status (2026-04-04, update 6)
-
-- **Completed this session:** PR-15 milestone 1 step 3 (part 2 / step 3) — persisted inspector modalities/view selection with strict workspace typing.
-- **Delivered scope highlights:**
-  - Workspace-state normalization now hardens `inspector.modalities` to list semantics.
-  - Workspace-state normalization now hardens `inspector.view_name` to string semantics.
-  - Added PT1/PT2/PT3 × progressive synthetic-user backend + frontend coverage for modality/view hydration and workspace-state persistence semantics.
-- **Artifact for clean PR replay:** `docs/planning/pr15-split-artifact.md`.
-- **Next unimplemented PR slice:** PR-15 milestone 1 step 3 (part 2 / step 4) — continue Epic 7 workspace rollout for additional cross-surface preferences.
+- **Completed PR slices:**
+  - `PR-15-M1`: Start screen deletion governance hardening.
+  - `PR-15-M2`: Configurable inspector hotkeys persistence.
+  - `PR-15-M3`: Workspace-backed shortcut-help visibility persistence.
+  - `PR-15-M4`: Workspace-backed normalization-triage persistence.
+  - `PR-15-M5`: Workspace-backed inspector image-visibility persistence.
+  - `PR-15-M6`: Workspace-backed inspector modality/view persistence hardening.
+- **Artifact for clean replay and submission order:** `docs/planning/pr15-split-artifact.md`.
+- **Next unimplemented PR slice:** `PR-15-M7` (to be selected from Epic 7 backlog for remaining cross-surface preferences).
+- **Planning rule going forward:** keep labels flat (`PR-15-M#`) and avoid step/part/sub-step hierarchy unless a milestone must be split for hard technical coupling.
