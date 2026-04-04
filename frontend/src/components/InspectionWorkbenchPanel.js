@@ -40,6 +40,14 @@ function getDroppedMetadataItemsSummary(reportPayload) {
     .map(([field, value]) => ({ field, value: Number(value) }));
 }
 
+function hasDroppedMetadataField(part, field) {
+  const metadata = part?.metadata;
+  if (!metadata || typeof metadata !== 'object') return false;
+  const value = metadata[field];
+  if (!Array.isArray(value)) return false;
+  return value.some((item) => !item || typeof item !== 'object' || Array.isArray(item));
+}
+
 function getDefectCount(part) {
   const defects = part?.metadata?.defects;
   if (Array.isArray(defects)) return defects.length;
@@ -205,6 +213,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [inspectorHotkeys, setInspectorHotkeys] = useState(DEFAULT_INSPECTOR_HOTKEYS);
   const [shortcutHelpVisible, setShortcutHelpVisible] = useState(false);
   const [panelLayout, setPanelLayout] = useState(DEFAULT_PANEL_LAYOUT);
+  const [normalizationTriageField, setNormalizationTriageField] = useState('');
   const droppedMetadataItemsSummary = useMemo(
     () => getDroppedMetadataItemsSummary(reportExport.payload),
     [reportExport.payload],
@@ -294,6 +303,9 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     } else if (defectFilter === 'critical_only') {
       output = output.filter((part) => getCriticalDefectCount(part) > 0);
     }
+    if (normalizationTriageField) {
+      output = output.filter((part) => hasDroppedMetadataField(part, normalizationTriageField));
+    }
 
     if (sortMode === 'defect_desc') {
       output.sort((a, b) => getDefectCount(b) - getDefectCount(a));
@@ -302,7 +314,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     }
 
     return output;
-  }, [parts, selectedBatchId, defectFilter, sortMode]);
+  }, [parts, selectedBatchId, defectFilter, normalizationTriageField, sortMode]);
 
   const selectedPart = useMemo(
     () => filteredParts.find((part) => part.id === selectedPartId) || filteredParts[0] || null,
@@ -976,7 +988,35 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
       {droppedMetadataItemsSummary.length > 0 && (
         <div className="alert alert-warning" data-testid="project-report-normalization-summary">
           <strong>Metadata normalization:</strong>{' '}
-          {droppedMetadataItemsSummary.map((item) => `${item.field} (${item.value})`).join(', ')}
+          {droppedMetadataItemsSummary.map((item, index) => (
+            <span key={item.field}>
+              <button
+                type="button"
+                className="btn btn-link"
+                data-testid={`normalization-triage-${item.field}`}
+                onClick={() => setNormalizationTriageField(item.field)}
+              >
+                {item.field} ({item.value})
+              </button>
+              {index < droppedMetadataItemsSummary.length - 1 ? ', ' : ''}
+            </span>
+          ))}
+          {normalizationTriageField && (
+            <>
+              {' '}
+              <span data-testid="normalization-triage-active">
+                Filtering parts with mixed <strong>{normalizationTriageField}</strong> values.
+              </span>{' '}
+              <button
+                type="button"
+                className="btn btn-link"
+                data-testid="normalization-triage-clear"
+                onClick={() => setNormalizationTriageField('')}
+              >
+                Clear
+              </button>
+            </>
+          )}
         </div>
       )}
       {ingestResult.payload && (
