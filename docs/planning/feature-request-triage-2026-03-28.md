@@ -165,3 +165,13 @@ Existing planning docs currently focus on auth architecture and test remediation
   - Added PT1/PT2/PT3 × progressive synthetic-user coverage for shortcut-help hydration and workspace-state persistence semantics.
 - **Artifact for clean PR replay:** `docs/planning/pr15-split-artifact.md`.
 - **Next unimplemented PR slice:** PR-15 milestone 1 step 3 (part 2) — continue Epic 7 cross-surface workspace persistence rollout beyond shortcut-help visibility.
+
+## Incremental execution status (2026-04-04, update 4)
+
+- **Completed this session:** PR-15 milestone 1 step 3 (part 2 / step 1) — persisted normalization-triage field in server-backed workspace state.
+- **Delivered scope highlights:**
+  - Workspace-state normalization now hardens `inspector.normalization_triage_field` into a strict string at API boundaries.
+  - Inspection workbench hydrates normalization triage filter from workspace state and persists it in autosave payloads.
+  - Added PT1/PT2/PT3 × progressive synthetic-user coverage for normalization-triage hydration + workspace-state persistence semantics.
+- **Artifact for clean PR replay:** `docs/planning/pr15-split-artifact.md`.
+- **Next unimplemented PR slice:** PR-15 milestone 1 step 3 (part 2 / step 2) — continue Epic 7 workspace rollout for additional cross-surface preferences.
