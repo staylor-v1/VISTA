@@ -43,6 +43,11 @@ This artifact re-baselines PR-15 into **flat, submit-ready PR slices**. Default 
    - Normalize `inspector.viewport_transform.panX` and `panY` as bounded ints (`-200`-`200`).
    - Preserve backward-compatible defaults for missing/invalid viewport values.
 
+8. **PR-15-M8 — Workspace-backed inspector manual-measurement persistence hardening** ✅ completed
+   - Normalize `inspector.measurements` as strict list of `{id,label,value}` tuples.
+   - Filter malformed/empty entries during hydration-safe workspace normalization.
+   - Preserve backward compatibility by accepting numeric measurement values and coercing to strings.
+
 ## Replay order for clean incremental PR submission
 
 1. `PR-15-M1` — Start screen deletion governance hardening.
@@ -52,6 +57,7 @@ This artifact re-baselines PR-15 into **flat, submit-ready PR slices**. Default 
 5. `PR-15-M5` — Workspace-backed inspector image-visibility persistence.
 6. `PR-15-M6` — Workspace-backed inspector modality/view persistence hardening.
 7. `PR-15-M7` — Workspace-backed inspector viewport-transform persistence hardening.
+8. `PR-15-M8` — Workspace-backed inspector manual-measurement persistence hardening.
 
 ## Per-PR acceptance requirements
 
@@ -62,5 +68,5 @@ Each PR must include:
 
 ## Remaining PR-15 backlog
 
-- Define `PR-15-M8` scope for additional cross-surface workspace preferences in Epic 7.
-- Keep future slicing flat (`M#`) and avoid nested step/part naming.
+- No open PR-15 backlog items remain after `PR-15-M8`.
+- Keep future slicing flat (`M#`) and avoid nested step/part naming when Epic 7 scope expands.

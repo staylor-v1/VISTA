@@ -46,13 +46,15 @@ A task is done only when:
   - `PR-15-M5` — Workspace-backed inspector image-visibility persistence.
   - `PR-15-M6` — Workspace-backed inspector modality/view persistence hardening.
   - `PR-15-M7` — Workspace-backed inspector viewport-transform persistence hardening.
+  - `PR-15-M8` — Workspace-backed inspector manual-measurement persistence hardening.
 - **Delivered summary:**
   - Deletion governance is role-restricted with irreversible confirmation and stale-state-safe list refresh.
   - Inspector hotkeys are editable, validated, persisted, and runtime-synchronized.
   - Workspace persistence now strictly normalizes/helpfully hydrates shortcut-help visibility, normalization triage field, image visibility, modalities, and selected view.
   - Workspace persistence now also strictly normalizes inspector viewport transform (`zoom`, `panX`, `panY`) with bounded numeric ranges.
-- **Replay artifact for clean incremental PRs:** `docs/planning/pr15-split-artifact.md`.
-- **Next scope boundary:** define `PR-15-M8` from Epic 7 for additional cross-surface workspace preferences.
+- Workspace persistence now strictly normalizes `inspector.measurements` into durable `{id,label,value}` tuples, filtering malformed entries for cross-surface hydration safety.
+- **Replay artifacts for clean incremental PRs:** `docs/planning/pr15-split-artifact.md`, `docs/planning/pr15-m8-replay-artifact.md`.
+- **Next scope boundary:** no open PR-15 slice; define `PR-15-M9+` only after approving additional Epic 7 preference contracts.
 - **Required tests for next slice:** preserve green status for:
   - `uv run pytest -q backend/tests/test_inspection_workbench_router.py`,
   - `npm test -- --runInBand src/components/__tests__/InspectionWorkbenchPanel.test.js`,
