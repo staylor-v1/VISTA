@@ -1005,6 +1005,34 @@ def test_project_configuration_clone_requires_access_to_source_project(client, p
     assert clone_resp.status_code == 403, clone_resp.text
     assert "does not have access to project" in clone_resp.json()["detail"]
 
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_project_configuration_clone_rejects_same_source_and_target_project(client, project_type):
+    headers = {
+        "X-User-Id": f"clone-self-{project_type.lower()}@example.com",
+        "X-User-Groups": f"[\"{project_type.lower()}-clone-self\"]",
+    }
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": f"{project_type} clone self",
+            "description": "clone self guard",
+            "meta_group_id": f"{project_type.lower()}-clone-self",
+            "project_type": project_type,
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+
+    clone_resp = client.post(
+        f"/api/projects/{project_id}/configuration/clone",
+        json={"source_project_id": project_id},
+        headers=headers,
+    )
+    assert clone_resp.status_code == 400, clone_resp.text
+    assert clone_resp.json()["detail"] == "source_project_id must be different from project_id"
+
 @pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
 def test_bulk_ingest_supports_progressive_users_with_discrepancy_counters(client, project_type):
     scenarios = [
