@@ -253,3 +253,11 @@ PR-15 execution has been flattened so each function-level change maps to one sub
   - `PR-16-M6`: surfaced backend clone API `detail` errors in Project Configuration UI, reset stale clone source selections when compatibility-filtered options change, and tightened clone-button disable guards.
 - **Replay/submission artifact:** `docs/planning/pr16-m6-replay-artifact.md`.
 - **Next unimplemented PR slice:** open `PR-16-M7+` only after explicit feature-contract approval.
+
+## Incremental execution status (2026-04-04, PR-16-M7 clone-feedback reset hardening)
+
+- **Completed PR slices:**
+  - `PR-16-M7`: reset clone success/error alerts when source selection changes and clear stale status before each clone attempt.
+- **Why this slice exists:** advanced synthetic workflows can involve repeated source switching; stale alerts can mislead operators about which source generated the current UI state.
+- **Replay/submission artifact:** `docs/planning/pr16-m7-replay-artifact.md`.
+- **Next unimplemented PR slice:** open `PR-16-M8+` only after explicit feature-contract approval.
