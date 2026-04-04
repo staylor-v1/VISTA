@@ -795,6 +795,63 @@ def test_project_bundle_json_ignores_adversarial_non_list_metadata_shapes(client
     assert payload["bundle_summary"]["discrepancies"]["parts_with_discrepancies"] == 0
 
 
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_project_bundle_json_flags_dropped_non_object_metadata_items(client, project_type):
+    group = f"bundle-json-dropped-{project_type.lower()}"
+    headers = {"X-Forwarded-Email": f"normalizer@{group}.test"}
+
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": f"Bundle JSON dropped items {project_type}",
+            "description": "mixed list metadata hardening",
+            "meta_group_id": group,
+            "project_type": project_type,
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+
+    batch_resp = client.post(
+        f"/api/projects/{project_id}/batches",
+        json={"name": "batch-0", "description": "mixed-metadata batch"},
+        headers=headers,
+    )
+    assert batch_resp.status_code == 201, batch_resp.text
+    batch_id = batch_resp.json()["id"]
+
+    part_resp = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={
+            "serial_number": f"{project_type}-MIXED-0001",
+            "display_name": "mixed-list-part",
+            "batch_id": batch_id,
+            "metadata": {
+                "annotations": [{"id": "ann-1", "defect_class": "scratch", "modality": "rgb"}, "junk", 5],
+                "overlay_layers": [{"id": "overlay-1", "label": "Mask", "color": "#22c55e"}, 9],
+                "segmentation_runs": [{"overlay_id": "overlay-1"}, None],
+                "measurement_runs": [{"run_id": "run-1", "status": "completed"}, False],
+            },
+        },
+        headers=headers,
+    )
+    assert part_resp.status_code == 201, part_resp.text
+
+    bundle_resp = client.get(f"/api/projects/{project_id}/export-bundle-json", headers=headers)
+    assert bundle_resp.status_code == 200, bundle_resp.text
+    payload = bundle_resp.json()
+    part_summary = payload["bundle_summary"]["discrepancies"]["per_part"][0]
+
+    assert payload["bundle_summary"]["annotations"]["total"] == 1
+    assert payload["bundle_summary"]["overlays"]["configured_layers"] == 1
+    assert payload["bundle_summary"]["overlays"]["segmentation_runs"] == 1
+    assert payload["bundle_summary"]["measurements"]["ai_runs"] == 1
+    assert part_summary["counts"]["dropped_non_object_metadata_items"] == 5
+    assert "metadata_items_dropped_non_object" in part_summary["discrepancy_codes"]
+    assert payload["bundle_summary"]["discrepancies"]["parts_with_discrepancies"] == 1
+
+
 def test_project_bundle_json_forbidden_for_non_group_member(client):
     project_resp = client.post(
         "/api/projects/",
@@ -812,6 +869,80 @@ def test_project_bundle_json_forbidden_for_non_group_member(client):
         bundle_resp = client.get(f"/api/projects/{project_id}/export-bundle-json")
 
     assert bundle_resp.status_code == 403
+
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_project_json_report_tracks_metadata_normalization_with_progressive_users(client, project_type):
+    scenarios = (
+        {"user": "report-mixed-basic", "level": 1, "part_count": 1, "dropped_per_part": 1},
+        {"user": "report-mixed-intermediate", "level": 2, "part_count": 2, "dropped_per_part": 2},
+        {"user": "report-mixed-advanced", "level": 3, "part_count": 3, "dropped_per_part": 3},
+    )
+    for scenario in scenarios:
+        group = f"report-norm-{project_type.lower()}-{scenario['user']}"
+        headers = {"X-Forwarded-Email": f"{scenario['user']}@{group}.test"}
+        project_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": f"Report normalization {project_type} {scenario['user']}",
+                "description": "report metadata normalization coverage",
+                "meta_group_id": group,
+                "project_type": project_type,
+            },
+            headers=headers,
+        )
+        assert project_resp.status_code == 201, project_resp.text
+        project_id = project_resp.json()["id"]
+
+        for idx in range(scenario["part_count"]):
+            batch_resp = client.post(
+                f"/api/projects/{project_id}/batches",
+                json={"name": f"batch-{idx}", "description": f"batch {idx}"},
+                headers=headers,
+            )
+            assert batch_resp.status_code == 201, batch_resp.text
+            batch_id = batch_resp.json()["id"]
+
+            annotations = [{"id": f"ann-{idx}", "defect_class": "scratch", "modality": "rgb"}]
+            annotations.extend([f"noise-{n}" for n in range(scenario["dropped_per_part"])])
+            part_resp = client.post(
+                f"/api/projects/{project_id}/parts",
+                json={
+                    "serial_number": f"{project_type}-REPORT-{scenario['level']}-{idx}",
+                    "display_name": f"report-part-{idx}",
+                    "batch_id": batch_id,
+                    "review_state": "pass" if idx % 2 == 0 else "unreviewed",
+                    "metadata": {
+                        "annotations": annotations,
+                        "overlay_layers": [{"id": f"overlay-{idx}", "label": "Mask", "color": "#22c55e"}],
+                        "segmentation_runs": [{"overlay_id": f"overlay-{idx}"}],
+                        "measurement_runs": [{"run_id": f"run-{idx}", "status": "completed"}],
+                    },
+                },
+                headers=headers,
+            )
+            assert part_resp.status_code == 201, part_resp.text
+
+            image_resp = client.post(
+                f"/api/projects/{project_id}/images",
+                files={"file": (f"report_{idx}.png", b"report-bytes", "image/png")},
+                data={"metadata": _json.dumps({"scenario": scenario["user"], "index": idx})},
+                headers=headers,
+            )
+            assert image_resp.status_code == 201, image_resp.text
+
+        report_resp = client.get(f"/api/projects/{project_id}/report-json", headers=headers)
+        assert report_resp.status_code == 200, report_resp.text
+        payload = report_resp.json()
+        assert payload["project"]["project_type"] == project_type
+        assert payload["summary"]["total_parts"] == scenario["part_count"]
+        assert payload["summary"]["total_images"] == scenario["part_count"]
+        assert payload["summary"]["metadata_normalization"]["dropped_non_object_items"]["annotations"] == (
+            scenario["part_count"] * scenario["dropped_per_part"]
+        )
+        assert payload["summary"]["metadata_normalization"]["dropped_non_object_items"]["overlay_layers"] == 0
+        assert payload["summary"]["metadata_normalization"]["dropped_non_object_items"]["segmentation_runs"] == 0
+        assert payload["summary"]["metadata_normalization"]["dropped_non_object_items"]["measurement_runs"] == 0
 
 
 def test_project_bundle_archive_supports_progressive_users_per_project_type(client):
