@@ -232,3 +232,9 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - **Why this unblocked progress:** explicit operator approval was provided to proceed beyond prior contract-gating language; this slice starts `PR-16-M3` with a concrete backend+frontend contract.
 - **Replay/submission artifact:** `docs/planning/pr16-m3-replay-artifact.md`.
 - **Next unimplemented PR slice:** open `PR-16-M4+` from the next approved feature contract or continue the approved `PR-16` stream.
+## Incremental execution status (2026-04-04, PR-16-M4 planning-state reconciliation + submission artifact)
+
+- **Completed PR slices:**
+  - `PR-16-M4`: synchronized planning source-of-truth docs after `PR-16-M3` delivery and added a post-inspection submission artifact with explicit replay/testing gates.
+- **Replay/submission artifact:** `docs/planning/pr16-m4-replay-artifact.md`.
+- **Next unimplemented PR slice:** open `PR-16-M5+` only after explicit feature-contract approval.
