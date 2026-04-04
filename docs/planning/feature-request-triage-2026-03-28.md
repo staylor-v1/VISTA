@@ -170,3 +170,9 @@ PR-15 execution has been flattened so each function-level change maps to one sub
   - `docs/planning/pr15-m8-replay-artifact.md`
   - `docs/planning/orchestrator-clean-replay-index-2026-04-04.md`
 - Execution status for this plan segment: **no unfinished PR-15 slices remain**. New scope requires explicit PR-15-M9+ approval.
+
+## Orchestrator execution sync (2026-04-04, closeout refresh)
+
+- Verified against `docs/planning/orchestrator-session-handoff.md`: there are no unfinished planned PR slices in currently approved `PR-15` and `PR-16` scope.
+- Post-inspection replay/submission artifact for clean incremental upstream PRs: `docs/planning/orchestrator-post-inspection-pr-submission-artifact-2026-04-04.md`.
+- Any additional implementation must start at `PR-16-M2+` only after explicit feature-contract approval.
