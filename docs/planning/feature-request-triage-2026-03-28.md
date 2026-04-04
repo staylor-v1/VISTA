@@ -214,3 +214,13 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - Created an execution artifact for post-inspection clean replay and scope-boundary control:
   - `docs/planning/orchestrator-next-unimplemented-pr-execution-2026-04-04.md`
 - Next implementation is blocked on explicit feature-contract approval for `PR-16-M3+`; no hidden carry-over work is authorized.
+
+## Orchestrator execution sync (2026-04-04, PR-queue reconciliation refresh)
+
+- Re-ran planning reconciliation for the two source-of-truth docs:
+  - `docs/planning/feature-request-triage-2026-03-28.md`
+  - `docs/planning/orchestrator-session-handoff.md`
+- Outcome: there is still no unimplemented planned slice through approved scope (`PR-16` complete through `PR-16-M2`).
+- Execution artifact for post-inspection replay + clean upstream submission sequencing:
+  - `docs/planning/orchestrator-next-pr-execution-artifact-2026-04-04-v2.md`
+- Scope gate remains unchanged: begin `PR-16-M3+` only after explicit feature-contract approval.
