@@ -42,6 +42,8 @@ WORKSPACE_INSPECTOR_DEFAULTS = {
     "shortcut_help_visible": False,
     "normalization_triage_field": "",
     "image_enabled": True,
+    "modalities": [],
+    "view_name": "",
 }
 
 
@@ -143,11 +145,25 @@ def _normalize_workspace_state(raw_state: object) -> dict:
         if isinstance(image_enabled, bool)
         else WORKSPACE_INSPECTOR_DEFAULTS["image_enabled"]
     )
+    modalities = inspector_candidate.get("modalities")
+    normalized_modalities = (
+        [str(value) for value in modalities]
+        if isinstance(modalities, list)
+        else list(WORKSPACE_INSPECTOR_DEFAULTS["modalities"])
+    )
+    view_name = inspector_candidate.get("view_name")
+    normalized_view_name = (
+        str(view_name).strip()
+        if isinstance(view_name, str)
+        else WORKSPACE_INSPECTOR_DEFAULTS["view_name"]
+    )
     safe_state["inspector"] = {
         **inspector_candidate,
         "shortcut_help_visible": normalized_shortcut_help_visible,
         "normalization_triage_field": normalized_triage_field,
         "image_enabled": normalized_image_enabled,
+        "modalities": normalized_modalities,
+        "view_name": normalized_view_name,
     }
     return safe_state
 
