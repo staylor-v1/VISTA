@@ -37,6 +37,15 @@ A task is done only when:
 
 ## Active session pointer (2026-04-04)
 
-- **Current milestone:** PR-14 milestone 2 step 2 complete (unknown normalization category hardening + filtered empty-state triage guidance with stable frontend contracts).
-- **Next scope boundary:** PR-15 milestone 1 step 1 should implement Start screen project deletion authorization + irreversible confirmation UX.
-- **Required tests for next step:** keep existing frontend Jest + Playwright matrices green, then add role-restricted delete-flow assertions (authorized/unauthorized) with explicit confirmation-state checks.
+- **Current milestone:** PR-15 milestone 1 step 1 complete (Start screen deletion governance hardening).
+- **Delivered in milestone:**
+  - Role-restricted delete affordance on dashboard cards based on user group membership.
+  - Irreversible confirmation-state UX (exact phrase + explicit acknowledgment) before deletion can execute.
+  - Regression-safe project-list refresh after deletion success.
+  - PT1/PT2/PT3 × (`basic`,`intermediate`,`advanced`) synthetic-user matrices for delete governance assertions.
+- **Replay artifact for clean incremental PRs:** `docs/planning/pr15-split-artifact.md`.
+- **Next scope boundary:** PR-15 milestone 1 step 2 (TBD in Epic 7) after stakeholder confirmation.
+- **Required tests for next step:** preserve green status for:
+  - frontend Jest matrix covering authorized + unauthorized delete states,
+  - backend router authorization/confirmation tests,
+  - Playwright PT1/PT2/PT3 synthetic workflow matrix.

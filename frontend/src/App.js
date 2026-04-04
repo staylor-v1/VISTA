@@ -248,13 +248,17 @@ const EditProjectModal = memo(function EditProjectModal({ project, onClose, onSu
   );
 });
 
-const DeleteProjectModal = memo(function DeleteProjectModal({ project, onClose, onConfirm }) {
+const DeleteProjectModal = memo(function DeleteProjectModal({ project, onClose, onConfirm, canDelete = true }) {
   const [confirmationPhrase, setConfirmationPhrase] = useState('');
+  const [acknowledgeIrreversible, setAcknowledgeIrreversible] = useState(false);
   const expectedPhrase = project ? `DELETE ${project.name}` : '';
+  const isPhraseValid = confirmationPhrase === expectedPhrase;
+  const canSubmit = canDelete && isPhraseValid && acknowledgeIrreversible;
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!project) return;
+    if (!canSubmit) return;
     onConfirm(project, confirmationPhrase);
   };
 
@@ -270,6 +274,9 @@ const DeleteProjectModal = memo(function DeleteProjectModal({ project, onClose, 
         <div className="modal-body">
           <p>
             This action permanently deletes <strong>{project.name}</strong> and related project data.
+          </p>
+          <p role="alert">
+            <strong>Warning:</strong> This action is irreversible and cannot be undone.
           </p>
           <p>
             To confirm, type <code>{expectedPhrase}</code>.
@@ -287,13 +294,32 @@ const DeleteProjectModal = memo(function DeleteProjectModal({ project, onClose, 
                 required
               />
             </div>
+            <div className="form-group">
+              <label htmlFor="delete_irreversible_acknowledge">
+                <input
+                  id="delete_irreversible_acknowledge"
+                  type="checkbox"
+                  checked={acknowledgeIrreversible}
+                  onChange={(e) => setAcknowledgeIrreversible(e.target.checked)}
+                />{' '}
+                I understand this is irreversible.
+              </label>
+            </div>
+            {!canDelete && (
+              <p role="alert">You are not authorized to delete this project.</p>
+            )}
           </form>
         </div>
         <div className="modal-footer">
           <button type="button" className="btn btn-secondary" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" form="delete-project-form" className="btn btn-danger btn-large">
+          <button
+            type="submit"
+            form="delete-project-form"
+            className="btn btn-danger btn-large"
+            disabled={!canSubmit}
+          >
             Delete Project
           </button>
         </div>
@@ -303,7 +329,7 @@ const DeleteProjectModal = memo(function DeleteProjectModal({ project, onClose, 
 });
 
 // Memoized ProjectItem component to prevent unnecessary re-renders
-const ProjectItem = memo(function ProjectItem({ project, onEdit, onDelete }) {
+const ProjectItem = memo(function ProjectItem({ project, onEdit, onDelete, canDelete }) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
@@ -346,9 +372,12 @@ const ProjectItem = memo(function ProjectItem({ project, onEdit, onDelete }) {
                 <button
                   type="button"
                   className="project-card-menu-item"
+                  disabled={!canDelete}
+                  title={canDelete ? '' : 'You do not have access to delete this project.'}
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
+                    if (!canDelete) return;
                     setMenuOpen(false);
                     onDelete(project);
                   }}
@@ -399,6 +428,7 @@ function App() {
   const [editingProject, setEditingProject] = useState(null);
   const [deletingProject, setDeletingProject] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
+  const [currentUserGroups, setCurrentUserGroups] = useState([]);
   // const [newProject, setNewProject] = useState({  // Commented out - not currently used
   //   name: '',
   //   description: '',
@@ -414,6 +444,19 @@ function App() {
   const hideToast = () => {
     setToast(null);
   };
+
+  const loadProjects = useCallback(() => {
+    return fetch('/api/projects/')
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(data => {
+        setProjects(data);
+      });
+  }, []);
 
   useEffect(() => {
     // Fetch the current user
@@ -432,22 +475,37 @@ function App() {
       .then(userData => {
         if (userData) {
           setCurrentUser(userData);
+          if (Array.isArray(userData.groups)) {
+            setCurrentUserGroups(userData.groups);
+          }
         }
       })
       .catch(err => {
         console.error("Failed to fetch current user:", err);
       });
 
-    // Fetch projects from the API
-    fetch('/api/projects/')
+    fetch('/api/users/me/groups')
       .then(response => {
         if (!response.ok) {
+          if (response.status === 401) {
+            return [];
+          }
           throw new Error(`HTTP error! status: ${response.status}`);
         }
         return response.json();
       })
-      .then(data => {
-        setProjects(data);
+      .then(groupData => {
+        if (Array.isArray(groupData)) {
+          setCurrentUserGroups(groupData);
+        }
+      })
+      .catch(err => {
+        console.error("Failed to fetch current user groups:", err);
+      });
+
+    // Fetch projects from the API
+    loadProjects()
+      .then(() => {
         setLoading(false);
       })
       .catch(err => {
@@ -455,7 +513,7 @@ function App() {
         showToast(`Failed to fetch projects: ${err.message}`, 'error');
         setLoading(false);
       });
-  }, []); // Empty dependency array means this effect runs once on mount
+  }, [loadProjects]); // Empty dependency array means this effect runs once on mount
 
   // Log component renders for debugging
   console.log("App render count:", ++renderCount);
@@ -542,8 +600,12 @@ function App() {
   }, [editingProject]);
 
   const handleDeleteProject = useCallback((project) => {
+    if (!currentUserGroups.includes(project.meta_group_id)) {
+      showToast(`You are not authorized to delete project "${project.name}".`, 'error');
+      return;
+    }
     setDeletingProject(project);
-  }, []);
+  }, [currentUserGroups]);
 
   const handleConfirmDeleteProject = useCallback((project, confirmationPhrase) => {
     if (!project) return;
@@ -563,17 +625,18 @@ function App() {
         }
       })
       .then(() => {
-        setProjects((prev) => prev.filter((candidate) => candidate.id !== project.id));
-        setDeletingProject(null);
-        setLoading(false);
-        showToast(`Project "${project.name}" deleted successfully.`, 'success');
+        return loadProjects().then(() => {
+          setDeletingProject(null);
+          setLoading(false);
+          showToast(`Project "${project.name}" deleted successfully.`, 'success');
+        });
       })
       .catch((err) => {
         console.error('Failed to delete project:', err);
         showToast(err.message, 'error');
         setLoading(false);
       });
-  }, []);
+  }, [loadProjects]);
 
 
   const HomePage = () => (
@@ -667,7 +730,13 @@ function App() {
             </div>
             <div className="projects-grid">
               {projects.map(project => (
-                <ProjectItem key={project.id} project={project} onEdit={handleEditProject} onDelete={handleDeleteProject} />
+                <ProjectItem
+                  key={project.id}
+                  project={project}
+                  onEdit={handleEditProject}
+                  onDelete={handleDeleteProject}
+                  canDelete={currentUserGroups.includes(project.meta_group_id)}
+                />
               ))}
             </div>
           </>
@@ -694,6 +763,7 @@ function App() {
           project={deletingProject}
           onClose={() => setDeletingProject(null)}
           onConfirm={handleConfirmDeleteProject}
+          canDelete={currentUserGroups.includes(deletingProject.meta_group_id)}
         />
       )}
     </div>
