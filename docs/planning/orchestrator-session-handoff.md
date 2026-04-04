@@ -37,6 +37,6 @@ A task is done only when:
 
 ## Active session pointer (2026-04-04)
 
-- **Current milestone:** PR-14 milestone 1 step 2 complete (Project Data report normalization telemetry E2E + screenshot analytics).
-- **Next scope boundary:** PR-14 milestone 2 step 1 should add actionable discrepancy triage links/filters on top of existing telemetry banner without changing backend contracts.
-- **Required tests for next step:** keep existing React Testing Library + Playwright PT matrix (`PT1`,`PT2`,`PT3`) and progressive synthetic users (`basic`,`intermediate`,`advanced`) green while adding targeted telemetry-action assertions.
+- **Current milestone:** PR-14 milestone 2 step 1 complete (actionable discrepancy triage links/filters for report normalization telemetry).
+- **Next scope boundary:** PR-14 milestone 2 step 2 should run red-team/blue-team hardening for unknown/empty normalization categories and filtered empty-state guidance without backend contract changes.
+- **Required tests for next step:** keep existing React Testing Library + Playwright PT matrix (`PT1`,`PT2`,`PT3`) and progressive synthetic users (`basic`,`intermediate`,`advanced`) green while adding adversarial telemetry payload assertions.
