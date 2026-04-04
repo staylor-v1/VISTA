@@ -176,3 +176,10 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - Verified against `docs/planning/orchestrator-session-handoff.md`: there are no unfinished planned PR slices in currently approved `PR-15` and `PR-16` scope.
 - Post-inspection replay/submission artifact for clean incremental upstream PRs: `docs/planning/orchestrator-post-inspection-pr-submission-artifact-2026-04-04.md`.
 - Any additional implementation must start at `PR-16-M2+` only after explicit feature-contract approval.
+
+## Orchestrator execution sync (2026-04-04, implementation-session refresh)
+
+- Re-checked planned-slice status before implementation kickoff: `PR-15` and `PR-16` remain fully complete with no unfinished slices.
+- Created an execution-ready artifact for post-inspection upstream submission sequencing:
+  - `docs/planning/orchestrator-next-pr-execution-artifact-2026-04-04.md`
+- Added explicit next-start rule: open `PR-16-M2+` only from a newly approved contract; no hidden carry-over scope is authorized.
