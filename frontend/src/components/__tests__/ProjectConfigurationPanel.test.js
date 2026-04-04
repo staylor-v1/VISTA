@@ -66,6 +66,11 @@ function mockFetch(config, projectType, mockOptions = {}) {
           json: async () => ({ detail: mockOptions.cloneFailureDetail }),
         });
       }
+      if (mockOptions.delayedClone) {
+        return new Promise((resolve) => {
+          setTimeout(() => resolve({ ok: true, json: async () => ({ config: { ...config, defect_types: [] } }) }), 25);
+        });
+      }
       return Promise.resolve({ ok: true, json: async () => ({ config: { ...config, defect_types: [] } }) });
     }
 
@@ -390,6 +395,32 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
         await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
         expect(screen.getByTestId('no-compatible-copy-sources')).toBeInTheDocument();
         expect(screen.getByLabelText('Source project')).toBeDisabled();
+      });
+
+      test(`prevents duplicate clone submissions while copy is in progress for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config, projectType, { delayedClone: true });
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText('Source project'), { target: { value: 'proj-copy' } });
+        const copyButton = screen.getByRole('button', { name: 'Copy from Project' });
+
+        fireEvent.click(copyButton);
+        expect(screen.getByRole('button', { name: 'Copying...' })).toBeDisabled();
+        expect(screen.getByLabelText('Source project')).toBeDisabled();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Copying...' }));
+
+        await waitFor(() => {
+          const cloneCalls = global.fetch.mock.calls.filter(
+            ([url, options = {}]) => url === '/api/projects/proj-1/configuration/clone' && options.method === 'POST',
+          );
+          expect(cloneCalls).toHaveLength(1);
+          expect(screen.getByText('Configuration copied from existing project.')).toBeInTheDocument();
+        });
       });
     });
   });

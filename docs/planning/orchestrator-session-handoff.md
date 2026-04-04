@@ -181,3 +181,15 @@ A task is done only when:
 - Replay/submission artifact:
   - `docs/planning/pr16-m7-replay-artifact.md`
 - Next implementation boundary: open `PR-16-M8+` only after explicit feature-contract approval.
+
+## Session update (2026-04-04, PR-16-M8 clone in-flight submission hardening)
+
+- Started and completed `PR-16-M8` under explicit next-unimplemented-slice direction.
+- Delivered:
+  - Copy configuration flow now keeps a dedicated in-flight state for clone requests.
+  - Clone controls (source select + copy button) are disabled while clone API is in progress.
+  - Copy button shows in-progress label (`Copying...`) and duplicate clone submissions are prevented.
+- Progressive synthetic-user coverage preserved (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3` with duplicate-submit prevention assertions.
+- Replay/submission artifact:
+  - `docs/planning/pr16-m8-replay-artifact.md`
+- Next implementation boundary: open `PR-16-M9+` only after explicit feature-contract approval.
