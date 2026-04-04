@@ -251,6 +251,20 @@ function mockWorkbenchFetch({ batches, parts, workspaceState = {}, hotkeys }) {
         }),
       });
     }
+    if (url.includes('/report-json')) {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          project: { id: 'proj-1', project_type: 'PT1' },
+          summary: {
+            total_images: mutableParts.length,
+            total_batches: batches.length,
+            total_parts: mutableParts.length,
+            reviewed_parts: mutableParts.filter((part) => ['pass', 'reject_pending', 'reject_confirmed'].includes(part.review_state)).length,
+          },
+        }),
+      });
+    }
     if (url.includes('/ingest') && options.method === 'POST') {
       const payload = JSON.parse(options.body || '{}');
       const partsReceived = Array.isArray(payload.batches)
@@ -423,6 +437,16 @@ describe('InspectionWorkbenchPanel', () => {
       fireEvent.click(screen.getByTestId('request-export-bundle-summary'));
       await waitFor(() => {
         expect(screen.getByTestId('export-bundle-summary-result')).toHaveTextContent(/Export summary ready:/);
+      });
+      fireEvent.change(screen.getByTestId('project-data-export-mode'), { target: { value: 'report_json' } });
+      fireEvent.click(screen.getByTestId('run-project-data-export-action'));
+      await waitFor(() => {
+        expect(screen.getByTestId('project-report-result')).toHaveTextContent(/Report ready:/);
+      });
+      fireEvent.change(screen.getByTestId('project-data-export-mode'), { target: { value: 'bundle_archive' } });
+      fireEvent.click(screen.getByTestId('run-project-data-export-action'));
+      await waitFor(() => {
+        expect(screen.getByTestId('export-bundle-archive-result')).toHaveTextContent(/Export archive ready:/);
       });
       fireEvent.click(screen.getByTestId('request-export-bundle-archive'));
       await waitFor(() => {
@@ -618,5 +642,21 @@ describe('InspectionWorkbenchPanel', () => {
       });
       unmount();
     }
+  });
+
+  test('blocks unsupported export/report modes with validation', async () => {
+    mockWorkbenchFetch(scenarioByUser[0]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Batches: 1')).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByTestId('project-data-export-mode'), { target: { value: 'invalid_mode' } });
+    fireEvent.click(screen.getByTestId('run-project-data-export-action'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Select a valid export/report mode.')).toBeInTheDocument();
+    });
   });
 });
