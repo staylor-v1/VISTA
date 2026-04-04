@@ -301,6 +301,13 @@ def _normalize_part_artifact_records(part_id, serial_number, annotations, overla
     }
 
 
+def _normalize_metadata_dict_list(metadata_obj, key):
+    candidate = metadata_obj.get(key)
+    if not isinstance(candidate, list):
+        return []
+    return [item for item in candidate if isinstance(item, dict)]
+
+
 @router.get("/projects/{project_id}/report-json")
 async def export_project_report_json(
     project_id: uuid.UUID,
@@ -407,10 +414,10 @@ async def export_project_bundle_json(
 
     for part_id, serial_number, display_name, metadata in part_metadata_rows:
         metadata_obj = metadata if isinstance(metadata, dict) else {}
-        annotations = metadata_obj.get("annotations") or []
-        overlay_layers = metadata_obj.get("overlay_layers") or []
-        segmentation_runs = metadata_obj.get("segmentation_runs") or []
-        measurement_runs = metadata_obj.get("measurement_runs") or []
+        annotations = _normalize_metadata_dict_list(metadata_obj, "annotations")
+        overlay_layers = _normalize_metadata_dict_list(metadata_obj, "overlay_layers")
+        segmentation_runs = _normalize_metadata_dict_list(metadata_obj, "segmentation_runs")
+        measurement_runs = _normalize_metadata_dict_list(metadata_obj, "measurement_runs")
 
         annotations_count += len(annotations)
         overlay_layer_count += len(overlay_layers)
