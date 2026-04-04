@@ -38,6 +38,9 @@ WORKSPACE_PANEL_LAYOUT_DEFAULTS = {
         "orientation": "vertical",
     },
 }
+WORKSPACE_INSPECTOR_DEFAULTS = {
+    "shortcut_help_visible": False,
+}
 
 
 async def _get_project_with_access_check(
@@ -117,6 +120,19 @@ def _normalize_workspace_state(raw_state: object) -> dict:
             "orientation": orientation,
         }
     safe_state["panel_layout"] = normalized_layout
+
+    raw_inspector = safe_state.get("inspector")
+    inspector_candidate = raw_inspector if isinstance(raw_inspector, dict) else {}
+    shortcut_help_visible = inspector_candidate.get("shortcut_help_visible")
+    normalized_shortcut_help_visible = (
+        shortcut_help_visible
+        if isinstance(shortcut_help_visible, bool)
+        else WORKSPACE_INSPECTOR_DEFAULTS["shortcut_help_visible"]
+    )
+    safe_state["inspector"] = {
+        **inspector_candidate,
+        "shortcut_help_visible": normalized_shortcut_help_visible,
+    }
     return safe_state
 
 

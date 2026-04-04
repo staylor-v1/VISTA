@@ -155,3 +155,13 @@ Existing planning docs currently focus on auth architecture and test remediation
   - Added PT1/PT2/PT3 × progressive synthetic user coverage for hotkey-save success and validation failure paths.
 - **Artifact for clean PR replay:** `docs/planning/pr15-split-artifact.md`.
 - **Next unimplemented PR slice:** PR-15 milestone 1 step 3 (select next Epic 7 scope: server-backed cross-surface workspace preferences or deletion-governance follow-on UX copy).
+
+## Incremental execution status (2026-04-04, update 3)
+
+- **Completed this session:** PR-15 milestone 1 step 3 (part 1) — persisted inspector shortcut-help visibility in server-backed workspace state.
+- **Delivered scope highlights:**
+  - Workspace-state normalization now hardens `inspector.shortcut_help_visible` into a strict boolean at API boundaries.
+  - Inspection workbench hydrates shortcut-help panel visibility from workspace state and persists visibility changes back to the server.
+  - Added PT1/PT2/PT3 × progressive synthetic-user coverage for shortcut-help hydration and workspace-state persistence semantics.
+- **Artifact for clean PR replay:** `docs/planning/pr15-split-artifact.md`.
+- **Next unimplemented PR slice:** PR-15 milestone 1 step 3 (part 2) — continue Epic 7 cross-surface workspace persistence rollout beyond shortcut-help visibility.
