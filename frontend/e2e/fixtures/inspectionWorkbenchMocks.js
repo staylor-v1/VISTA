@@ -61,6 +61,7 @@ const scenarioByUser = {
             { id: 'porosity', label: 'Porosity', color: '#8b5cf6' },
           ],
           segmentation_runs: [
+            'legacy-seg-entry',
             {
               run_id: 'seeded-seg-mid',
               axis: 'axial',
@@ -139,6 +140,7 @@ const scenarioByUser = {
             },
           ],
           measurement_runs: [
+            'legacy-measurement-entry',
             {
               run_id: 'seeded-measure-adv',
               status: 'completed',
@@ -182,8 +184,8 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
   const { batches, parts, workspaceState } = createMockData(scenario);
   const metadataNormalizationByScenario = {
     basic: {},
-    intermediate: { annotations: 1 },
-    advanced: { annotations: 2, segmentation_runs: 1, measurement_runs: 1 },
+    intermediate: { segmentation_runs: 1 },
+    advanced: { segmentation_runs: 1, measurement_runs: 1 },
   };
   const configurationByProjectId = {
     [projectId]: {
