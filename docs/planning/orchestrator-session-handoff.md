@@ -34,3 +34,9 @@ A task is done only when:
 - Backward compatibility or migration path is documented.
 - Error handling and observability are adequate.
 - Performance/latency impact is acceptable or measured.
+
+## Active session pointer (2026-04-04)
+
+- **Current milestone:** PR-14 milestone 1 step 1 (Project Data report normalization telemetry surface).
+- **Scope boundary for first implementation step:** frontend-only rendering of existing `report-json` telemetry contract (`summary.metadata_normalization.dropped_non_object_items`).
+- **Required tests:** existing React Testing Library matrix across project types (`PT1`,`PT2`,`PT3`) and progressive synthetic users (`basic`,`intermediate`,`advanced`).
