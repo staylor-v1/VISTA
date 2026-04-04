@@ -39,12 +39,32 @@ This artifact captures the combined implementation state for PR-15 milestone 1 s
    - Automated coverage:
      - `cd /workspace/VISTA/frontend && npm test -- --runInBand src/components/__tests__/InspectionWorkbenchPanel.test.js`
 
+3. **PR-15 milestone 1 step 3 (part 1) — Workspace-backed shortcut-help visibility persistence**
+   - Scope:
+     - Normalize workspace-state `inspector.shortcut_help_visible` as a strict boolean in backend router boundaries.
+     - Hydrate inspection workbench shortcut-help panel visibility from workspace state.
+     - Persist shortcut-help visibility changes in workspace autosave payloads.
+     - Extend PT1/PT2/PT3 progressive synthetic-user backend + frontend tests for shortcut-help workspace persistence.
+   - Files:
+     - `backend/routers/inspection_workbench.py`
+     - `backend/tests/test_inspection_workbench_router.py`
+     - `frontend/src/components/InspectionWorkbenchPanel.js`
+     - `frontend/src/components/__tests__/InspectionWorkbenchPanel.test.js`
+     - `docs/planning/feature-request-triage-2026-03-28.md`
+     - `docs/planning/orchestrator-session-handoff.md`
+     - `docs/planning/pr15-orchestrator-checklist.md`
+     - `docs/planning/pr15-split-artifact.md`
+   - Automated coverage:
+     - `cd /workspace/VISTA && uv run pytest -q backend/tests/test_inspection_workbench_router.py`
+     - `cd /workspace/VISTA/frontend && npm test -- --runInBand src/components/__tests__/InspectionWorkbenchPanel.test.js`
+
 ## Clean incremental PR replay artifact
 
 After validation of the combined app state, replay clean PRs in this order:
 
 1. `PR-15-m1-step1` — Start screen deletion governance hardening.
 2. `PR-15-m1-step2` — Configurable inspector hotkeys persistence.
+3. `PR-15-m1-step3-part1` — Workspace-backed shortcut-help visibility persistence.
 
 Replay PR requirements:
 - keep diff focused to milestone scope only,
@@ -55,4 +75,4 @@ Replay PR requirements:
 ## Remaining PR-15 backlog after this checkpoint
 
 - Select and scope PR-15 milestone 1 step 3 from Epic 7 (`per-user workspace persistence` cross-surface rollout, additional configurable hotkey governance, or deletion-governance follow-on UX).
-- Define explicit acceptance tests for the selected step before implementation.
+- Continue PR-15 milestone 1 step 3 with part 2 for additional cross-surface workspace preferences.
