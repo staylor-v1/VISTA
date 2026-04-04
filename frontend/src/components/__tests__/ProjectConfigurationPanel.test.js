@@ -43,15 +43,16 @@ function makeConfig(projectType, syntheticUser) {
   };
 }
 
-function mockFetch(config) {
+function mockFetch(config, projectType) {
+  const alternateProjectType = projectType === 'PT1' ? 'PT2' : 'PT1';
   global.fetch = jest.fn((url, options = {}) => {
     if (url === '/api/projects') {
       return Promise.resolve({
         ok: true,
         json: async () => [
-          { id: 'proj-1', name: 'Current Project', project_type: 'PT1' },
-          { id: 'proj-copy', name: 'Template Project', project_type: 'PT1' },
-          { id: 'proj-cross-type', name: 'Cross-Type Project', project_type: 'PT2' },
+          { id: 'proj-1', name: 'Current Project', project_type: projectType },
+          { id: 'proj-copy', name: 'Template Project', project_type: projectType },
+          { id: 'proj-cross-type', name: 'Cross-Type Project', project_type: alternateProjectType },
         ],
       });
     }
@@ -81,7 +82,7 @@ describe('ProjectConfigurationPanel', () => {
     syntheticUsers.forEach((syntheticUser) => {
       test(`loads and saves configuration for ${projectType} ${syntheticUser} synthetic user`, async () => {
         const config = makeConfig(projectType, syntheticUser);
-        mockFetch(config);
+        mockFetch(config, projectType);
 
         render(<ProjectConfigurationPanel projectId="proj-1" />);
 
@@ -100,7 +101,7 @@ describe('ProjectConfigurationPanel', () => {
 
       test(`supports defect type add/edit/remove for ${projectType} ${syntheticUser} synthetic user`, async () => {
         const config = makeConfig(projectType, syntheticUser);
-        mockFetch(config);
+        mockFetch(config, projectType);
 
         render(<ProjectConfigurationPanel projectId="proj-1" />);
 
@@ -133,7 +134,7 @@ describe('ProjectConfigurationPanel', () => {
 
       test(`supports image modality add/edit/remove for ${projectType} ${syntheticUser} synthetic user`, async () => {
         const config = makeConfig(projectType, syntheticUser);
-        mockFetch(config);
+        mockFetch(config, projectType);
 
         render(<ProjectConfigurationPanel projectId="proj-1" />);
 
@@ -167,7 +168,7 @@ describe('ProjectConfigurationPanel', () => {
 
       test(`supports configurable hotkeys edits for ${projectType} ${syntheticUser} synthetic user`, async () => {
         const config = makeConfig(projectType, syntheticUser);
-        mockFetch(config);
+        mockFetch(config, projectType);
 
         render(<ProjectConfigurationPanel projectId="proj-1" />);
 
@@ -206,7 +207,7 @@ describe('ProjectConfigurationPanel', () => {
       
       test(`blocks save and shows validation errors for ${projectType} ${syntheticUser} synthetic user`, async () => {
         const config = makeConfig(projectType, syntheticUser);
-        mockFetch(config);
+        mockFetch(config, projectType);
 
         render(<ProjectConfigurationPanel projectId="proj-1" />);
 
@@ -238,7 +239,7 @@ describe('ProjectConfigurationPanel', () => {
       });
 test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} synthetic user`, async () => {
         const config = makeConfig(projectType, syntheticUser);
-        mockFetch(config);
+        mockFetch(config, projectType);
 
         render(<ProjectConfigurationPanel projectId="proj-1" />);
 
@@ -285,7 +286,7 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
     syntheticUsers.forEach((syntheticUser) => {
       test(`copies configuration via clone endpoint for ${projectType} ${syntheticUser} synthetic user`, async () => {
         const config = makeConfig(projectType, syntheticUser);
-        mockFetch(config);
+        mockFetch(config, projectType);
 
         render(<ProjectConfigurationPanel projectId="proj-1" />);
 
@@ -308,15 +309,40 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
 
       test(`filters copy source projects by matching project type for ${projectType} ${syntheticUser} synthetic user`, async () => {
         const config = makeConfig(projectType, syntheticUser);
-        mockFetch(config);
+        mockFetch(config, projectType);
 
         render(<ProjectConfigurationPanel projectId="proj-1" />);
 
         await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
 
-        expect(screen.getByText(/Only PT1 source projects are listed/)).toBeInTheDocument();
+        expect(screen.getByText(new RegExp(`Only ${projectType} source projects are listed`))).toBeInTheDocument();
         expect(screen.getByRole('option', { name: 'Template Project' })).toBeInTheDocument();
         expect(screen.queryByRole('option', { name: 'Cross-Type Project' })).not.toBeInTheDocument();
+      });
+
+      test(`shows empty-state guidance when no same-type copy sources exist for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config, projectType);
+        const originalFetch = global.fetch;
+        const incompatibleType = projectType === 'PT1' ? 'PT2' : 'PT1';
+        global.fetch = jest.fn((url, options = {}) => {
+          if (url === '/api/projects') {
+            return Promise.resolve({
+              ok: true,
+              json: async () => [
+                { id: 'proj-1', name: 'Current Project', project_type: projectType },
+                { id: 'proj-cross-type', name: 'Cross-Type Project', project_type: incompatibleType },
+              ],
+            });
+          }
+          return originalFetch(url, options);
+        });
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
+        expect(screen.getByTestId('no-compatible-copy-sources')).toBeInTheDocument();
+        expect(screen.getByLabelText('Source project')).toBeDisabled();
       });
     });
   });
