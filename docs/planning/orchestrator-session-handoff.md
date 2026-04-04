@@ -85,3 +85,21 @@ A task is done only when:
 - Added execution artifact for clean incremental replay/submission after product inspection:
   - `docs/planning/orchestrator-next-pr-execution-artifact-2026-04-04.md`
 - Next unimplemented slice remains **none** in approved scope; begin at `PR-16-M2+` only with explicit contract approval.
+
+
+## Session update (2026-04-04, artifact-refresh)
+
+- Re-checked active planned scope across handoff and triage docs: no unfinished planned PR slices remain.
+- Added refreshed post-inspection clean replay/submission artifact:
+  - `docs/planning/orchestrator-post-inspection-pr-submission-artifact-2026-04-04-v2.md`
+- Required guardrail suites to preserve before replaying upstream PRs:
+  - `uv run pytest -q backend/tests/test_inspection_workbench_router.py`
+  - `npm test -- --runInBand src/components/__tests__/InspectionWorkbenchPanel.test.js`
+
+## Session update (2026-04-04, unified-planning-refresh)
+
+- Added a single consolidated PR-planning index for operators:
+  - `docs/planning/orchestrator-unified-pr-planning-2026-04-04.md`
+- Unified index covers replay status/order for `PR-07` through `PR-16` so planning is no longer fragmented across one or two series artifacts.
+- Keep per-slice artifacts for implementation detail, but start orchestration/replay from the unified index.
+
