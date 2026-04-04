@@ -139,3 +139,11 @@ A task is done only when:
 - Added/validated progressive synthetic-user coverage (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3` for the new guard behavior.
 - Replay/submission artifact:
   - `docs/planning/pr16-m3-replay-artifact.md`
+
+## Session update (2026-04-04, PR-16-M4 planning-state reconciliation)
+
+- Completed `PR-16-M4` documentation-scope reconciliation to align planning source-of-truth docs with delivered `PR-16-M3` state.
+- Added clean replay/submission artifact:
+  - `docs/planning/pr16-m4-replay-artifact.md`
+- Guardrail verification for this slice preserved required project-configuration/backend coverage, including progressive synthetic users (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3`.
+- Next implementation boundary: open `PR-16-M5+` only after explicit feature-contract approval.
