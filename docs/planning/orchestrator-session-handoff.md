@@ -111,3 +111,11 @@ A task is done only when:
 - Added clean replay/submission artifact:
   - `docs/planning/pr16-m2-replay-artifact.md`
 - Next unimplemented slice remains **none** in approved scope; begin at `PR-16-M3+` only with explicit contract approval.
+
+
+## Session update (2026-04-04, next-unimplemented execution request)
+
+- Reconfirmed there is no unfinished planned PR slice in approved scope (`PR-15` complete; `PR-16` complete through `PR-16-M2`).
+- Added operator artifact for post-inspection replay order and living checklist state:
+  - `docs/planning/orchestrator-next-unimplemented-pr-execution-2026-04-04.md`
+- Enforcement remains: require explicit feature-contract approval before beginning `PR-16-M3+`.

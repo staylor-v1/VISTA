@@ -14,7 +14,7 @@ This document consolidates PR planning/replay status into one source so operator
 | PR-13 | export/report option controls + adversarial normalization | Complete | `docs/planning/pr13-split-artifact.md` |
 | PR-14 | report telemetry UI + triage filtering + red/blue hardening | Complete | `docs/planning/pr14-split-artifact.md` |
 | PR-15 | `PR-15-M1` through `PR-15-M8` | Complete | `docs/planning/pr15-split-artifact.md`, `docs/planning/pr15-m8-replay-artifact.md` |
-| PR-16 | `PR-16-M1`, `PR-16-M1a` | Complete | `docs/planning/pr16-split-artifact.md`, `docs/planning/pr16-m1-replay-artifact.md` |
+| PR-16 | `PR-16-M1`, `PR-16-M1a`, `PR-16-M2` | Complete | `docs/planning/pr16-split-artifact.md`, `docs/planning/pr16-m1-replay-artifact.md`, `docs/planning/pr16-m2-replay-artifact.md` |
 
 ## 2) Single replay order (clean incremental upstream submission)
 
@@ -30,6 +30,7 @@ Submit in numeric order by series and slice:
 8. `PR-15-M1` → `PR-15-M8`
 9. `PR-16-M1`
 10. `PR-16-M1a`
+11. `PR-16-M2`
 
 ## 3) Acceptance gates before/after each replayed slice
 
@@ -63,3 +64,11 @@ When replaying slices that touch Project Configuration flows, also run:
 ## 6) Consolidation note
 
 This file is now the umbrella planning index for cross-series PR execution. Existing per-series docs remain as evidence and slice-level detail, but operators should start from this document for full-sequence planning.
+
+
+## 7) Session refresh (2026-04-04, next-unimplemented execution request)
+
+- Reconciled this unified index against both planning source docs and confirmed no unfinished planned PR slice remains in approved scope.
+- Recorded the execution artifact for post-inspection replay/submission and next-scope control:
+  - `docs/planning/orchestrator-next-unimplemented-pr-execution-2026-04-04.md`
+- Next implementation boundary remains unchanged: require explicit approval before opening `PR-16-M3+`.
