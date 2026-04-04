@@ -62,8 +62,10 @@ A task is done only when:
   - `npm test -- --runInBand src/components/__tests__/InspectionWorkbenchPanel.test.js`,
   - broader frontend/backend suites when scope expands.
 
-## Active follow-on pointer (2026-04-04)
+## Active follow-on pointer (2026-04-04, updated)
 
-- **Next unimplemented planned slice:** `PR-16-M1` (Feature request A5) — clone project configuration from an existing accessible project.
-- **Contract added for PR-16-M1:** `POST /api/projects/{project_id}/configuration/clone` with request body `{ "source_project_id": "<uuid>" }`.
-- **Replay artifact for clean incremental submission after inspection:** `docs/planning/pr16-split-artifact.md`.
+- **Current completed PR slices:**
+  - `PR-16-M1` — project configuration cloning contract, source-project access enforcement, and PT1/PT2/PT3 synthetic progressive-user coverage.
+  - `PR-16-M1a` — self-clone rejection guard (`source_project_id` must differ from route `project_id`) with dedicated cross-project-type regression tests.
+- **Replay artifacts for clean incremental PR submission:** `docs/planning/pr16-split-artifact.md`, `docs/planning/pr16-m1-replay-artifact.md`.
+- **Next scope boundary:** no open PR-16 slice; define `PR-16-M2+` only after explicit approval of the next feature contract.
