@@ -22,6 +22,7 @@ const scenarioByUser = [
       inspector: {
         shortcut_help_visible: false,
         normalization_triage_field: '',
+        image_enabled: true,
       },
     },
     batches: [{ id: 'batch-basic', name: 'Batch Basic' }],
@@ -77,6 +78,7 @@ const scenarioByUser = [
       inspector: {
         shortcut_help_visible: true,
         normalization_triage_field: 'segmentation_runs',
+        image_enabled: false,
       },
     },
     batches: [
@@ -168,6 +170,7 @@ const scenarioByUser = [
       inspector: {
         shortcut_help_visible: 'yes',
         normalization_triage_field: 73,
+        image_enabled: 'no',
       },
     },
     batches: [
@@ -540,8 +543,15 @@ describe('InspectionWorkbenchPanel', () => {
       });
 
       fireEvent.click(screen.getByTestId('toggle-image-visibility'));
+      const initialImageEnabled = typeof scenario.workspaceState?.inspector?.image_enabled === 'boolean'
+        ? scenario.workspaceState.inspector.image_enabled
+        : true;
       if (projectType === 'PT1') {
-        expect(screen.getAllByText('Image hidden').length).toBeGreaterThan(0);
+        if (initialImageEnabled) {
+          expect(screen.getAllByText('Image hidden').length).toBeGreaterThan(0);
+        } else {
+          expect(screen.getAllByText(/Mapped:|No image mapped/).length).toBeGreaterThan(0);
+        }
       }
 
       // Defect-centric filter
@@ -756,6 +766,10 @@ describe('InspectionWorkbenchPanel', () => {
         .getWorkspaceSaves()
         .map((entry) => entry?.state?.inspector?.normalization_triage_field);
       expect(savedTriageFields.every((value) => typeof value === 'string')).toBe(true);
+      const savedImageEnabledStates = workspaceTracker
+        .getWorkspaceSaves()
+        .map((entry) => entry?.state?.inspector?.image_enabled);
+      expect(savedImageEnabledStates.every((value) => typeof value === 'boolean')).toBe(true);
       unmount();
     }
   });
