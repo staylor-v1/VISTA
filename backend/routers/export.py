@@ -304,8 +304,17 @@ def _normalize_part_artifact_records(part_id, serial_number, annotations, overla
 def _normalize_metadata_dict_list(metadata_obj, key):
     candidate = metadata_obj.get(key)
     if not isinstance(candidate, list):
-        return []
-    return [item for item in candidate if isinstance(item, dict)]
+        return [], 0
+    normalized = []
+    dropped_count = 0
+    for item in candidate:
+        if isinstance(item, dict):
+            normalized.append(item)
+        elif key == "overlay_layers" and isinstance(item, str) and item.strip():
+            normalized.append({"id": item, "label": item})
+        else:
+            dropped_count += 1
+    return normalized, dropped_count
 
 
 @router.get("/projects/{project_id}/report-json")
@@ -351,6 +360,22 @@ async def export_project_report_json(
     )
     reviewed_parts = reviewed_parts_result.scalar_one()
 
+    part_metadata_result = await db.execute(
+        select(models.InspectionPart.metadata_json)
+        .where(models.InspectionPart.project_id == project_id)
+    )
+    metadata_drop_counts = {
+        "annotations": 0,
+        "overlay_layers": 0,
+        "segmentation_runs": 0,
+        "measurement_runs": 0,
+    }
+    for (metadata,) in part_metadata_result:
+        metadata_obj = metadata if isinstance(metadata, dict) else {}
+        for key in metadata_drop_counts:
+            _, dropped = _normalize_metadata_dict_list(metadata_obj, key)
+            metadata_drop_counts[key] += dropped
+
     report_payload = {
         "project": {
             "id": str(db_project.id),
@@ -364,6 +389,9 @@ async def export_project_report_json(
             "total_parts": total_parts,
             "reviewed_parts": reviewed_parts,
             "unreviewed_parts": max(total_parts - reviewed_parts, 0),
+            "metadata_normalization": {
+                "dropped_non_object_items": metadata_drop_counts,
+            },
         },
     }
     return JSONResponse(content=report_payload)
@@ -414,10 +442,10 @@ async def export_project_bundle_json(
 
     for part_id, serial_number, display_name, metadata in part_metadata_rows:
         metadata_obj = metadata if isinstance(metadata, dict) else {}
-        annotations = _normalize_metadata_dict_list(metadata_obj, "annotations")
-        overlay_layers = _normalize_metadata_dict_list(metadata_obj, "overlay_layers")
-        segmentation_runs = _normalize_metadata_dict_list(metadata_obj, "segmentation_runs")
-        measurement_runs = _normalize_metadata_dict_list(metadata_obj, "measurement_runs")
+        annotations, dropped_annotations = _normalize_metadata_dict_list(metadata_obj, "annotations")
+        overlay_layers, dropped_overlay_layers = _normalize_metadata_dict_list(metadata_obj, "overlay_layers")
+        segmentation_runs, dropped_segmentation_runs = _normalize_metadata_dict_list(metadata_obj, "segmentation_runs")
+        measurement_runs, dropped_measurement_runs = _normalize_metadata_dict_list(metadata_obj, "measurement_runs")
 
         annotations_count += len(annotations)
         overlay_layer_count += len(overlay_layers)
@@ -437,6 +465,12 @@ async def export_project_bundle_json(
 
         incomplete_annotations = normalized_records["incomplete_annotations"]
         missing_measurement_ids = normalized_records["missing_measurement_ids"]
+        dropped_metadata_items = (
+            dropped_annotations
+            + dropped_overlay_layers
+            + dropped_segmentation_runs
+            + dropped_measurement_runs
+        )
 
         discrepancy_codes = []
         if segmentation_runs and not overlay_layers:
@@ -445,6 +479,8 @@ async def export_project_bundle_json(
             discrepancy_codes.append("incomplete_annotation_fields")
         if missing_measurement_ids:
             discrepancy_codes.append("measurement_run_missing_run_id")
+        if dropped_metadata_items:
+            discrepancy_codes.append("metadata_items_dropped_non_object")
 
         part_discrepancy_summaries.append(
             {
@@ -458,6 +494,7 @@ async def export_project_bundle_json(
                     "measurement_runs": len(measurement_runs),
                     "incomplete_annotations": incomplete_annotations,
                     "measurement_runs_missing_run_id": missing_measurement_ids,
+                    "dropped_non_object_metadata_items": dropped_metadata_items,
                 },
                 "discrepancy_codes": discrepancy_codes,
             }
