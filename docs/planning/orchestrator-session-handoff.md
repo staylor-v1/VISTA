@@ -103,3 +103,11 @@ A task is done only when:
 - Unified index covers replay status/order for `PR-07` through `PR-16` so planning is no longer fragmented across one or two series artifacts.
 - Keep per-slice artifacts for implementation detail, but start orchestration/replay from the unified index.
 
+
+## Session update (2026-04-04, PR-16-M2 frontend clone integration)
+
+- Implemented `PR-16-M2`: Project Configuration copy flow now calls the clone API directly (`POST /api/projects/{project_id}/configuration/clone`) and hydrates returned config payload.
+- Extended existing frontend RTL matrix coverage to validate clone endpoint usage for three synthetic users (`basic`, `intermediate`, `advanced`) across each project type (`PT1`, `PT2`, `PT3`).
+- Added clean replay/submission artifact:
+  - `docs/planning/pr16-m2-replay-artifact.md`
+- Next unimplemented slice remains **none** in approved scope; begin at `PR-16-M3+` only with explicit contract approval.

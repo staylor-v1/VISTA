@@ -199,3 +199,10 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - This unified doc now serves as the first-stop source for replay/submission planning across `PR-07` through `PR-16`.
 - Existing per-series split/checklist artifacts remain as slice-level detail and evidence.
 
+
+## Incremental execution status (2026-04-04, PR-16-M2 frontend clone integration)
+
+- **Completed PR slices:**
+  - `PR-16-M2`: Project Configuration UI now clones from existing project via `POST /api/projects/{project_id}/configuration/clone` instead of client-side GET+PUT chaining.
+- **Replay/submission artifact:** `docs/planning/pr16-m2-replay-artifact.md`.
+- **Next unimplemented PR slice:** none currently planned; open `PR-16-M3+` only after explicit feature-contract approval.
