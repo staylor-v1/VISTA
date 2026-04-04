@@ -49,8 +49,9 @@ function mockFetch(config) {
       return Promise.resolve({
         ok: true,
         json: async () => [
-          { id: 'proj-1', name: 'Current Project' },
-          { id: 'proj-copy', name: 'Template Project' },
+          { id: 'proj-1', name: 'Current Project', project_type: 'PT1' },
+          { id: 'proj-copy', name: 'Template Project', project_type: 'PT1' },
+          { id: 'proj-cross-type', name: 'Cross-Type Project', project_type: 'PT2' },
         ],
       });
     }
@@ -303,6 +304,19 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
           );
           expect(screen.getByText('Configuration copied from existing project.')).toBeInTheDocument();
         });
+      });
+
+      test(`filters copy source projects by matching project type for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config);
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
+
+        expect(screen.getByText(/Only PT1 source projects are listed/)).toBeInTheDocument();
+        expect(screen.getByRole('option', { name: 'Template Project' })).toBeInTheDocument();
+        expect(screen.queryByRole('option', { name: 'Cross-Type Project' })).not.toBeInTheDocument();
       });
     });
   });
