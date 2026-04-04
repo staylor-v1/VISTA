@@ -40,6 +40,7 @@ WORKSPACE_PANEL_LAYOUT_DEFAULTS = {
 }
 WORKSPACE_INSPECTOR_DEFAULTS = {
     "shortcut_help_visible": False,
+    "normalization_triage_field": "",
 }
 
 
@@ -129,9 +130,16 @@ def _normalize_workspace_state(raw_state: object) -> dict:
         if isinstance(shortcut_help_visible, bool)
         else WORKSPACE_INSPECTOR_DEFAULTS["shortcut_help_visible"]
     )
+    normalization_triage_field = inspector_candidate.get("normalization_triage_field")
+    normalized_triage_field = (
+        str(normalization_triage_field).strip()
+        if isinstance(normalization_triage_field, str)
+        else WORKSPACE_INSPECTOR_DEFAULTS["normalization_triage_field"]
+    )
     safe_state["inspector"] = {
         **inspector_candidate,
         "shortcut_help_visible": normalized_shortcut_help_visible,
+        "normalization_triage_field": normalized_triage_field,
     }
     return safe_state
 

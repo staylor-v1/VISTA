@@ -484,8 +484,13 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   }, [selectedPart, projectType, mprDimensions, workspaceHydration]);
 
   useEffect(() => {
-    if (!selectedPart) return;
     const savedInspector = workspaceHydration?.inspector || {};
+    setNormalizationTriageField(
+      typeof savedInspector.normalization_triage_field === 'string'
+        ? savedInspector.normalization_triage_field
+        : '',
+    );
+    if (!selectedPart) return;
     const savedModalities = Array.isArray(savedInspector.modalities)
       ? savedInspector.modalities.map((value) => String(value))
       : [];
@@ -564,6 +569,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                 view_name: activeViewName || '',
                 image_enabled: imageEnabled,
                 shortcut_help_visible: shortcutHelpVisible,
+                normalization_triage_field: normalizationTriageField || '',
                 measurements: measurementEntries,
                 viewport_transform: inspectorViewport,
               },
@@ -587,6 +593,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     shortcutHelpVisible,
     loading,
     measurementEntries,
+    normalizationTriageField,
     inspectorViewport,
     panelLayout,
     projectId,
