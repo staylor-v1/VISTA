@@ -185,3 +185,13 @@ Existing planning docs currently focus on auth architecture and test remediation
   - Added PT1/PT2/PT3 × progressive synthetic-user coverage in backend and frontend tests for image-visibility hydration + persistence semantics.
 - **Artifact for clean PR replay:** `docs/planning/pr15-split-artifact.md`.
 - **Next unimplemented PR slice:** PR-15 milestone 1 step 3 (part 2 / step 3) — continue Epic 7 workspace rollout for remaining cross-surface preferences.
+
+## Incremental execution status (2026-04-04, update 6)
+
+- **Completed this session:** PR-15 milestone 1 step 3 (part 2 / step 3) — persisted inspector modalities/view selection with strict workspace typing.
+- **Delivered scope highlights:**
+  - Workspace-state normalization now hardens `inspector.modalities` to list semantics.
+  - Workspace-state normalization now hardens `inspector.view_name` to string semantics.
+  - Added PT1/PT2/PT3 × progressive synthetic-user backend + frontend coverage for modality/view hydration and workspace-state persistence semantics.
+- **Artifact for clean PR replay:** `docs/planning/pr15-split-artifact.md`.
+- **Next unimplemented PR slice:** PR-15 milestone 1 step 3 (part 2 / step 4) — continue Epic 7 workspace rollout for additional cross-surface preferences.

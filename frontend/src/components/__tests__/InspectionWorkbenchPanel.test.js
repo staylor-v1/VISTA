@@ -23,6 +23,8 @@ const scenarioByUser = [
         shortcut_help_visible: false,
         normalization_triage_field: '',
         image_enabled: true,
+        modalities: ['visual'],
+        view_name: 'front',
       },
     },
     batches: [{ id: 'batch-basic', name: 'Batch Basic' }],
@@ -79,6 +81,8 @@ const scenarioByUser = [
         shortcut_help_visible: true,
         normalization_triage_field: 'segmentation_runs',
         image_enabled: false,
+        modalities: ['infrared'],
+        view_name: 'left',
       },
     },
     batches: [
@@ -171,6 +175,8 @@ const scenarioByUser = [
         shortcut_help_visible: 'yes',
         normalization_triage_field: 73,
         image_enabled: 'no',
+        modalities: 'not-a-list',
+        view_name: 45,
       },
     },
     batches: [
@@ -770,6 +776,14 @@ describe('InspectionWorkbenchPanel', () => {
         .getWorkspaceSaves()
         .map((entry) => entry?.state?.inspector?.image_enabled);
       expect(savedImageEnabledStates.every((value) => typeof value === 'boolean')).toBe(true);
+      const savedModalities = workspaceTracker
+        .getWorkspaceSaves()
+        .map((entry) => entry?.state?.inspector?.modalities);
+      expect(savedModalities.every((value) => Array.isArray(value))).toBe(true);
+      const savedViewNames = workspaceTracker
+        .getWorkspaceSaves()
+        .map((entry) => entry?.state?.inspector?.view_name);
+      expect(savedViewNames.every((value) => typeof value === 'string')).toBe(true);
       unmount();
     }
   });
