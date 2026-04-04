@@ -388,3 +388,14 @@ When preparing upstream PRs:
   - toggle `source` (`manual`/`auto`) and remove part-view rows before save.
 - Preserved the existing configuration API contract (`PUT /api/projects/{project_id}/configuration`) and reused current payload shape without schema migration.
 - Extended existing React Testing Library coverage for all project types (`PT1`, `PT2`, `PT3`) and progressive synthetic users (`basic`, `intermediate`, `advanced`) to validate part-view add/edit/remove flows and persisted payload updates.
+
+
+#### PR-11 milestone 2 (step 6 implemented in artifact branch)
+- Added client-side save-time validation guardrails in `ProjectConfigurationPanel` to prevent malformed payloads before API submission.
+- Added validation rules for:
+  - unique image-modality identifiers and required id/label presence,
+  - unique part-view identifiers and required id/label presence,
+  - part-view required modalities constrained to configured image modalities,
+  - defect-type hex-color format enforcement,
+  - configurable hotkey uniqueness and single alphanumeric-key requirements.
+- Extended existing React Testing Library matrix (three progressive synthetic users across `PT1`/`PT2`/`PT3`) to verify invalid configurations are blocked locally and surfaced with actionable errors.
