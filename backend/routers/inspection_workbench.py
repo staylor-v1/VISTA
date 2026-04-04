@@ -44,6 +44,7 @@ WORKSPACE_INSPECTOR_DEFAULTS = {
     "image_enabled": True,
     "modalities": [],
     "view_name": "",
+    "viewport_transform": {"zoom": 1.0, "panX": 0, "panY": 0},
 }
 
 
@@ -157,6 +158,32 @@ def _normalize_workspace_state(raw_state: object) -> dict:
         if isinstance(view_name, str)
         else WORKSPACE_INSPECTOR_DEFAULTS["view_name"]
     )
+    viewport_transform = inspector_candidate.get("viewport_transform")
+    viewport_candidate = viewport_transform if isinstance(viewport_transform, dict) else {}
+    default_viewport = WORKSPACE_INSPECTOR_DEFAULTS["viewport_transform"]
+    normalized_viewport_transform = {
+        "zoom": max(
+            0.5,
+            min(
+                4.0,
+                float(viewport_candidate.get("zoom", default_viewport["zoom"]))
+                if isinstance(viewport_candidate.get("zoom", default_viewport["zoom"]), (int, float))
+                else float(default_viewport["zoom"]),
+            ),
+        ),
+        "panX": _normalize_panel_dimension(
+            viewport_candidate.get("panX"),
+            fallback=default_viewport["panX"],
+            minimum=-200,
+            maximum=200,
+        ),
+        "panY": _normalize_panel_dimension(
+            viewport_candidate.get("panY"),
+            fallback=default_viewport["panY"],
+            minimum=-200,
+            maximum=200,
+        ),
+    }
     safe_state["inspector"] = {
         **inspector_candidate,
         "shortcut_help_visible": normalized_shortcut_help_visible,
@@ -164,6 +191,7 @@ def _normalize_workspace_state(raw_state: object) -> dict:
         "image_enabled": normalized_image_enabled,
         "modalities": normalized_modalities,
         "view_name": normalized_view_name,
+        "viewport_transform": normalized_viewport_transform,
     }
     return safe_state
 
