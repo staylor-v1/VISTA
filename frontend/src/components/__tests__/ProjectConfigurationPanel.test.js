@@ -170,6 +170,24 @@ function mockFetch(config, projectType, mockOptions = {}) {
           }),
         });
       }
+      if (mockOptions.cloneInvalidConfigRelationalFields) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            config: {
+              ...config,
+              image_modalities: [
+                { id: 'duplicate-id', label: 'Modality 1' },
+                { id: 'duplicate-id', label: 'Modality 2' },
+              ],
+              part_views: [
+                { id: 'view-1', label: 'View 1', required_modalities: ['duplicate-id'] },
+                { id: 'view-1', label: 'View 2', required_modalities: ['missing-modality'] },
+              ],
+            },
+          }),
+        });
+      }
       return Promise.resolve({ ok: true, json: async () => ({ config: { ...config, defect_types: [] } }) });
     }
 
@@ -588,6 +606,23 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
 
         await waitFor(() => {
           expect(screen.getByText('Failed to copy project configuration (invalid config hotkey domain fields)')).toBeInTheDocument();
+        });
+        expect(screen.queryByText('Configuration copied from Template Project.')).not.toBeInTheDocument();
+      });
+
+      test(`rejects clone success payloads with invalid config relational fields for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config, projectType, { cloneInvalidConfigRelationalFields: true });
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText('Source project'), { target: { value: 'proj-copy' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Copy from Project' }));
+
+        await waitFor(() => {
+          expect(screen.getByText('Failed to copy project configuration (invalid config relational fields)')).toBeInTheDocument();
         });
         expect(screen.queryByText('Configuration copied from Template Project.')).not.toBeInTheDocument();
       });
