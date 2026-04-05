@@ -316,3 +316,14 @@ A task is done only when:
 - Replay/submission artifact:
   - `docs/planning/pr16-m19-replay-artifact.md`
 - Next implementation boundary: open `PR-16-M20+` only after explicit feature-contract approval.
+
+## Session update (2026-04-05, PR-16-M20 clone defect-name uniqueness contract hardening)
+
+- Started and completed `PR-16-M20` under explicit next-unimplemented-slice direction.
+- Delivered:
+  - Project Configuration clone flow now validates defect-name uniqueness (case-insensitive) before hydration.
+  - Clone success responses with duplicated defect names now surface explicit operator errors instead of silently hydrating ambiguous defect-type state.
+- Progressive synthetic-user coverage preserved (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3` with duplicate-defect-name clone-response assertions.
+- Replay/submission artifact:
+  - `docs/planning/pr16-m20-replay-artifact.md`
+- Next implementation boundary: open `PR-16-M21+` only after explicit feature-contract approval.
