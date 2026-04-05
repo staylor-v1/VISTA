@@ -271,3 +271,15 @@ A task is done only when:
   - `docs/planning/pr16-m15-replay-artifact.md`
 - Next implementation boundary: open `PR-16-M16+` only after explicit feature-contract approval.
 
+
+
+## Session update (2026-04-05, PR-16-M16 clone domain-enum contract hardening)
+
+- Started and completed `PR-16-M16` under explicit next-unimplemented-slice direction.
+- Delivered:
+  - Project Configuration clone flow now validates enum-backed domain values before hydration.
+  - Clone success responses with unsupported `part_views[].source` or unsupported `display_settings` colormaps now surface explicit operator errors.
+- Progressive synthetic-user coverage preserved (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3` with invalid-domain clone-response assertions.
+- Replay/submission artifact:
+  - `docs/planning/pr16-m16-replay-artifact.md`
+- Next implementation boundary: open `PR-16-M17+` only after explicit feature-contract approval.
