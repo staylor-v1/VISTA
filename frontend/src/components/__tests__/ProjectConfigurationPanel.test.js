@@ -316,8 +316,27 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
               body: JSON.stringify({ source_project_id: 'proj-copy' }),
             }),
           );
-          expect(screen.getByText('Configuration copied from existing project.')).toBeInTheDocument();
+          expect(screen.getByText('Configuration copied from Template Project.')).toBeInTheDocument();
         });
+      });
+
+      test(`resets clone source selection after successful copy for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config, projectType);
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText('Source project'), { target: { value: 'proj-copy' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Copy from Project' }));
+
+        await waitFor(() => {
+          expect(screen.getByText('Configuration copied from Template Project.')).toBeInTheDocument();
+        });
+
+        expect(screen.getByLabelText('Source project')).toHaveValue('');
+        expect(screen.getByRole('button', { name: 'Copy from Project' })).toBeDisabled();
       });
 
 
@@ -336,7 +355,7 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
         await waitFor(() => {
           expect(screen.getByText(cloneFailureDetail)).toBeInTheDocument();
         });
-        expect(screen.queryByText('Configuration copied from existing project.')).not.toBeInTheDocument();
+        expect(screen.queryByText('Configuration copied from Template Project.')).not.toBeInTheDocument();
       });
 
       test(`clears clone status alerts when source project selection changes for ${projectType} ${syntheticUser} synthetic user`, async () => {
@@ -351,12 +370,12 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
         fireEvent.click(screen.getByRole('button', { name: 'Copy from Project' }));
 
         await waitFor(() => {
-          expect(screen.getByText('Configuration copied from existing project.')).toBeInTheDocument();
+          expect(screen.getByText('Configuration copied from Template Project.')).toBeInTheDocument();
         });
 
         fireEvent.change(screen.getByLabelText('Source project'), { target: { value: 'proj-copy-2' } });
 
-        expect(screen.queryByText('Configuration copied from existing project.')).not.toBeInTheDocument();
+        expect(screen.queryByText('Configuration copied from Template Project.')).not.toBeInTheDocument();
       });
 
       test(`filters copy source projects by matching project type for ${projectType} ${syntheticUser} synthetic user`, async () => {
@@ -419,7 +438,7 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
             ([url, options = {}]) => url === '/api/projects/proj-1/configuration/clone' && options.method === 'POST',
           );
           expect(cloneCalls).toHaveLength(1);
-          expect(screen.getByText('Configuration copied from existing project.')).toBeInTheDocument();
+          expect(screen.getByText('Configuration copied from Template Project.')).toBeInTheDocument();
         });
       });
     });
