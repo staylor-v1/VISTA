@@ -152,6 +152,24 @@ function mockFetch(config, projectType, mockOptions = {}) {
           }),
         });
       }
+      if (mockOptions.cloneInvalidConfigHotkeyDomainFields) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            config: {
+              ...config,
+              process_settings: {
+                ...config.process_settings,
+                configurable_hotkeys: {
+                  accept_classification: 'aa',
+                  reject_classification: 'aa',
+                  toggle_shortcut_help: 'h',
+                },
+              },
+            },
+          }),
+        });
+      }
       return Promise.resolve({ ok: true, json: async () => ({ config: { ...config, defect_types: [] } }) });
     }
 
@@ -553,6 +571,23 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
 
         await waitFor(() => {
           expect(screen.getByText('Failed to copy project configuration (invalid config domain fields)')).toBeInTheDocument();
+        });
+        expect(screen.queryByText('Configuration copied from Template Project.')).not.toBeInTheDocument();
+      });
+
+      test(`rejects clone success payloads with invalid config hotkey domain fields for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config, projectType, { cloneInvalidConfigHotkeyDomainFields: true });
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText('Source project'), { target: { value: 'proj-copy' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Copy from Project' }));
+
+        await waitFor(() => {
+          expect(screen.getByText('Failed to copy project configuration (invalid config hotkey domain fields)')).toBeInTheDocument();
         });
         expect(screen.queryByText('Configuration copied from Template Project.')).not.toBeInTheDocument();
       });
