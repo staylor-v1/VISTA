@@ -72,6 +72,23 @@ function getCloneConfigOrThrow(cloneResponseData) {
     throw new Error('Failed to copy project configuration (invalid config scalar fields)');
   }
 
+  const hasValidSettingsFields =
+    typeof clonedConfig.process_settings.require_disposition_on_submit === 'boolean' &&
+    typeof clonedConfig.process_settings.require_measurement_for_critical === 'boolean' &&
+    typeof clonedConfig.process_settings.require_second_reviewer_for_reject === 'boolean' &&
+    clonedConfig.process_settings.configurable_hotkeys &&
+    typeof clonedConfig.process_settings.configurable_hotkeys === 'object' &&
+    typeof clonedConfig.process_settings.configurable_hotkeys.accept_classification === 'string' &&
+    typeof clonedConfig.process_settings.configurable_hotkeys.reject_classification === 'string' &&
+    typeof clonedConfig.process_settings.configurable_hotkeys.toggle_shortcut_help === 'string' &&
+    typeof clonedConfig.display_settings.default_colormap === 'string' &&
+    typeof clonedConfig.display_settings.anomaly_colormap === 'string' &&
+    typeof clonedConfig.display_settings.grayscale_base_image === 'boolean';
+
+  if (!hasValidSettingsFields) {
+    throw new Error('Failed to copy project configuration (invalid config settings fields)');
+  }
+
   return clonedConfig;
 }
 
