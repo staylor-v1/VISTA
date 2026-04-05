@@ -326,3 +326,12 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - **Replay/submission artifact:** `docs/planning/pr16-m15-replay-artifact.md`.
 - **Next unimplemented PR slice:** open `PR-16-M16+` only after explicit feature-contract approval.
 
+
+
+## Incremental execution status (2026-04-05, PR-16-M16 clone domain-enum contract hardening)
+
+- **Completed PR slices:**
+  - `PR-16-M16`: hardened frontend clone handling to reject successful clone payloads that contain out-of-contract domain values for enum-backed fields (`part_views[].source`, `display_settings.default_colormap`, `display_settings.anomaly_colormap`).
+- **Why this slice exists:** type checks alone cannot prevent enum drift (for example `source: "api"` or unsupported colormaps) from silently hydrating invalid state that misrepresents available UI options.
+- **Replay/submission artifact:** `docs/planning/pr16-m16-replay-artifact.md`.
+- **Next unimplemented PR slice:** open `PR-16-M17+` only after explicit feature-contract approval.
