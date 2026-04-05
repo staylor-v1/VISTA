@@ -21,7 +21,22 @@ function getCloneConfigOrThrow(cloneResponseData) {
   if (!cloneResponseData || typeof cloneResponseData !== 'object' || !cloneResponseData.config) {
     throw new Error('Failed to copy project configuration (missing config payload)');
   }
-  return cloneResponseData.config;
+  const clonedConfig = cloneResponseData.config;
+  const hasValidTopLevelShape =
+    typeof clonedConfig === 'object' &&
+    Array.isArray(clonedConfig.image_modalities) &&
+    Array.isArray(clonedConfig.part_views) &&
+    Array.isArray(clonedConfig.defect_types) &&
+    clonedConfig.process_settings &&
+    typeof clonedConfig.process_settings === 'object' &&
+    clonedConfig.display_settings &&
+    typeof clonedConfig.display_settings === 'object';
+
+  if (!hasValidTopLevelShape) {
+    throw new Error('Failed to copy project configuration (invalid config payload shape)');
+  }
+
+  return clonedConfig;
 }
 
 function validateConfiguration(config) {
