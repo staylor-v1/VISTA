@@ -1,14 +1,14 @@
 # PR-16 Orchestrator Living Checklist (2026-04-05)
 
 ## Current milestone
-- **PR-16-M18**: clone relational-integrity contract hardening for malformed successful clone payload graph relationships (duplicate modality/view IDs and unknown required modality references).
+- **PR-16-M19**: clone semantic-value contract hardening for malformed successful clone payloads that contain blank identifiers/labels/names or non-hex defect colors.
 
 ## Files changed in this milestone
 - `frontend/src/components/ProjectConfigurationPanel.js`
 - `frontend/src/components/__tests__/ProjectConfigurationPanel.test.js`
 - `docs/planning/feature-request-triage-2026-03-28.md`
 - `docs/planning/orchestrator-session-handoff.md`
-- `docs/planning/pr16-m18-replay-artifact.md`
+- `docs/planning/pr16-m19-replay-artifact.md`
 - `docs/planning/pr16-orchestrator-checklist.md`
 
 ## Tests
@@ -18,6 +18,7 @@
 ## Reviewer notes (edge cases / security / architecture)
 - Clone success handling now enforces top-level, entry-level, scalar-field, settings-field, domain-enum, and hotkey-domain payload contracts for clone responses.
 - Relational-integrity hardening prevents duplicate cloned modality/view IDs and unknown part-view modality references from silently hydrating and destabilizing downstream save/edit workflows.
+- Semantic-value hardening now blocks clone payloads that pass type/domain/relational checks but still contain blank or invalid scalar content that violates save-time expectations.
 - Existing clone API contract remains unchanged (`POST /api/projects/{project_id}/configuration/clone` with `{ source_project_id }`).
 - UI continues to surface backend-provided `detail` when available and falls back to explicit contract errors when success payload shape is invalid.
 
@@ -41,7 +42,8 @@
 - [x] `PR-16-M16` clone domain-enum contract hardening.
 - [x] `PR-16-M17` clone hotkey-domain contract hardening.
 - [x] `PR-16-M18` clone relational-integrity contract hardening.
-- [ ] `PR-16-M19+` pending explicit approval of next feature-request contract.
+- [x] `PR-16-M19` clone semantic-value contract hardening.
+- [ ] `PR-16-M20+` pending explicit approval of next feature-request contract.
 
 ## Risks / blockers
 - `browser_container` is unavailable in this execution environment; Playwright-based screenshot capture + analytics were used as fallback evidence.
