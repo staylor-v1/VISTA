@@ -36,6 +36,24 @@ function getCloneConfigOrThrow(cloneResponseData) {
     throw new Error('Failed to copy project configuration (invalid config payload shape)');
   }
 
+  const hasValidCollectionEntries =
+    clonedConfig.image_modalities.every(
+      (modality) => modality && typeof modality === 'object',
+    ) &&
+    clonedConfig.part_views.every(
+      (partView) =>
+        partView &&
+        typeof partView === 'object' &&
+        Array.isArray(partView.required_modalities || []),
+    ) &&
+    clonedConfig.defect_types.every(
+      (defectType) => defectType && typeof defectType === 'object',
+    );
+
+  if (!hasValidCollectionEntries) {
+    throw new Error('Failed to copy project configuration (invalid config payload entries)');
+  }
+
   return clonedConfig;
 }
 
