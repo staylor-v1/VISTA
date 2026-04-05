@@ -1,30 +1,37 @@
-# PR-16 Orchestrator Living Checklist (2026-04-04)
+# PR-16 Orchestrator Living Checklist (2026-04-05)
 
 ## Current milestone
-- **PR-16-M2**: Project configuration clone UI integration.
+- **PR-16-M10**: clone error parsing hardening for non-JSON failure bodies.
 
 ## Files changed in this milestone
 - `frontend/src/components/ProjectConfigurationPanel.js`
 - `frontend/src/components/__tests__/ProjectConfigurationPanel.test.js`
 - `docs/planning/feature-request-triage-2026-03-28.md`
 - `docs/planning/orchestrator-session-handoff.md`
-- `docs/planning/pr16-m2-replay-artifact.md`
+- `docs/planning/pr16-m10-replay-artifact.md`
 - `docs/planning/pr16-orchestrator-checklist.md`
 
 ## Tests
 - [x] `cd /workspace/VISTA/frontend && npm test -- --runInBand src/components/__tests__/ProjectConfigurationPanel.test.js`
-- [x] `cd /workspace/VISTA && uv run pytest -q backend/tests/test_inspection_workbench_router.py -k project_configuration_clone`
 
 ## Reviewer notes (edge cases / security / architecture)
-- UI copy flow now delegates clone persistence to backend clone endpoint and no longer executes a client-side GET+PUT chain.
-- Clone requests submit only `source_project_id`; source/target authorization remains enforced server-side.
-- Success messaging is only shown after clone API success, preserving failure visibility when clone requests fail.
+- Clone error handling now safely tolerates non-JSON response bodies by using a guarded JSON parse path.
+- Existing clone API contract remains unchanged (`POST /api/projects/{project_id}/configuration/clone` with `{ source_project_id }`).
+- UI continues to surface backend-provided `detail` when available and falls back to status-based errors when unavailable.
 
 ## Remaining PR-16 milestones
 - [x] `PR-16-M1` configuration clone API baseline.
 - [x] `PR-16-M1a` self-clone guard.
 - [x] `PR-16-M2` frontend clone API integration.
-- [ ] `PR-16-M3+` pending explicit approval of next feature-request contract.
+- [x] `PR-16-M3` clone source/target project-type compatibility enforcement.
+- [x] `PR-16-M4` planning-state reconciliation.
+- [x] `PR-16-M5` clone-source empty-state UX hardening.
+- [x] `PR-16-M6` clone error detail surfacing + stale-source reset.
+- [x] `PR-16-M7` clone feedback reset hardening.
+- [x] `PR-16-M8` clone in-flight submission hardening.
+- [x] `PR-16-M9` post-clone source reset hardening.
+- [x] `PR-16-M10` clone error parsing hardening.
+- [ ] `PR-16-M11+` pending explicit approval of next feature-request contract.
 
 ## Risks / blockers
-- Playwright browser binaries are not yet installed in this environment, so screenshot-based E2E visual verification is currently blocked.
+- Browser-based screenshot/visual analytics tooling (`browser_container`) is unavailable in this execution environment, so visual screenshot analysis remains blocked for this slice.
