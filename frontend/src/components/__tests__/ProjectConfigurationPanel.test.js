@@ -112,6 +112,31 @@ function mockFetch(config, projectType, mockOptions = {}) {
           }),
         });
       }
+      if (mockOptions.cloneInvalidConfigSettingsFields) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            config: {
+              ...config,
+              process_settings: {
+                require_disposition_on_submit: 'yes',
+                require_measurement_for_critical: true,
+                require_second_reviewer_for_reject: false,
+                configurable_hotkeys: {
+                  accept_classification: 'a',
+                  reject_classification: 9,
+                  toggle_shortcut_help: 'h',
+                },
+              },
+              display_settings: {
+                default_colormap: 'grayscale',
+                anomaly_colormap: 'viridis',
+                grayscale_base_image: 'true',
+              },
+            },
+          }),
+        });
+      }
       return Promise.resolve({ ok: true, json: async () => ({ config: { ...config, defect_types: [] } }) });
     }
 
@@ -479,6 +504,23 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
 
         await waitFor(() => {
           expect(screen.getByText('Failed to copy project configuration (invalid config scalar fields)')).toBeInTheDocument();
+        });
+        expect(screen.queryByText('Configuration copied from Template Project.')).not.toBeInTheDocument();
+      });
+
+      test(`rejects clone success payloads with invalid config settings fields for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config, projectType, { cloneInvalidConfigSettingsFields: true });
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText('Source project'), { target: { value: 'proj-copy' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Copy from Project' }));
+
+        await waitFor(() => {
+          expect(screen.getByText('Failed to copy project configuration (invalid config settings fields)')).toBeInTheDocument();
         });
         expect(screen.queryByText('Configuration copied from Template Project.')).not.toBeInTheDocument();
       });
