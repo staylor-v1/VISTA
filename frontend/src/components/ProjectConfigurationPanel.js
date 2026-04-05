@@ -101,6 +101,20 @@ function getCloneConfigOrThrow(cloneResponseData) {
     throw new Error('Failed to copy project configuration (invalid config domain fields)');
   }
 
+  const cloneHotkeys = clonedConfig.process_settings.configurable_hotkeys || {};
+  const normalizedCloneHotkeys = [
+    normalizeLower(cloneHotkeys.accept_classification),
+    normalizeLower(cloneHotkeys.reject_classification),
+    normalizeLower(cloneHotkeys.toggle_shortcut_help),
+  ];
+  const hasValidHotkeyDomainFields =
+    normalizedCloneHotkeys.every((hotkeyValue) => isSingleAlphanumeric(hotkeyValue)) &&
+    new Set(normalizedCloneHotkeys).size === normalizedCloneHotkeys.length;
+
+  if (!hasValidHotkeyDomainFields) {
+    throw new Error('Failed to copy project configuration (invalid config hotkey domain fields)');
+  }
+
   return clonedConfig;
 }
 
