@@ -367,3 +367,12 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - **Why this slice exists:** prior semantic checks allowed non-empty defect names but did not prevent duplicate semantic labels from silently hydrating and degrading downstream defect triage and reporting workflows.
 - **Replay/submission artifact:** `docs/planning/pr16-m20-replay-artifact.md`.
 - **Next unimplemented PR slice:** open `PR-16-M21+` only after explicit feature-contract approval.
+
+## Incremental execution status (2026-04-05, PR-16-M21 planning admission gate + clean replay artifact refresh)
+
+- **Completed PR slices:**
+  - `PR-16-M21` (planning/control slice): recorded explicit post-`PR-16-M20` queue state and created a clean replay/submission artifact for operator inspection handoff.
+- **Why this slice exists:** after closing the clone-hardening chain through `PR-16-M20`, orchestration needed an explicit no-hidden-scope checkpoint before any new feature contract is admitted.
+- **Replay/submission artifact:** `docs/planning/orchestrator-next-pr-execution-artifact-2026-04-05.md`.
+- **Screenshot analytics artifact:** `docs/planning/pr16-m21-screenshot-analysis.md`.
+- **Next unimplemented PR slice:** open `PR-16-M22+` only after explicit feature-contract approval.
