@@ -80,6 +80,9 @@ function mockFetch(config, projectType, mockOptions = {}) {
           setTimeout(() => resolve({ ok: true, json: async () => ({ config: { ...config, defect_types: [] } }) }), 25);
         });
       }
+      if (mockOptions.cloneMissingConfig) {
+        return Promise.resolve({ ok: true, json: async () => ({ copied: true }) });
+      }
       return Promise.resolve({ ok: true, json: async () => ({ config: { ...config, defect_types: [] } }) });
     }
 
@@ -381,6 +384,23 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
         await waitFor(() => {
           expect(screen.getByText('Failed to copy project configuration (502)')).toBeInTheDocument();
         });
+      });
+
+      test(`rejects clone success payloads that omit config for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config, projectType, { cloneMissingConfig: true });
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText('Source project'), { target: { value: 'proj-copy' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Copy from Project' }));
+
+        await waitFor(() => {
+          expect(screen.getByText('Failed to copy project configuration (missing config payload)')).toBeInTheDocument();
+        });
+        expect(screen.queryByText('Configuration copied from Template Project.')).not.toBeInTheDocument();
       });
 
       test(`clears clone status alerts when source project selection changes for ${projectType} ${syntheticUser} synthetic user`, async () => {
