@@ -139,15 +139,17 @@ function getCloneConfigOrThrow(cloneResponseData) {
 
   const normalizedModalityIds = clonedConfig.image_modalities.map((modality) => normalizeLower(modality.id));
   const normalizedPartViewIds = clonedConfig.part_views.map((partView) => normalizeLower(partView.id));
+  const normalizedDefectNames = clonedConfig.defect_types.map((defectType) => normalizeLower(defectType.name));
   const hasDuplicateModalityIds = new Set(normalizedModalityIds).size !== normalizedModalityIds.length;
   const hasDuplicatePartViewIds = new Set(normalizedPartViewIds).size !== normalizedPartViewIds.length;
+  const hasDuplicateDefectNames = new Set(normalizedDefectNames).size !== normalizedDefectNames.length;
   const hasUnknownRequiredModalities = clonedConfig.part_views.some((partView) =>
     partView.required_modalities.some(
       (requiredModalityId) => !normalizedModalityIds.includes(normalizeLower(requiredModalityId)),
     ),
   );
 
-  if (hasDuplicateModalityIds || hasDuplicatePartViewIds || hasUnknownRequiredModalities) {
+  if (hasDuplicateModalityIds || hasDuplicatePartViewIds || hasDuplicateDefectNames || hasUnknownRequiredModalities) {
     throw new Error('Failed to copy project configuration (invalid config relational fields)');
   }
 
