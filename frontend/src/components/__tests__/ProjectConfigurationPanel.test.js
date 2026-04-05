@@ -66,6 +66,15 @@ function mockFetch(config, projectType, mockOptions = {}) {
           json: async () => ({ detail: mockOptions.cloneFailureDetail }),
         });
       }
+      if (mockOptions.cloneInvalidJson) {
+        return Promise.resolve({
+          ok: false,
+          status: 502,
+          json: async () => {
+            throw new Error('invalid json');
+          },
+        });
+      }
       if (mockOptions.delayedClone) {
         return new Promise((resolve) => {
           setTimeout(() => resolve({ ok: true, json: async () => ({ config: { ...config, defect_types: [] } }) }), 25);
@@ -356,6 +365,22 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
           expect(screen.getByText(cloneFailureDetail)).toBeInTheDocument();
         });
         expect(screen.queryByText('Configuration copied from Template Project.')).not.toBeInTheDocument();
+      });
+
+      test(`falls back to status error when clone API response is non-JSON for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config, projectType, { cloneInvalidJson: true });
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText('Source project'), { target: { value: 'proj-copy' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Copy from Project' }));
+
+        await waitFor(() => {
+          expect(screen.getByText('Failed to copy project configuration (502)')).toBeInTheDocument();
+        });
       });
 
       test(`clears clone status alerts when source project selection changes for ${projectType} ${syntheticUser} synthetic user`, async () => {

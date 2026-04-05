@@ -9,6 +9,14 @@ function normalizeLower(value) {
   return (value || '').trim().toLowerCase();
 }
 
+async function parseJsonSafely(response) {
+  try {
+    return await response.json();
+  } catch (error) {
+    return null;
+  }
+}
+
 function validateConfiguration(config) {
   const errors = [];
 
@@ -306,7 +314,7 @@ function ProjectConfigurationPanel({ projectId }) {
         body: JSON.stringify({ source_project_id: copySourceProjectId }),
       });
 
-      const cloneData = await cloneResp.json();
+      const cloneData = await parseJsonSafely(cloneResp);
       if (!cloneResp.ok) {
         throw new Error(cloneData?.detail || `Failed to copy project configuration (${cloneResp.status})`);
       }

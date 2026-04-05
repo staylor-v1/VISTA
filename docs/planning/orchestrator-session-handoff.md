@@ -204,3 +204,14 @@ A task is done only when:
 - Replay/submission artifact:
   - `docs/planning/pr16-m9-replay-artifact.md`
 - Next implementation boundary: open `PR-16-M10+` only after explicit feature-contract approval.
+
+## Session update (2026-04-05, PR-16-M10 clone error parsing hardening)
+
+- Started and completed `PR-16-M10` under explicit next-unimplemented-slice direction.
+- Delivered:
+  - Project Configuration clone flow now safely handles non-JSON clone error bodies without surfacing JSON parse exceptions.
+  - Operator-facing clone failure state now consistently falls back to status-based messaging when backend error details are unavailable.
+- Progressive synthetic-user coverage preserved (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3` with non-JSON clone-error assertions.
+- Replay/submission artifact:
+  - `docs/planning/pr16-m10-replay-artifact.md`
+- Next implementation boundary: open `PR-16-M11+` only after explicit feature-contract approval.
