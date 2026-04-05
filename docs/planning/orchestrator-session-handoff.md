@@ -248,3 +248,14 @@ A task is done only when:
 - Replay/submission artifact:
   - `docs/planning/pr16-m13-replay-artifact.md`
 - Next implementation boundary: open `PR-16-M14+` only after explicit feature-contract approval.
+
+## Session update (2026-04-05, PR-16-M14 clone config scalar-field contract hardening)
+
+- Started and completed `PR-16-M14` under explicit next-unimplemented-slice direction.
+- Delivered:
+  - Project Configuration clone flow now validates required scalar fields before hydration (IDs/labels/names/colors must be string-backed; `required_modalities` entries must be strings).
+  - Clone success responses with malformed scalar values now surface explicit operator errors instead of silently hydrating invalid state.
+- Progressive synthetic-user coverage preserved (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3` with malformed-scalar clone-response assertions.
+- Replay/submission artifact:
+  - `docs/planning/pr16-m14-replay-artifact.md`
+- Next implementation boundary: open `PR-16-M15+` only after explicit feature-contract approval.
