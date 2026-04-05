@@ -294,3 +294,14 @@ A task is done only when:
 - Replay/submission artifact:
   - `docs/planning/pr16-m17-replay-artifact.md`
 - Next implementation boundary: open `PR-16-M18+` only after explicit feature-contract approval.
+
+## Session update (2026-04-05, PR-16-M18 clone relational-integrity contract hardening)
+
+- Started and completed `PR-16-M18` under explicit next-unimplemented-slice direction.
+- Delivered:
+  - Project Configuration clone flow now validates relational integrity before hydration.
+  - Clone success responses are rejected when modality IDs or part-view IDs are duplicated, or when part-view required modalities reference unknown modality IDs.
+- Progressive synthetic-user coverage preserved (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3` with invalid-relational clone-response assertions.
+- Replay/submission artifact:
+  - `docs/planning/pr16-m18-replay-artifact.md`
+- Next implementation boundary: open `PR-16-M19+` only after explicit feature-contract approval.

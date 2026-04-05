@@ -115,6 +115,20 @@ function getCloneConfigOrThrow(cloneResponseData) {
     throw new Error('Failed to copy project configuration (invalid config hotkey domain fields)');
   }
 
+  const normalizedModalityIds = clonedConfig.image_modalities.map((modality) => normalizeLower(modality.id));
+  const normalizedPartViewIds = clonedConfig.part_views.map((partView) => normalizeLower(partView.id));
+  const hasDuplicateModalityIds = new Set(normalizedModalityIds).size !== normalizedModalityIds.length;
+  const hasDuplicatePartViewIds = new Set(normalizedPartViewIds).size !== normalizedPartViewIds.length;
+  const hasUnknownRequiredModalities = clonedConfig.part_views.some((partView) =>
+    partView.required_modalities.some(
+      (requiredModalityId) => !normalizedModalityIds.includes(normalizeLower(requiredModalityId)),
+    ),
+  );
+
+  if (hasDuplicateModalityIds || hasDuplicatePartViewIds || hasUnknownRequiredModalities) {
+    throw new Error('Failed to copy project configuration (invalid config relational fields)');
+  }
+
   return clonedConfig;
 }
 

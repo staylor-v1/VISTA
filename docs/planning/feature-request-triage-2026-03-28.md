@@ -343,3 +343,11 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - **Why this slice exists:** string-type checks cannot prevent semantically invalid hotkey bindings from silently hydrating operator workflows and conflicting with shortcut behavior.
 - **Replay/submission artifact:** `docs/planning/pr16-m17-replay-artifact.md`.
 - **Next unimplemented PR slice:** open `PR-16-M18+` only after explicit feature-contract approval.
+
+## Incremental execution status (2026-04-05, PR-16-M18 clone relational-integrity contract hardening)
+
+- **Completed PR slices:**
+  - `PR-16-M18`: hardened frontend clone handling to reject successful clone payloads with relational-integrity violations (duplicate modality/view IDs or `part_views[].required_modalities` references to unknown modalities).
+- **Why this slice exists:** top-level/type/domain checks can still allow semantically inconsistent graph data that later fails save-time validation and confuses operators in advanced PT1/PT2/PT3 editing workflows.
+- **Replay/submission artifact:** `docs/planning/pr16-m18-replay-artifact.md`.
+- **Next unimplemented PR slice:** open `PR-16-M19+` only after explicit feature-contract approval.
