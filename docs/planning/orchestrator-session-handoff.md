@@ -237,3 +237,14 @@ A task is done only when:
 - Replay/submission artifact:
   - `docs/planning/pr16-m12-replay-artifact.md`
 - Next implementation boundary: open `PR-16-M13+` only after explicit feature-contract approval.
+
+## Session update (2026-04-05, PR-16-M13 clone config-entry contract hardening)
+
+- Started and completed `PR-16-M13` under explicit next-unimplemented-slice direction.
+- Delivered:
+  - Project Configuration clone flow now validates collection entry safety before hydration (`image_modalities`, `part_views`, `defect_types` entries must be object-backed; `part_views.required_modalities` must be array-backed).
+  - Clone success responses with malformed collection members now surface explicit operator errors instead of causing render-time exceptions.
+- Progressive synthetic-user coverage preserved (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3` with malformed-entry clone-response assertions.
+- Replay/submission artifact:
+  - `docs/planning/pr16-m13-replay-artifact.md`
+- Next implementation boundary: open `PR-16-M14+` only after explicit feature-contract approval.
