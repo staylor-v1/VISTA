@@ -327,3 +327,16 @@ A task is done only when:
 - Replay/submission artifact:
   - `docs/planning/pr16-m20-replay-artifact.md`
 - Next implementation boundary: open `PR-16-M21+` only after explicit feature-contract approval.
+
+## Session update (2026-04-05, PR-16-M21 planning admission gate + clean replay artifact refresh)
+
+- Started and completed `PR-16-M21` as a planning/control slice under next-unimplemented execution direction.
+- Delivered:
+  - Added an explicit post-`PR-16-M20` execution artifact that locks replay order for inspection-following upstream submission.
+  - Reaffirmed contract gate: no implementation past `PR-16-M20` without explicit approval of the next feature contract.
+- Progressive synthetic-user coverage remains preserved in existing frontend test framework (`basic`, `intermediate`, `advanced` across `PT1`/`PT2`/`PT3`) via `ProjectConfigurationPanel` matrix tests.
+- Replay/submission artifact:
+  - `docs/planning/orchestrator-next-pr-execution-artifact-2026-04-05.md`
+- Screenshot analytics artifact:
+  - `docs/planning/pr16-m21-screenshot-analysis.md`
+- Next implementation boundary: open `PR-16-M22+` only after explicit feature-contract approval.
