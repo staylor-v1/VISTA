@@ -215,3 +215,14 @@ A task is done only when:
 - Replay/submission artifact:
   - `docs/planning/pr16-m10-replay-artifact.md`
 - Next implementation boundary: open `PR-16-M11+` only after explicit feature-contract approval.
+
+## Session update (2026-04-05, PR-16-M11 clone success payload contract hardening)
+
+- Started and completed `PR-16-M11` under explicit next-unimplemented-slice direction.
+- Delivered:
+  - Project Configuration clone flow now enforces success-response payload integrity by requiring `config` in successful clone responses.
+  - Clone success responses that omit `config` now surface an actionable operator error instead of silently replacing state with defaults.
+- Progressive synthetic-user coverage preserved (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3` with missing-payload clone-error assertions.
+- Replay/submission artifact:
+  - `docs/planning/pr16-m11-replay-artifact.md`
+- Next implementation boundary: open `PR-16-M12+` only after explicit feature-contract approval.
