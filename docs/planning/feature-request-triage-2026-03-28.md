@@ -351,3 +351,11 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - **Why this slice exists:** top-level/type/domain checks can still allow semantically inconsistent graph data that later fails save-time validation and confuses operators in advanced PT1/PT2/PT3 editing workflows.
 - **Replay/submission artifact:** `docs/planning/pr16-m18-replay-artifact.md`.
 - **Next unimplemented PR slice:** open `PR-16-M19+` only after explicit feature-contract approval.
+
+## Incremental execution status (2026-04-05, PR-16-M19 clone semantic-value contract hardening)
+
+- **Completed PR slices:**
+  - `PR-16-M19`: hardened frontend clone handling to reject successful clone payloads with semantically invalid scalar content (blank identifiers/labels/names, blank required modality references, or non-hex defect colors).
+- **Why this slice exists:** prior clone checks validated type, enums, and relational integrity, but still allowed semantically empty values that degrade UX and can produce inconsistent edit/save behavior after clone hydration.
+- **Replay/submission artifact:** `docs/planning/pr16-m19-replay-artifact.md`.
+- **Next unimplemented PR slice:** open `PR-16-M20+` only after explicit feature-contract approval.

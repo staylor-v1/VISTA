@@ -188,6 +188,19 @@ function mockFetch(config, projectType, mockOptions = {}) {
           }),
         });
       }
+      if (mockOptions.cloneInvalidConfigSemanticFields) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            config: {
+              ...config,
+              image_modalities: [{ id: '   ', label: '   ' }],
+              part_views: [{ id: 'view-1', label: ' ', required_modalities: ['   '] }],
+              defect_types: [{ name: '   ', color: 'red' }],
+            },
+          }),
+        });
+      }
       return Promise.resolve({ ok: true, json: async () => ({ config: { ...config, defect_types: [] } }) });
     }
 
@@ -623,6 +636,23 @@ test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} syn
 
         await waitFor(() => {
           expect(screen.getByText('Failed to copy project configuration (invalid config relational fields)')).toBeInTheDocument();
+        });
+        expect(screen.queryByText('Configuration copied from Template Project.')).not.toBeInTheDocument();
+      });
+
+      test(`rejects clone success payloads with invalid config semantic fields for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config, projectType, { cloneInvalidConfigSemanticFields: true });
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText('Source project'), { target: { value: 'proj-copy' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Copy from Project' }));
+
+        await waitFor(() => {
+          expect(screen.getByText('Failed to copy project configuration (invalid config semantic fields)')).toBeInTheDocument();
         });
         expect(screen.queryByText('Configuration copied from Template Project.')).not.toBeInTheDocument();
       });
