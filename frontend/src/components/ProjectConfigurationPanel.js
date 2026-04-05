@@ -17,6 +17,13 @@ async function parseJsonSafely(response) {
   }
 }
 
+function getCloneConfigOrThrow(cloneResponseData) {
+  if (!cloneResponseData || typeof cloneResponseData !== 'object' || !cloneResponseData.config) {
+    throw new Error('Failed to copy project configuration (missing config payload)');
+  }
+  return cloneResponseData.config;
+}
+
 function validateConfiguration(config) {
   const errors = [];
 
@@ -319,7 +326,8 @@ function ProjectConfigurationPanel({ projectId }) {
         throw new Error(cloneData?.detail || `Failed to copy project configuration (${cloneResp.status})`);
       }
 
-      setConfig(cloneData?.config || EMPTY_CONFIG);
+      const clonedConfig = getCloneConfigOrThrow(cloneData);
+      setConfig(clonedConfig);
       const copiedFromProject = selectedCopySourceProject?.name || 'existing project';
       setCopySourceProjectId('');
       setStatusMessage(`Configuration copied from ${copiedFromProject}.`);
