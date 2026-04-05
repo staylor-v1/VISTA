@@ -335,3 +335,11 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - **Why this slice exists:** type checks alone cannot prevent enum drift (for example `source: "api"` or unsupported colormaps) from silently hydrating invalid state that misrepresents available UI options.
 - **Replay/submission artifact:** `docs/planning/pr16-m16-replay-artifact.md`.
 - **Next unimplemented PR slice:** open `PR-16-M17+` only after explicit feature-contract approval.
+
+## Incremental execution status (2026-04-05, PR-16-M17 clone hotkey-domain contract hardening)
+
+- **Completed PR slices:**
+  - `PR-16-M17`: hardened frontend clone handling to reject successful clone payloads that violate hotkey-domain constraints (non-single-key bindings or duplicated key assignments).
+- **Why this slice exists:** string-type checks cannot prevent semantically invalid hotkey bindings from silently hydrating operator workflows and conflicting with shortcut behavior.
+- **Replay/submission artifact:** `docs/planning/pr16-m17-replay-artifact.md`.
+- **Next unimplemented PR slice:** open `PR-16-M18+` only after explicit feature-contract approval.
