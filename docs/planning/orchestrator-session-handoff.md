@@ -226,3 +226,14 @@ A task is done only when:
 - Replay/submission artifact:
   - `docs/planning/pr16-m11-replay-artifact.md`
 - Next implementation boundary: open `PR-16-M12+` only after explicit feature-contract approval.
+
+## Session update (2026-04-05, PR-16-M12 clone config-shape contract hardening)
+
+- Started and completed `PR-16-M12` under explicit next-unimplemented-slice direction.
+- Delivered:
+  - Project Configuration clone flow now validates successful `config` payload top-level shape before state hydration.
+  - Clone success responses with malformed `config` objects (for example missing `image_modalities`, `part_views`, or `defect_types`) now surface an actionable operator error instead of triggering render-time crashes.
+- Progressive synthetic-user coverage preserved (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3` with malformed-config clone-response assertions.
+- Replay/submission artifact:
+  - `docs/planning/pr16-m12-replay-artifact.md`
+- Next implementation boundary: open `PR-16-M13+` only after explicit feature-contract approval.
