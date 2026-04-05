@@ -277,3 +277,11 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - **Why this slice exists:** progressive synthetic-user workflows repeatedly clone from templates; auto-resetting source selection reduces accidental repeated clone submissions against stale intent.
 - **Replay/submission artifact:** `docs/planning/pr16-m9-replay-artifact.md`.
 - **Next unimplemented PR slice:** open `PR-16-M10+` only after explicit feature-contract approval.
+
+## Incremental execution status (2026-04-05, PR-16-M10 clone error parsing hardening)
+
+- **Completed PR slices:**
+  - `PR-16-M10`: hardened clone error handling to gracefully process non-JSON API error payloads and preserve actionable fallback status messaging.
+- **Why this slice exists:** reverse-proxy/network edge paths can return HTML/text error bodies; parsing hardening prevents opaque JSON parse errors from leaking into operator-facing alerts.
+- **Replay/submission artifact:** `docs/planning/pr16-m10-replay-artifact.md`.
+- **Next unimplemented PR slice:** open `PR-16-M11+` only after explicit feature-contract approval.
