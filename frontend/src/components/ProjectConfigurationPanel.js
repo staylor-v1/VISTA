@@ -108,6 +108,7 @@ function ProjectConfigurationPanel({ projectId }) {
   const [statusMessage, setStatusMessage] = useState('');
   const [copyingConfiguration, setCopyingConfiguration] = useState(false);
   const hasCompatibleCopySources = availableProjects.length > 0;
+  const selectedCopySourceProject = availableProjects.find((project) => project.id === copySourceProjectId) || null;
 
   useEffect(() => {
     const loadConfiguration = async () => {
@@ -311,7 +312,9 @@ function ProjectConfigurationPanel({ projectId }) {
       }
 
       setConfig(cloneData?.config || EMPTY_CONFIG);
-      setStatusMessage('Configuration copied from existing project.');
+      const copiedFromProject = selectedCopySourceProject?.name || 'existing project';
+      setCopySourceProjectId('');
+      setStatusMessage(`Configuration copied from ${copiedFromProject}.`);
     } catch (err) {
       setStatusMessage('');
       setError(err.message || 'Failed to copy project configuration');
