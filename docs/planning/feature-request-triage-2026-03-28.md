@@ -293,3 +293,11 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - **Why this slice exists:** clone endpoint success semantics should guarantee a hydrated configuration payload; accepting success without `config` risks destructive empty-state replacement in advanced multi-step workflows.
 - **Replay/submission artifact:** `docs/planning/pr16-m11-replay-artifact.md`.
 - **Next unimplemented PR slice:** open `PR-16-M12+` only after explicit feature-contract approval.
+
+## Incremental execution status (2026-04-05, PR-16-M12 clone config-shape contract hardening)
+
+- **Completed PR slices:**
+  - `PR-16-M12`: hardened frontend clone handling to reject successful clone payloads with structurally invalid `config` objects (missing required top-level arrays/objects), preventing runtime crashes from malformed success responses.
+- **Why this slice exists:** accepting malformed `config` objects (for example `{}`) can crash the Project Configuration view when rendering expects array-backed sections (`image_modalities`, `part_views`, `defect_types`).
+- **Replay/submission artifact:** `docs/planning/pr16-m12-replay-artifact.md`.
+- **Next unimplemented PR slice:** open `PR-16-M13+` only after explicit feature-contract approval.
