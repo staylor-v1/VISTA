@@ -1,15 +1,15 @@
 # PR-16 Orchestrator Living Checklist (2026-04-05)
 
 ## Current milestone
-- **PR-16-M15**: clone settings-field contract hardening for malformed successful clone payload `process_settings`/`display_settings` members.
+- **PR-16-M16**: clone domain-enum contract hardening for malformed successful clone payload enum-backed fields (`part_views[].source`, `display_settings` colormaps).
 
 ## Files changed in this milestone
 - `frontend/src/components/ProjectConfigurationPanel.js`
 - `frontend/src/components/__tests__/ProjectConfigurationPanel.test.js`
 - `docs/planning/feature-request-triage-2026-03-28.md`
 - `docs/planning/orchestrator-session-handoff.md`
-- `docs/planning/pr16-m15-replay-artifact.md`
-- `docs/planning/pr16-m15-screenshot-analysis.md`
+- `docs/planning/pr16-m16-replay-artifact.md`
+- `docs/planning/pr16-m16-screenshot-analysis.md`
 - `docs/planning/pr16-orchestrator-checklist.md`
 
 ## Tests
@@ -17,8 +17,8 @@
 - [x] `cd /workspace/VISTA/frontend && npx playwright test e2e/specs/inspection-workbench.spec.js --grep "PR-09 inspector controls screenshot artifact"`
 
 ## Reviewer notes (edge cases / security / architecture)
-- Clone success handling now enforces top-level, entry-level, scalar-field, and settings-field payload contracts for clone responses.
-- Settings-field contract hardening prevents malformed booleans/strings in `process_settings` and `display_settings` from silently hydrating and causing downstream workflow/UX inconsistencies.
+- Clone success handling now enforces top-level, entry-level, scalar-field, settings-field, and domain-enum payload contracts for clone responses.
+- Domain-enum contract hardening prevents unsupported `part_views[].source` and display-colormap values from silently hydrating and causing UI/contract drift in downstream workflows.
 - Existing clone API contract remains unchanged (`POST /api/projects/{project_id}/configuration/clone` with `{ source_project_id }`).
 - UI continues to surface backend-provided `detail` when available and falls back to explicit contract errors when success payload shape is invalid.
 
@@ -39,7 +39,8 @@
 - [x] `PR-16-M13` clone config-entry contract hardening.
 - [x] `PR-16-M14` clone config scalar-field contract hardening.
 - [x] `PR-16-M15` clone settings-field contract hardening.
-- [ ] `PR-16-M16+` pending explicit approval of next feature-request contract.
+- [x] `PR-16-M16` clone domain-enum contract hardening.
+- [ ] `PR-16-M17+` pending explicit approval of next feature-request contract.
 
 ## Risks / blockers
 - `browser_container` is unavailable in this execution environment; Playwright-based screenshot capture + analytics were used as fallback evidence.
