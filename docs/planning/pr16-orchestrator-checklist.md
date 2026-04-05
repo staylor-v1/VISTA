@@ -1,22 +1,22 @@
 # PR-16 Orchestrator Living Checklist (2026-04-05)
 
 ## Current milestone
-- **PR-16-M13**: clone config-entry contract hardening for malformed successful clone collection members.
+- **PR-16-M14**: clone config scalar-field contract hardening for malformed successful clone payload members.
 
 ## Files changed in this milestone
 - `frontend/src/components/ProjectConfigurationPanel.js`
 - `frontend/src/components/__tests__/ProjectConfigurationPanel.test.js`
 - `docs/planning/feature-request-triage-2026-03-28.md`
 - `docs/planning/orchestrator-session-handoff.md`
-- `docs/planning/pr16-m13-replay-artifact.md`
+- `docs/planning/pr16-m14-replay-artifact.md`
 - `docs/planning/pr16-orchestrator-checklist.md`
 
 ## Tests
 - [x] `cd /workspace/VISTA/frontend && npm test -- --runInBand src/components/__tests__/ProjectConfigurationPanel.test.js`
 
 ## Reviewer notes (edge cases / security / architecture)
-- Clone success handling now enforces both top-level and entry-level payload contracts for clone responses.
-- Entry-level contract hardening prevents render-time crashes from malformed array members (for example non-object `defect_types` or non-array `part_views.required_modalities`).
+- Clone success handling now enforces top-level, entry-level, and scalar-field payload contracts for clone responses.
+- Scalar-field contract hardening prevents malformed values (for example numeric modality IDs or non-string required-modality entries) from silently hydrating and causing downstream validation/render inconsistencies.
 - Existing clone API contract remains unchanged (`POST /api/projects/{project_id}/configuration/clone` with `{ source_project_id }`).
 - UI continues to surface backend-provided `detail` when available and falls back to explicit contract errors when success payload shape is invalid.
 
@@ -35,7 +35,8 @@
 - [x] `PR-16-M11` clone success payload contract hardening.
 - [x] `PR-16-M12` clone config-shape contract hardening.
 - [x] `PR-16-M13` clone config-entry contract hardening.
-- [ ] `PR-16-M14+` pending explicit approval of next feature-request contract.
+- [x] `PR-16-M14` clone config scalar-field contract hardening.
+- [ ] `PR-16-M15+` pending explicit approval of next feature-request contract.
 
 ## Risks / blockers
 - Browser-based screenshot/visual analytics tooling (`browser_container`) is unavailable in this execution environment, so visual screenshot analysis remains blocked for this slice.

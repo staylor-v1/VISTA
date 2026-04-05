@@ -309,3 +309,11 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - **Why this slice exists:** even with valid top-level payload keys, malformed entry members can still trigger render-time exceptions in advanced edit workflows (for example `.join` on non-array `required_modalities`).
 - **Replay/submission artifact:** `docs/planning/pr16-m13-replay-artifact.md`.
 - **Next unimplemented PR slice:** open `PR-16-M14+` only after explicit feature-contract approval.
+
+## Incremental execution status (2026-04-05, PR-16-M14 clone config scalar-field contract hardening)
+
+- **Completed PR slices:**
+  - `PR-16-M14`: hardened frontend clone handling to reject successful clone payloads that pass top-level/entry checks but still contain invalid scalar field types in configuration members.
+- **Why this slice exists:** scalar-type drift in success payloads (for example numeric modality IDs or non-string `required_modalities` values) can silently hydrate and later break validation and edit workflows.
+- **Replay/submission artifact:** `docs/planning/pr16-m14-replay-artifact.md`.
+- **Next unimplemented PR slice:** open `PR-16-M15+` only after explicit feature-contract approval.
