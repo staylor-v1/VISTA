@@ -305,3 +305,14 @@ A task is done only when:
 - Replay/submission artifact:
   - `docs/planning/pr16-m18-replay-artifact.md`
 - Next implementation boundary: open `PR-16-M19+` only after explicit feature-contract approval.
+
+## Session update (2026-04-05, PR-16-M19 clone semantic-value contract hardening)
+
+- Started and completed `PR-16-M19` under explicit next-unimplemented-slice direction.
+- Delivered:
+  - Project Configuration clone flow now validates semantic scalar value quality before hydration.
+  - Clone success responses are rejected when modality/view IDs or labels are blank, required modality references are blank, defect names are blank, or defect colors are not valid hex colors.
+- Progressive synthetic-user coverage preserved (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3` with invalid-semantic clone-response assertions.
+- Replay/submission artifact:
+  - `docs/planning/pr16-m19-replay-artifact.md`
+- Next implementation boundary: open `PR-16-M20+` only after explicit feature-contract approval.
