@@ -89,6 +89,18 @@ function getCloneConfigOrThrow(cloneResponseData) {
     throw new Error('Failed to copy project configuration (invalid config settings fields)');
   }
 
+  const allowedColormaps = new Set(['grayscale', 'magma', 'viridis']);
+  const hasValidDomainFields =
+    clonedConfig.part_views.every(
+      (partView) => !partView.source || partView.source === 'manual' || partView.source === 'auto',
+    ) &&
+    allowedColormaps.has(clonedConfig.display_settings.default_colormap) &&
+    allowedColormaps.has(clonedConfig.display_settings.anomaly_colormap);
+
+  if (!hasValidDomainFields) {
+    throw new Error('Failed to copy project configuration (invalid config domain fields)');
+  }
+
   return clonedConfig;
 }
 
