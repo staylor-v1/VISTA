@@ -283,3 +283,14 @@ A task is done only when:
 - Replay/submission artifact:
   - `docs/planning/pr16-m16-replay-artifact.md`
 - Next implementation boundary: open `PR-16-M17+` only after explicit feature-contract approval.
+
+## Session update (2026-04-05, PR-16-M17 clone hotkey-domain contract hardening)
+
+- Started and completed `PR-16-M17` under explicit next-unimplemented-slice direction.
+- Delivered:
+  - Project Configuration clone flow now validates hotkey domain constraints before hydration.
+  - Clone success responses now reject invalid hotkey bindings when values are not single alphanumeric keys or when duplicate bindings are present.
+- Progressive synthetic-user coverage preserved (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3` with malformed-hotkey clone-response assertions.
+- Replay/submission artifact:
+  - `docs/planning/pr16-m17-replay-artifact.md`
+- Next implementation boundary: open `PR-16-M18+` only after explicit feature-contract approval.
