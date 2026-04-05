@@ -285,3 +285,11 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - **Why this slice exists:** reverse-proxy/network edge paths can return HTML/text error bodies; parsing hardening prevents opaque JSON parse errors from leaking into operator-facing alerts.
 - **Replay/submission artifact:** `docs/planning/pr16-m10-replay-artifact.md`.
 - **Next unimplemented PR slice:** open `PR-16-M11+` only after explicit feature-contract approval.
+
+## Incremental execution status (2026-04-05, PR-16-M11 clone success payload contract hardening)
+
+- **Completed PR slices:**
+  - `PR-16-M11`: hardened frontend clone handling to reject successful clone responses that omit `config`, preventing silent fallback to empty defaults.
+- **Why this slice exists:** clone endpoint success semantics should guarantee a hydrated configuration payload; accepting success without `config` risks destructive empty-state replacement in advanced multi-step workflows.
+- **Replay/submission artifact:** `docs/planning/pr16-m11-replay-artifact.md`.
+- **Next unimplemented PR slice:** open `PR-16-M12+` only after explicit feature-contract approval.
