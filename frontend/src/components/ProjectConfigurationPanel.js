@@ -54,6 +54,24 @@ function getCloneConfigOrThrow(cloneResponseData) {
     throw new Error('Failed to copy project configuration (invalid config payload entries)');
   }
 
+  const hasValidScalarFields =
+    clonedConfig.image_modalities.every(
+      (modality) => typeof modality.id === 'string' && typeof modality.label === 'string',
+    ) &&
+    clonedConfig.part_views.every(
+      (partView) =>
+        typeof partView.id === 'string' &&
+        typeof partView.label === 'string' &&
+        partView.required_modalities.every((requiredModality) => typeof requiredModality === 'string'),
+    ) &&
+    clonedConfig.defect_types.every(
+      (defectType) => typeof defectType.name === 'string' && typeof defectType.color === 'string',
+    );
+
+  if (!hasValidScalarFields) {
+    throw new Error('Failed to copy project configuration (invalid config scalar fields)');
+  }
+
   return clonedConfig;
 }
 
