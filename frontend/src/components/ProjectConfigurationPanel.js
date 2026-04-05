@@ -72,6 +72,28 @@ function getCloneConfigOrThrow(cloneResponseData) {
     throw new Error('Failed to copy project configuration (invalid config scalar fields)');
   }
 
+  const hasValidSemanticScalarFields =
+    clonedConfig.image_modalities.every(
+      (modality) => normalizeLower(modality.id).length > 0 && (modality.label || '').trim().length > 0,
+    ) &&
+    clonedConfig.part_views.every(
+      (partView) =>
+        normalizeLower(partView.id).length > 0 &&
+        (partView.label || '').trim().length > 0 &&
+        partView.required_modalities.every(
+          (requiredModality) => normalizeLower(requiredModality).length > 0,
+        ),
+    ) &&
+    clonedConfig.defect_types.every(
+      (defectType) =>
+        (defectType.name || '').trim().length > 0 &&
+        /^#[0-9a-fA-F]{6}$/.test((defectType.color || '').trim()),
+    );
+
+  if (!hasValidSemanticScalarFields) {
+    throw new Error('Failed to copy project configuration (invalid config semantic fields)');
+  }
+
   const hasValidSettingsFields =
     typeof clonedConfig.process_settings.require_disposition_on_submit === 'boolean' &&
     typeof clonedConfig.process_settings.require_measurement_for_critical === 'boolean' &&
