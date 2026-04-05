@@ -359,3 +359,11 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - **Why this slice exists:** prior clone checks validated type, enums, and relational integrity, but still allowed semantically empty values that degrade UX and can produce inconsistent edit/save behavior after clone hydration.
 - **Replay/submission artifact:** `docs/planning/pr16-m19-replay-artifact.md`.
 - **Next unimplemented PR slice:** open `PR-16-M20+` only after explicit feature-contract approval.
+
+## Incremental execution status (2026-04-05, PR-16-M20 clone defect-name uniqueness contract hardening)
+
+- **Completed PR slices:**
+  - `PR-16-M20`: hardened frontend clone handling to reject successful clone payloads that contain duplicate defect names (case-insensitive) before configuration hydration.
+- **Why this slice exists:** prior semantic checks allowed non-empty defect names but did not prevent duplicate semantic labels from silently hydrating and degrading downstream defect triage and reporting workflows.
+- **Replay/submission artifact:** `docs/planning/pr16-m20-replay-artifact.md`.
+- **Next unimplemented PR slice:** open `PR-16-M21+` only after explicit feature-contract approval.
