@@ -193,3 +193,14 @@ A task is done only when:
 - Replay/submission artifact:
   - `docs/planning/pr16-m8-replay-artifact.md`
 - Next implementation boundary: open `PR-16-M9+` only after explicit feature-contract approval.
+
+## Session update (2026-04-04, PR-16-M9 post-clone source reset hardening)
+
+- Started and completed `PR-16-M9` under explicit next-unimplemented-slice direction.
+- Delivered:
+  - Successful clone now reports the specific source project name in success status.
+  - Clone source selector resets to placeholder after success to avoid stale-intent repeat submissions.
+- Progressive synthetic-user coverage preserved (`basic`, `intermediate`, `advanced`) across `PT1`/`PT2`/`PT3` with post-clone reset assertions.
+- Replay/submission artifact:
+  - `docs/planning/pr16-m9-replay-artifact.md`
+- Next implementation boundary: open `PR-16-M10+` only after explicit feature-contract approval.

@@ -269,3 +269,11 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - **Why this slice exists:** progressive synthetic-user workflows include repeated source selection and rapid retries; without an in-flight lock, duplicate clone requests can race and produce confusing operator feedback.
 - **Replay/submission artifact:** `docs/planning/pr16-m8-replay-artifact.md`.
 - **Next unimplemented PR slice:** open `PR-16-M9+` only after explicit feature-contract approval.
+
+## Incremental execution status (2026-04-04, PR-16-M9 post-clone source reset hardening)
+
+- **Completed PR slices:**
+  - `PR-16-M9`: after successful configuration clone, copy-source selection now resets to placeholder state and success messaging includes copied source project name.
+- **Why this slice exists:** progressive synthetic-user workflows repeatedly clone from templates; auto-resetting source selection reduces accidental repeated clone submissions against stale intent.
+- **Replay/submission artifact:** `docs/planning/pr16-m9-replay-artifact.md`.
+- **Next unimplemented PR slice:** open `PR-16-M10+` only after explicit feature-contract approval.
