@@ -22,7 +22,21 @@ function Start-LogCollector {
     )
 
     $dockerCmdArgs = @("compose", "-f", $ComposeFile, "logs", "-f", "--no-color", $Service)
-    $proc = Start-Process -FilePath "docker" -ArgumentList $dockerCmdArgs -RedirectStandardOutput $OutputFile -RedirectStandardError $OutputFile -PassThru -WindowStyle Hidden
+    $errorFile = "$OutputFile.err"
+    $startProcessArgs = @{
+        FilePath = "docker"
+        ArgumentList = $dockerCmdArgs
+        RedirectStandardOutput = $OutputFile
+        RedirectStandardError = $errorFile
+        PassThru = $true
+    }
+
+    # -WindowStyle is only available in Windows PowerShell editions.
+    if ($IsWindows) {
+        $startProcessArgs["WindowStyle"] = "Hidden"
+    }
+
+    $proc = Start-Process @startProcessArgs
     return $proc.Id
 }
 
