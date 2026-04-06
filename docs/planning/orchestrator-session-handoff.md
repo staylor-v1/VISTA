@@ -340,3 +340,13 @@ A task is done only when:
 - Screenshot analytics artifact:
   - `docs/planning/pr16-m21-screenshot-analysis.md`
 - Next implementation boundary: open `PR-16-M22+` only after explicit feature-contract approval.
+
+## Session update (2026-04-05, PR-16-M22 save-time defect-name uniqueness parity)
+
+- Started and completed `PR-16-M22` under explicit next-unimplemented-slice direction.
+- Delivered:
+  - Project Configuration save validation now rejects duplicate defect names using case-insensitive matching.
+  - Added frontend regression coverage for duplicate-defect save blocking across progressive synthetic users (`basic`, `intermediate`, `advanced`) and project types (`PT1`, `PT2`, `PT3`).
+- Replay/submission artifact:
+  - `docs/planning/pr16-m22-replay-artifact.md`
+- Next implementation boundary: open `PR-16-M23+` only after explicit feature-contract approval.
