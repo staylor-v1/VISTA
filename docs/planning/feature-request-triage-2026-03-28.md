@@ -376,3 +376,11 @@ PR-15 execution has been flattened so each function-level change maps to one sub
 - **Replay/submission artifact:** `docs/planning/orchestrator-next-pr-execution-artifact-2026-04-05.md`.
 - **Screenshot analytics artifact:** `docs/planning/pr16-m21-screenshot-analysis.md`.
 - **Next unimplemented PR slice:** open `PR-16-M22+` only after explicit feature-contract approval.
+
+## Incremental execution status (2026-04-05, PR-16-M22 save-time defect-name uniqueness parity)
+
+- **Completed PR slices:**
+  - `PR-16-M22`: aligned manual Project Configuration save validation with clone hydration rules by rejecting duplicate defect names (case-insensitive) before save submission.
+- **Why this slice exists:** clone hardening (`PR-16-M20`) blocked duplicated defect names only on clone responses; parity on direct in-panel edits prevents drift between cloned and manually authored configurations.
+- **Replay/submission artifact:** `docs/planning/pr16-m22-replay-artifact.md`.
+- **Next unimplemented PR slice:** open `PR-16-M23+` only after explicit feature-contract approval.
