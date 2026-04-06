@@ -202,6 +202,13 @@ function validateConfiguration(config) {
   if (defectTypes.some((defectType) => !defectType.name)) {
     errors.push('Each defect type requires a name.');
   }
+  const normalizedDefectNames = defectTypes.map((defectType) => normalizeLower(defectType.name)).filter(Boolean);
+  const duplicateDefectNames = normalizedDefectNames.filter(
+    (name, index) => normalizedDefectNames.indexOf(name) !== index,
+  );
+  if (duplicateDefectNames.length > 0) {
+    errors.push('Defect type names must be unique (case-insensitive).');
+  }
   if (defectTypes.some((defectType) => !/^#[0-9a-fA-F]{6}$/.test(defectType.color))) {
     errors.push('Defect type colors must be valid 6-digit hex values (for example #ef4444).');
   }
