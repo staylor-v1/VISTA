@@ -394,7 +394,41 @@ describe('ProjectConfigurationPanel', () => {
         ).length;
         expect(putCallsAfter).toBe(putCallsBefore);
       });
-test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} synthetic user`, async () => {
+
+
+      test(`blocks save on duplicate defect names for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config, projectType);
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Defect type name 1')).toBeInTheDocument());
+
+        fireEvent.click(screen.getByRole('button', { name: 'Add Defect Type' }));
+        fireEvent.change(screen.getByLabelText(`Defect type name ${config.defect_types.length + 1}`), {
+          target: { value: 'Defect 1' },
+        });
+        fireEvent.change(screen.getByLabelText(`Defect type color ${config.defect_types.length + 1}`), {
+          target: { value: '#22c55e' },
+        });
+
+        const putCallsBefore = global.fetch.mock.calls.filter(
+          ([url, options = {}]) => url === '/api/projects/proj-1/configuration' && options.method === 'PUT',
+        ).length;
+
+        fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+
+        await waitFor(() => {
+          expect(screen.getByText(/Defect type names must be unique/)).toBeInTheDocument();
+        });
+
+        const putCallsAfter = global.fetch.mock.calls.filter(
+          ([url, options = {}]) => url === '/api/projects/proj-1/configuration' && options.method === 'PUT',
+        ).length;
+        expect(putCallsAfter).toBe(putCallsBefore);
+      });
+
+      test(`supports part view add/edit/remove for ${projectType} ${syntheticUser} synthetic user`, async () => {
         const config = makeConfig(projectType, syntheticUser);
         mockFetch(config, projectType);
 
