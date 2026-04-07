@@ -3659,8 +3659,12 @@ ul li:hover {
 
 .project-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 16px;
+  align-items: stretch;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 .project-tab {
@@ -3670,6 +3674,10 @@ ul li:hover {
   padding: 8px 14px;
   font-weight: 600;
   cursor: pointer;
+  min-height: 40px;
+  flex: 1 1 220px;
+  max-width: 320px;
+  text-align: center;
 }
 
 .project-tab.active {
@@ -3699,15 +3707,16 @@ ul li:hover {
 
 .workbench-controls {
   display: grid;
-  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 8px 12px;
   margin-bottom: 12px;
 }
 
 .workbench-layout {
   display: grid;
-  grid-template-columns: minmax(320px, 420px) 1fr;
+  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
   gap: 12px;
+  align-items: start;
 }
 
 @media (max-width: 1200px) {
@@ -3770,6 +3779,7 @@ ul li:hover {
   border-radius: 8px;
   padding: 12px;
   min-height: 220px;
+  min-width: 0;
 }
 
 .workbench-detail-header {
@@ -4064,6 +4074,94 @@ ul li:hover {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
+}
+
+.workbench-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.summary-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 12px;
+}
+
+.summary-card h3 {
+  margin: 0 0 6px;
+  font-size: 0.92rem;
+}
+
+.summary-card p {
+  margin: 0;
+  color: #475569;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.part-detail-panel {
+  border: 1px solid #edf1f5;
+  border-radius: 8px;
+  background: #fff;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.part-detail-panel > h3 {
+  margin-top: 0;
+}
+
+.part-detail-panel label {
+  font-size: 0.9rem;
+}
+
+.part-detail-panel input[type='text'],
+.part-detail-panel select {
+  width: 100%;
+}
+
+.workbench-controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.workbench-controls-row > label {
+  min-width: 120px;
+}
+
+.workbench-controls-row > input[type='text'],
+.workbench-controls-row > select {
+  flex: 1 1 180px;
+  min-width: 160px;
+}
+
+.workbench-controls-row > .btn {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 900px) {
+  .project-tab {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+
+  .workbench-controls-row {
+    align-items: stretch;
+  }
+
+  .workbench-controls-row > label,
+  .workbench-controls-row > input[type='text'],
+  .workbench-controls-row > select,
+  .workbench-controls-row > .btn {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
 }
 
 @media (max-width: 900px) {

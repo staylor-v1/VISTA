@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 
 const VIEW_ORDER = ['front', 'back', 'left', 'right', 'top', 'bottom'];
 const MPR_AXES = ['axial', 'coronal', 'sagittal'];
@@ -627,6 +627,26 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     workspaceStateLoaded,
   ]);
 
+  const updatePartReviewState = useCallback(async (part, nextState) => {
+    try {
+      setSavingPartId(part.id);
+      const resp = await fetch(`/api/projects/${projectId}/parts/${part.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ review_state: nextState }),
+      });
+      if (!resp.ok) {
+        throw new Error(`Failed to update review state (${resp.status})`);
+      }
+      const updatedPart = await resp.json();
+      setParts((prev) => prev.map((item) => (item.id === updatedPart.id ? updatedPart : item)));
+    } catch (err) {
+      setError(err.message || 'Failed to update part review state');
+    } finally {
+      setSavingPartId(null);
+    }
+  }, [projectId]);
+
   useEffect(() => {
     if (!selectedPart?.id) return undefined;
     const handleInspectorHotkeys = (event) => {
@@ -651,7 +671,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     };
     document.addEventListener('keydown', handleInspectorHotkeys);
     return () => document.removeEventListener('keydown', handleInspectorHotkeys);
-  }, [inspectorHotkeys, savingPartId, selectedPart]);
+  }, [inspectorHotkeys, savingPartId, selectedPart, updatePartReviewState]);
 
   const reviewSummary = useMemo(() => {
     return parts.reduce(
@@ -663,26 +683,6 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
       { unreviewed: 0, in_review: 0, pass: 0, reject_pending: 0, reject_confirmed: 0 },
     );
   }, [parts]);
-
-  const updatePartReviewState = async (part, nextState) => {
-    try {
-      setSavingPartId(part.id);
-      const resp = await fetch(`/api/projects/${projectId}/parts/${part.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ review_state: nextState }),
-      });
-      if (!resp.ok) {
-        throw new Error(`Failed to update review state (${resp.status})`);
-      }
-      const updatedPart = await resp.json();
-      setParts((prev) => prev.map((item) => (item.id === updatedPart.id ? updatedPart : item)));
-    } catch (err) {
-      setError(err.message || 'Failed to update part review state');
-    } finally {
-      setSavingPartId(null);
-    }
-  };
 
   const updateSlicePosition = (axis, value, dimensions) => {
     const upper = Math.max(0, (dimensions?.[axis] || 1) - 1);
