@@ -293,6 +293,9 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [shortcutHelpVisible, setShortcutHelpVisible] = useState(false);
   const [panelLayout, setPanelLayout] = useState(DEFAULT_PANEL_LAYOUT);
   const [normalizationTriageField, setNormalizationTriageField] = useState('');
+  const [leftPanelTab, setLeftPanelTab] = useState('part_summary');
+  const [centerPanelTab, setCenterPanelTab] = useState('inspector');
+  const [rightPanelTab, setRightPanelTab] = useState('annotations');
   const droppedMetadataItemsSummary = useMemo(
     () => getDroppedMetadataItemsSummary(reportExport.payload),
     [reportExport.payload],
@@ -460,6 +463,12 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     }
     return configuredViews[0] || '';
   }, [selectedPart, selectedViewName]);
+  const selectedPartMetadata = useMemo(() => {
+    if (!selectedPart?.metadata || typeof selectedPart.metadata !== 'object') {
+      return {};
+    }
+    return selectedPart.metadata;
+  }, [selectedPart]);
 
   const tooltipValues = useMemo(() => {
     const axisSeed = slicePosition.axial + slicePosition.coronal + slicePosition.sagittal;
@@ -1366,8 +1375,57 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                     </div>
                   )}
 
-                  <div className="inspector-common-controls" data-testid="inspector-common-controls">
-                    <div className="workspace-panel-layout" data-testid="hotkey-controls">
+                  <div className="workbench-tabbed-panels">
+                    <section className="workbench-tabbed-panel">
+                      <div className="project-tabs" role="tablist" aria-label="Left panel tabs">
+                        <button
+                          type="button"
+                          className={`project-tab ${leftPanelTab === 'part_summary' ? 'active' : ''}`}
+                          role="tab"
+                          aria-selected={leftPanelTab === 'part_summary'}
+                          onClick={() => setLeftPanelTab('part_summary')}
+                        >
+                          Part Summary
+                        </button>
+                      </div>
+                      {leftPanelTab === 'part_summary' && (
+                        <div className="workspace-panel-layout">
+                          <strong>Part Summary</strong>
+                          <p className="muted">Serial: {selectedPart.serial_number}</p>
+                          <p className="muted">Batch: {selectedPart.batch_id || '—'}</p>
+                          <p className="muted">State: {REVIEW_LABELS[selectedPart.review_state || 'unreviewed']}</p>
+                          <p className="muted">Defects: {getDefectCount(selectedPart)}</p>
+                          <p className="muted">Critical defects: {getCriticalDefectCount(selectedPart)}</p>
+                          <p className="muted">Views: {getPartViews(selectedPart).join(', ')}</p>
+                          <p className="muted">Modalities: {modalityOptions.join(', ')}</p>
+                        </div>
+                      )}
+                    </section>
+
+                    <section className="workbench-tabbed-panel">
+                      <div className="project-tabs" role="tablist" aria-label="Center panel tabs">
+                        <button
+                          type="button"
+                          className={`project-tab ${centerPanelTab === 'inspector' ? 'active' : ''}`}
+                          role="tab"
+                          aria-selected={centerPanelTab === 'inspector'}
+                          onClick={() => setCenterPanelTab('inspector')}
+                        >
+                          Inspector
+                        </button>
+                        <button
+                          type="button"
+                          className={`project-tab ${centerPanelTab === 'image_metadata' ? 'active' : ''}`}
+                          role="tab"
+                          aria-selected={centerPanelTab === 'image_metadata'}
+                          onClick={() => setCenterPanelTab('image_metadata')}
+                        >
+                          Image Metadata
+                        </button>
+                      </div>
+                      {centerPanelTab === 'inspector' && (
+                        <div className="inspector-common-controls" data-testid="inspector-common-controls">
+                          <div className="workspace-panel-layout" data-testid="hotkey-controls">
                       <strong>Configurable hotkeys</strong>
                       <div className="measurement-fields">
                         <label>
@@ -1432,7 +1490,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                         </p>
                       )}
                     </div>
-                    <div className="workspace-panel-layout" data-testid="panel-layout-controls">
+                          <div className="workspace-panel-layout" data-testid="panel-layout-controls">
                       <strong>Workspace panels</strong>
                       {PANEL_LAYOUT_KEYS.map((panelKey) => {
                         const config = panelLayout[panelKey] || DEFAULT_PANEL_LAYOUT[panelKey];
@@ -1484,7 +1542,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                         );
                       })}
                     </div>
-                    <div className="modality-controls">
+                          <div className="modality-controls">
                       <strong>Modalities</strong>
                       <div className="modality-list">
                         {modalityOptions.map((modality) => (
@@ -1499,7 +1557,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                         ))}
                       </div>
                     </div>
-                    <div className="view-switcher">
+                          <div className="view-switcher">
                       <strong>View quick switch</strong>
                       <div className="view-thumbnail-list">
                         {getPartViews(selectedPart).map((viewName) => (
@@ -1514,7 +1572,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                         ))}
                       </div>
                     </div>
-                    <div className="image-toggle">
+                          <div className="image-toggle">
                       <button
                         type="button"
                         className="btn btn-secondary btn-sm"
@@ -1524,7 +1582,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                         {imageEnabled ? 'Hide image' : 'Show image'}
                       </button>
                     </div>
-                    <div className="measurement-capture">
+                          <div className="measurement-capture">
                       <strong>Measurements</strong>
                       <div className="measurement-fields">
                         <input
@@ -1566,7 +1624,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                         )}
                       </ul>
                     </div>
-                    <div className="inspector-nav-controls" data-testid="inspector-nav-controls">
+                          <div className="inspector-nav-controls" data-testid="inspector-nav-controls">
                       <strong>Inspector viewport</strong>
                       <div className="mpr-nav-controls">
                         <button type="button" className="btn btn-secondary btn-sm" onClick={() => adjustInspectorZoom(0.1)}>Zoom +</button>
@@ -1583,8 +1641,31 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                         Zoom {inspectorViewport.zoom.toFixed(2)}x • Pan ({inspectorViewport.panX}, {inspectorViewport.panY})
                       </p>
                     </div>
-                    <div className="annotation-controls" data-testid="annotation-controls">
-                      <strong>Annotations</strong>
+                          </div>
+                      )}
+                      {centerPanelTab === 'image_metadata' && (
+                        <div className="workspace-panel-layout" data-testid="image-metadata-panel">
+                          <strong>Image Metadata</strong>
+                          <pre>{JSON.stringify(selectedPartMetadata, null, 2)}</pre>
+                        </div>
+                      )}
+                    </section>
+
+                    <section className="workbench-tabbed-panel">
+                      <div className="project-tabs" role="tablist" aria-label="Right panel tabs">
+                        <button
+                          type="button"
+                          className={`project-tab ${rightPanelTab === 'annotations' ? 'active' : ''}`}
+                          role="tab"
+                          aria-selected={rightPanelTab === 'annotations'}
+                          onClick={() => setRightPanelTab('annotations')}
+                        >
+                          Annotations
+                        </button>
+                      </div>
+                      {rightPanelTab === 'annotations' && (
+                        <div className="annotation-controls" data-testid="annotation-controls">
+                          <strong>Annotations</strong>
                       <div className="measurement-fields">
                         <input
                           type="text"
@@ -1721,7 +1802,9 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                           ))
                         )}
                       </ul>
-                    </div>
+                        </div>
+                      )}
+                    </section>
                   </div>
 
                   {['PT2', 'PT3'].includes(projectType) ? (
