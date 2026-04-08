@@ -308,6 +308,13 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
         }),
       });
     }
+    if (url.includes('/report-pdf')) {
+      return Promise.resolve({
+        ok: true,
+        headers: { get: (name) => (name.toLowerCase() === 'content-type' ? 'application/pdf' : null) },
+        blob: async () => new Blob(['synthetic-pdf']),
+      });
+    }
     if (url.includes('/ingest') && options.method === 'POST') {
       const payload = JSON.parse(options.body || '{}');
       const partsReceived = Array.isArray(payload.batches)
@@ -518,6 +525,11 @@ describe('InspectionWorkbenchPanel', () => {
       fireEvent.click(screen.getByTestId('run-project-data-export-action'));
       await waitFor(() => {
         expect(screen.getByTestId('export-bundle-archive-result')).toHaveTextContent(/Export archive ready:/);
+      });
+      fireEvent.change(screen.getByTestId('project-data-export-mode'), { target: { value: 'report_pdf' } });
+      fireEvent.click(screen.getByTestId('run-project-data-export-action'));
+      await waitFor(() => {
+        expect(screen.getByTestId('project-report-result')).toHaveTextContent(/PDF report ready:/);
       });
       fireEvent.click(screen.getByTestId('request-export-bundle-archive'));
       await waitFor(() => {
