@@ -40,6 +40,12 @@ function makeConfig(projectType, syntheticUser) {
       anomaly_colormap: 'viridis',
       grayscale_base_image: true,
     },
+    serial_number_scheme: {
+      batch_sn_enabled: true,
+      sub_batching_enabled: complexity > 1,
+      sub_batch_sn_enabled: complexity > 2,
+      part_sn_enabled: true,
+    },
   };
 }
 
@@ -246,6 +252,7 @@ describe('ProjectConfigurationPanel', () => {
         await waitFor(() => expect(screen.getByTestId('project-configuration-summary')).toBeInTheDocument());
 
         expect(screen.getAllByRole('heading', { name: 'Image Modalities' }).length).toBeGreaterThan(0);
+        expect(screen.getByRole('heading', { name: 'Serial Number Scheme' })).toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
 
         await waitFor(() => {

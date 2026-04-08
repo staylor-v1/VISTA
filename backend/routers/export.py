@@ -6,7 +6,7 @@ import zipfile
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func as _func
 
@@ -317,18 +317,7 @@ def _normalize_metadata_dict_list(metadata_obj, key):
     return normalized, dropped_count
 
 
-@router.get("/projects/{project_id}/report-json")
-async def export_project_report_json(
-    project_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user: schemas.User = Depends(get_current_user),
-):
-    db_project = await _get_project_with_export_access(
-        project_id=project_id,
-        db=db,
-        current_user=current_user,
-    )
-
+async def _build_project_report_payload(project_id: uuid.UUID, db: AsyncSession, db_project: models.Project) -> dict:
     image_count_result = await db.execute(
         select(_func.count())
         .select_from(models.DataInstance)
@@ -376,7 +365,7 @@ async def export_project_report_json(
             _, dropped = _normalize_metadata_dict_list(metadata_obj, key)
             metadata_drop_counts[key] += dropped
 
-    report_payload = {
+    return {
         "project": {
             "id": str(db_project.id),
             "name": db_project.name,
@@ -394,7 +383,101 @@ async def export_project_report_json(
             },
         },
     }
+
+
+def _build_simple_report_pdf(report_payload: dict) -> bytes:
+    project = report_payload.get("project", {})
+    summary = report_payload.get("summary", {})
+    dropped = summary.get("metadata_normalization", {}).get("dropped_non_object_items", {})
+    lines = [
+        "VISTA Inspection Report",
+        f"Project: {project.get('name', 'Unknown')}",
+        f"Project ID: {project.get('id', 'Unknown')}",
+        f"Project Type: {project.get('project_type', 'PT1')}",
+        f"Total Images: {summary.get('total_images', 0)}",
+        f"Total Batches: {summary.get('total_batches', 0)}",
+        f"Total Parts: {summary.get('total_parts', 0)}",
+        f"Reviewed Parts: {summary.get('reviewed_parts', 0)}",
+        f"Unreviewed Parts: {summary.get('unreviewed_parts', 0)}",
+        "Dropped Metadata Items:",
+    ]
+    for field, count in dropped.items():
+        lines.append(f"- {field or 'unknown_field'}: {count}")
+
+    safe_lines = [str(line).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)") for line in lines]
+    text_lines = ["BT", "/F1 12 Tf", "72 760 Td", "14 TL"]
+    for index, line in enumerate(safe_lines):
+        if index > 0:
+            text_lines.append("T*")
+        text_lines.append(f"({line}) Tj")
+    text_lines.append("ET")
+    content_stream = "\n".join(text_lines).encode("latin-1", errors="replace")
+
+    objects = []
+    objects.append(b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n")
+    objects.append(b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n")
+    objects.append(
+        b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n"
+    )
+    objects.append(b"4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n")
+    objects.append(
+        b"5 0 obj << /Length " + str(len(content_stream)).encode("ascii") + b" >> stream\n"
+        + content_stream
+        + b"\nendstream endobj\n"
+    )
+
+    pdf = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for obj in objects:
+        offsets.append(len(pdf))
+        pdf.extend(obj)
+    xref_offset = len(pdf)
+    pdf.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    pdf.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        pdf.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    pdf.extend(
+        f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF".encode("ascii")
+    )
+    return bytes(pdf)
+
+
+@router.get("/projects/{project_id}/report-json")
+async def export_project_report_json(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    db_project = await _get_project_with_export_access(
+        project_id=project_id,
+        db=db,
+        current_user=current_user,
+    )
+
+    report_payload = await _build_project_report_payload(project_id=project_id, db=db, db_project=db_project)
     return JSONResponse(content=report_payload)
+
+
+@router.get("/projects/{project_id}/report-pdf")
+async def export_project_report_pdf(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    db_project = await _get_project_with_export_access(
+        project_id=project_id,
+        db=db,
+        current_user=current_user,
+    )
+    report_payload = await _build_project_report_payload(project_id=project_id, db=db, db_project=db_project)
+    pdf_bytes = _build_simple_report_pdf(report_payload)
+    filename = f"{db_project.name.replace(' ', '_') or 'project'}-report.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/projects/{project_id}/export-bundle-json")

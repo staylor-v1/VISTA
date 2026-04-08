@@ -30,6 +30,12 @@ const EXPORT_ACTIONS = {
   bundle_summary: 'bundle_summary',
   bundle_archive: 'bundle_archive',
   report_json: 'report_json',
+  report_pdf: 'report_pdf',
+};
+const PROJECT_PHASES = {
+  data_ingestion: 'Data Ingestion',
+  part_inspection: 'Part Inspection',
+  reporting: 'Reporting',
 };
 const KNOWN_NORMALIZATION_FIELDS = new Set([
   'annotations',
@@ -274,6 +280,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     payload: null,
   });
   const [exportAction, setExportAction] = useState(EXPORT_ACTIONS.bundle_summary);
+  const [projectPhase, setProjectPhase] = useState('data_ingestion');
   const [ingestResult, setIngestResult] = useState({
     loading: false,
     error: null,
@@ -1017,6 +1024,29 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
       await requestExportBundleArchive();
       return;
     }
+    if (exportAction === EXPORT_ACTIONS.report_pdf) {
+      try {
+        setReportExport({ loading: true, error: null, payload: null });
+        const resp = await fetch(`/api/projects/${projectId}/report-pdf`);
+        if (!resp.ok) {
+          throw new Error(`Failed to generate PDF report (${resp.status})`);
+        }
+        const blob = await resp.blob();
+        const contentType = resp.headers.get('content-type') || 'application/pdf';
+        setReportExport({
+          loading: false,
+          error: null,
+          payload: {
+            format: 'pdf',
+            sizeBytes: blob.size,
+            contentType,
+          },
+        });
+      } catch (err) {
+        setReportExport({ loading: false, error: err.message || 'Failed to generate PDF report', payload: null });
+      }
+      return;
+    }
     try {
       setReportExport({ loading: true, error: null, payload: null });
       const resp = await fetch(`/api/projects/${projectId}/report-json`);
@@ -1037,6 +1067,25 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
         <p>
           Inspection workbench for <strong>{projectType || 'PT1'}</strong> projects.
         </p>
+        <div className="workbench-controls-row">
+          <label htmlFor="projectPhaseLabel" className="form-label">
+            Project phase
+          </label>
+          <select
+            id="projectPhaseLabel"
+            className="form-control"
+            data-testid="project-phase-select"
+            value={projectPhase}
+            onChange={(event) => setProjectPhase(event.target.value)}
+          >
+            <option value="data_ingestion">{PROJECT_PHASES.data_ingestion}</option>
+            <option value="part_inspection">{PROJECT_PHASES.part_inspection}</option>
+            <option value="reporting">{PROJECT_PHASES.reporting}</option>
+          </select>
+          <span className="group-badge" data-testid="project-phase-label">
+            Phase: {PROJECT_PHASES[projectPhase] || PROJECT_PHASES.data_ingestion}
+          </span>
+        </div>
         <div className="workbench-detail-actions">
           <label htmlFor="projectDataExportMode" className="form-label">
             Export/report mode
@@ -1051,6 +1100,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
             <option value={EXPORT_ACTIONS.bundle_summary}>Export bundle summary</option>
             <option value={EXPORT_ACTIONS.bundle_archive}>Export bundle archive</option>
             <option value={EXPORT_ACTIONS.report_json}>Project report JSON</option>
+            <option value={EXPORT_ACTIONS.report_pdf}>Project report PDF</option>
           </select>
           <button
             type="button"
@@ -1113,8 +1163,11 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
       )}
       {reportExport.payload && (
         <div className="alert alert-success" data-testid="project-report-result">
-          Report ready: {reportExport.payload?.summary?.total_parts || 0} parts,{' '}
-          {reportExport.payload?.summary?.reviewed_parts || 0} reviewed.
+          {reportExport.payload?.format === 'pdf'
+            ? `PDF report ready: ${reportExport.payload?.sizeBytes || 0} bytes (${reportExport.payload?.contentType || 'application/pdf'}).`
+            : `Report ready: ${reportExport.payload?.summary?.total_parts || 0} parts, ${
+                reportExport.payload?.summary?.reviewed_parts || 0
+              } reviewed.`}
         </div>
       )}
       {droppedMetadataItemsSummary.length > 0 && (
