@@ -591,6 +591,31 @@ def test_project_json_report_forbidden_for_non_group_member(client):
     assert report_resp.status_code == 403
 
 
+def test_project_pdf_report_supports_export(client):
+    headers = {
+        "X-User-Id": "pdf-report@example.com",
+        "X-User-Groups": "[\"pdf-report-group\"]",
+    }
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": "PDF Report Project",
+            "description": "pdf report scenario",
+            "meta_group_id": "pdf-report-group",
+            "project_type": "PT1",
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+
+    report_resp = client.get(f"/api/projects/{project_id}/report-pdf", headers=headers)
+    assert report_resp.status_code == 200, report_resp.text
+    assert report_resp.headers["content-type"].startswith("application/pdf")
+    assert report_resp.headers["content-disposition"].endswith("-report.pdf\"")
+    assert report_resp.content.startswith(b"%PDF-1.4")
+
+
 def test_project_bundle_json_supports_progressive_users_per_project_type(client):
     import json as _json
 

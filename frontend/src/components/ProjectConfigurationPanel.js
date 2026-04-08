@@ -249,7 +249,23 @@ const EMPTY_CONFIG = {
     anomaly_colormap: 'viridis',
     grayscale_base_image: true,
   },
+  serial_number_scheme: {
+    batch_sn_enabled: true,
+    sub_batching_enabled: false,
+    sub_batch_sn_enabled: false,
+    part_sn_enabled: true,
+  },
 };
+
+function normalizeSerialNumberScheme(config) {
+  const candidate = config?.serial_number_scheme || {};
+  return {
+    batch_sn_enabled: candidate.batch_sn_enabled !== false,
+    sub_batching_enabled: candidate.sub_batching_enabled === true,
+    sub_batch_sn_enabled: candidate.sub_batch_sn_enabled === true,
+    part_sn_enabled: candidate.part_sn_enabled !== false,
+  };
+}
 
 function ProjectConfigurationPanel({ projectId }) {
   const [config, setConfig] = useState(EMPTY_CONFIG);
@@ -281,7 +297,12 @@ function ProjectConfigurationPanel({ projectId }) {
         }
 
         const configData = await configResp.json();
-        setConfig(configData?.config || EMPTY_CONFIG);
+        const incomingConfig = configData?.config || EMPTY_CONFIG;
+        setConfig({
+          ...EMPTY_CONFIG,
+          ...incomingConfig,
+          serial_number_scheme: normalizeSerialNumberScheme(incomingConfig),
+        });
 
         if (projectsResp.ok) {
           const projectsData = await projectsResp.json();
@@ -593,6 +614,80 @@ function ProjectConfigurationPanel({ projectId }) {
                 }}
               />
             </div>
+          </section>
+
+          <section className="part-detail-panel" aria-label="Serial number scheme">
+            <h3>Serial Number Scheme</h3>
+            <p>Choose whether serial numbers are tracked at batch, sub-batch, and part levels.</p>
+            <label>
+              <input
+                type="checkbox"
+                checked={Boolean(config.serial_number_scheme?.batch_sn_enabled)}
+                onChange={(event) =>
+                  setConfig((previous) => ({
+                    ...previous,
+                    serial_number_scheme: {
+                      ...normalizeSerialNumberScheme(previous),
+                      batch_sn_enabled: event.target.checked,
+                    },
+                  }))
+                }
+              />
+              Track serial number at batch level
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={Boolean(config.serial_number_scheme?.sub_batching_enabled)}
+                onChange={(event) =>
+                  setConfig((previous) => {
+                    const enabled = event.target.checked;
+                    return {
+                      ...previous,
+                      serial_number_scheme: {
+                        ...normalizeSerialNumberScheme(previous),
+                        sub_batching_enabled: enabled,
+                        sub_batch_sn_enabled: enabled ? previous.serial_number_scheme?.sub_batch_sn_enabled === true : false,
+                      },
+                    };
+                  })
+                }
+              />
+              Organize each batch into sub-batches
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={Boolean(config.serial_number_scheme?.sub_batch_sn_enabled)}
+                disabled={!config.serial_number_scheme?.sub_batching_enabled}
+                onChange={(event) =>
+                  setConfig((previous) => ({
+                    ...previous,
+                    serial_number_scheme: {
+                      ...normalizeSerialNumberScheme(previous),
+                      sub_batch_sn_enabled: event.target.checked,
+                    },
+                  }))
+                }
+              />
+              Track serial number at sub-batch level
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={Boolean(config.serial_number_scheme?.part_sn_enabled)}
+                onChange={(event) =>
+                  setConfig((previous) => ({
+                    ...previous,
+                    serial_number_scheme: {
+                      ...normalizeSerialNumberScheme(previous),
+                      part_sn_enabled: event.target.checked,
+                    },
+                  }))
+                }
+              />
+              Track serial number at part level
+            </label>
           </section>
 
           <section className="part-detail-panel" aria-label="Image modalities">
