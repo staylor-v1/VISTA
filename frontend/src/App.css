@@ -3811,6 +3811,32 @@ ul li:hover {
   gap: 10px;
 }
 
+.workbench-tabbed-panels {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.workbench-tabbed-panel {
+  min-width: 0;
+}
+
+.workbench-tabbed-panel .project-tabs {
+  margin-bottom: 8px;
+}
+
+.workbench-tabbed-panel pre {
+  margin: 8px 0 0;
+  max-height: 360px;
+  overflow: auto;
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+}
+
 .modality-list,
 .view-thumbnail-list {
   display: flex;
@@ -3842,6 +3868,10 @@ ul li:hover {
 }
 
 @media (max-width: 900px) {
+  .workbench-tabbed-panels {
+    grid-template-columns: 1fr;
+  }
+
   .view-board {
     grid-template-columns: repeat(2, minmax(120px, 1fr));
   }
