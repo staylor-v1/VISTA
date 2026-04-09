@@ -1,5 +1,5 @@
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 import utils.crud as crud
@@ -53,6 +53,7 @@ async def create_new_project(
 async def read_projects(
     skip: int = 0,
     limit: int = 100,
+    include_archived: bool = Query(False),
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
 ):
@@ -68,7 +69,8 @@ async def read_projects(
         db=db, 
         user=current_user, 
         skip=skip, 
-        limit=limit
+        limit=limit,
+        include_archived=include_archived,
     )
     return projects
 
@@ -191,3 +193,65 @@ async def delete_existing_project(
         await cache.delete(cache_key)
 
     return schemas.ProjectDeleteResponse(project_id=project_id, deleted=True, deleted_by=current_user.email)
+
+
+@router.patch("/{project_id}/archive", response_model=schemas.Project)
+async def archive_project(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """Archive a project, making it read-only and hidden from the default view."""
+    db_project = await crud.get_project(db=db, project_id=project_id)
+    if db_project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    if not is_user_in_group(current_user.email, db_project.meta_group_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access forbidden")
+
+    if db_project.created_by and db_project.created_by != current_user.email:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the project creator can archive this project.",
+        )
+
+    result = await crud.archive_project(db=db, project_id=project_id, archived_by=current_user.email)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    cache = Cache()
+    for pattern_limit in [10, 20, 50, 100]:
+        await cache.delete(f"projects:user:{current_user.email}:skip:0:limit:{pattern_limit}")
+
+    return result
+
+
+@router.patch("/{project_id}/unarchive", response_model=schemas.Project)
+async def unarchive_project(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """Unarchive a project, restoring full access and visibility."""
+    db_project = await crud.get_project(db=db, project_id=project_id)
+    if db_project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    if not is_user_in_group(current_user.email, db_project.meta_group_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access forbidden")
+
+    if db_project.created_by and db_project.created_by != current_user.email:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the project creator can unarchive this project.",
+        )
+
+    result = await crud.unarchive_project(db=db, project_id=project_id, unarchived_by=current_user.email)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    cache = Cache()
+    for pattern_limit in [10, 20, 50, 100]:
+        await cache.delete(f"projects:user:{current_user.email}:skip:0:limit:{pattern_limit}")
+
+    return result
