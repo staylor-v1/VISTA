@@ -34,6 +34,7 @@ function ImageView() {
   const [currentUser, setCurrentUser] = useState(null);
   const [sidebarWidth, setSidebarWidth] = useState(350);
   const [isResizing, setIsResizing] = useState(false);
+  const [projectArchived, setProjectArchived] = useState(null);
 
   // Navigation settings - restore from localStorage
   const [skipDeletedImages, setSkipDeletedImages] = useState(() => {
@@ -269,6 +270,18 @@ function ImageView() {
     loadImageData();
     loadClasses();
   }, [imageId, projectId, loadImageData, loadClasses]);
+
+  // Fetch project archive status (only when projectId changes, not on every image navigation)
+  useEffect(() => {
+    if (projectId) {
+      fetch(`/api/projects/${projectId}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (data) setProjectArchived(!!data.is_archived);
+        })
+        .catch(() => {});
+    }
+  }, [projectId]);
 
   // Load project images for navigation once we know the current image's group
   useEffect(() => {
@@ -567,10 +580,15 @@ function ImageView() {
       </header>
 
       <div className="container" style={{ maxWidth: '100%', padding: 'var(--space-4)' }}>
+        {projectArchived === true && (
+          <div className="archived-project-notice">
+            <strong>This project is archived.</strong> It is read-only. Classifications, comments, reviews, and other edits are disabled.
+          </div>
+        )}
         {error && (
           <div className="alert alert-error">
             {error}
-            <button 
+            <button
               className="close-alert"
               onClick={() => setError(null)}
             >
@@ -590,6 +608,7 @@ function ImageView() {
               {image && (
                 <ReviewPanel
                   imageId={imageId}
+                  readOnly={projectArchived !== false}
                 />
               )}
 
@@ -602,6 +621,7 @@ function ImageView() {
                   onGroupChanged={(newGroupId) => {
                     setImage(prev => prev ? { ...prev, group_id: newGroupId } : prev);
                   }}
+                  readOnly={projectArchived !== false}
                 />
               )}
 
@@ -612,6 +632,7 @@ function ImageView() {
                 loading={loading}
                 setLoading={setLoading}
                 setError={setError}
+                readOnly={projectArchived !== false}
               />
 
 
@@ -620,6 +641,7 @@ function ImageView() {
                 loading={loading}
                 setLoading={setLoading}
                 setError={setError}
+                readOnly={projectArchived !== false}
               />
 
               <ImageMetadata
@@ -711,13 +733,15 @@ function ImageView() {
             </div>
           </div>
 
-          {/* Keep deletion controls at the bottom for all to see */}
-          <ImageDeletionControls
-            projectId={projectId}
-            image={image}
-            setImage={setImage}
-            refreshProjectImages={loadProjectImages}
-          />
+          {/* Keep deletion controls at the bottom for all to see (hidden for archived projects) */}
+          {projectArchived === false && (
+            <ImageDeletionControls
+              projectId={projectId}
+              image={image}
+              setImage={setImage}
+              refreshProjectImages={loadProjectImages}
+            />
+          )}
 
           {/* Navigation settings */}
           <div style={{

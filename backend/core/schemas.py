@@ -71,6 +71,9 @@ class Project(ProjectBase):
     id: uuid.UUID
     created_at: datetime
     updated_at: Optional[datetime] = None
+    created_by: Optional[str] = None
+    is_archived: bool = False
+    archived_at: Optional[datetime] = None
 
     model_config = {
         "from_attributes": True,
@@ -528,8 +531,7 @@ class ImageComment(ImageCommentBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
     
-    # Remove the related data that's causing issues
-    # author: Optional[User] = None
+    author: Optional[User] = None
 
     model_config = {
         "from_attributes": True,
