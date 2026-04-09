@@ -329,11 +329,39 @@ const DeleteProjectModal = memo(function DeleteProjectModal({ project, onClose, 
 });
 
 // Memoized ProjectItem component to prevent unnecessary re-renders
-const ProjectItem = memo(function ProjectItem({ project, onEdit, onDelete, canDelete }) {
+const ProjectItem = memo(function ProjectItem({ project, onEdit, onDelete, canDelete, currentUser, onArchiveToggle }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+  const canArchive = currentUser && (!project.created_by || project.created_by === currentUser.email);
+
+  const handleArchiveToggle = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!canArchive) return;
+    const action = project.is_archived ? 'unarchive' : 'archive';
+    const message = project.is_archived
+      ? `Unarchive "${project.name}"? This will restore full editing access.`
+      : `Archive "${project.name}"? The project will become read-only and hidden by default.`;
+    if (!window.confirm(message)) return;
+    setArchiving(true);
+    try {
+      const response = await fetch(`/api/projects/${project.id}/${action}`, { method: 'PATCH' });
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => ({}));
+        throw new Error(errorPayload.detail || `Failed to ${action} project`);
+      }
+      const updated = await response.json();
+      onArchiveToggle(updated);
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setArchiving(false);
+      setMenuOpen(false);
+    }
+  };
 
   return (
-    <div className="project-card">
+    <div className={`project-card${project.is_archived ? ' project-card-archived' : ''}`}>
       <div className="project-card-header">
         <div className="project-card-header-row">
           <Link
@@ -341,6 +369,7 @@ const ProjectItem = memo(function ProjectItem({ project, onEdit, onDelete, canDe
             className="project-card-link-title"
           >
           <h3 className="project-card-title">{project.name}</h3>
+          {project.is_archived && <span className="archived-badge">Archived</span>}
           </Link>
           <div className="project-card-menu">
             <button
@@ -368,6 +397,15 @@ const ProjectItem = memo(function ProjectItem({ project, onEdit, onDelete, canDe
                   }}
                 >
                   Edit
+                </button>
+                <button
+                  type="button"
+                  className="project-card-menu-item"
+                  disabled={!canArchive || archiving}
+                  title={!canArchive ? 'Only the project creator can archive/unarchive.' : ''}
+                  onClick={handleArchiveToggle}
+                >
+                  {project.is_archived ? 'Unarchive' : 'Archive'}
                 </button>
                 <button
                   type="button"
@@ -429,6 +467,7 @@ function App() {
   const [deletingProject, setDeletingProject] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
   const [currentUserGroups, setCurrentUserGroups] = useState([]);
+  const [showArchived, setShowArchived] = useState(false);
   // const [newProject, setNewProject] = useState({  // Commented out - not currently used
   //   name: '',
   //   description: '',
@@ -445,8 +484,9 @@ function App() {
     setToast(null);
   };
 
-  const loadProjects = useCallback(() => {
-    return fetch('/api/projects/')
+  const loadProjects = useCallback((includeArchived = showArchived) => {
+    const url = includeArchived ? '/api/projects/?include_archived=true' : '/api/projects/';
+    return fetch(url)
       .then(response => {
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
@@ -456,7 +496,7 @@ function App() {
       .then(data => {
         setProjects(data);
       });
-  }, []);
+  }, [showArchived]);
 
   useEffect(() => {
     // Fetch the current user
@@ -513,7 +553,7 @@ function App() {
         showToast(`Failed to fetch projects: ${err.message}`, 'error');
         setLoading(false);
       });
-  }, [loadProjects]); // Empty dependency array means this effect runs once on mount
+  }, [loadProjects]); // Refresh when archived toggle changes.
 
   // Log component renders for debugging
   console.log("App render count:", ++renderCount);
@@ -638,6 +678,15 @@ function App() {
       });
   }, [loadProjects]);
 
+  const handleArchiveToggle = useCallback((updatedProject) => {
+    setProjects((prev) => {
+      if (updatedProject.is_archived && !showArchived) {
+        return prev.filter((p) => p.id !== updatedProject.id);
+      }
+      return prev.map((p) => (p.id === updatedProject.id ? updatedProject : p));
+    });
+  }, [showArchived]);
+
 
   const HomePage = () => (
     <div className="App">
@@ -723,6 +772,20 @@ function App() {
                 Your Projects ({projects.length})
               </h2>
               <div className="flex gap-4">
+                <label className="archive-toggle-label">
+                  <input
+                    type="checkbox"
+                    checked={showArchived}
+                    onChange={(e) => setShowArchived(e.target.checked)}
+                    className="archive-toggle-input"
+                  />
+                  <span className="archive-toggle-track">
+                    <span className="archive-toggle-thumb"></span>
+                  </span>
+                  <span style={{ fontSize: '0.875rem', color: 'var(--gray-600)' }}>
+                    Show archived
+                  </span>
+                </label>
                 <span style={{ fontSize: '0.875rem', color: 'var(--gray-500)' }}>
                   {projects.length} {projects.length === 1 ? 'project' : 'projects'} total
                 </span>
@@ -736,6 +799,8 @@ function App() {
                   onEdit={handleEditProject}
                   onDelete={handleDeleteProject}
                   canDelete={currentUserGroups.includes(project.meta_group_id)}
+                  currentUser={currentUser}
+                  onArchiveToggle={handleArchiveToggle}
                 />
               ))}
             </div>

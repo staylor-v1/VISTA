@@ -287,6 +287,11 @@ function Project() {
         
         {!loading && (
           <div className="project-content">
+            {project?.is_archived && (
+              <div className="archived-project-notice">
+                <strong>This project is archived.</strong> It is read-only. Unarchive it from the dashboard to make changes.
+              </div>
+            )}
             <div className="project-tabs" role="tablist" aria-label="Project sections">
               <button
                 className={`project-tab ${activeTab === 'inspection' ? 'active' : ''}`}
@@ -357,15 +362,18 @@ function Project() {
             )}
             
             {/* Quick Upload Section */}
-            <div className="upload-section">
-              <ImageUploader
-                projectId={id}
-                onUploadComplete={handleUploadComplete}
-                setError={setError}
-              />
-            </div>
+            {!project?.is_archived && (
+              <div className="upload-section">
+                <ImageUploader
+                  projectId={id}
+                  onUploadComplete={handleUploadComplete}
+                  setError={setError}
+                />
+              </div>
+            )}
             
             {/* Management Sections */}
+            {!project?.is_archived && (
             <div className="management-sections">
               <div className="metadata-section">
                 <MetadataManager 
@@ -389,6 +397,7 @@ function Project() {
                 />
               </div>
             </div>
+            )}
             
             {/* Image Deletion Controls - only relevant for the flat gallery view */}
             {!hasGroups && (
