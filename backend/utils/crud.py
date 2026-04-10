@@ -229,7 +229,6 @@ async def get_all_projects(db: AsyncSession, skip: int = 0, limit: int = 100, in
         db: Database session
         skip: Number of records to skip
         limit: Maximum number of records to return
-        include_archived: If False, exclude archived projects
         
     Returns:
         List of all projects
@@ -237,11 +236,7 @@ async def get_all_projects(db: AsyncSession, skip: int = 0, limit: int = 100, in
     query = select(models.Project)
     if not include_archived:
         query = query.where(models.Project.is_archived.is_(False))
-    result = await db.execute(
-        query
-        .offset(skip)
-        .limit(limit)
-    )
+    result = await db.execute(query.offset(skip).limit(limit))
     return result.scalars().all()
 
 async def create_project(db: AsyncSession, project: schemas.ProjectCreate, created_by: Optional[str] = None) -> models.Project:
@@ -257,6 +252,7 @@ async def create_project(db: AsyncSession, project: schemas.ProjectCreate, creat
 async def archive_project(db: AsyncSession, project_id: uuid.UUID, archived_by: Optional[str] = None) -> Optional[models.Project]:
     """Archive a project, making it read-only and hidden by default."""
     from datetime import datetime, timezone
+
     project = await get_project(db, project_id)
     if project is None:
         return None
@@ -279,6 +275,171 @@ async def unarchive_project(db: AsyncSession, project_id: uuid.UUID, unarchived_
     await db.refresh(project)
     log_db_operation("UNARCHIVE", "projects", project_id, unarchived_by or "system", {})
     return project
+
+
+async def update_project(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    project: schemas.ProjectUpdate,
+    updated_by: Optional[str] = None,
+) -> Optional[models.Project]:
+    db_project = await get_project(db, project_id)
+    if db_project is None:
+        return None
+
+    updates = project.model_dump(exclude_unset=True)
+    if not updates:
+        return db_project
+
+    for key, value in updates.items():
+        setattr(db_project, key, value)
+
+    await db.commit()
+    await db.refresh(db_project)
+    log_db_operation("UPDATE", "projects", db_project.id, updated_by or "system", {"changes": updates})
+    return db_project
+
+
+async def delete_project(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    deleted_by: Optional[str] = None,
+) -> bool:
+    db_project = await get_project(db, project_id)
+    if db_project is None:
+        return False
+
+    await db.delete(db_project)
+    await db.commit()
+    log_db_operation("DELETE", "projects", project_id, deleted_by or "system", {})
+    return True
+
+
+async def create_inspection_batch(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    batch: schemas.InspectionBatchCreate,
+    created_by: Optional[str] = None,
+) -> models.InspectionBatch:
+    db_batch = models.InspectionBatch(project_id=project_id, **batch.model_dump())
+    db.add(db_batch)
+    await db.commit()
+    await db.refresh(db_batch)
+    log_db_operation("CREATE", "inspection_batches", db_batch.id, created_by or "system", {"project_id": str(project_id), "name": batch.name})
+    return db_batch
+
+
+async def list_inspection_batches(db: AsyncSession, project_id: uuid.UUID) -> List[models.InspectionBatch]:
+    result = await db.execute(
+        select(models.InspectionBatch)
+        .where(models.InspectionBatch.project_id == project_id)
+        .order_by(models.InspectionBatch.created_at.asc())
+    )
+    return result.scalars().all()
+
+
+async def get_inspection_batch(db: AsyncSession, batch_id: uuid.UUID) -> Optional[models.InspectionBatch]:
+    result = await db.execute(select(models.InspectionBatch).where(models.InspectionBatch.id == batch_id))
+    return result.scalars().first()
+
+
+async def create_inspection_part(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    part: schemas.InspectionPartCreate,
+    created_by: Optional[str] = None,
+) -> models.InspectionPart:
+    payload = part.model_dump(by_alias=False)
+    metadata_payload = payload.pop("metadata_json", None)
+    db_part = models.InspectionPart(project_id=project_id, metadata_json=metadata_payload, **payload)
+    db.add(db_part)
+    await db.commit()
+    await db.refresh(db_part)
+    log_db_operation("CREATE", "inspection_parts", db_part.id, created_by or "system", {"project_id": str(project_id), "serial_number": part.serial_number})
+    return db_part
+
+
+async def list_inspection_parts(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    batch_id: Optional[uuid.UUID] = None,
+    review_state: Optional[str] = None,
+) -> List[models.InspectionPart]:
+    query = (
+        select(models.InspectionPart)
+        .where(models.InspectionPart.project_id == project_id)
+        .order_by(models.InspectionPart.created_at.asc())
+    )
+    if batch_id:
+        query = query.where(models.InspectionPart.batch_id == batch_id)
+    if review_state:
+        query = query.where(models.InspectionPart.review_state == review_state)
+
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
+async def get_inspection_part(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+) -> Optional[models.InspectionPart]:
+    result = await db.execute(
+        select(models.InspectionPart).where(
+            models.InspectionPart.project_id == project_id,
+            models.InspectionPart.id == part_id,
+        )
+    )
+    return result.scalars().first()
+
+
+async def update_inspection_part_review_state(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    review_state: str,
+    updated_by: Optional[str] = None,
+) -> Optional[models.InspectionPart]:
+    part = await get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        return None
+
+    part.review_state = review_state
+    await db.commit()
+    await db.refresh(part)
+    log_db_operation(
+        "UPDATE",
+        "inspection_parts",
+        part.id,
+        updated_by or "system",
+        {"project_id": str(project_id), "review_state": review_state},
+    )
+    return part
+
+
+async def update_inspection_part_metadata(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    metadata_patch: Dict,
+    updated_by: Optional[str] = None,
+) -> Optional[models.InspectionPart]:
+    part = await get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        return None
+
+    current_metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+    part.metadata_json = {**current_metadata, **metadata_patch}
+    await db.commit()
+    await db.refresh(part)
+    log_db_operation(
+        "UPDATE",
+        "inspection_parts",
+        part.id,
+        updated_by or "system",
+        {"project_id": str(project_id), "metadata_keys": sorted(metadata_patch.keys())},
+    )
+    return part
 
 # DataInstance CRUD operations
 async def get_data_instance(db: AsyncSession, image_id: uuid.UUID) -> Optional[models.DataInstance]:
@@ -591,6 +752,8 @@ async def create_comment(db: AsyncSession, comment: schemas.ImageCommentCreate, 
     
     log_db_operation("CREATE", "image_comments", db_comment.id, created_by or "system", {"image_id": str(comment.image_id), "text_length": len(comment.text)})
     
+    # Re-load with author relationship eagerly loaded so FastAPI response
+    # serialization does not trigger async lazy-loading (MissingGreenlet).
     result = await db.execute(
         select(models.ImageComment)
         .options(selectinload(models.ImageComment.author))

@@ -31,9 +31,41 @@ class ProjectBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     meta_group_id: str = Field(..., min_length=1, max_length=255)
+    project_type: str = Field(default="PT1", pattern=r"^(PT1|PT2|PT3)$")
+
+    @field_validator("project_type", mode="before")
+    @classmethod
+    def normalize_project_type(cls, v: str) -> str:
+        if isinstance(v, str):
+            return v.strip().upper()
+        return v
 
 class ProjectCreate(ProjectBase):
     pass
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    meta_group_id: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    project_type: Optional[str] = Field(default=None, pattern=r"^(PT1|PT2|PT3)$")
+
+    @field_validator("project_type", mode="before")
+    @classmethod
+    def normalize_project_type(cls, v: Optional[str]) -> Optional[str]:
+        if isinstance(v, str):
+            return v.strip().upper()
+        return v
+
+
+class ProjectDeleteRequest(BaseModel):
+    confirmation_phrase: str = Field(..., min_length=1, max_length=512)
+
+
+class ProjectDeleteResponse(BaseModel):
+    project_id: uuid.UUID
+    deleted: bool = True
+    deleted_by: EmailStr
+
 
 class Project(ProjectBase):
     id: uuid.UUID
@@ -47,6 +79,268 @@ class Project(ProjectBase):
         "from_attributes": True,
         "populate_by_name": True
     }
+
+
+class InspectionBatchBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+
+
+class InspectionBatchCreate(InspectionBatchBase):
+    pass
+
+
+class InspectionBatch(InspectionBatchBase):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = {
+        "from_attributes": True,
+        "populate_by_name": True
+    }
+
+
+class InspectionPartBase(BaseModel):
+    serial_number: str = Field(..., min_length=1, max_length=255)
+    display_name: Optional[str] = Field(None, max_length=255)
+    metadata_json: Optional[Dict[str, Any]] = Field(
+        None,
+        validation_alias="metadata",
+        serialization_alias="metadata",
+    )
+    review_state: str = Field(default="unreviewed", pattern=r"^(unreviewed|in_review|pass|reject_pending|reject_confirmed)$")
+
+    @field_validator("serial_number")
+    @classmethod
+    def strip_serial_number(cls, v: str) -> str:
+        return v.strip()
+
+
+class InspectionPartCreate(InspectionPartBase):
+    batch_id: Optional[uuid.UUID] = None
+
+
+class InspectionPartUpdate(BaseModel):
+    review_state: str = Field(pattern=r"^(unreviewed|in_review|pass|reject_pending|reject_confirmed)$")
+
+
+class InspectionPart(InspectionPartBase):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    batch_id: Optional[uuid.UUID] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = {
+        "from_attributes": True,
+        "populate_by_name": True
+    }
+
+
+class InspectionSegmentationInvokeRequest(BaseModel):
+    axis: str = Field(default="axial", pattern=r"^(axial|coronal|sagittal)$")
+    slice_index: int = Field(default=0, ge=0)
+
+
+class InspectionSegmentationInvokeResponse(BaseModel):
+    run_id: uuid.UUID
+    part_id: uuid.UUID
+    axis: str
+    slice_index: int
+    status: str
+    overlay_id: str
+    created_at: datetime
+
+
+class InspectionMeasurementInvokeRequest(BaseModel):
+    measurement_profile: str = Field(default="default", min_length=1, max_length=64)
+    include_overlays: List[str] = Field(default_factory=list)
+
+
+class InspectionMeasurementInvokeResponse(BaseModel):
+    run_id: uuid.UUID
+    part_id: uuid.UUID
+    status: str
+    measurement_profile: str
+    units: str
+    values: Dict[str, float]
+    created_at: datetime
+
+
+class InspectionWorkspaceStatePayload(BaseModel):
+    state: Dict[str, Any] = Field(default_factory=dict)
+
+
+class InspectionWorkspaceStateResponse(BaseModel):
+    project_id: uuid.UUID
+    user_email: str
+    state: Dict[str, Any] = Field(default_factory=dict)
+    updated_at: Optional[datetime] = None
+
+
+class InspectionAnnotationBase(BaseModel):
+    defect_class: str = Field(..., min_length=1, max_length=128)
+    modality: str = Field(..., min_length=1, max_length=64)
+    comment: Optional[str] = Field(default=None, max_length=2000)
+    disposition: str = Field(default="open", pattern=r"^(open|accepted|rejected|needs_info)$")
+    measurements: Dict[str, float] = Field(default_factory=dict)
+    bbox: Optional[Dict[str, float]] = None
+    hidden: bool = False
+
+
+class InspectionAnnotationCreate(InspectionAnnotationBase):
+    pass
+
+
+class InspectionAnnotationUpdate(BaseModel):
+    defect_class: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    modality: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    comment: Optional[str] = Field(default=None, max_length=2000)
+    disposition: Optional[str] = Field(default=None, pattern=r"^(open|accepted|rejected|needs_info)$")
+    measurements: Optional[Dict[str, float]] = None
+    bbox: Optional[Dict[str, float]] = None
+    hidden: Optional[bool] = None
+
+
+class InspectionAnnotation(InspectionAnnotationBase):
+    id: uuid.UUID
+    created_at: datetime
+    created_by: str
+    updated_at: datetime
+    updated_by: str
+
+
+class InspectionAnnotationListResponse(BaseModel):
+    part_id: uuid.UUID
+    annotations: List[InspectionAnnotation]
+
+
+class InspectionProjectModalityConfig(BaseModel):
+    id: str = Field(..., min_length=1, max_length=64)
+    label: str = Field(..., min_length=1, max_length=128)
+    calibration_required: bool = False
+    example_image_uploaded: bool = False
+
+
+class InspectionProjectPartViewConfig(BaseModel):
+    id: str = Field(..., min_length=1, max_length=64)
+    label: str = Field(..., min_length=1, max_length=128)
+    required_modalities: List[str] = Field(default_factory=list)
+    source: str = Field(default="manual", pattern=r"^(manual|auto)$")
+
+
+class InspectionProjectDefectTypeConfig(BaseModel):
+    name: str = Field(..., min_length=1, max_length=128)
+    color: str = Field(default="#ef4444", min_length=4, max_length=16)
+    definition: Optional[str] = Field(default=None, max_length=2000)
+
+
+class InspectionProjectProcessSettingsConfig(BaseModel):
+    require_disposition_on_submit: bool = True
+    require_measurement_for_critical: bool = False
+    require_second_reviewer_for_reject: bool = False
+    configurable_hotkeys: Dict[str, str] = Field(
+        default_factory=lambda: {
+            "accept_classification": "a",
+            "reject_classification": "r",
+            "toggle_shortcut_help": "h",
+        }
+    )
+
+    @field_validator("configurable_hotkeys")
+    @classmethod
+    def validate_configurable_hotkeys(cls, value: Dict[str, str]) -> Dict[str, str]:
+        required_keys = {"accept_classification", "reject_classification", "toggle_shortcut_help"}
+        if not required_keys.issubset(value.keys()):
+            missing = ", ".join(sorted(required_keys - set(value.keys())))
+            raise ValueError(f"configurable_hotkeys missing required keys: {missing}")
+        normalized: Dict[str, str] = {}
+        for binding, hotkey in value.items():
+            if not isinstance(hotkey, str):
+                raise ValueError(f"Hotkey for '{binding}' must be a string")
+            trimmed = hotkey.strip().lower()
+            if len(trimmed) != 1 or not trimmed.isalnum():
+                raise ValueError(f"Hotkey for '{binding}' must be a single alphanumeric character")
+            normalized[binding] = trimmed
+        if len(set(normalized.values())) != len(normalized):
+            raise ValueError("configurable_hotkeys must use unique key bindings")
+        return normalized
+
+
+class InspectionProjectDisplaySettingsConfig(BaseModel):
+    default_colormap: str = Field(default="grayscale", min_length=1, max_length=64)
+    anomaly_colormap: str = Field(default="viridis", min_length=1, max_length=64)
+    grayscale_base_image: bool = True
+
+
+class InspectionProjectConfiguration(BaseModel):
+    image_modalities: List[InspectionProjectModalityConfig] = Field(default_factory=list)
+    part_views: List[InspectionProjectPartViewConfig] = Field(default_factory=list)
+    defect_types: List[InspectionProjectDefectTypeConfig] = Field(default_factory=list)
+    process_settings: InspectionProjectProcessSettingsConfig = Field(default_factory=InspectionProjectProcessSettingsConfig)
+    display_settings: InspectionProjectDisplaySettingsConfig = Field(default_factory=InspectionProjectDisplaySettingsConfig)
+
+
+class InspectionProjectConfigurationPayload(BaseModel):
+    config: InspectionProjectConfiguration
+
+
+class InspectionProjectConfigurationResponse(BaseModel):
+    project_id: uuid.UUID
+    config: InspectionProjectConfiguration
+    updated_at: Optional[datetime] = None
+
+
+class InspectionProjectConfigurationCloneRequest(BaseModel):
+    source_project_id: uuid.UUID
+
+
+class InspectionProjectConfigurationCloneResponse(BaseModel):
+    project_id: uuid.UUID
+    source_project_id: uuid.UUID
+    config: InspectionProjectConfiguration
+    updated_at: Optional[datetime] = None
+
+
+class InspectionIngestPartRecord(BaseModel):
+    serial_number: str = Field(..., min_length=1, max_length=255)
+    display_name: Optional[str] = Field(default=None, max_length=255)
+    metadata_json: Optional[Dict[str, Any]] = Field(
+        default=None,
+        validation_alias="metadata",
+        serialization_alias="metadata",
+    )
+    review_state: str = Field(default="unreviewed", pattern=r"^(unreviewed|in_review|pass|reject_pending|reject_confirmed)$")
+
+    @field_validator("serial_number")
+    @classmethod
+    def strip_serial_number(cls, v: str) -> str:
+        return v.strip()
+
+
+class InspectionIngestBatchRecord(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    parts: List[InspectionIngestPartRecord] = Field(default_factory=list)
+
+
+class InspectionBulkIngestPayload(BaseModel):
+    batches: List[InspectionIngestBatchRecord] = Field(default_factory=list)
+
+
+class InspectionIngestDiscrepancy(BaseModel):
+    code: str
+    batch_name: str
+    serial_number: Optional[str] = None
+    message: str
+
+
+class InspectionBulkIngestResponse(BaseModel):
+    project_id: uuid.UUID
+    counters: Dict[str, int]
+    discrepancies: List[InspectionIngestDiscrepancy] = Field(default_factory=list)
 
 # ImageGroup schemas
 class ImageGroupBase(BaseModel):

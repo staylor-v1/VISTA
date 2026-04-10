@@ -32,6 +32,7 @@ class Project(Base):
     created_by = Column(String(255), nullable=True)
     is_archived = Column(Boolean, default=False, nullable=False)
     archived_at = Column(DateTime(timezone=True), nullable=True)
+    project_type = Column(String(16), nullable=False, server_default="PT1", index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -41,6 +42,47 @@ class Project(Base):
     project_metadata = relationship("ProjectMetadata", back_populates="project", cascade="all, delete-orphan")
     reviews = relationship("ImageReview", back_populates="project", cascade="all, delete-orphan")
     image_groups = relationship("ImageGroup", back_populates="project", cascade="all, delete-orphan")
+    inspection_batches = relationship("InspectionBatch", back_populates="project", cascade="all, delete-orphan")
+    inspection_parts = relationship("InspectionPart", back_populates="project", cascade="all, delete-orphan")
+
+
+class InspectionBatch(Base):
+    __tablename__ = "inspection_batches"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    project = relationship("Project", back_populates="inspection_batches")
+    parts = relationship("InspectionPart", back_populates="batch")
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "name", name="uix_inspection_batches_project_name"),
+    )
+
+
+class InspectionPart(Base):
+    __tablename__ = "inspection_parts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    batch_id = Column(UUID(as_uuid=True), ForeignKey("inspection_batches.id", ondelete="SET NULL"), nullable=True, index=True)
+    serial_number = Column(String(255), nullable=False)
+    display_name = Column(String(255), nullable=True)
+    metadata_json = Column("metadata", JSON, nullable=True)
+    review_state = Column(String(50), nullable=False, server_default="unreviewed", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    project = relationship("Project", back_populates="inspection_parts")
+    batch = relationship("InspectionBatch", back_populates="parts")
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "serial_number", name="uix_inspection_parts_project_serial_number"),
+    )
 
 
 class ImageGroup(Base):

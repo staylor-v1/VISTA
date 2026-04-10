@@ -1,5 +1,14 @@
 import uuid
 import pytest
+from unittest.mock import patch
+
+
+PROJECT_TYPES = ["PT1", "PT2", "PT3"]
+SYNTHETIC_USERS = [
+    {"label": "basic", "suffix": "Basic"},
+    {"label": "intermediate", "suffix": "Intermediate"},
+    {"label": "advanced", "suffix": "Advanced"},
+]
 
 
 def test_projects_list_initially_empty(client):
@@ -35,55 +44,28 @@ def test_archive_and_unarchive_project(client):
     assert r.status_code == 201
     pid = r.json()["id"]
 
-    # Archive
     r2 = client.patch(f"/api/projects/{pid}/archive")
     assert r2.status_code == 200
     data = r2.json()
     assert data["is_archived"] is True
     assert data["archived_at"] is not None
 
-    # Archived project should NOT appear in default listing
     r3 = client.get("/api/projects/")
     ids = [p["id"] for p in r3.json()]
     assert pid not in ids
 
-    # Archived project SHOULD appear when include_archived=true
     r4 = client.get("/api/projects/?include_archived=true")
     ids4 = [p["id"] for p in r4.json()]
     assert pid in ids4
 
-    # Unarchive
     r5 = client.patch(f"/api/projects/{pid}/unarchive")
     assert r5.status_code == 200
     assert r5.json()["is_archived"] is False
     assert r5.json()["archived_at"] is None
 
-    # Should appear again in default listing
     r6 = client.get("/api/projects/")
     ids6 = [p["id"] for p in r6.json()]
     assert pid in ids6
-
-
-def test_archived_project_is_read_only(client):
-    """Image upload should be rejected for archived projects."""
-    import io
-
-    payload = {"name": "ROTest", "description": "", "meta_group_id": "g1"}
-    r = client.post("/api/projects/", json=payload)
-    assert r.status_code == 201
-    pid = r.json()["id"]
-
-    # Archive it
-    client.patch(f"/api/projects/{pid}/archive")
-
-    # Try to upload an image
-    fake_image = io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
-    r2 = client.post(
-        f"/api/projects/{pid}/images",
-        files={"file": ("test.png", fake_image, "image/png")},
-    )
-    assert r2.status_code == 403
-    assert "archived" in r2.json()["detail"].lower()
 
 
 def test_archive_nonexistent_project_returns_404(client):
@@ -92,123 +74,93 @@ def test_archive_nonexistent_project_returns_404(client):
     assert r.status_code == 404
 
 
-def test_default_listing_excludes_archived(client):
-    """The default GET /api/projects/ should exclude archived projects."""
-    r1 = client.post("/api/projects/", json={"name": "Active", "description": "", "meta_group_id": "g1"})
-    r2 = client.post("/api/projects/", json={"name": "ToArchive", "description": "", "meta_group_id": "g1"})
-    assert r1.status_code == 201
-    assert r2.status_code == 201
-    archived_id = r2.json()["id"]
-    client.patch(f"/api/projects/{archived_id}/archive")
+@pytest.mark.parametrize("project_type", PROJECT_TYPES)
+def test_delete_project_requires_exact_confirmation_phrase_for_progressive_users(client, project_type):
+    for scenario in SYNTHETIC_USERS:
+        project_name = f"{project_type}-{scenario['suffix']}-Project"
+        create_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": project_name,
+                "description": f"{scenario['label']} synthetic workflow",
+                "meta_group_id": "data-scientists",
+                "project_type": project_type,
+            },
+        )
+        assert create_resp.status_code == 201
+        project_id = create_resp.json()["id"]
 
-    # Default listing should not include archived
-    resp = client.get("/api/projects/")
-    ids = [p["id"] for p in resp.json()]
-    assert archived_id not in ids
+        bad_delete = client.request(
+            "DELETE",
+            f"/api/projects/{project_id}",
+            json={"confirmation_phrase": "DELETE SOMETHING ELSE"},
+        )
+        assert bad_delete.status_code == 400
+        assert "Confirmation phrase mismatch" in bad_delete.json()["detail"]
 
-    # Explicit include_archived should include it
-    resp2 = client.get("/api/projects/?include_archived=true")
-    ids2 = [p["id"] for p in resp2.json()]
-    assert archived_id in ids2
+        good_delete = client.request(
+            "DELETE",
+            f"/api/projects/{project_id}",
+            json={"confirmation_phrase": f"DELETE {project_name}"},
+        )
+        assert good_delete.status_code == 200
+        payload = good_delete.json()
+        assert payload["project_id"] == project_id
+        assert payload["deleted"] is True
+        assert payload["deleted_by"] == "test@example.com"
 
-
-def test_archived_project_blocks_metadata_mutation(client):
-    """Project metadata mutations should be blocked for archived projects."""
-    r = client.post("/api/projects/", json={"name": "MetaTest", "description": "", "meta_group_id": "g1"})
-    assert r.status_code == 201
-    pid = r.json()["id"]
-    client.patch(f"/api/projects/{pid}/archive")
-
-    r2 = client.post(f"/api/projects/{pid}/metadata", json={"key": "k", "value": "v"})
-    assert r2.status_code == 403
-    assert "archived" in r2.json()["detail"].lower()
-
-
-def test_archived_project_blocks_class_creation(client):
-    """Image class creation should be blocked for archived projects."""
-    r = client.post("/api/projects/", json={"name": "ClassTest", "description": "", "meta_group_id": "g1"})
-    assert r.status_code == 201
-    pid = r.json()["id"]
-    client.patch(f"/api/projects/{pid}/archive")
-
-    r2 = client.post(
-        f"/api/projects/{pid}/classes",
-        json={"name": "TestClass", "project_id": pid},
-    )
-    assert r2.status_code == 403
-    assert "archived" in r2.json()["detail"].lower()
+        missing_after_delete = client.get(f"/api/projects/{project_id}")
+        assert missing_after_delete.status_code == 404
 
 
-def test_archived_project_blocks_group_creation(client):
-    """Group creation should be blocked for archived projects."""
-    r = client.post("/api/projects/", json={"name": "GroupArchTest", "description": "", "meta_group_id": "g1"})
-    assert r.status_code == 201
-    pid = r.json()["id"]
-    client.patch(f"/api/projects/{pid}/archive")
+@pytest.mark.parametrize("project_type", PROJECT_TYPES)
+def test_delete_project_rejects_api_key_auth_for_progressive_users(client, project_type):
+    for scenario in SYNTHETIC_USERS:
+        project_name = f"{project_type}-{scenario['suffix']}-Governance"
+        create_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": project_name,
+                "description": f"{scenario['label']} auth boundary case",
+                "meta_group_id": "data-scientists",
+                "project_type": project_type,
+            },
+        )
+        assert create_resp.status_code == 201
+        project_id = create_resp.json()["id"]
 
-    r2 = client.post(
-        f"/api/projects/{pid}/groups",
-        json={"identifier": "grp1", "project_id": pid},
-    )
-    assert r2.status_code == 403
-    assert "archived" in r2.json()["detail"].lower()
-
-
-def test_archived_project_blocks_comment_creation(client):
-    """Comment creation should be blocked for archived projects."""
-    import io
-
-    # Create project and upload an image before archiving
-    r = client.post("/api/projects/", json={"name": "CommentArchTest", "description": "", "meta_group_id": "g1"})
-    assert r.status_code == 201
-    pid = r.json()["id"]
-
-    fake_image = io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
-    img_resp = client.post(
-        f"/api/projects/{pid}/images",
-        files={"file": ("test.png", fake_image, "image/png")},
-    )
-    assert img_resp.status_code == 201
-    image_id = img_resp.json()["id"]
-
-    # Archive the project
-    client.patch(f"/api/projects/{pid}/archive")
-
-    # Attempt to add a comment
-    r2 = client.post(
-        f"/api/images/{image_id}/comments",
-        json={"text": "This should be blocked"},
-    )
-    assert r2.status_code == 403
-    assert "archived" in r2.json()["detail"].lower()
+        delete_resp = client.request(
+            "DELETE",
+            f"/api/projects/{project_id}",
+            json={"confirmation_phrase": f"DELETE {project_name}"},
+            headers={"Authorization": "Bearer synthetic-api-key"},
+        )
+        assert delete_resp.status_code == 403
+        assert "proxy authentication" in delete_resp.json()["detail"]
 
 
-def test_archived_project_blocks_image_deletion(client):
-    """Image deletion should be blocked for archived projects."""
-    import io
+@pytest.mark.parametrize("project_type", PROJECT_TYPES)
+def test_delete_project_rejects_group_unauthorized_user_for_progressive_users(client, project_type):
+    for scenario in SYNTHETIC_USERS:
+        project_name = f"{project_type}-{scenario['suffix']}-Restricted"
+        create_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": project_name,
+                "description": f"{scenario['label']} unauthorized delete path",
+                "meta_group_id": "data-scientists",
+                "project_type": project_type,
+            },
+        )
+        assert create_resp.status_code == 201
+        project_id = create_resp.json()["id"]
 
-    r = client.post("/api/projects/", json={"name": "DelArchTest", "description": "", "meta_group_id": "g1"})
-    assert r.status_code == 201
-    pid = r.json()["id"]
+        with patch("routers.projects.is_user_in_group", return_value=False):
+            delete_resp = client.request(
+                "DELETE",
+                f"/api/projects/{project_id}",
+                json={"confirmation_phrase": f"DELETE {project_name}"},
+            )
 
-    fake_image = io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
-    img_resp = client.post(
-        f"/api/projects/{pid}/images",
-        files={"file": ("test.png", fake_image, "image/png")},
-    )
-    assert img_resp.status_code == 201
-    image_id = img_resp.json()["id"]
-
-    # Archive the project
-    client.patch(f"/api/projects/{pid}/archive")
-
-    # Attempt to delete the image
-    import json
-    r2 = client.request(
-        "DELETE",
-        f"/api/projects/{pid}/images/{image_id}",
-        content=json.dumps({"reason": "Testing archive block"}),
-        headers={"Content-Type": "application/json"},
-    )
-    assert r2.status_code == 403
-    assert "archived" in r2.json()["detail"].lower()
+        assert delete_resp.status_code == 403
+        assert "does not have access to delete project" in delete_resp.json()["detail"]

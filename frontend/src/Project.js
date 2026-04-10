@@ -9,6 +9,8 @@ import ClassManager from './components/ClassManager';
 import ImageGallery from './components/ImageGallery';
 import GroupedImagesPage from './components/GroupedImagesPage';
 import ReviewStatusSummary from './components/ReviewStatusSummary';
+import InspectionWorkbenchPanel from './components/InspectionWorkbenchPanel';
+import ProjectConfigurationPanel from './components/ProjectConfigurationPanel';
 import { downloadExcel } from './utils/downloadExcel';
 
 function Project() {
@@ -26,6 +28,7 @@ function Project() {
   const [exporting, setExporting] = useState(false);
   const [hasGroups, setHasGroups] = useState(false);
   const [groupSearch, setGroupSearch] = useState('');
+  const [activeTab, setActiveTab] = useState('inspection');
 
   const fetchImages = useCallback(async (projId, opts = {}) => {
     const inc = opts.includeDeleted ?? includeDeleted;
@@ -227,6 +230,7 @@ function Project() {
                 </button>
               </span>
               <span className="project-group">Group: {project?.meta_group_id}</span>
+              <span className="project-group">Type: {project?.project_type || 'PT1'}</span>
               {currentUser && <span className="project-user">{currentUser.email}</span>}
             </div>
             <div className="project-actions" style={{ marginTop: '12px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -283,13 +287,44 @@ function Project() {
         
         {!loading && (
           <div className="project-content">
-            {/* Archived project notice */}
             {project?.is_archived && (
               <div className="archived-project-notice">
                 <strong>This project is archived.</strong> It is read-only. Unarchive it from the dashboard to make changes.
               </div>
             )}
+            <div className="project-tabs" role="tablist" aria-label="Project sections">
+              <button
+                className={`project-tab ${activeTab === 'inspection' ? 'active' : ''}`}
+                onClick={() => setActiveTab('inspection')}
+                role="tab"
+                aria-selected={activeTab === 'inspection'}
+              >
+                Inspection
+              </button>
+              <button
+                className={`project-tab ${activeTab === 'project-data' ? 'active' : ''}`}
+                onClick={() => setActiveTab('project-data')}
+                role="tab"
+                aria-selected={activeTab === 'project-data'}
+              >
+                Project Data
+              </button>
+              <button
+                className={`project-tab ${activeTab === 'project-configuration' ? 'active' : ''}`}
+                onClick={() => setActiveTab('project-configuration')}
+                role="tab"
+                aria-selected={activeTab === 'project-configuration'}
+              >
+                Project Configuration
+              </button>
+            </div>
 
+            {activeTab === 'project-data' ? (
+              <InspectionWorkbenchPanel projectId={id} projectType={project?.project_type} />
+            ) : activeTab === 'project-configuration' ? (
+              <ProjectConfigurationPanel projectId={id} />
+            ) : (
+              <>
             {/* Review Status Summary + group search */}
             <div className="review-summary-row">
               <ReviewStatusSummary projectId={id} />
@@ -326,18 +361,18 @@ function Project() {
               </div>
             )}
             
-            {/* Quick Upload Section - hidden for archived projects */}
+            {/* Quick Upload Section */}
             {!project?.is_archived && (
-            <div className="upload-section">
-              <ImageUploader
-                projectId={id}
-                onUploadComplete={handleUploadComplete}
-                setError={setError}
-              />
-            </div>
+              <div className="upload-section">
+                <ImageUploader
+                  projectId={id}
+                  onUploadComplete={handleUploadComplete}
+                  setError={setError}
+                />
+              </div>
             )}
             
-            {/* Management Sections - hidden for archived projects */}
+            {/* Management Sections */}
             {!project?.is_archived && (
             <div className="management-sections">
               <div className="metadata-section">
@@ -364,8 +399,8 @@ function Project() {
             </div>
             )}
             
-            {/* Image Deletion Controls - only relevant for the flat gallery view and non-archived projects */}
-            {!hasGroups && !project?.is_archived && (
+            {/* Image Deletion Controls - only relevant for the flat gallery view */}
+            {!hasGroups && (
             <div className="deletion-controls-section" style={{ marginTop: '24px', padding: '16px', backgroundColor: '#f8f9fa', borderRadius: '8px', border: '1px solid #e9ecef' }}>
               <h3 style={{ margin: '0 0 12px 0', fontSize: '1.1rem', fontWeight: '600', color: '#333' }}>Image View Options</h3>
               <div style={{ display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -395,6 +430,8 @@ function Project() {
                 </span>
               </div>
             </div>
+            )}
+              </>
             )}
           </div>
         )}

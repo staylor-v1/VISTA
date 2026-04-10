@@ -2,6 +2,7 @@
 import io
 import uuid
 import json as _json
+import zipfile
 import pytest
 from unittest.mock import patch
 
@@ -498,6 +499,578 @@ def test_export_excel_excludes_measurements_metadata(client):
     assert "lot_number" in headers
 
 
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_project_json_report_supports_three_progressive_users(client, project_type):
+    scenarios = [
+        {"user": "report-basic", "level": 1, "batch_count": 1, "part_count": 1, "review_state": "unreviewed"},
+        {"user": "report-intermediate", "level": 2, "batch_count": 2, "part_count": 2, "review_state": "reject_pending"},
+        {"user": "report-advanced", "level": 3, "batch_count": 3, "part_count": 3, "review_state": "pass"},
+    ]
+
+    for scenario in scenarios:
+        group = f"{project_type.lower()}-{scenario['user']}"
+        headers = {
+            "X-User-Id": f"{scenario['user']}-{project_type.lower()}@example.com",
+            "X-User-Groups": f"[\"{group}\"]",
+        }
+        project_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": f"{project_type} {scenario['user']} project",
+                "description": "json report scenario",
+                "meta_group_id": group,
+                "project_type": project_type,
+            },
+            headers=headers,
+        )
+        assert project_resp.status_code == 201, project_resp.text
+        project_id = project_resp.json()["id"]
+
+        for batch_idx in range(scenario["batch_count"]):
+            batch_resp = client.post(
+                f"/api/projects/{project_id}/batches",
+                json={
+                    "name": f"batch-{batch_idx}",
+                    "description": f"scenario {scenario['user']} batch {batch_idx}",
+                },
+                headers=headers,
+            )
+            assert batch_resp.status_code == 201, batch_resp.text
+            batch_id = batch_resp.json()["id"]
+
+            part_resp = client.post(
+                f"/api/projects/{project_id}/parts",
+                json={
+                    "serial_number": f"{project_type}-{scenario['level']}-{batch_idx}",
+                    "display_name": f"part-{batch_idx}",
+                    "batch_id": batch_id,
+                    "review_state": scenario["review_state"] if batch_idx % 2 == 0 else "unreviewed",
+                    "metadata": {"synthetic_level": scenario["level"], "workflow_step": batch_idx + 1},
+                },
+                headers=headers,
+            )
+            assert part_resp.status_code == 201, part_resp.text
+
+        for image_idx in range(scenario["part_count"]):
+            files = {"file": (f"{project_type}_{scenario['user']}_{image_idx}.png", b"fake-png-data", "image/png")}
+            image_resp = client.post(
+                f"/api/projects/{project_id}/images",
+                files=files,
+                data={"metadata": _json.dumps({"synthetic_level": scenario["level"], "slot": image_idx})},
+                headers=headers,
+            )
+            assert image_resp.status_code == 201, image_resp.text
+
+        report_resp = client.get(f"/api/projects/{project_id}/report-json", headers=headers)
+        assert report_resp.status_code == 200, report_resp.text
+        payload = report_resp.json()
+        assert payload["project"]["project_type"] == project_type
+        assert payload["summary"]["total_batches"] == scenario["batch_count"]
+        assert payload["summary"]["total_parts"] == scenario["batch_count"]
+        assert payload["summary"]["total_images"] == scenario["part_count"]
+        assert payload["summary"]["reviewed_parts"] >= 0
+        assert payload["summary"]["unreviewed_parts"] >= 0
+
+
+def test_project_json_report_forbidden_for_non_group_member(client):
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": "JSON Report Access",
+            "description": "access check",
+            "meta_group_id": "json-report-private",
+            "project_type": "PT1",
+        },
+    )
+    assert project_resp.status_code == 201
+    project_id = project_resp.json()["id"]
+
+    with patch("routers.export.is_user_in_group", return_value=False):
+        report_resp = client.get(f"/api/projects/{project_id}/report-json")
+
+    assert report_resp.status_code == 403
+
+
+def test_project_pdf_report_supports_export(client):
+    headers = {
+        "X-User-Id": "pdf-report@example.com",
+        "X-User-Groups": "[\"pdf-report-group\"]",
+    }
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": "PDF Report Project",
+            "description": "pdf report scenario",
+            "meta_group_id": "pdf-report-group",
+            "project_type": "PT1",
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+
+    report_resp = client.get(f"/api/projects/{project_id}/report-pdf", headers=headers)
+    assert report_resp.status_code == 200, report_resp.text
+    assert report_resp.headers["content-type"].startswith("application/pdf")
+    assert report_resp.headers["content-disposition"].endswith("-report.pdf\"")
+    assert report_resp.content.startswith(b"%PDF-1.4")
+
+
+def test_project_bundle_json_supports_progressive_users_per_project_type(client):
+    import json as _json
+
+    project_types = ("PT1", "PT2", "PT3")
+    scenarios = (
+        {
+            "user": "basic",
+            "level": 1,
+            "part_count": 1,
+            "image_count": 1,
+            "overlay_layers": ["mask_base"],
+            "annotation_count": 1,
+            "segmentation_runs": 1,
+            "measurement_runs": 1,
+        },
+        {
+            "user": "intermediate",
+            "level": 2,
+            "part_count": 2,
+            "image_count": 2,
+            "overlay_layers": ["mask_base", "heatmap"],
+            "annotation_count": 2,
+            "segmentation_runs": 2,
+            "measurement_runs": 2,
+        },
+        {
+            "user": "advanced",
+            "level": 3,
+            "part_count": 3,
+            "image_count": 3,
+            "overlay_layers": ["mask_base", "heatmap", "depth"],
+            "annotation_count": 3,
+            "segmentation_runs": 3,
+            "measurement_runs": 3,
+        },
+    )
+
+    for project_type in project_types:
+        for scenario in scenarios:
+            group = f"bundle-json-{project_type}-{scenario['user']}"
+            headers = {"X-Forwarded-Email": f"{scenario['user']}@{group}.test"}
+            project_resp = client.post(
+                "/api/projects/",
+                json={
+                    "name": f"Bundle JSON {project_type} {scenario['user']}",
+                    "description": "bundle export coverage",
+                    "meta_group_id": group,
+                    "project_type": project_type,
+                },
+                headers=headers,
+            )
+            assert project_resp.status_code == 201, project_resp.text
+            project_id = project_resp.json()["id"]
+
+            total_annotations = 0
+            total_overlay_layers = 0
+            total_segmentation_runs = 0
+            total_measurement_runs = 0
+
+            for idx in range(scenario["part_count"]):
+                batch_resp = client.post(
+                    f"/api/projects/{project_id}/batches",
+                    json={"name": f"batch-{idx}", "description": f"batch {idx}"},
+                    headers=headers,
+                )
+                assert batch_resp.status_code == 201, batch_resp.text
+                batch_id = batch_resp.json()["id"]
+
+                annotations = [
+                    {
+                        "id": f"ann-{idx}-{annotation_idx}",
+                        "defect_class": "scratch",
+                        "modality": "rgb",
+                        "comment": f"annotation-{annotation_idx}",
+                    }
+                    for annotation_idx in range(scenario["annotation_count"])
+                ]
+                if scenario["level"] > 1 and idx == 0:
+                    annotations[0]["modality"] = ""
+                segmentation_runs = [
+                    {"overlay_id": f"overlay-{idx}-{run_idx}"}
+                    for run_idx in range(scenario["segmentation_runs"])
+                ]
+                measurement_runs = [
+                    {"run_id": f"measure-{idx}-{run_idx}"}
+                    for run_idx in range(scenario["measurement_runs"])
+                ]
+                part_metadata = {
+                    "overlay_layers": scenario["overlay_layers"],
+                    "annotations": annotations,
+                    "segmentation_runs": segmentation_runs,
+                    "measurement_runs": measurement_runs,
+                }
+                total_annotations += len(annotations)
+                total_overlay_layers += len(scenario["overlay_layers"])
+                total_segmentation_runs += len(segmentation_runs)
+                total_measurement_runs += len(measurement_runs)
+
+                part_resp = client.post(
+                    f"/api/projects/{project_id}/parts",
+                    json={
+                        "serial_number": f"{project_type}-{scenario['level']}-{idx}",
+                        "display_name": f"part-{idx}",
+                        "batch_id": batch_id,
+                        "metadata": part_metadata,
+                    },
+                    headers=headers,
+                )
+                assert part_resp.status_code == 201, part_resp.text
+
+            for image_idx in range(scenario["image_count"]):
+                files = {
+                    "file": (
+                        f"{project_type}_{scenario['user']}_{image_idx}.png",
+                        b"synthetic-image-data",
+                        "image/png",
+                    )
+                }
+                image_resp = client.post(
+                    f"/api/projects/{project_id}/images",
+                    files=files,
+                    data={"metadata": _json.dumps({"slot": image_idx, "scenario": scenario["user"]})},
+                    headers=headers,
+                )
+                assert image_resp.status_code == 201, image_resp.text
+
+            bundle_resp = client.get(f"/api/projects/{project_id}/export-bundle-json", headers=headers)
+            assert bundle_resp.status_code == 200, bundle_resp.text
+            payload = bundle_resp.json()
+            assert payload["project"]["project_type"] == project_type
+            assert payload["bundle_summary"]["images"]["total"] == scenario["image_count"]
+            assert payload["bundle_summary"]["parts"]["total"] == scenario["part_count"]
+            assert payload["bundle_summary"]["annotations"]["total"] == total_annotations
+            assert len(payload["bundle_summary"]["annotations"]["records"]) == total_annotations
+            assert payload["bundle_summary"]["overlays"]["configured_layers"] == total_overlay_layers
+            assert payload["bundle_summary"]["overlays"]["segmentation_runs"] == total_segmentation_runs
+            assert len(payload["bundle_summary"]["overlays"]["records"]) == total_overlay_layers
+            assert payload["bundle_summary"]["measurements"]["ai_runs"] == total_measurement_runs
+            assert len(payload["bundle_summary"]["measurements"]["records"]) == total_measurement_runs
+            assert payload["bundle_summary"]["images"]["total_bytes"] > 0
+            assert len(payload["bundle_summary"]["discrepancies"]["per_part"]) == scenario["part_count"]
+            expected_discrepancy_parts = 1 if scenario["level"] > 1 else 0
+            assert payload["bundle_summary"]["discrepancies"]["parts_with_discrepancies"] == expected_discrepancy_parts
+
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_project_bundle_json_ignores_adversarial_non_list_metadata_shapes(client, project_type):
+    group = f"bundle-json-adversarial-{project_type.lower()}"
+    headers = {"X-Forwarded-Email": f"adversary@{group}.test"}
+
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": f"Bundle JSON adversarial {project_type}",
+            "description": "adversarial metadata shape test",
+            "meta_group_id": group,
+            "project_type": project_type,
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+
+    batch_resp = client.post(
+        f"/api/projects/{project_id}/batches",
+        json={"name": "batch-0", "description": "adversarial batch"},
+        headers=headers,
+    )
+    assert batch_resp.status_code == 201, batch_resp.text
+    batch_id = batch_resp.json()["id"]
+
+    part_resp = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={
+            "serial_number": f"{project_type}-ADV-0001",
+            "display_name": "adversarial-part",
+            "batch_id": batch_id,
+            "metadata": {
+                "annotations": "not-a-list",
+                "overlay_layers": {"id": "overlay-1"},
+                "segmentation_runs": 404,
+                "measurement_runs": True,
+            },
+        },
+        headers=headers,
+    )
+    assert part_resp.status_code == 201, part_resp.text
+
+    bundle_resp = client.get(f"/api/projects/{project_id}/export-bundle-json", headers=headers)
+    assert bundle_resp.status_code == 200, bundle_resp.text
+    payload = bundle_resp.json()
+
+    assert payload["project"]["project_type"] == project_type
+    assert payload["bundle_summary"]["parts"]["total"] == 1
+    assert payload["bundle_summary"]["annotations"]["total"] == 0
+    assert payload["bundle_summary"]["overlays"]["configured_layers"] == 0
+    assert payload["bundle_summary"]["overlays"]["segmentation_runs"] == 0
+    assert payload["bundle_summary"]["measurements"]["ai_runs"] == 0
+    assert payload["bundle_summary"]["annotations"]["records"] == []
+    assert payload["bundle_summary"]["overlays"]["records"] == []
+    assert payload["bundle_summary"]["measurements"]["records"] == []
+    assert payload["bundle_summary"]["discrepancies"]["parts_with_discrepancies"] == 0
+
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_project_bundle_json_flags_dropped_non_object_metadata_items(client, project_type):
+    group = f"bundle-json-dropped-{project_type.lower()}"
+    headers = {"X-Forwarded-Email": f"normalizer@{group}.test"}
+
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": f"Bundle JSON dropped items {project_type}",
+            "description": "mixed list metadata hardening",
+            "meta_group_id": group,
+            "project_type": project_type,
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+
+    batch_resp = client.post(
+        f"/api/projects/{project_id}/batches",
+        json={"name": "batch-0", "description": "mixed-metadata batch"},
+        headers=headers,
+    )
+    assert batch_resp.status_code == 201, batch_resp.text
+    batch_id = batch_resp.json()["id"]
+
+    part_resp = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={
+            "serial_number": f"{project_type}-MIXED-0001",
+            "display_name": "mixed-list-part",
+            "batch_id": batch_id,
+            "metadata": {
+                "annotations": [{"id": "ann-1", "defect_class": "scratch", "modality": "rgb"}, "junk", 5],
+                "overlay_layers": [{"id": "overlay-1", "label": "Mask", "color": "#22c55e"}, 9],
+                "segmentation_runs": [{"overlay_id": "overlay-1"}, None],
+                "measurement_runs": [{"run_id": "run-1", "status": "completed"}, False],
+            },
+        },
+        headers=headers,
+    )
+    assert part_resp.status_code == 201, part_resp.text
+
+    bundle_resp = client.get(f"/api/projects/{project_id}/export-bundle-json", headers=headers)
+    assert bundle_resp.status_code == 200, bundle_resp.text
+    payload = bundle_resp.json()
+    part_summary = payload["bundle_summary"]["discrepancies"]["per_part"][0]
+
+    assert payload["bundle_summary"]["annotations"]["total"] == 1
+    assert payload["bundle_summary"]["overlays"]["configured_layers"] == 1
+    assert payload["bundle_summary"]["overlays"]["segmentation_runs"] == 1
+    assert payload["bundle_summary"]["measurements"]["ai_runs"] == 1
+    assert part_summary["counts"]["dropped_non_object_metadata_items"] == 5
+    assert "metadata_items_dropped_non_object" in part_summary["discrepancy_codes"]
+    assert payload["bundle_summary"]["discrepancies"]["parts_with_discrepancies"] == 1
+
+
+def test_project_bundle_json_forbidden_for_non_group_member(client):
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": "Bundle JSON Access",
+            "description": "access check",
+            "meta_group_id": "bundle-json-private",
+            "project_type": "PT2",
+        },
+    )
+    assert project_resp.status_code == 201
+    project_id = project_resp.json()["id"]
+
+    with patch("routers.export.is_user_in_group", return_value=False):
+        bundle_resp = client.get(f"/api/projects/{project_id}/export-bundle-json")
+
+    assert bundle_resp.status_code == 403
+
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_project_json_report_tracks_metadata_normalization_with_progressive_users(client, project_type):
+    scenarios = (
+        {"user": "report-mixed-basic", "level": 1, "part_count": 1, "dropped_per_part": 1},
+        {"user": "report-mixed-intermediate", "level": 2, "part_count": 2, "dropped_per_part": 2},
+        {"user": "report-mixed-advanced", "level": 3, "part_count": 3, "dropped_per_part": 3},
+    )
+    for scenario in scenarios:
+        group = f"report-norm-{project_type.lower()}-{scenario['user']}"
+        headers = {"X-Forwarded-Email": f"{scenario['user']}@{group}.test"}
+        project_resp = client.post(
+            "/api/projects/",
+            json={
+                "name": f"Report normalization {project_type} {scenario['user']}",
+                "description": "report metadata normalization coverage",
+                "meta_group_id": group,
+                "project_type": project_type,
+            },
+            headers=headers,
+        )
+        assert project_resp.status_code == 201, project_resp.text
+        project_id = project_resp.json()["id"]
+
+        for idx in range(scenario["part_count"]):
+            batch_resp = client.post(
+                f"/api/projects/{project_id}/batches",
+                json={"name": f"batch-{idx}", "description": f"batch {idx}"},
+                headers=headers,
+            )
+            assert batch_resp.status_code == 201, batch_resp.text
+            batch_id = batch_resp.json()["id"]
+
+            annotations = [{"id": f"ann-{idx}", "defect_class": "scratch", "modality": "rgb"}]
+            annotations.extend([f"noise-{n}" for n in range(scenario["dropped_per_part"])])
+            part_resp = client.post(
+                f"/api/projects/{project_id}/parts",
+                json={
+                    "serial_number": f"{project_type}-REPORT-{scenario['level']}-{idx}",
+                    "display_name": f"report-part-{idx}",
+                    "batch_id": batch_id,
+                    "review_state": "pass" if idx % 2 == 0 else "unreviewed",
+                    "metadata": {
+                        "annotations": annotations,
+                        "overlay_layers": [{"id": f"overlay-{idx}", "label": "Mask", "color": "#22c55e"}],
+                        "segmentation_runs": [{"overlay_id": f"overlay-{idx}"}],
+                        "measurement_runs": [{"run_id": f"run-{idx}", "status": "completed"}],
+                    },
+                },
+                headers=headers,
+            )
+            assert part_resp.status_code == 201, part_resp.text
+
+            image_resp = client.post(
+                f"/api/projects/{project_id}/images",
+                files={"file": (f"report_{idx}.png", b"report-bytes", "image/png")},
+                data={"metadata": _json.dumps({"scenario": scenario["user"], "index": idx})},
+                headers=headers,
+            )
+            assert image_resp.status_code == 201, image_resp.text
+
+        report_resp = client.get(f"/api/projects/{project_id}/report-json", headers=headers)
+        assert report_resp.status_code == 200, report_resp.text
+        payload = report_resp.json()
+        assert payload["project"]["project_type"] == project_type
+        assert payload["summary"]["total_parts"] == scenario["part_count"]
+        assert payload["summary"]["total_images"] == scenario["part_count"]
+        assert payload["summary"]["metadata_normalization"]["dropped_non_object_items"]["annotations"] == (
+            scenario["part_count"] * scenario["dropped_per_part"]
+        )
+        assert payload["summary"]["metadata_normalization"]["dropped_non_object_items"]["overlay_layers"] == 0
+        assert payload["summary"]["metadata_normalization"]["dropped_non_object_items"]["segmentation_runs"] == 0
+        assert payload["summary"]["metadata_normalization"]["dropped_non_object_items"]["measurement_runs"] == 0
+
+
+def test_project_bundle_archive_supports_progressive_users_per_project_type(client):
+    project_types = ("PT1", "PT2", "PT3")
+    scenarios = (
+        {
+            "user": "basic",
+            "level": 1,
+            "part_count": 1,
+            "image_count": 1,
+        },
+        {
+            "user": "intermediate",
+            "level": 2,
+            "part_count": 2,
+            "image_count": 2,
+        },
+        {
+            "user": "advanced",
+            "level": 3,
+            "part_count": 3,
+            "image_count": 3,
+        },
+    )
+
+    for project_type in project_types:
+        for scenario in scenarios:
+            group = f"bundle-archive-{project_type}-{scenario['user']}"
+            headers = {"X-Forwarded-Email": f"{scenario['user']}@{group}.test"}
+
+            project_resp = client.post(
+                "/api/projects/",
+                json={
+                    "name": f"Bundle Archive {project_type} {scenario['user']}",
+                    "description": "bundle archive coverage",
+                    "meta_group_id": group,
+                    "project_type": project_type,
+                },
+                headers=headers,
+            )
+            assert project_resp.status_code == 201, project_resp.text
+            project_id = project_resp.json()["id"]
+
+            for idx in range(scenario["part_count"]):
+                batch_resp = client.post(
+                    f"/api/projects/{project_id}/batches",
+                    json={"name": f"batch-{idx}", "description": f"batch {idx}"},
+                    headers=headers,
+                )
+                assert batch_resp.status_code == 201, batch_resp.text
+                batch_id = batch_resp.json()["id"]
+
+                part_resp = client.post(
+                    f"/api/projects/{project_id}/parts",
+                    json={
+                        "serial_number": f"{project_type}-{scenario['level']}-{idx}",
+                        "display_name": f"part-{idx}",
+                        "batch_id": batch_id,
+                        "metadata": {
+                            "synthetic_level": scenario["level"],
+                            "annotations": [{"id": f"ann-{idx}", "defect_class": "scratch", "modality": "rgb"}],
+                            "overlay_layers": [{"id": f"overlay-{idx}", "label": "Mask", "color": "#22c55e"}],
+                            "measurement_runs": [{"run_id": f"measure-{idx}", "status": "completed"}],
+                        },
+                    },
+                    headers=headers,
+                )
+                assert part_resp.status_code == 201, part_resp.text
+
+            for image_idx in range(scenario["image_count"]):
+                files = {
+                    "file": (
+                        f"{project_type}_{scenario['user']}_{image_idx}.png",
+                        b"synthetic-image-data",
+                        "image/png",
+                    )
+                }
+                image_resp = client.post(
+                    f"/api/projects/{project_id}/images",
+                    files=files,
+                    data={"metadata": _json.dumps({"slot": image_idx, "scenario": scenario["user"]})},
+                    headers=headers,
+                )
+                assert image_resp.status_code == 201, image_resp.text
+
+            bundle_resp = client.get(f"/api/projects/{project_id}/export-bundle", headers=headers)
+            assert bundle_resp.status_code == 200, bundle_resp.text
+            assert bundle_resp.headers["content-type"].startswith("application/zip")
+            assert ".zip" in bundle_resp.headers.get("content-disposition", "")
+
+            with zipfile.ZipFile(io.BytesIO(bundle_resp.content)) as archive:
+                names = archive.namelist()
+                assert "export-manifest.json" in names
+                manifest = _json.loads(archive.read("export-manifest.json").decode("utf-8"))
+
+            assert manifest["project"]["project_type"] == project_type
+            assert manifest["bundle_summary"]["parts"]["total"] == scenario["part_count"]
+            assert manifest["bundle_summary"]["images"]["total"] == scenario["image_count"]
+            assert len(manifest["bundle_summary"]["overlays"]["records"]) == scenario["part_count"]
+            assert len(manifest["bundle_summary"]["measurements"]["records"]) == scenario["part_count"]
+            assert len(manifest["image_references"]) == scenario["image_count"]
+
+
 # ---------------------------------------------------------------------------
 # Unit tests for _build_workbook helper
 # ---------------------------------------------------------------------------
@@ -663,4 +1236,3 @@ class TestBuildWorkbook:
         assert ws.cell(row=1, column=5).quotePrefix is False
         # Fixed headers (Filename, etc.) should not have quotePrefix
         assert ws.cell(row=1, column=1).quotePrefix is False
-
