@@ -22,7 +22,6 @@ function Project() {
   const [classes, setClasses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [currentUser, setCurrentUser] = useState(null);
   const [includeDeleted, setIncludeDeleted] = useState(false);
   const [deletedOnly, setDeletedOnly] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -65,28 +64,6 @@ function Project() {
   }, []);
 
   useEffect(() => {
-    // Fetch the current user
-    fetch('/api/users/me')
-      .then(response => {
-        if (!response.ok) {
-          // If we get a 401, it's expected when authentication is disabled
-          if (response.status === 401) {
-            console.log("Authentication is disabled or user is not logged in");
-            return null;
-          }
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return response.json();
-      })
-      .then(userData => {
-        if (userData) {
-          setCurrentUser(userData);
-        }
-      })
-      .catch(err => {
-        console.error("Failed to fetch current user:", err);
-      });
-
     // Load project data, metadata, classes, and images
     const fetchProjectData = async () => {
       try {
@@ -205,66 +182,11 @@ function Project() {
               <span className="back-icon">←</span>
               <span>Back to Dashboard</span>
             </button>
-            <div className="breadcrumb-mini">
-              <span>Projects</span>
-              <span className="breadcrumb-separator">›</span>
-              <span className="current-project">{project ? project.name : 'Loading...'}</span>
-            </div>
           </div>
           <div className="project-info">
             <h1 className="project-title">{project ? project.name : 'Loading project...'}</h1>
-            <p className="project-description">
-              {project ? (project.description || 'No description provided') : ''}
-            </p>
             <div className="project-meta">
-              <span className="project-id">
-                Project ID: {project?.id}
-                <button
-                  className="copy-id-btn"
-                  onClick={() => {
-                    navigator.clipboard.writeText(project?.id);
-                  }}
-                  title="Copy project ID"
-                >
-                  Copy
-                </button>
-              </span>
-              <span className="project-group">Group: {project?.meta_group_id}</span>
               <span className="project-group">Type: {project?.project_type || 'PT1'}</span>
-              {currentUser && <span className="project-user">{currentUser.email}</span>}
-            </div>
-            <div className="project-actions" style={{ marginTop: '12px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-              <button
-                className="btn btn-primary"
-                onClick={handleExportExcel}
-                disabled={exporting || loading}
-                title="Export all project image data to Microsoft Excel"
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  padding: '8px 16px',
-                  fontSize: '0.9rem',
-                  fontWeight: '600',
-                }}
-              >
-                {exporting ? 'Exporting...' : 'Export Data'}
-              </button>
-              <button
-                className="btn btn-secondary"
-                onClick={() => navigate(`/project/${id}/report`)}
-                disabled={loading}
-                title="View detailed project report"
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  padding: '8px 16px',
-                  fontSize: '0.9rem',
-                }}
-              >
-                View Report
-              </button>
             </div>
           </div>
         </div>
@@ -319,12 +241,31 @@ function Project() {
               </button>
             </div>
 
-            {activeTab === 'project-data' ? (
+            {activeTab === 'inspection' ? (
               <InspectionWorkbenchPanel projectId={id} projectType={project?.project_type} />
             ) : activeTab === 'project-configuration' ? (
               <ProjectConfigurationPanel projectId={id} />
             ) : (
               <>
+            <div className="project-actions" style={{ marginTop: '-16px', marginBottom: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <button
+                className="btn btn-primary"
+                onClick={handleExportExcel}
+                disabled={exporting || loading}
+                title="Export all project image data to Microsoft Excel"
+              >
+                {exporting ? 'Exporting...' : 'Export Data'}
+              </button>
+              <button
+                className="btn btn-secondary"
+                onClick={() => navigate(`/project/${id}/report`)}
+                disabled={loading}
+                title="View detailed project report"
+              >
+                View Report
+              </button>
+            </div>
+
             {/* Review Status Summary + group search */}
             <div className="review-summary-row">
               <ReviewStatusSummary projectId={id} />
