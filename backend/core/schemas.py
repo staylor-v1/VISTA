@@ -275,12 +275,18 @@ class InspectionProjectDisplaySettingsConfig(BaseModel):
     grayscale_base_image: bool = True
 
 
+class InspectionProjectPhaseSettingsConfig(BaseModel):
+    manual_phase_selection_enabled: bool = False
+    manual_phase: str = Field(default="data_ingestion", pattern=r"^(data_ingestion|part_inspection|reporting)$")
+
+
 class InspectionProjectConfiguration(BaseModel):
     image_modalities: List[InspectionProjectModalityConfig] = Field(default_factory=list)
     part_views: List[InspectionProjectPartViewConfig] = Field(default_factory=list)
     defect_types: List[InspectionProjectDefectTypeConfig] = Field(default_factory=list)
     process_settings: InspectionProjectProcessSettingsConfig = Field(default_factory=InspectionProjectProcessSettingsConfig)
     display_settings: InspectionProjectDisplaySettingsConfig = Field(default_factory=InspectionProjectDisplaySettingsConfig)
+    phase_settings: InspectionProjectPhaseSettingsConfig = Field(default_factory=InspectionProjectPhaseSettingsConfig)
 
 
 class InspectionProjectConfigurationPayload(BaseModel):

@@ -4271,3 +4271,32 @@ ul li:hover {
     grid-template-columns: 1fr;
   }
 }
+
+.phase-flow {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.phase-flow-node {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid #d0d7de;
+  background: #f6f8fa;
+  color: #57606a;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.phase-flow-node.active {
+  background: #1f6feb;
+  color: #ffffff;
+  border-color: #1f6feb;
+}
+
+.phase-flow-arrow {
+  color: #8c959f;
+  font-weight: 700;
+}

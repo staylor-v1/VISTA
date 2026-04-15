@@ -251,6 +251,10 @@ def _default_project_configuration() -> dict:
             "anomaly_colormap": "viridis",
             "grayscale_base_image": True,
         },
+        "phase_settings": {
+            "manual_phase_selection_enabled": False,
+            "manual_phase": "data_ingestion",
+        },
     }
 
 
