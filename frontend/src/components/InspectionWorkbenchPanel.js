@@ -225,8 +225,9 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [parts, setParts] = useState([]);
   const [selectedBatchId, setSelectedBatchId] = useState('');
   const [selectedPartId, setSelectedPartId] = useState('');
-  const [defectFilter, setDefectFilter] = useState('all');
-  const [sortMode, setSortMode] = useState('defect_desc');
+  const [reviewFilter, setReviewFilter] = useState('all');
+  const [partFilter, setPartFilter] = useState('');
+  const [sortMode, setSortMode] = useState('part_asc');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [savingPartId, setSavingPartId] = useState(null);
@@ -296,6 +297,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [leftPanelTab, setLeftPanelTab] = useState('part_summary');
   const [centerPanelTab, setCenterPanelTab] = useState('inspector');
   const [rightPanelTab, setRightPanelTab] = useState('annotations');
+  const [selectedImageRef, setSelectedImageRef] = useState('');
   const droppedMetadataItemsSummary = useMemo(
     () => getDroppedMetadataItemsSummary(reportExport.payload),
     [reportExport.payload],
@@ -342,10 +344,11 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
         setParts(safeParts);
         const savedBatchId = String(savedState.selected_batch_id || '');
         setSelectedBatchId(savedBatchId);
-        const savedDefectFilter = String(savedState.defect_filter || 'all');
-        setDefectFilter(['all', 'has_defects', 'critical_only'].includes(savedDefectFilter) ? savedDefectFilter : 'all');
-        const savedSortMode = String(savedState.sort_mode || 'defect_desc');
-        setSortMode(['defect_desc', 'serial_asc'].includes(savedSortMode) ? savedSortMode : 'defect_desc');
+        const savedReviewFilter = String(savedState.review_filter || 'all');
+        setReviewFilter(['all', 'pass', 'reject_pending', 'reject_confirmed', 'none'].includes(savedReviewFilter) ? savedReviewFilter : 'all');
+        setPartFilter(String(savedState.part_filter || ''));
+        const savedSortMode = String(savedState.sort_mode || 'part_asc');
+        setSortMode(['part_asc', 'batch_asc', 'status_asc', 'defect_desc'].includes(savedSortMode) ? savedSortMode : 'part_asc');
         const savedPartId = String(savedState.selected_part_id || '');
         const selectedFromSaved = safeParts.find((part) => part.id === savedPartId);
         if (selectedFromSaved) {
@@ -426,10 +429,19 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     if (selectedBatchId) {
       output = output.filter((part) => part.batch_id === selectedBatchId);
     }
-    if (defectFilter === 'has_defects') {
-      output = output.filter((part) => getDefectCount(part) > 0);
-    } else if (defectFilter === 'critical_only') {
-      output = output.filter((part) => getCriticalDefectCount(part) > 0);
+    if (reviewFilter !== 'all') {
+      if (reviewFilter === 'none') {
+        output = output.filter((part) => !part.review_state || part.review_state === 'unreviewed');
+      } else {
+        output = output.filter((part) => String(part.review_state || '').toLowerCase() === reviewFilter);
+      }
+    }
+    if (partFilter.trim()) {
+      const query = partFilter.trim().toLowerCase();
+      output = output.filter((part) => {
+        const candidate = `${part.display_name || ''} ${part.serial_number || ''} ${part.batch_id || ''}`.toLowerCase();
+        return candidate.includes(query);
+      });
     }
     if (normalizationTriageField) {
       output = output.filter((part) => hasDroppedMetadataField(part, normalizationTriageField));
@@ -437,12 +449,16 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
 
     if (sortMode === 'defect_desc') {
       output.sort((a, b) => getDefectCount(b) - getDefectCount(a));
-    } else if (sortMode === 'serial_asc') {
+    } else if (sortMode === 'batch_asc') {
+      output.sort((a, b) => String(a.batch_id || '').localeCompare(String(b.batch_id || '')));
+    } else if (sortMode === 'status_asc') {
+      output.sort((a, b) => String(a.review_state || 'unreviewed').localeCompare(String(b.review_state || 'unreviewed')));
+    } else {
       output.sort((a, b) => String(a.serial_number).localeCompare(String(b.serial_number)));
     }
 
     return output;
-  }, [parts, selectedBatchId, defectFilter, normalizationTriageField, sortMode]);
+  }, [parts, selectedBatchId, reviewFilter, partFilter, normalizationTriageField, sortMode]);
   const normalizationTriageMatchCount = useMemo(() => {
     if (!normalizationTriageField) return 0;
     return parts.filter((part) => hasDroppedMetadataField(part, normalizationTriageField)).length;
@@ -469,6 +485,16 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     }
     return selectedPart.metadata;
   }, [selectedPart]);
+  const selectedPartImageRefs = useMemo(() => {
+    if (!selectedPart?.metadata || typeof selectedPart.metadata !== 'object') return [];
+    const imagesByView = selectedPart.metadata.view_images || {};
+    if (!imagesByView || typeof imagesByView !== 'object') return [];
+    return Object.entries(imagesByView).map(([viewName, imageRef]) => ({
+      id: `${selectedPart.id}-${viewName}`,
+      viewName,
+      imageRef: imageRef ? String(imageRef) : '',
+    }));
+  }, [selectedPart]);
 
   const tooltipValues = useMemo(() => {
     const axisSeed = slicePosition.axial + slicePosition.coronal + slicePosition.sagittal;
@@ -488,6 +514,17 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
       setSelectedPartId(selectedPart.id);
     }
   }, [selectedPart, selectedPartId]);
+
+  useEffect(() => {
+    if (selectedPartImageRefs.length === 0) {
+      setSelectedImageRef('');
+      return;
+    }
+    const hasCurrentImage = selectedPartImageRefs.some((entry) => entry.imageRef === selectedImageRef);
+    if (!hasCurrentImage) {
+      setSelectedImageRef(selectedPartImageRefs[0].imageRef);
+    }
+  }, [selectedPartImageRefs, selectedImageRef]);
 
   useEffect(() => {
     if (!selectedPart || !['PT2', 'PT3'].includes(projectType)) return;
@@ -589,7 +626,8 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
           body: JSON.stringify({
             state: {
               selected_batch_id: selectedBatchId || '',
-              defect_filter: defectFilter,
+              review_filter: reviewFilter,
+              part_filter: partFilter,
               sort_mode: sortMode,
               selected_part_id: selectedPart?.id || '',
               mpr: ['PT2', 'PT3'].includes(projectType)
@@ -624,7 +662,8 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     activeViewName,
     contrastPercent,
     cursorProbe,
-    defectFilter,
+    reviewFilter,
+    partFilter,
     enabledModalities,
     imageEnabled,
     shortcutHelpVisible,
@@ -1249,19 +1288,33 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
               ))}
             </select>
 
-            <label htmlFor="defectFilter" className="form-label">
-              Defect filter
+            <label htmlFor="reviewFilter" className="form-label">
+              Inspection status
             </label>
             <select
-              id="defectFilter"
+              id="reviewFilter"
               className="form-control"
-              value={defectFilter}
-              onChange={(e) => setDefectFilter(e.target.value)}
+              value={reviewFilter}
+              onChange={(e) => setReviewFilter(e.target.value)}
             >
-              <option value="all">All parts</option>
-              <option value="has_defects">Has defects</option>
-              <option value="critical_only">Critical defects only</option>
+              <option value="all">All</option>
+              <option value="pass">Pass</option>
+              <option value="reject_pending">Fail</option>
+              <option value="reject_confirmed">Fail (confirmed)</option>
+              <option value="none">None</option>
             </select>
+
+            <label htmlFor="partFilter" className="form-label">
+              Batch / Part filter
+            </label>
+            <input
+              id="partFilter"
+              className="form-control"
+              type="text"
+              value={partFilter}
+              onChange={(e) => setPartFilter(e.target.value)}
+              placeholder="Filter by batch # or part #"
+            />
 
             <label htmlFor="sortMode" className="form-label">
               Sort
@@ -1272,65 +1325,32 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
               value={sortMode}
               onChange={(e) => setSortMode(e.target.value)}
             >
+              <option value="part_asc">Part # (A → Z)</option>
+              <option value="batch_asc">Batch # (A → Z)</option>
+              <option value="status_asc">Inspection status</option>
               <option value="defect_desc">Defect count (high → low)</option>
-              <option value="serial_asc">Serial Number (A → Z)</option>
             </select>
           </div>
 
           <div className="workbench-layout">
-            <div className="workbench-list">
-              {filteredParts.length === 0 ? (
-                <div>
-                  <p className="muted">No parts found for the current filters.</p>
-                  {normalizationTriageField && (
-                    <p className="muted" data-testid="normalization-triage-empty-guidance">
-                      {normalizationTriageMatchCount > 0
-                        ? `Triage matches exist for ${normalizationTriageField}, but they are hidden by the active batch/defect filters.`
-                        : `No parts in this project contain mixed ${normalizationTriageField} metadata values.`}
-                    </p>
-                  )}
-                </div>
-              ) : (
-                filteredParts.map((part) => {
-                  const state = part.review_state || 'unreviewed';
-                  const defectCount = getDefectCount(part);
-                  const isSelected = part.id === selectedPart?.id;
-                  return (
-                    <article
-                      key={part.id}
-                      className={`workbench-part-row ${isSelected ? 'selected' : ''}`}
-                      onClick={() => setSelectedPartId(part.id)}
-                      role="button"
-                      tabIndex={0}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          setSelectedPartId(part.id);
-                        }
-                      }}
-                    >
-                      <div>
-                        <div className="group-row-name">
-                          {part.display_name || part.serial_number}
-                          {state === 'pass' && <span className="part-checkmark" title="Part passed review">✓</span>}
-                        </div>
-                        <div className="group-row-identifier">{part.serial_number}</div>
-                        <div className="workbench-defect-count">Defects: {defectCount}</div>
-                      </div>
-                      <span
-                        className={`group-status-badge group-status-${state}`}
-                        data-testid="part-review-state"
-                      >
-                        {REVIEW_LABELS[state] || REVIEW_LABELS.unreviewed}
-                      </span>
-                    </article>
-                  );
-                })
-              )}
-            </div>
-
             <div className="workbench-details">
               {!selectedPart ? (
-                <p className="muted">Select a part to inspect its configured view board.</p>
+                <div>
+                  {filteredParts.length === 0 ? (
+                    <>
+                      <p className="muted">No parts found for the current filters.</p>
+                      {normalizationTriageField && (
+                        <p className="muted" data-testid="normalization-triage-empty-guidance">
+                          {normalizationTriageMatchCount > 0
+                            ? `Triage matches exist for ${normalizationTriageField}, but they are hidden by the active filters.`
+                            : `No parts in this project contain mixed ${normalizationTriageField} metadata values.`}
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    <p className="muted">Select a part to inspect its configured view board.</p>
+                  )}
+                </div>
               ) : (
                 <>
                   <div className="workbench-detail-header">
@@ -1391,13 +1411,86 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                       {leftPanelTab === 'part_summary' && (
                         <div className="workspace-panel-layout">
                           <strong>Part Summary</strong>
-                          <p className="muted">Serial: {selectedPart.serial_number}</p>
-                          <p className="muted">Batch: {selectedPart.batch_id || '—'}</p>
-                          <p className="muted">State: {REVIEW_LABELS[selectedPart.review_state || 'unreviewed']}</p>
-                          <p className="muted">Defects: {getDefectCount(selectedPart)}</p>
-                          <p className="muted">Critical defects: {getCriticalDefectCount(selectedPart)}</p>
-                          <p className="muted">Views: {getPartViews(selectedPart).join(', ')}</p>
-                          <p className="muted">Modalities: {modalityOptions.join(', ')}</p>
+                          <p className="muted">Navigate by batch, part, and image.</p>
+                          <div className="workbench-list">
+                            {filteredParts.length === 0 ? (
+                              <div>
+                                <p className="muted">No parts found for the current filters.</p>
+                                {normalizationTriageField && (
+                                  <p className="muted" data-testid="normalization-triage-empty-guidance">
+                                    {normalizationTriageMatchCount > 0
+                                      ? `Triage matches exist for ${normalizationTriageField}, but they are hidden by the active filters.`
+                                      : `No parts in this project contain mixed ${normalizationTriageField} metadata values.`}
+                                  </p>
+                                )}
+                              </div>
+                            ) : (
+                              (() => {
+                                const partsByBatch = filteredParts.reduce((acc, part) => {
+                                  const key = String(part.batch_id || 'No Batch');
+                                  if (!acc.has(key)) acc.set(key, []);
+                                  acc.get(key).push(part);
+                                  return acc;
+                                }, new Map());
+                                return Array.from(partsByBatch.entries()).map(([batchKey, batchParts]) => (
+                                  <div key={batchKey} className="part-summary-batch">
+                                    <h4>{batchKey}</h4>
+                                    {batchParts.map((part) => {
+                                      const state = part.review_state || 'unreviewed';
+                                      const defectCount = getDefectCount(part);
+                                      const annotationCount = Array.isArray(part?.metadata?.annotations) ? part.metadata.annotations.length : 0;
+                                      const isSelected = part.id === selectedPart?.id;
+                                      const viewImages = part?.metadata?.view_images || {};
+                                      const imageEntries = Object.entries(viewImages);
+                                      return (
+                                        <article
+                                          key={part.id}
+                                          className={`workbench-part-row ${isSelected ? 'selected' : ''}`}
+                                          onClick={() => setSelectedPartId(part.id)}
+                                          role="button"
+                                          tabIndex={0}
+                                          onKeyDown={(event) => {
+                                            if (event.key === 'Enter' || event.key === ' ') {
+                                              setSelectedPartId(part.id);
+                                            }
+                                          }}
+                                        >
+                                          <div>
+                                            <div className="group-row-name">{part.display_name || part.serial_number}</div>
+                                            <div className="group-row-identifier">{part.serial_number}</div>
+                                            <div className="workbench-defect-count">
+                                              Reviewed: {state === 'unreviewed' ? 'No' : 'Yes'} • Defects: {defectCount} • Annotations: {annotationCount}
+                                            </div>
+                                            {imageEntries.length > 0 && (
+                                              <div className="part-summary-images">
+                                                {imageEntries.map(([viewName, imageRef]) => (
+                                                  <button
+                                                    type="button"
+                                                    key={`${part.id}-${viewName}`}
+                                                    className={`btn btn-secondary btn-sm ${selectedImageRef === String(imageRef || '') ? 'active' : ''}`}
+                                                    onClick={(event) => {
+                                                      event.stopPropagation();
+                                                      setSelectedPartId(part.id);
+                                                      setSelectedImageRef(String(imageRef || ''));
+                                                    }}
+                                                  >
+                                                    {viewName}: {imageRef || 'none'}
+                                                  </button>
+                                                ))}
+                                              </div>
+                                            )}
+                                          </div>
+                                          <span className={`group-status-badge group-status-${state}`} data-testid="part-review-state">
+                                            {REVIEW_LABELS[state] || REVIEW_LABELS.unreviewed}
+                                          </span>
+                                        </article>
+                                      );
+                                    })}
+                                  </div>
+                                ));
+                              })()
+                            )}
+                          </div>
                         </div>
                       )}
                     </section>
@@ -1411,7 +1504,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                           aria-selected={centerPanelTab === 'inspector'}
                           onClick={() => setCenterPanelTab('inspector')}
                         >
-                          Inspector
+                          Inspection
                         </button>
                         <button
                           type="button"
@@ -1425,6 +1518,28 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                       </div>
                       {centerPanelTab === 'inspector' && (
                         <div className="inspector-common-controls" data-testid="inspector-common-controls">
+                          <div className="workspace-panel-layout" data-testid="selected-image-panel">
+                            <strong>Selected Part Image</strong>
+                            {selectedPartImageRefs.length === 0 ? (
+                              <p className="muted">No mapped images for this part.</p>
+                            ) : (
+                              <>
+                                <p className="muted">Currently viewing: {selectedImageRef || selectedPartImageRefs[0].imageRef}</p>
+                                <div className="view-thumbnail-list">
+                                  {selectedPartImageRefs.map((entry) => (
+                                    <button
+                                      key={entry.id}
+                                      type="button"
+                                      className={`btn btn-secondary btn-sm ${(selectedImageRef || selectedPartImageRefs[0].imageRef) === entry.imageRef ? 'active' : ''}`}
+                                      onClick={() => setSelectedImageRef(entry.imageRef)}
+                                    >
+                                      {entry.viewName}: {entry.imageRef || 'none'}
+                                    </button>
+                                  ))}
+                                </div>
+                              </>
+                            )}
+                          </div>
                           <div className="workspace-panel-layout" data-testid="hotkey-controls">
                       <strong>Configurable hotkeys</strong>
                       <div className="measurement-fields">
@@ -1666,13 +1781,19 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                       {rightPanelTab === 'annotations' && (
                         <div className="annotation-controls" data-testid="annotation-controls">
                           <strong>Annotations</strong>
+                          <p className="muted">For selected part: {selectedPart.serial_number}</p>
                       <div className="measurement-fields">
-                        <input
-                          type="text"
-                          placeholder="defect class"
+                        <select
+                          aria-label="Annotation defect type"
                           value={annotationDraft.defect_class}
                           onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, defect_class: event.target.value }))}
-                        />
+                        >
+                          <option value="">Defect type</option>
+                          <option value="Crack">Crack</option>
+                          <option value="Dent">Dent</option>
+                          <option value="Scratch">Scratch</option>
+                          <option value="Other">Other</option>
+                        </select>
                         <input
                           type="text"
                           placeholder="annotation modality"

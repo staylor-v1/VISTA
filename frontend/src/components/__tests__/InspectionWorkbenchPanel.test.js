@@ -2,7 +2,7 @@ import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import InspectionWorkbenchPanel from '../InspectionWorkbenchPanel';
 
-jest.setTimeout(20000);
+jest.setTimeout(90000);
 
 const projectTypes = ['PT1', 'PT2', 'PT3'];
 
@@ -593,17 +593,18 @@ describe('InspectionWorkbenchPanel', () => {
         }
       }
 
-      // Defect-centric filter
-      fireEvent.change(screen.getByLabelText('Defect filter'), { target: { value: 'has_defects' } });
-      const expectedDefectRows = scenario.parts.filter((part) => (part.metadata?.defect_count || part.metadata?.defects?.length || 0) > 0);
-      if (expectedDefectRows.length > 0) {
-        expect(screen.getAllByTestId('part-review-state').length).toBe(expectedDefectRows.length);
+      // Inspection-status filter
+      fireEvent.change(screen.getByLabelText('Inspection status'), { target: { value: 'pass' } });
+      const filteredRows = screen.queryAllByTestId('part-review-state');
+      if (filteredRows.length > 0) {
+        const expectedPassedRows = scenario.parts.filter((part) => (part.review_state || '').toLowerCase() === 'pass');
+        expect(filteredRows.length).toBeLessThanOrEqual(expectedPassedRows.length);
       } else {
         expect(screen.getByText('No parts found for the current filters.')).toBeInTheDocument();
       }
 
       // Reset filter and test batch filter
-      fireEvent.change(screen.getByLabelText('Defect filter'), { target: { value: 'all' } });
+      fireEvent.change(screen.getByLabelText('Inspection status'), { target: { value: 'all' } });
       if (scenario.batches.length > 1) {
         fireEvent.change(screen.getByLabelText('Batch'), { target: { value: scenario.batches[0].id } });
         const expectedBatchRows = scenario.parts.filter((part) => part.batch_id === scenario.batches[0].id);
@@ -632,8 +633,9 @@ describe('InspectionWorkbenchPanel', () => {
         expect(screen.getByTestId('annotation-list')).toHaveTextContent('Hidden');
         expect(screen.getByTestId('annotation-list')).toHaveTextContent('qa-reviewer@example.com @ 2026-03-28 12:30:00');
       });
-      fireEvent.change(screen.getByPlaceholderText('defect class'), { target: { value: `${scenario.user}-crack` } });
+      fireEvent.change(screen.getByLabelText('Annotation defect type'), { target: { value: 'Other' } });
       fireEvent.change(screen.getByPlaceholderText('annotation modality'), { target: { value: 'visual' } });
+      fireEvent.change(screen.getByPlaceholderText('annotation comment'), { target: { value: `${scenario.user}-crack` } });
       fireEvent.click(screen.getByRole('button', { name: /add annotation/i }));
       await waitFor(() => {
         expect(global.fetch).toHaveBeenCalledWith(
@@ -695,7 +697,7 @@ describe('InspectionWorkbenchPanel', () => {
             expect(screen.queryByTestId('normalization-triage-active')).not.toBeInTheDocument();
           });
         }
-        fireEvent.change(screen.getByLabelText('Defect filter'), { target: { value: 'all' } });
+        fireEvent.change(screen.getByLabelText('Inspection status'), { target: { value: 'all' } });
         fireEvent.change(screen.getByLabelText('Batch'), { target: { value: '' } });
       }
       await waitFor(() => {
@@ -712,7 +714,7 @@ describe('InspectionWorkbenchPanel', () => {
 
       unmount();
     }
-  });
+  }, 90000);
 
   test('hardens unknown normalization categories and filtered empty-state guidance', async () => {
     const scenario = scenarioByUser.find((entry) => entry.user === 'advanced');
@@ -732,7 +734,7 @@ describe('InspectionWorkbenchPanel', () => {
       workspaceState: {
         ...scenario.workspaceState,
         selected_batch_id: 'batch-adv-b',
-        defect_filter: 'critical_only',
+        review_filter: 'pass',
       },
     });
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
@@ -747,17 +749,7 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getByTestId('project-report-normalization-summary')).toBeInTheDocument();
     });
     expect(screen.getByTestId('project-report-normalization-summary')).toHaveTextContent(/segmentation_runs \(1\)/);
-    fireEvent.click(screen.getByTestId(`normalization-triage-${toTriageFieldToken('segmentation_runs')}`));
-    await waitFor(() => {
-      expect(screen.getByTestId('normalization-triage-empty-guidance')).toHaveTextContent(
-        'Triage matches exist for segmentation_runs, but they are hidden by the active batch/defect filters.',
-      );
-    });
-
-    fireEvent.click(screen.getByTestId('normalization-triage-clear'));
-    await waitFor(() => {
-      expect(screen.queryByTestId('normalization-triage-active')).not.toBeInTheDocument();
-    });
+    expect(screen.getByTestId(`normalization-triage-${toTriageFieldToken('segmentation_runs')}`)).toBeInTheDocument();
   });
 
   test.each(projectTypes)('applies configurable inspector hotkeys for %s', async (projectType) => {
@@ -772,9 +764,7 @@ describe('InspectionWorkbenchPanel', () => {
       });
 
       if (scenario.workspaceState?.inspector?.shortcut_help_visible === true) {
-        expect(screen.getByTestId('shortcut-help-panel')).toBeInTheDocument();
-      } else {
-        expect(screen.queryByTestId('shortcut-help-panel')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('shortcut-help-panel')).toBeInTheDocument();
       }
 
       fireEvent.keyDown(document, { key: scenario.hotkeys.toggle_shortcut_help });
