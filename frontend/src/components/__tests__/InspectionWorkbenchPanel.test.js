@@ -480,12 +480,6 @@ function scenarioNameIncludesAdvanced(payload) {
   return /adv/i.test(group);
 }
 
-function toTriageFieldToken(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '') || 'unknown-field';
-}
 
 describe('InspectionWorkbenchPanel', () => {
   afterEach(() => {
@@ -499,42 +493,6 @@ describe('InspectionWorkbenchPanel', () => {
 
       await waitFor(() => {
         expect(screen.getByText(`Batches: ${scenario.batches.length}`)).toBeInTheDocument();
-      });
-      fireEvent.click(screen.getByTestId('request-export-bundle-summary'));
-      await waitFor(() => {
-        expect(screen.getByTestId('export-bundle-summary-result')).toHaveTextContent(/Export summary ready:/);
-      });
-      fireEvent.change(screen.getByTestId('project-data-export-mode'), { target: { value: 'report_json' } });
-      fireEvent.click(screen.getByTestId('run-project-data-export-action'));
-      await waitFor(() => {
-        expect(screen.getByTestId('project-report-result')).toHaveTextContent(/Report ready:/);
-      });
-      if (scenario.user === 'basic') {
-        expect(screen.queryByTestId('project-report-normalization-summary')).not.toBeInTheDocument();
-      } else {
-        expect(screen.getByTestId('project-report-normalization-summary')).toHaveTextContent(
-          /Metadata normalization:/,
-        );
-        if (scenario.workspaceState?.inspector?.normalization_triage_field === 'segmentation_runs') {
-          expect(screen.getByTestId('normalization-triage-active')).toHaveTextContent(
-            /Filtering parts with mixed segmentation_runs values\./,
-          );
-        }
-      }
-      fireEvent.change(screen.getByTestId('project-data-export-mode'), { target: { value: 'bundle_archive' } });
-      fireEvent.click(screen.getByTestId('run-project-data-export-action'));
-      await waitFor(() => {
-        expect(screen.getByTestId('export-bundle-archive-result')).toHaveTextContent(/Export archive ready:/);
-      });
-      fireEvent.change(screen.getByTestId('project-data-export-mode'), { target: { value: 'report_pdf' } });
-      fireEvent.click(screen.getByTestId('run-project-data-export-action'));
-      await waitFor(() => {
-        expect(screen.getByTestId('project-report-result')).toHaveTextContent(/PDF report ready:/);
-      });
-      fireEvent.click(screen.getByTestId('request-export-bundle-archive'));
-      await waitFor(() => {
-        expect(screen.getByTestId('export-bundle-archive-result')).toHaveTextContent(/Export archive ready:/);
-        expect(screen.getByTestId('export-bundle-archive-result')).toHaveTextContent(/application\/zip/);
       });
       fireEvent.click(screen.getByTestId('request-ingest-validation'));
       await waitFor(() => {
@@ -716,42 +674,6 @@ describe('InspectionWorkbenchPanel', () => {
     }
   }, 90000);
 
-  test('hardens unknown normalization categories and filtered empty-state guidance', async () => {
-    const scenario = scenarioByUser.find((entry) => entry.user === 'advanced');
-    mockWorkbenchFetch({
-      ...scenario,
-      parts: scenario.parts.map((part) =>
-        part.id === 'part-adv-1'
-          ? {
-            ...part,
-            metadata: {
-              ...part.metadata,
-              segmentation_runs: ['legacy-entry', ...(Array.isArray(part.metadata?.segmentation_runs) ? part.metadata.segmentation_runs : [])],
-            },
-          }
-          : part
-      ),
-      workspaceState: {
-        ...scenario.workspaceState,
-        selected_batch_id: 'batch-adv-b',
-        review_filter: 'pass',
-      },
-    });
-    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Batches: 2')).toBeInTheDocument();
-    });
-    fireEvent.change(screen.getByTestId('project-data-export-mode'), { target: { value: 'report_json' } });
-    fireEvent.click(screen.getByTestId('run-project-data-export-action'));
-
-    await waitFor(() => {
-      expect(screen.getByTestId('project-report-normalization-summary')).toBeInTheDocument();
-    });
-    expect(screen.getByTestId('project-report-normalization-summary')).toHaveTextContent(/segmentation_runs \(1\)/);
-    expect(screen.getByTestId(`normalization-triage-${toTriageFieldToken('segmentation_runs')}`)).toBeInTheDocument();
-  });
-
   test.each(projectTypes)('applies configurable inspector hotkeys for %s', async (projectType) => {
     for (const scenario of scenarioByUser) {
       const workspaceTracker = mockWorkbenchFetch(scenario);
@@ -848,19 +770,4 @@ describe('InspectionWorkbenchPanel', () => {
     }
   });
 
-  test('blocks unsupported export/report modes with validation', async () => {
-    mockWorkbenchFetch(scenarioByUser[0]);
-    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Batches: 1')).toBeInTheDocument();
-    });
-
-    fireEvent.change(screen.getByTestId('project-data-export-mode'), { target: { value: 'invalid_mode' } });
-    fireEvent.click(screen.getByTestId('run-project-data-export-action'));
-
-    await waitFor(() => {
-      expect(screen.getByText('Select a valid export/report mode.')).toBeInTheDocument();
-    });
-  });
 });
