@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { PROJECT_PHASE_LABELS, PROJECT_PHASE_SEQUENCE } from '../utils/projectPhases';
 
 
 function isSingleAlphanumeric(value) {
@@ -255,6 +256,10 @@ const EMPTY_CONFIG = {
     sub_batch_sn_enabled: false,
     part_sn_enabled: true,
   },
+  phase_settings: {
+    manual_phase_selection_enabled: false,
+    manual_phase: 'data_ingestion',
+  },
 };
 
 function normalizeSerialNumberScheme(config) {
@@ -264,6 +269,16 @@ function normalizeSerialNumberScheme(config) {
     sub_batching_enabled: candidate.sub_batching_enabled === true,
     sub_batch_sn_enabled: candidate.sub_batch_sn_enabled === true,
     part_sn_enabled: candidate.part_sn_enabled !== false,
+  };
+}
+
+function normalizePhaseSettings(config) {
+  const candidate = config?.phase_settings || {};
+  return {
+    manual_phase_selection_enabled: candidate.manual_phase_selection_enabled === true,
+    manual_phase: PROJECT_PHASE_SEQUENCE.includes(candidate.manual_phase)
+      ? candidate.manual_phase
+      : 'data_ingestion',
   };
 }
 
@@ -302,6 +317,7 @@ function ProjectConfigurationPanel({ projectId }) {
           ...EMPTY_CONFIG,
           ...incomingConfig,
           serial_number_scheme: normalizeSerialNumberScheme(incomingConfig),
+          phase_settings: normalizePhaseSettings(incomingConfig),
         });
 
         if (projectsResp.ok) {
@@ -487,7 +503,12 @@ function ProjectConfigurationPanel({ projectId }) {
       }
 
       const clonedConfig = getCloneConfigOrThrow(cloneData);
-      setConfig(clonedConfig);
+      setConfig({
+        ...EMPTY_CONFIG,
+        ...clonedConfig,
+        serial_number_scheme: normalizeSerialNumberScheme(clonedConfig),
+        phase_settings: normalizePhaseSettings(clonedConfig),
+      });
       const copiedFromProject = selectedCopySourceProject?.name || 'existing project';
       setCopySourceProjectId('');
       setStatusMessage(`Configuration copied from ${copiedFromProject}.`);
@@ -688,6 +709,54 @@ function ProjectConfigurationPanel({ projectId }) {
               />
               Track serial number at part level
             </label>
+          </section>
+
+          <section className="part-detail-panel" aria-label="Project phase settings">
+            <h3>Project Phase Settings</h3>
+            <p>
+              By default, projects progress automatically from Data Ingestion to Part Inspection to Reporting as data is
+              loaded and annotated.
+            </p>
+            <label>
+              <input
+                type="checkbox"
+                checked={Boolean(config.phase_settings?.manual_phase_selection_enabled)}
+                onChange={(event) =>
+                  setConfig((previous) => ({
+                    ...previous,
+                    phase_settings: {
+                      ...normalizePhaseSettings(previous),
+                      manual_phase_selection_enabled: event.target.checked,
+                    },
+                  }))
+                }
+              />
+              Manually choose current project phase
+            </label>
+            <div className="workbench-controls-row">
+              <label htmlFor="manual-project-phase">Manual phase</label>
+              <select
+                id="manual-project-phase"
+                aria-label="Manual project phase"
+                disabled={!config.phase_settings?.manual_phase_selection_enabled}
+                value={config.phase_settings?.manual_phase || 'data_ingestion'}
+                onChange={(event) =>
+                  setConfig((previous) => ({
+                    ...previous,
+                    phase_settings: {
+                      ...normalizePhaseSettings(previous),
+                      manual_phase: event.target.value,
+                    },
+                  }))
+                }
+              >
+                {PROJECT_PHASE_SEQUENCE.map((phaseKey) => (
+                  <option key={phaseKey} value={phaseKey}>
+                    {PROJECT_PHASE_LABELS[phaseKey]}
+                  </option>
+                ))}
+              </select>
+            </div>
           </section>
 
           <section className="part-detail-panel" aria-label="Image modalities">

@@ -26,57 +26,6 @@ const REVIEW_LABELS = {
   reject_pending: 'Reject Pending',
   reject_confirmed: 'Reject Confirmed',
 };
-const EXPORT_ACTIONS = {
-  bundle_summary: 'bundle_summary',
-  bundle_archive: 'bundle_archive',
-  report_json: 'report_json',
-  report_pdf: 'report_pdf',
-};
-const PROJECT_PHASES = {
-  data_ingestion: 'Data Ingestion',
-  part_inspection: 'Part Inspection',
-  reporting: 'Reporting',
-};
-const KNOWN_NORMALIZATION_FIELDS = new Set([
-  'annotations',
-  'overlay_layers',
-  'segmentation_runs',
-  'measurement_runs',
-]);
-
-function toTriageFieldToken(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '') || 'unknown-field';
-}
-
-function getDroppedMetadataItemsSummary(reportPayload) {
-  const droppedItems = reportPayload?.summary?.metadata_normalization?.dropped_non_object_items;
-  if (!droppedItems || typeof droppedItems !== 'object') return [];
-  const countersByField = Object.entries(droppedItems).reduce((acc, [rawField, value]) => {
-    const normalizedCount = Number(value);
-    if (!Number.isFinite(normalizedCount) || normalizedCount <= 0) return acc;
-    const normalizedField = String(rawField || '').trim();
-    const field = normalizedField || 'unknown_field';
-    const previous = acc.get(field) || 0;
-    acc.set(field, previous + normalizedCount);
-    return acc;
-  }, new Map());
-
-  return Array.from(countersByField.entries())
-    .map(([field, value]) => ({
-      field,
-      value,
-      token: toTriageFieldToken(field),
-      isKnown: KNOWN_NORMALIZATION_FIELDS.has(field),
-    }))
-    .sort((a, b) => {
-      if (b.value !== a.value) return b.value - a.value;
-      return a.field.localeCompare(b.field);
-    });
-}
-
 function hasDroppedMetadataField(part, field) {
   const metadata = part?.metadata;
   if (!metadata || typeof metadata !== 'object') return false;
@@ -265,23 +214,6 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     measurement_value: '',
     bbox: { x: '', y: '', width: '', height: '' },
   });
-  const [bundleExport, setBundleExport] = useState({
-    loading: false,
-    error: null,
-    payload: null,
-  });
-  const [bundleArchive, setBundleArchive] = useState({
-    loading: false,
-    error: null,
-    details: null,
-  });
-  const [reportExport, setReportExport] = useState({
-    loading: false,
-    error: null,
-    payload: null,
-  });
-  const [exportAction, setExportAction] = useState(EXPORT_ACTIONS.bundle_summary);
-  const [projectPhase, setProjectPhase] = useState('data_ingestion');
   const [ingestResult, setIngestResult] = useState({
     loading: false,
     error: null,
@@ -298,10 +230,6 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [centerPanelTab, setCenterPanelTab] = useState('inspector');
   const [rightPanelTab, setRightPanelTab] = useState('annotations');
   const [selectedImageRef, setSelectedImageRef] = useState('');
-  const droppedMetadataItemsSummary = useMemo(
-    () => getDroppedMetadataItemsSummary(reportExport.payload),
-    [reportExport.payload],
-  );
 
   useEffect(() => {
     const loadWorkbenchData = async () => {
@@ -984,42 +912,6 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     }
   };
 
-  const requestExportBundleSummary = async () => {
-    try {
-      setBundleExport({ loading: true, error: null, payload: null });
-      const resp = await fetch(`/api/projects/${projectId}/export-bundle-json`);
-      if (!resp.ok) {
-        throw new Error(`Failed to generate export bundle summary (${resp.status})`);
-      }
-      const payload = await resp.json();
-      setBundleExport({ loading: false, error: null, payload });
-    } catch (err) {
-      setBundleExport({ loading: false, error: err.message || 'Failed to generate export bundle summary', payload: null });
-    }
-  };
-
-  const requestExportBundleArchive = async () => {
-    try {
-      setBundleArchive({ loading: true, error: null, details: null });
-      const resp = await fetch(`/api/projects/${projectId}/export-bundle`);
-      if (!resp.ok) {
-        throw new Error(`Failed to generate export bundle archive (${resp.status})`);
-      }
-      const archiveBlob = await resp.blob();
-      const contentType = resp.headers.get('content-type') || 'application/octet-stream';
-      setBundleArchive({
-        loading: false,
-        error: null,
-        details: {
-          sizeBytes: archiveBlob.size,
-          contentType,
-        },
-      });
-    } catch (err) {
-      setBundleArchive({ loading: false, error: err.message || 'Failed to generate export bundle archive', details: null });
-    }
-  };
-
   const requestIngestValidation = async () => {
     const syntheticPayload = {
       batches: batches.slice(0, 1).map((batch) => ({
@@ -1056,129 +948,14 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     }
   };
 
-  const runProjectDataExportAction = async () => {
-    setBundleExport((prev) => ({ ...prev, error: null }));
-    setBundleArchive((prev) => ({ ...prev, error: null }));
-    setReportExport((prev) => ({ ...prev, error: null }));
-    if (!Object.values(EXPORT_ACTIONS).includes(exportAction)) {
-      setReportExport({ loading: false, error: 'Select a valid export/report mode.', payload: null });
-      return;
-    }
-    if (exportAction === EXPORT_ACTIONS.bundle_summary) {
-      await requestExportBundleSummary();
-      return;
-    }
-    if (exportAction === EXPORT_ACTIONS.bundle_archive) {
-      await requestExportBundleArchive();
-      return;
-    }
-    if (exportAction === EXPORT_ACTIONS.report_pdf) {
-      try {
-        setReportExport({ loading: true, error: null, payload: null });
-        const resp = await fetch(`/api/projects/${projectId}/report-pdf`);
-        if (!resp.ok) {
-          throw new Error(`Failed to generate PDF report (${resp.status})`);
-        }
-        const blob = await resp.blob();
-        const contentType = resp.headers.get('content-type') || 'application/pdf';
-        setReportExport({
-          loading: false,
-          error: null,
-          payload: {
-            format: 'pdf',
-            sizeBytes: blob.size,
-            contentType,
-          },
-        });
-      } catch (err) {
-        setReportExport({ loading: false, error: err.message || 'Failed to generate PDF report', payload: null });
-      }
-      return;
-    }
-    try {
-      setReportExport({ loading: true, error: null, payload: null });
-      const resp = await fetch(`/api/projects/${projectId}/report-json`);
-      if (!resp.ok) {
-        throw new Error(`Failed to generate report (${resp.status})`);
-      }
-      const payload = await resp.json();
-      setReportExport({ loading: false, error: null, payload });
-    } catch (err) {
-      setReportExport({ loading: false, error: err.message || 'Failed to generate report', payload: null });
-    }
-  };
-
   return (
     <section className="workbench-panel" aria-label="Inspection Workbench">
       <div className="workbench-header">
-        <h2>Project Data</h2>
+        <h2>Inspection Workbench</h2>
         <p>
           Inspection workbench for <strong>{projectType || 'PT1'}</strong> projects.
         </p>
-        <div className="workbench-controls-row">
-          <label htmlFor="projectPhaseLabel" className="form-label">
-            Project phase
-          </label>
-          <select
-            id="projectPhaseLabel"
-            className="form-control"
-            data-testid="project-phase-select"
-            value={projectPhase}
-            onChange={(event) => setProjectPhase(event.target.value)}
-          >
-            <option value="data_ingestion">{PROJECT_PHASES.data_ingestion}</option>
-            <option value="part_inspection">{PROJECT_PHASES.part_inspection}</option>
-            <option value="reporting">{PROJECT_PHASES.reporting}</option>
-          </select>
-          <span className="group-badge" data-testid="project-phase-label">
-            Phase: {PROJECT_PHASES[projectPhase] || PROJECT_PHASES.data_ingestion}
-          </span>
-        </div>
         <div className="workbench-detail-actions">
-          <label htmlFor="projectDataExportMode" className="form-label">
-            Export/report mode
-          </label>
-          <select
-            id="projectDataExportMode"
-            className="form-control"
-            data-testid="project-data-export-mode"
-            value={exportAction}
-            onChange={(e) => setExportAction(e.target.value)}
-          >
-            <option value={EXPORT_ACTIONS.bundle_summary}>Export bundle summary</option>
-            <option value={EXPORT_ACTIONS.bundle_archive}>Export bundle archive</option>
-            <option value={EXPORT_ACTIONS.report_json}>Project report JSON</option>
-            <option value={EXPORT_ACTIONS.report_pdf}>Project report PDF</option>
-          </select>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            data-testid="run-project-data-export-action"
-            disabled={bundleExport.loading || bundleArchive.loading || reportExport.loading}
-            onClick={runProjectDataExportAction}
-          >
-            {bundleExport.loading || bundleArchive.loading || reportExport.loading
-              ? 'Running Export/Report…'
-              : 'Run Export/Report'}
-          </button>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            data-testid="request-export-bundle-summary"
-            disabled={bundleExport.loading}
-            onClick={requestExportBundleSummary}
-          >
-            {bundleExport.loading ? 'Preparing Export Summary…' : 'Export Bundle Summary'}
-          </button>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            data-testid="request-export-bundle-archive"
-            disabled={bundleArchive.loading}
-            onClick={requestExportBundleArchive}
-          >
-            {bundleArchive.loading ? 'Preparing Export Archive…' : 'Prepare Export Archive'}
-          </button>
           <button
             type="button"
             className="btn btn-secondary"
@@ -1193,66 +970,7 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
 
       {loading && <div className="loading-text">Loading inspection workbench…</div>}
       {error && <div className="alert alert-error">{error}</div>}
-      {bundleExport.error && <div className="alert alert-error">{bundleExport.error}</div>}
-      {bundleArchive.error && <div className="alert alert-error">{bundleArchive.error}</div>}
-      {reportExport.error && <div className="alert alert-error">{reportExport.error}</div>}
       {ingestResult.error && <div className="alert alert-error">{ingestResult.error}</div>}
-      {bundleExport.payload && (
-        <div className="alert alert-success" data-testid="export-bundle-summary-result">
-          Export summary ready: {bundleExport.payload?.summary?.images?.total || 0} images,{' '}
-          {bundleExport.payload?.summary?.annotations?.total || 0} annotations,{' '}
-          {bundleExport.payload?.summary?.overlays?.segmentation_runs || 0} segmentation runs.
-        </div>
-      )}
-      {bundleArchive.details && (
-        <div className="alert alert-success" data-testid="export-bundle-archive-result">
-          Export archive ready: {bundleArchive.details.sizeBytes} bytes ({bundleArchive.details.contentType}).
-        </div>
-      )}
-      {reportExport.payload && (
-        <div className="alert alert-success" data-testid="project-report-result">
-          {reportExport.payload?.format === 'pdf'
-            ? `PDF report ready: ${reportExport.payload?.sizeBytes || 0} bytes (${reportExport.payload?.contentType || 'application/pdf'}).`
-            : `Report ready: ${reportExport.payload?.summary?.total_parts || 0} parts, ${
-                reportExport.payload?.summary?.reviewed_parts || 0
-              } reviewed.`}
-        </div>
-      )}
-      {droppedMetadataItemsSummary.length > 0 && (
-        <div className="alert alert-warning" data-testid="project-report-normalization-summary">
-          <strong>Metadata normalization:</strong>{' '}
-          {droppedMetadataItemsSummary.map((item, index) => (
-            <span key={item.field}>
-              <button
-                type="button"
-                className="btn btn-link"
-                data-testid={`normalization-triage-${item.token}`}
-                onClick={() => setNormalizationTriageField(item.field)}
-              >
-                {item.field} ({item.value})
-              </button>
-              {!item.isKnown && <span className="muted"> (unknown category)</span>}
-              {index < droppedMetadataItemsSummary.length - 1 ? ', ' : ''}
-            </span>
-          ))}
-          {normalizationTriageField && (
-            <>
-              {' '}
-              <span data-testid="normalization-triage-active">
-                Filtering parts with mixed <strong>{normalizationTriageField}</strong> values.
-              </span>{' '}
-              <button
-                type="button"
-                className="btn btn-link"
-                data-testid="normalization-triage-clear"
-                onClick={() => setNormalizationTriageField('')}
-              >
-                Clear
-              </button>
-            </>
-          )}
-        </div>
-      )}
       {ingestResult.payload && (
         <div className="alert alert-success" data-testid="ingest-validation-result">
           Ingest validation complete: created {ingestResult.payload?.counters?.parts_created || 0} parts, skipped{' '}
