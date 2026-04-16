@@ -224,6 +224,14 @@ function mockFetch(config, projectType, mockOptions = {}) {
       return Promise.resolve({ ok: true, json: async () => ({ config: { ...config, defect_types: [] } }) });
     }
 
+    if (url.includes('/configuration/interface-layout/default') && requestOptions.method === 'POST') {
+      return Promise.resolve({ ok: true, json: async () => ({ config }) });
+    }
+
+    if (url.includes('/configuration/interface-layout/project-type-default') && requestOptions.method === 'POST') {
+      return Promise.resolve({ ok: true, json: async () => ({ config }) });
+    }
+
     if (url.includes('/configuration') && requestOptions.method === 'PUT') {
       return Promise.resolve({ ok: true, json: async () => ({ config }) });
     }
@@ -812,6 +820,39 @@ describe('ProjectConfigurationPanel', () => {
           expect(screen.getByText('Configuration copied from Template Project.')).toBeInTheDocument();
         });
       });
+    });
+  });
+
+  test('shows interface default buttons and calls save endpoints', async () => {
+    const config = makeConfig('PT1', 'advanced');
+    mockFetch(config, 'PT1');
+    const layoutModel = {
+      layout: { type: 'row', children: [] },
+    };
+
+    render(
+      <ProjectConfigurationPanel
+        projectId="proj-1"
+        projectType="PT1"
+        currentInterfaceLayout={layoutModel}
+        isAdminUser
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('project-configuration-summary')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Current Interface as Project Default' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Current Interface as PT1 Default' }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/projects/proj-1/configuration/interface-layout/default',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/projects/proj-1/configuration/interface-layout/project-type-default',
+        expect.objectContaining({ method: 'POST' }),
+      );
     });
   });
 });

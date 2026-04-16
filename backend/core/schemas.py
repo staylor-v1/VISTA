@@ -280,6 +280,10 @@ class InspectionProjectPhaseSettingsConfig(BaseModel):
     manual_phase: str = Field(default="data_ingestion", pattern=r"^(data_ingestion|part_inspection|reporting)$")
 
 
+class InspectionProjectInterfaceLayoutConfig(BaseModel):
+    default_model: Optional[Dict[str, Any]] = None
+
+
 class InspectionProjectConfiguration(BaseModel):
     image_modalities: List[InspectionProjectModalityConfig] = Field(default_factory=list)
     part_views: List[InspectionProjectPartViewConfig] = Field(default_factory=list)
@@ -287,6 +291,7 @@ class InspectionProjectConfiguration(BaseModel):
     process_settings: InspectionProjectProcessSettingsConfig = Field(default_factory=InspectionProjectProcessSettingsConfig)
     display_settings: InspectionProjectDisplaySettingsConfig = Field(default_factory=InspectionProjectDisplaySettingsConfig)
     phase_settings: InspectionProjectPhaseSettingsConfig = Field(default_factory=InspectionProjectPhaseSettingsConfig)
+    interface_layout: InspectionProjectInterfaceLayoutConfig = Field(default_factory=InspectionProjectInterfaceLayoutConfig)
 
 
 class InspectionProjectConfigurationPayload(BaseModel):
@@ -308,6 +313,10 @@ class InspectionProjectConfigurationCloneResponse(BaseModel):
     source_project_id: uuid.UUID
     config: InspectionProjectConfiguration
     updated_at: Optional[datetime] = None
+
+
+class InspectionInterfaceLayoutDefaultPayload(BaseModel):
+    layout_model: Dict[str, Any]
 
 
 class InspectionIngestPartRecord(BaseModel):

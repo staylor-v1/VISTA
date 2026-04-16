@@ -282,7 +282,13 @@ function normalizePhaseSettings(config) {
   };
 }
 
-function ProjectConfigurationPanel({ projectId }) {
+function ProjectConfigurationPanel({
+  projectId,
+  projectType,
+  currentInterfaceLayout = null,
+  isAdminUser = false,
+  onConfigurationSaved = null,
+}) {
   const [config, setConfig] = useState(EMPTY_CONFIG);
   const [availableProjects, setAvailableProjects] = useState([]);
   const [currentProjectType, setCurrentProjectType] = useState('');
@@ -292,6 +298,8 @@ function ProjectConfigurationPanel({ projectId }) {
   const [error, setError] = useState(null);
   const [statusMessage, setStatusMessage] = useState('');
   const [copyingConfiguration, setCopyingConfiguration] = useState(false);
+  const [savingInterfaceLayoutDefault, setSavingInterfaceLayoutDefault] = useState(false);
+  const [savingProjectTypeLayoutDefault, setSavingProjectTypeLayoutDefault] = useState(false);
   const hasCompatibleCopySources = availableProjects.length > 0;
   const selectedCopySourceProject = availableProjects.find((project) => project.id === copySourceProjectId) || null;
 
@@ -384,11 +392,75 @@ function ProjectConfigurationPanel({ projectId }) {
       if (!response.ok) {
         throw new Error(`Failed to save project configuration (${response.status})`);
       }
+      const payload = await response.json();
       setStatusMessage('Configuration saved.');
+      if (payload?.config && typeof onConfigurationSaved === 'function') {
+        onConfigurationSaved(payload.config);
+      }
     } catch (err) {
       setError(err.message || 'Failed to save project configuration');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveInterfaceLayoutAsProjectDefault = async () => {
+    if (!currentInterfaceLayout || savingInterfaceLayoutDefault) return;
+    try {
+      setSavingInterfaceLayoutDefault(true);
+      setError(null);
+      setStatusMessage('');
+      const response = await fetch(`/api/projects/${projectId}/configuration/interface-layout/default`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ layout_model: currentInterfaceLayout }),
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to save project interface default (${response.status})`);
+      }
+      const payload = await response.json();
+      if (payload?.config) {
+        setConfig((previous) => ({
+          ...previous,
+          ...payload.config,
+          serial_number_scheme: normalizeSerialNumberScheme(payload.config),
+          phase_settings: normalizePhaseSettings(payload.config),
+        }));
+        if (typeof onConfigurationSaved === 'function') {
+          onConfigurationSaved(payload.config);
+        }
+      }
+      setStatusMessage('Current interface saved as this project default.');
+    } catch (err) {
+      setError(err.message || 'Failed to save project interface default');
+    } finally {
+      setSavingInterfaceLayoutDefault(false);
+    }
+  };
+
+  const saveInterfaceLayoutAsProjectTypeDefault = async () => {
+    if (!currentInterfaceLayout || savingProjectTypeLayoutDefault || !isAdminUser) return;
+    try {
+      setSavingProjectTypeLayoutDefault(true);
+      setError(null);
+      setStatusMessage('');
+      const response = await fetch(`/api/projects/${projectId}/configuration/interface-layout/project-type-default`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ layout_model: currentInterfaceLayout }),
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to save ${projectType || 'project type'} interface default (${response.status})`);
+      }
+      const payload = await response.json();
+      if (payload?.config && typeof onConfigurationSaved === 'function') {
+        onConfigurationSaved(payload.config);
+      }
+      setStatusMessage(`Current interface saved as the default for ${projectType || 'this project type'}.`);
+    } catch (err) {
+      setError(err.message || 'Failed to save project type interface default');
+    } finally {
+      setSavingProjectTypeLayoutDefault(false);
     }
   };
 
@@ -1012,6 +1084,26 @@ function ProjectConfigurationPanel({ projectId }) {
             <button className="btn btn-primary" type="button" disabled={saving} onClick={saveConfiguration}>
               {saving ? 'Saving...' : 'Save Configuration'}
             </button>
+            <button
+              className="btn btn-secondary"
+              type="button"
+              disabled={!currentInterfaceLayout || savingInterfaceLayoutDefault}
+              onClick={saveInterfaceLayoutAsProjectDefault}
+            >
+              {savingInterfaceLayoutDefault ? 'Saving Layout...' : 'Save Current Interface as Project Default'}
+            </button>
+            {isAdminUser && (
+              <button
+                className="btn btn-secondary"
+                type="button"
+                disabled={!currentInterfaceLayout || savingProjectTypeLayoutDefault}
+                onClick={saveInterfaceLayoutAsProjectTypeDefault}
+              >
+                {savingProjectTypeLayoutDefault
+                  ? 'Saving Type Layout...'
+                  : `Save Current Interface as ${projectType || 'Type'} Default`}
+              </button>
+            )}
             <span>{hasConfiguration ? 'Configuration is populated.' : 'Using defaults until sections are configured.'}</span>
           </div>
         </>
