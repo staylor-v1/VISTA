@@ -91,4 +91,33 @@ test.describe('Full inspection workflow end-to-end', () => {
 
     await page.screenshot({ path: screenshotPath, fullPage: true });
   });
+
+  test('creates a PT1 project and preserves the original hierarchical inspection panel layout', async ({ page }) => {
+    const { projectId } = await mockFullInspectionWorkflowRoutes(page);
+
+    await page.goto('/', { waitUntil: 'networkidle' });
+
+    await page.getByRole('button', { name: 'Create Your First Project' }).click();
+    await page.getByLabel('Project Name *').fill('PT1 Hierarchical Layout Regression');
+    await page.getByLabel('Description').fill('Verifies PT1 uses the legacy hierarchical inspection panel arrangement');
+    await page.getByLabel('Access Group *').fill('qa-team');
+    await page.getByLabel('Project Type *').selectOption('PT1');
+    await page.getByRole('button', { name: 'Create Project' }).click();
+
+    await page.getByRole('link', { name: 'PT1 Hierarchical Layout Regression' }).click();
+    await expect(page).toHaveURL(new RegExp(`/project/${projectId}$`));
+
+    const workbench = page.locator('section[aria-label="Inspection Workbench"]');
+    await expect(workbench).toBeVisible();
+
+    const tabbedPanels = workbench.locator('.workbench-tabbed-panels');
+    await expect(tabbedPanels).toBeVisible();
+    await expect(workbench.locator('.workbench-tabbed-panel')).toHaveCount(3);
+
+    await expect(workbench.getByRole('tablist', { name: 'Left panel tabs' })).toHaveCount(1);
+    await expect(workbench.getByRole('tablist', { name: 'Center panel tabs' })).toHaveCount(1);
+    await expect(workbench.getByRole('tablist', { name: 'Right panel tabs' })).toHaveCount(1);
+
+    await expect(workbench.locator('.flexlayout__layout')).toHaveCount(0);
+  });
 });
