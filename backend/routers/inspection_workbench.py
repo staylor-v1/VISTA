@@ -3,10 +3,11 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
-from core import schemas
+from core import models, schemas
 from core.database import get_db
 from core.group_auth_helper import is_user_in_group
 from utils.dependencies import get_current_user
@@ -17,6 +18,7 @@ router = APIRouter(tags=["Inspection Workbench"])
 
 WORKSPACE_STATE_KEY_PREFIX = "inspection_workbench.workspace_state"
 PROJECT_CONFIGURATION_KEY = "inspection_workbench.project_configuration"
+PROJECT_TYPE_INTERFACE_LAYOUT_KEY_PREFIX = "inspection_workbench.project_type_interface_layout_default"
 ANNOTATIONS_METADATA_KEY = "annotations"
 WORKSPACE_PANEL_LAYOUT_DEFAULTS = {
     "part_list": {
@@ -255,7 +257,44 @@ def _default_project_configuration() -> dict:
             "manual_phase_selection_enabled": False,
             "manual_phase": "data_ingestion",
         },
+        "interface_layout": {
+            "default_model": None,
+        },
     }
+
+
+def _project_type_interface_layout_metadata_key(project_type: str) -> str:
+    return f"{PROJECT_TYPE_INTERFACE_LAYOUT_KEY_PREFIX}:{project_type}"
+
+
+def _normalize_layout_model(candidate: object) -> dict:
+    if not isinstance(candidate, dict):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="layout_model must be an object")
+    layout_node = candidate.get("layout")
+    if not isinstance(layout_node, dict) or layout_node.get("type") not in {"row", "tabset"}:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="layout_model must include a valid layout root")
+    return candidate
+
+
+async def _resolve_project_type_interface_layout_default(
+    db: AsyncSession,
+    *,
+    project_type: str,
+) -> Optional[dict]:
+    metadata_key = _project_type_interface_layout_metadata_key(project_type)
+    stmt = (
+        select(models.ProjectMetadata.value)
+        .join(models.Project, models.Project.id == models.ProjectMetadata.project_id)
+        .where(
+            models.Project.project_type == project_type,
+            models.ProjectMetadata.key == metadata_key,
+        )
+        .order_by(models.ProjectMetadata.updated_at.desc())
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    value = result.scalar_one_or_none()
+    return value if isinstance(value, dict) else None
 
 
 @router.post(
@@ -661,16 +700,34 @@ async def get_project_configuration(
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
 ):
-    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    project = await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
     metadata = await crud.get_project_metadata_by_key(
         db=db,
         project_id=project_id,
         key=PROJECT_CONFIGURATION_KEY,
     )
     raw_config = metadata.value if metadata and isinstance(metadata.value, dict) else _default_project_configuration()
+    resolved_config = {
+        **_default_project_configuration(),
+        **raw_config,
+    }
+    interface_layout = resolved_config.get("interface_layout")
+    has_project_default_layout = (
+        isinstance(interface_layout, dict)
+        and isinstance(interface_layout.get("default_model"), dict)
+    )
+    if not has_project_default_layout:
+        project_type_default = await _resolve_project_type_interface_layout_default(
+            db,
+            project_type=project.project_type or "PT1",
+        )
+        if project_type_default:
+            resolved_config["interface_layout"] = {
+                "default_model": project_type_default,
+            }
     return {
         "project_id": project_id,
-        "config": raw_config,
+        "config": resolved_config,
         "updated_at": metadata.updated_at if metadata else None,
     }
 
@@ -701,6 +758,74 @@ async def update_project_configuration(
         "config": persisted,
         "updated_at": updated.updated_at,
     }
+
+
+@router.post(
+    "/projects/{project_id}/configuration/interface-layout/default",
+    response_model=schemas.InspectionProjectConfigurationResponse,
+)
+async def save_project_default_interface_layout(
+    project_id: uuid.UUID,
+    payload: schemas.InspectionInterfaceLayoutDefaultPayload,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    metadata = await crud.get_project_metadata_by_key(
+        db=db,
+        project_id=project_id,
+        key=PROJECT_CONFIGURATION_KEY,
+    )
+    raw_config = metadata.value if metadata and isinstance(metadata.value, dict) else _default_project_configuration()
+    config = {
+        **_default_project_configuration(),
+        **raw_config,
+    }
+    config["interface_layout"] = {
+        "default_model": _normalize_layout_model(payload.layout_model),
+    }
+    updated = await crud.create_or_update_project_metadata(
+        db=db,
+        metadata=schemas.ProjectMetadataCreate(
+            project_id=project_id,
+            key=PROJECT_CONFIGURATION_KEY,
+            value=config,
+        ),
+        created_by=current_user.email,
+    )
+    persisted = updated.value if isinstance(updated.value, dict) else _default_project_configuration()
+    return {
+        "project_id": project_id,
+        "config": persisted,
+        "updated_at": updated.updated_at,
+    }
+
+
+@router.post(
+    "/projects/{project_id}/configuration/interface-layout/project-type-default",
+    response_model=schemas.InspectionProjectConfigurationResponse,
+)
+async def save_project_type_default_interface_layout(
+    project_id: uuid.UUID,
+    payload: schemas.InspectionInterfaceLayoutDefaultPayload,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    project = await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    if not (is_user_in_group(current_user.email, "admin") or is_user_in_group(current_user.email, "admins")):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required to save project type defaults")
+    normalized_layout = _normalize_layout_model(payload.layout_model)
+    metadata_key = _project_type_interface_layout_metadata_key(project.project_type or "PT1")
+    await crud.create_or_update_project_metadata(
+        db=db,
+        metadata=schemas.ProjectMetadataCreate(
+            project_id=project_id,
+            key=metadata_key,
+            value=normalized_layout,
+        ),
+        created_by=current_user.email,
+    )
+    return await get_project_configuration(project_id=project_id, db=db, current_user=current_user)
 
 
 @router.post(
