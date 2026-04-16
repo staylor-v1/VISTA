@@ -41,39 +41,6 @@ function isValidLayoutModel(candidate) {
   );
 }
 
-function isLegacyFourColumnDefault(candidate) {
-  if (!isValidLayoutModel(candidate)) return false;
-  if (candidate?.layout?.type !== 'row') return false;
-  const children = Array.isArray(candidate?.layout?.children) ? candidate.layout.children : [];
-  if (children.length !== 4) return false;
-  const expected = ['inspection', 'project-data', 'project-configuration', 'report'];
-  return children.every((child, index) => (
-    child?.type === 'tabset'
-    && Array.isArray(child?.children)
-    && child.children.length === 1
-    && child.children[0]?.type === 'tab'
-    && child.children[0]?.component === expected[index]
-  ));
-}
-
-function migrateLegacyLayoutModel(candidate) {
-  if (!isLegacyFourColumnDefault(candidate)) {
-    return candidate;
-  }
-  const tabs = candidate.layout.children.map((child) => ({
-    type: 'tab',
-    component: child.children[0].component,
-    name: child.children[0].name,
-  }));
-  return {
-    ...candidate,
-    layout: {
-      type: 'tabset',
-      children: tabs,
-    },
-  };
-}
-
 function Project({ currentUserGroups = [] }) {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -205,15 +172,14 @@ function Project({ currentUserGroups = [] }) {
     try {
       const fromStorageRaw = window.localStorage.getItem(layoutStorageKey);
       const fromStorage = fromStorageRaw ? JSON.parse(fromStorageRaw) : null;
-      const migratedFromStorage = migrateLegacyLayoutModel(fromStorage);
-      if (isValidLayoutModel(migratedFromStorage)) {
-        setLayoutModelJson(migratedFromStorage);
+      if (isValidLayoutModel(fromStorage)) {
+        setLayoutModelJson(fromStorage);
         return;
       }
     } catch (_error) {
       // Ignore local storage parsing errors.
     }
-    const fromProjectDefault = migrateLegacyLayoutModel(projectConfiguration?.interface_layout?.default_model);
+    const fromProjectDefault = projectConfiguration?.interface_layout?.default_model;
     if (isValidLayoutModel(fromProjectDefault)) {
       setLayoutModelJson(fromProjectDefault);
       return;
