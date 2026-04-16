@@ -169,7 +169,7 @@ function normalizePanelLayout(candidate) {
   }, {});
 }
 
-function InspectionWorkbenchPanel({ projectId, projectType }) {
+function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
   const [batches, setBatches] = useState([]);
   const [parts, setParts] = useState([]);
   const [selectedBatchId, setSelectedBatchId] = useState('');
@@ -230,6 +230,14 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
   const [centerPanelTab, setCenterPanelTab] = useState('inspector');
   const [rightPanelTab, setRightPanelTab] = useState('annotations');
   const [selectedImageRef, setSelectedImageRef] = useState('');
+
+  const inspectionHierarchy = useMemo(() => ({
+    leftColumn: hierarchy.leftColumn || 'part_summary',
+    centerTabs: Array.isArray(hierarchy.centerTabs) && hierarchy.centerTabs.length > 0
+      ? hierarchy.centerTabs
+      : ['inspector', 'image_metadata'],
+    rightColumn: hierarchy.rightColumn || 'annotations',
+  }), [hierarchy]);
 
   useEffect(() => {
     const loadWorkbenchData = async () => {
@@ -396,6 +404,14 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
     () => filteredParts.find((part) => part.id === selectedPartId) || filteredParts[0] || null,
     [filteredParts, selectedPartId],
   );
+  useEffect(() => {
+    setLeftPanelTab(inspectionHierarchy.leftColumn);
+    setRightPanelTab(inspectionHierarchy.rightColumn);
+    if (!inspectionHierarchy.centerTabs.includes(centerPanelTab)) {
+      setCenterPanelTab(inspectionHierarchy.centerTabs[0]);
+    }
+  }, [inspectionHierarchy, centerPanelTab]);
+
   const mprDimensions = useMemo(() => getMprDimensions(selectedPart), [selectedPart]);
   const overlayLayers = useMemo(() => getOverlayLayers(selectedPart), [selectedPart]);
   const modalityOptions = useMemo(() => getModalities(selectedPart), [selectedPart]);
@@ -1118,15 +1134,15 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                       <div className="project-tabs" role="tablist" aria-label="Left panel tabs">
                         <button
                           type="button"
-                          className={`project-tab ${leftPanelTab === 'part_summary' ? 'active' : ''}`}
+                          className={`project-tab ${leftPanelTab === inspectionHierarchy.leftColumn ? 'active' : ''}`}
                           role="tab"
-                          aria-selected={leftPanelTab === 'part_summary'}
-                          onClick={() => setLeftPanelTab('part_summary')}
+                          aria-selected={leftPanelTab === inspectionHierarchy.leftColumn}
+                          onClick={() => setLeftPanelTab(inspectionHierarchy.leftColumn)}
                         >
                           Part Summary
                         </button>
                       </div>
-                      {leftPanelTab === 'part_summary' && (
+                      {leftPanelTab === inspectionHierarchy.leftColumn && (
                         <div className="workspace-panel-layout">
                           <strong>Part Summary</strong>
                           <p className="muted">Navigate by batch, part, and image.</p>
@@ -1215,24 +1231,28 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
 
                     <section className="workbench-tabbed-panel">
                       <div className="project-tabs" role="tablist" aria-label="Center panel tabs">
-                        <button
-                          type="button"
-                          className={`project-tab ${centerPanelTab === 'inspector' ? 'active' : ''}`}
-                          role="tab"
-                          aria-selected={centerPanelTab === 'inspector'}
-                          onClick={() => setCenterPanelTab('inspector')}
-                        >
-                          Inspection
-                        </button>
-                        <button
-                          type="button"
-                          className={`project-tab ${centerPanelTab === 'image_metadata' ? 'active' : ''}`}
-                          role="tab"
-                          aria-selected={centerPanelTab === 'image_metadata'}
-                          onClick={() => setCenterPanelTab('image_metadata')}
-                        >
-                          Image Metadata
-                        </button>
+                        {inspectionHierarchy.centerTabs.includes('inspector') && (
+                          <button
+                            type="button"
+                            className={`project-tab ${centerPanelTab === 'inspector' ? 'active' : ''}`}
+                            role="tab"
+                            aria-selected={centerPanelTab === 'inspector'}
+                            onClick={() => setCenterPanelTab('inspector')}
+                          >
+                            Inspection
+                          </button>
+                        )}
+                        {inspectionHierarchy.centerTabs.includes('image_metadata') && (
+                          <button
+                            type="button"
+                            className={`project-tab ${centerPanelTab === 'image_metadata' ? 'active' : ''}`}
+                            role="tab"
+                            aria-selected={centerPanelTab === 'image_metadata'}
+                            onClick={() => setCenterPanelTab('image_metadata')}
+                          >
+                            Image Metadata
+                          </button>
+                        )}
                       </div>
                       {centerPanelTab === 'inspector' && (
                         <div className="inspector-common-controls" data-testid="inspector-common-controls">
@@ -1488,15 +1508,15 @@ function InspectionWorkbenchPanel({ projectId, projectType }) {
                       <div className="project-tabs" role="tablist" aria-label="Right panel tabs">
                         <button
                           type="button"
-                          className={`project-tab ${rightPanelTab === 'annotations' ? 'active' : ''}`}
+                          className={`project-tab ${rightPanelTab === inspectionHierarchy.rightColumn ? 'active' : ''}`}
                           role="tab"
-                          aria-selected={rightPanelTab === 'annotations'}
-                          onClick={() => setRightPanelTab('annotations')}
+                          aria-selected={rightPanelTab === inspectionHierarchy.rightColumn}
+                          onClick={() => setRightPanelTab(inspectionHierarchy.rightColumn)}
                         >
                           Annotations
                         </button>
                       </div>
-                      {rightPanelTab === 'annotations' && (
+                      {rightPanelTab === inspectionHierarchy.rightColumn && (
                         <div className="annotation-controls" data-testid="annotation-controls">
                           <strong>Annotations</strong>
                           <p className="muted">For selected part: {selectedPart.serial_number}</p>
