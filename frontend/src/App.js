@@ -843,7 +843,7 @@ function App() {
         path="/project/:id"
         element={
           <Suspense fallback={<div className="loading-container">Loading project...</div>}>
-            <Project />
+            <Project currentUserGroups={currentUserGroups} />
           </Suspense>
         }
       />

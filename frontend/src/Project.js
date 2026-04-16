@@ -1,5 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { Layout, Model } from 'flexlayout-react';
+import 'flexlayout-react/style/light.css';
 import './App.css';
 
 import ImageUploader from './components/ImageUploader';
@@ -14,19 +16,76 @@ import ProjectReportTab from './components/ProjectReportTab';
 import ProjectPhaseFlow from './components/ProjectPhaseFlow';
 import { resolveCurrentProjectPhase } from './utils/projectPhases';
 
-function Project() {
+const DEFAULT_LAYOUT_MODEL = {
+  global: {
+    tabEnableClose: false,
+  },
+  layout: {
+    type: 'tabset',
+    children: [
+      { type: 'tab', component: 'inspection', name: 'Inspection' },
+      { type: 'tab', component: 'project-data', name: 'Project Data' },
+      { type: 'tab', component: 'project-configuration', name: 'Project Configuration' },
+      { type: 'tab', component: 'report', name: 'Report' },
+    ],
+  },
+};
+
+function isValidLayoutModel(candidate) {
+  return Boolean(
+    candidate
+      && typeof candidate === 'object'
+      && candidate.layout
+      && typeof candidate.layout === 'object'
+      && (candidate.layout.type === 'row' || candidate.layout.type === 'tabset'),
+  );
+}
+
+function isLegacyFourColumnDefault(candidate) {
+  if (!isValidLayoutModel(candidate)) return false;
+  if (candidate?.layout?.type !== 'row') return false;
+  const children = Array.isArray(candidate?.layout?.children) ? candidate.layout.children : [];
+  if (children.length !== 4) return false;
+  const expected = ['inspection', 'project-data', 'project-configuration', 'report'];
+  return children.every((child, index) => (
+    child?.type === 'tabset'
+    && Array.isArray(child?.children)
+    && child.children.length === 1
+    && child.children[0]?.type === 'tab'
+    && child.children[0]?.component === expected[index]
+  ));
+}
+
+function migrateLegacyLayoutModel(candidate) {
+  if (!isLegacyFourColumnDefault(candidate)) {
+    return candidate;
+  }
+  const tabs = candidate.layout.children.map((child) => ({
+    type: 'tab',
+    component: child.children[0].component,
+    name: child.children[0].name,
+  }));
+  return {
+    ...candidate,
+    layout: {
+      type: 'tabset',
+      children: tabs,
+    },
+  };
+}
+
+function Project({ currentUserGroups = [] }) {
   const { id } = useParams();
   const navigate = useNavigate();
   const [project, setProject] = useState(null);
-  const [images, setImages] = useState([]);
   const [metadata, setMetadata] = useState({});
   const [classes, setClasses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [hasGroups, setHasGroups] = useState(false);
   const [groupSearch, setGroupSearch] = useState('');
-  const [activeTab, setActiveTab] = useState('inspection');
   const [projectConfiguration, setProjectConfiguration] = useState(null);
+  const [layoutModelJson, setLayoutModelJson] = useState(null);
   const [dataCounts, setDataCounts] = useState({
     partsLoaded: 0,
     rawImages: 0,
@@ -35,6 +94,7 @@ function Project() {
     annotations: 0,
   });
   const [countsLoading, setCountsLoading] = useState(true);
+  const layoutStorageKey = `vista.project.layout.${id}`;
 
   const fetchImages = useCallback(async (projId) => {
     const PAGE_SIZE = 200;
@@ -52,7 +112,7 @@ function Project() {
       hasMore = batch.length === PAGE_SIZE;
       skip += PAGE_SIZE;
     }
-    setImages(allImages);
+    return allImages;
   }, []);
 
   const refreshProjectCounts = useCallback(async () => {
@@ -138,8 +198,30 @@ function Project() {
     fetchProjectData();
   }, [id, fetchImages, refreshProjectCounts]);
 
-  const handleUploadComplete = async (newImages) => {
-    setImages((prevImages) => [...prevImages, ...newImages]);
+  useEffect(() => {
+    if (loading || layoutModelJson) {
+      return;
+    }
+    try {
+      const fromStorageRaw = window.localStorage.getItem(layoutStorageKey);
+      const fromStorage = fromStorageRaw ? JSON.parse(fromStorageRaw) : null;
+      const migratedFromStorage = migrateLegacyLayoutModel(fromStorage);
+      if (isValidLayoutModel(migratedFromStorage)) {
+        setLayoutModelJson(migratedFromStorage);
+        return;
+      }
+    } catch (_error) {
+      // Ignore local storage parsing errors.
+    }
+    const fromProjectDefault = migrateLegacyLayoutModel(projectConfiguration?.interface_layout?.default_model);
+    if (isValidLayoutModel(fromProjectDefault)) {
+      setLayoutModelJson(fromProjectDefault);
+      return;
+    }
+    setLayoutModelJson(DEFAULT_LAYOUT_MODEL);
+  }, [loading, layoutModelJson, layoutStorageKey, projectConfiguration]);
+
+  const handleUploadComplete = useCallback(async () => {
     await refreshProjectCounts();
     try {
       const resp = await fetch(`/api/projects/${id}/has-groups`);
@@ -148,13 +230,119 @@ function Project() {
         setHasGroups(data.has_groups);
       }
     } catch (_) {}
-  };
+  }, [id, refreshProjectCounts]);
 
   const currentPhase = resolveCurrentProjectPhase({
     phaseSettings: projectConfiguration?.phase_settings,
     partsLoaded: dataCounts.partsLoaded,
     annotations: dataCounts.annotations,
   });
+
+  const projectDataContent = useMemo(() => (
+    <>
+      <ProjectDataSummaryTab counts={dataCounts} loading={countsLoading} />
+      <div className="review-summary-row">
+        <ReviewStatusSummary projectId={id} />
+        {hasGroups && (
+          <input
+            type="text"
+            className="search-input group-search-inline"
+            placeholder="Search groups..."
+            value={groupSearch}
+            onChange={(e) => setGroupSearch(e.target.value)}
+          />
+        )}
+      </div>
+      {hasGroups && (
+        <div className="gallery-section">
+          <GroupedImagesPage projectId={id} projectName={project?.name} onBack={() => navigate('/')} search={groupSearch} />
+        </div>
+      )}
+
+      {!project?.is_archived && (
+        <div className="management-sections">
+          <div className="upload-section">
+            <ImageUploader projectId={id} onUploadComplete={handleUploadComplete} setError={setError} />
+          </div>
+          <div className="metadata-section">
+            <MetadataManager
+              projectId={id}
+              metadata={metadata}
+              setMetadata={setMetadata}
+              loading={loading}
+              setLoading={setLoading}
+              setError={setError}
+            />
+          </div>
+          <div className="classes-section">
+            <ClassManager
+              projectId={id}
+              classes={classes}
+              setClasses={setClasses}
+              loading={loading}
+              setLoading={setLoading}
+              setError={setError}
+            />
+          </div>
+        </div>
+      )}
+    </>
+  ), [
+    classes,
+    countsLoading,
+    dataCounts,
+    groupSearch,
+    hasGroups,
+    id,
+    loading,
+    metadata,
+    navigate,
+    handleUploadComplete,
+    project?.is_archived,
+    project?.name,
+  ]);
+
+  const layoutModel = useMemo(() => {
+    if (!isValidLayoutModel(layoutModelJson)) {
+      return Model.fromJson(DEFAULT_LAYOUT_MODEL);
+    }
+    return Model.fromJson(layoutModelJson);
+  }, [layoutModelJson]);
+
+  const handleLayoutModelChange = useCallback((model) => {
+    const nextJson = model.toJson();
+    setLayoutModelJson(nextJson);
+    try {
+      window.localStorage.setItem(layoutStorageKey, JSON.stringify(nextJson));
+    } catch (_error) {
+      // Ignore local storage write errors.
+    }
+  }, [layoutStorageKey]);
+
+  const layoutFactory = useCallback((node) => {
+    const component = node.getComponent();
+    if (component === 'inspection') {
+      return <InspectionWorkbenchPanel projectId={id} projectType={project?.project_type} />;
+    }
+    if (component === 'project-data') {
+      return projectDataContent;
+    }
+    if (component === 'project-configuration') {
+      return (
+        <ProjectConfigurationPanel
+          projectId={id}
+          projectType={project?.project_type}
+          currentInterfaceLayout={layoutModelJson}
+          isAdminUser={currentUserGroups.includes('admin') || currentUserGroups.includes('admins')}
+          onConfigurationSaved={(nextConfig) => setProjectConfiguration(nextConfig)}
+        />
+      );
+    }
+    if (component === 'report') {
+      return <ProjectReportTab projectId={id} projectName={project?.name} setError={setError} />;
+    }
+    return null;
+  }, [id, project?.name, project?.project_type, projectDataContent, layoutModelJson, currentUserGroups]);
 
   return (
     <div className="App">
@@ -191,78 +379,8 @@ function Project() {
         )}
 
         {!loading && (
-          <div className="project-content">
-            <div className="project-tabs" role="tablist" aria-label="Project sections">
-              <button className={`project-tab ${activeTab === 'inspection' ? 'active' : ''}`} onClick={() => setActiveTab('inspection')}>
-                Inspection
-              </button>
-              <button className={`project-tab ${activeTab === 'project-data' ? 'active' : ''}`} onClick={() => setActiveTab('project-data')}>
-                Project Data
-              </button>
-              <button className={`project-tab ${activeTab === 'project-configuration' ? 'active' : ''}`} onClick={() => setActiveTab('project-configuration')}>
-                Project Configuration
-              </button>
-              <button className={`project-tab ${activeTab === 'report' ? 'active' : ''}`} onClick={() => setActiveTab('report')}>
-                Report
-              </button>
-            </div>
-
-            {activeTab === 'inspection' && <InspectionWorkbenchPanel projectId={id} projectType={project?.project_type} />}
-
-            {activeTab === 'project-configuration' && <ProjectConfigurationPanel projectId={id} />}
-
-            {activeTab === 'report' && <ProjectReportTab projectId={id} projectName={project?.name} setError={setError} />}
-
-            {activeTab === 'project-data' && (
-              <>
-                <ProjectDataSummaryTab counts={dataCounts} loading={countsLoading} />
-                <div className="review-summary-row">
-                  <ReviewStatusSummary projectId={id} />
-                  {hasGroups && (
-                    <input
-                      type="text"
-                      className="search-input group-search-inline"
-                      placeholder="Search groups..."
-                      value={groupSearch}
-                      onChange={(e) => setGroupSearch(e.target.value)}
-                    />
-                  )}
-                </div>
-                {hasGroups && (
-                  <div className="gallery-section">
-                    <GroupedImagesPage projectId={id} projectName={project?.name} onBack={() => navigate('/')} search={groupSearch} />
-                  </div>
-                )}
-
-                {!project?.is_archived && (
-                  <div className="management-sections">
-                    <div className="upload-section">
-                      <ImageUploader projectId={id} onUploadComplete={handleUploadComplete} setError={setError} />
-                    </div>
-                    <div className="metadata-section">
-                      <MetadataManager
-                        projectId={id}
-                        metadata={metadata}
-                        setMetadata={setMetadata}
-                        loading={loading}
-                        setLoading={setLoading}
-                        setError={setError}
-                      />
-                    </div>
-                    <div className="classes-section">
-                      <ClassManager
-                        projectId={id}
-                        classes={classes}
-                        setClasses={setClasses}
-                        loading={loading}
-                        setLoading={setLoading}
-                        setError={setError}
-                      />
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
+          <div className="project-content project-flexlayout-shell">
+            <Layout model={layoutModel} factory={layoutFactory} onModelChange={handleLayoutModelChange} />
           </div>
         )}
       </div>

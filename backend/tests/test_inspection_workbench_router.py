@@ -1084,6 +1084,111 @@ def test_project_configuration_clone_rejects_cross_project_type_sources_progress
             == "source_project_id must belong to a project with the same project_type as the target project"
         )
 
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_project_configuration_interface_layout_default_save_and_load(client, project_type):
+    group = f"{project_type.lower()}-layout-default"
+    headers = {
+        "X-User-Id": f"{project_type.lower()}-layout-default@example.com",
+        "X-User-Groups": f"[\"{group}\"]",
+    }
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": f"{project_type} layout default project",
+            "description": "layout default workflow",
+            "meta_group_id": group,
+            "project_type": project_type,
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+
+    layout_model = {
+        "global": {"tabEnableClose": False},
+        "layout": {
+            "type": "row",
+            "children": [
+                {
+                    "type": "tabset",
+                    "children": [{"type": "tab", "component": "inspection", "name": "Inspection"}],
+                }
+            ],
+        },
+    }
+    save_resp = client.post(
+        f"/api/projects/{project_id}/configuration/interface-layout/default",
+        json={"layout_model": layout_model},
+        headers=headers,
+    )
+    assert save_resp.status_code == 200, save_resp.text
+    assert save_resp.json()["config"]["interface_layout"]["default_model"] == layout_model
+
+    get_resp = client.get(f"/api/projects/{project_id}/configuration", headers=headers)
+    assert get_resp.status_code == 200, get_resp.text
+    assert get_resp.json()["config"]["interface_layout"]["default_model"] == layout_model
+
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_project_type_interface_layout_default_requires_admin_and_applies_to_matching_projects(client, project_type):
+    group = f"{project_type.lower()}-layout-type-default"
+    admin_headers = {
+        "X-User-Id": f"{project_type.lower()}-layout-type-admin@example.com",
+        "X-User-Groups": f"[\"{group}\",\"admins\"]",
+    }
+    non_admin_headers = {
+        "X-User-Id": f"{project_type.lower()}-layout-type-user@example.com",
+        "X-User-Groups": f"[\"{group}\"]",
+    }
+    source_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": f"{project_type} layout type source",
+            "description": "layout type source",
+            "meta_group_id": group,
+            "project_type": project_type,
+        },
+        headers=admin_headers,
+    )
+    assert source_resp.status_code == 201, source_resp.text
+    source_project_id = source_resp.json()["id"]
+
+    layout_model = {
+        "global": {"tabEnableClose": False},
+        "layout": {"type": "row", "children": [{"type": "tabset", "children": []}]},
+    }
+    forbidden_resp = client.post(
+        f"/api/projects/{source_project_id}/configuration/interface-layout/project-type-default",
+        json={"layout_model": layout_model},
+        headers=non_admin_headers,
+    )
+    assert forbidden_resp.status_code == 403, forbidden_resp.text
+
+    save_resp = client.post(
+        f"/api/projects/{source_project_id}/configuration/interface-layout/project-type-default",
+        json={"layout_model": layout_model},
+        headers=admin_headers,
+    )
+    assert save_resp.status_code == 200, save_resp.text
+
+    target_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": f"{project_type} layout type target",
+            "description": "layout type target",
+            "meta_group_id": group,
+            "project_type": project_type,
+        },
+        headers=admin_headers,
+    )
+    assert target_resp.status_code == 201, target_resp.text
+    target_project_id = target_resp.json()["id"]
+
+    target_config_resp = client.get(f"/api/projects/{target_project_id}/configuration", headers=admin_headers)
+    assert target_config_resp.status_code == 200, target_config_resp.text
+    assert target_config_resp.json()["config"]["interface_layout"]["default_model"] == layout_model
+
 @pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
 def test_bulk_ingest_supports_progressive_users_with_discrepancy_counters(client, project_type):
     scenarios = [

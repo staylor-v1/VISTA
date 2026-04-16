@@ -1054,6 +1054,15 @@ ul li:hover {
   gap: var(--space-8);
 }
 
+.project-flexlayout-shell {
+  min-height: 680px;
+  height: calc(100vh - 260px);
+}
+
+.project-flexlayout-shell .flexlayout__layout {
+  --color-1: #f8fafc;
+}
+
 .gallery-section {
   order: 1;
 }
