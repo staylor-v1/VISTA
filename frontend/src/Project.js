@@ -21,12 +21,29 @@ const DEFAULT_LAYOUT_MODEL = {
     tabEnableClose: false,
   },
   layout: {
-    type: 'tabset',
+    type: 'row',
+    weight: 100,
     children: [
-      { type: 'tab', component: 'inspection', name: 'Inspection' },
-      { type: 'tab', component: 'project-data', name: 'Project Data' },
-      { type: 'tab', component: 'project-configuration', name: 'Project Configuration' },
-      { type: 'tab', component: 'report', name: 'Report' },
+      {
+        type: 'tabset',
+        weight: 34,
+        children: [{ type: 'tab', component: 'inspection', name: 'Inspection' }],
+      },
+      {
+        type: 'tabset',
+        weight: 22,
+        children: [{ type: 'tab', component: 'project-data', name: 'Project Data' }],
+      },
+      {
+        type: 'tabset',
+        weight: 22,
+        children: [{ type: 'tab', component: 'project-configuration', name: 'Project Configuration' }],
+      },
+      {
+        type: 'tabset',
+        weight: 22,
+        children: [{ type: 'tab', component: 'report', name: 'Report' }],
+      },
     ],
   },
 };

@@ -1151,8 +1151,20 @@ def test_project_type_interface_layout_default_requires_admin_and_applies_to_mat
         },
         headers=admin_headers,
     )
+    target_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": f"{project_type} layout type target",
+            "description": "layout type target",
+            "meta_group_id": group,
+            "project_type": project_type,
+        },
+        headers=admin_headers,
+    )
     assert source_resp.status_code == 201, source_resp.text
+    assert target_resp.status_code == 201, target_resp.text
     source_project_id = source_resp.json()["id"]
+    target_project_id = target_resp.json()["id"]
 
     layout_model = {
         "global": {"tabEnableClose": False},
@@ -1171,19 +1183,6 @@ def test_project_type_interface_layout_default_requires_admin_and_applies_to_mat
         headers=admin_headers,
     )
     assert save_resp.status_code == 200, save_resp.text
-
-    target_resp = client.post(
-        "/api/projects/",
-        json={
-            "name": f"{project_type} layout type target",
-            "description": "layout type target",
-            "meta_group_id": group,
-            "project_type": project_type,
-        },
-        headers=admin_headers,
-    )
-    assert target_resp.status_code == 201, target_resp.text
-    target_project_id = target_resp.json()["id"]
 
     target_config_resp = client.get(f"/api/projects/{target_project_id}/configuration", headers=admin_headers)
     assert target_config_resp.status_code == 200, target_config_resp.text

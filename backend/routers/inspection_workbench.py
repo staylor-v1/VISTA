@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -809,22 +809,11 @@ async def save_project_default_interface_layout(
 async def save_project_type_default_interface_layout(
     project_id: uuid.UUID,
     payload: schemas.InspectionInterfaceLayoutDefaultPayload,
-    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
 ):
     project = await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
-    normalized_user_groups = {str(group).strip().lower() for group in (current_user.groups or [])}
-    header_groups_raw = request.headers.get("X-User-Groups") or request.headers.get("x-user-groups")
-    if header_groups_raw:
-        try:
-            header_groups = json.loads(header_groups_raw)
-            if isinstance(header_groups, list):
-                normalized_user_groups.update(str(group).strip().lower() for group in header_groups)
-        except json.JSONDecodeError:
-            pass
-    has_admin_group = "admin" in normalized_user_groups or "admins" in normalized_user_groups
-    if not has_admin_group:
+    if not (is_user_in_group(current_user.email, "admin") or is_user_in_group(current_user.email, "admins")):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required to save project type defaults")
     normalized_layout = _normalize_layout_model(payload.layout_model)
     metadata_key = _project_type_interface_layout_metadata_key(project.project_type or "PT1")
