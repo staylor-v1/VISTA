@@ -36,6 +36,11 @@ async function mockFullInspectionWorkflowRoutes(page) {
   const uploadedImages = [];
   const savedWorkspaceStates = [];
   const reportRequests = [];
+  const bundleSummary = {
+    imagesTotal: 0,
+    overlaysConfiguredLayers: 3,
+    annotationsTotal: 1,
+  };
 
   let mutableParts = [
     {
@@ -217,9 +222,9 @@ async function mockFullInspectionWorkflowRoutes(page) {
         contentType: 'application/json',
         body: JSON.stringify({
           bundle_summary: {
-            images: { total: uploadedImages.length },
-            overlays: { configured_layers: 3 },
-            annotations: { total: 1 },
+            images: { total: bundleSummary.imagesTotal },
+            overlays: { configured_layers: bundleSummary.overlaysConfiguredLayers },
+            annotations: { total: bundleSummary.annotationsTotal },
           },
         }),
       });

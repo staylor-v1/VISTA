@@ -70,15 +70,18 @@ function Project() {
       const imagePayload = imageResp.ok ? await imageResp.json() : [];
       const configPayload = configResp.ok ? await configResp.json() : {};
 
-      const imageMetadata = (Array.isArray(imagePayload) ? imagePayload : []).reduce((count, image) => {
+      const allImages = Array.isArray(imagePayload) ? imagePayload : [];
+      const activeImageCount = allImages.filter((image) => !image?.deleted_at).length;
+      const imageMetadata = allImages.reduce((count, image) => {
         const metadataObj = image?.metadata;
         return count + (metadataObj && typeof metadataObj === 'object' ? Object.keys(metadataObj).length : 0);
       }, 0);
+      const bundleRawImageCount = Number(bundlePayload?.bundle_summary?.images?.total) || 0;
 
       setProjectConfiguration(configPayload?.config || null);
       setDataCounts({
         partsLoaded: Array.isArray(partsPayload) ? partsPayload.length : 0,
-        rawImages: bundlePayload?.bundle_summary?.images?.total || 0,
+        rawImages: Math.max(bundleRawImageCount, activeImageCount),
         imageMetadata,
         overlayImages: bundlePayload?.bundle_summary?.overlays?.configured_layers || 0,
         annotations: bundlePayload?.bundle_summary?.annotations?.total || 0,
