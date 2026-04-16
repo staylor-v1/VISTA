@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Layout, Model } from 'flexlayout-react';
-import 'flexlayout-react/style/light.css';
 import './App.css';
 
 import ImageUploader from './components/ImageUploader';
@@ -15,48 +13,14 @@ import ProjectDataSummaryTab from './components/ProjectDataSummaryTab';
 import ProjectReportTab from './components/ProjectReportTab';
 import ProjectPhaseFlow from './components/ProjectPhaseFlow';
 import { resolveCurrentProjectPhase } from './utils/projectPhases';
+import { DEFAULT_INTERFACE_HIERARCHY, loadInterfaceHierarchy } from './utils/interfaceHierarchy';
 
-const DEFAULT_LAYOUT_MODEL = {
-  global: {
-    tabEnableClose: false,
-  },
-  layout: {
-    type: 'row',
-    weight: 100,
-    children: [
-      {
-        type: 'tabset',
-        weight: 34,
-        children: [{ type: 'tab', component: 'inspection', name: 'Inspection' }],
-      },
-      {
-        type: 'tabset',
-        weight: 22,
-        children: [{ type: 'tab', component: 'project-data', name: 'Project Data' }],
-      },
-      {
-        type: 'tabset',
-        weight: 22,
-        children: [{ type: 'tab', component: 'project-configuration', name: 'Project Configuration' }],
-      },
-      {
-        type: 'tabset',
-        weight: 22,
-        children: [{ type: 'tab', component: 'report', name: 'Report' }],
-      },
-    ],
-  },
+const MAIN_TAB_DEFINITIONS = {
+  project_configuration: { label: 'Project Configuration' },
+  project_data: { label: 'Project Data' },
+  inspection: { label: 'Inspection' },
+  report: { label: 'Report' },
 };
-
-function isValidLayoutModel(candidate) {
-  return Boolean(
-    candidate
-      && typeof candidate === 'object'
-      && candidate.layout
-      && typeof candidate.layout === 'object'
-      && (candidate.layout.type === 'row' || candidate.layout.type === 'tabset'),
-  );
-}
 
 function Project({ currentUserGroups = [] }) {
   const { id } = useParams();
@@ -69,7 +33,8 @@ function Project({ currentUserGroups = [] }) {
   const [hasGroups, setHasGroups] = useState(false);
   const [groupSearch, setGroupSearch] = useState('');
   const [projectConfiguration, setProjectConfiguration] = useState(null);
-  const [layoutModelJson, setLayoutModelJson] = useState(null);
+  const [interfaceHierarchy, setInterfaceHierarchy] = useState(DEFAULT_INTERFACE_HIERARCHY);
+  const [activeMainTab, setActiveMainTab] = useState(DEFAULT_INTERFACE_HIERARCHY.mainTabs[0]);
   const [dataCounts, setDataCounts] = useState({
     partsLoaded: 0,
     rawImages: 0,
@@ -78,7 +43,6 @@ function Project({ currentUserGroups = [] }) {
     annotations: 0,
   });
   const [countsLoading, setCountsLoading] = useState(true);
-  const layoutStorageKey = `vista.project.layout.${id}`;
 
   const fetchImages = useCallback(async (projId) => {
     const PAGE_SIZE = 200;
@@ -183,26 +147,19 @@ function Project({ currentUserGroups = [] }) {
   }, [id, fetchImages, refreshProjectCounts]);
 
   useEffect(() => {
-    if (loading || layoutModelJson) {
-      return;
-    }
-    try {
-      const fromStorageRaw = window.localStorage.getItem(layoutStorageKey);
-      const fromStorage = fromStorageRaw ? JSON.parse(fromStorageRaw) : null;
-      if (isValidLayoutModel(fromStorage)) {
-        setLayoutModelJson(fromStorage);
+    const loadHierarchy = async () => {
+      const hierarchy = await loadInterfaceHierarchy();
+      const validTabs = hierarchy.mainTabs.filter((tabKey) => MAIN_TAB_DEFINITIONS[tabKey]);
+      if (validTabs.length === 0) {
+        setInterfaceHierarchy(DEFAULT_INTERFACE_HIERARCHY);
+        setActiveMainTab(DEFAULT_INTERFACE_HIERARCHY.mainTabs[0]);
         return;
       }
-    } catch (_error) {
-      // Ignore local storage parsing errors.
-    }
-    const fromProjectDefault = projectConfiguration?.interface_layout?.default_model;
-    if (isValidLayoutModel(fromProjectDefault)) {
-      setLayoutModelJson(fromProjectDefault);
-      return;
-    }
-    setLayoutModelJson(DEFAULT_LAYOUT_MODEL);
-  }, [loading, layoutModelJson, layoutStorageKey, projectConfiguration]);
+      setInterfaceHierarchy({ ...hierarchy, mainTabs: validTabs });
+      setActiveMainTab((prev) => (validTabs.includes(prev) ? prev : validTabs[0]));
+    };
+    loadHierarchy();
+  }, []);
 
   const handleUploadComplete = useCallback(async () => {
     await refreshProjectCounts();
@@ -285,47 +242,35 @@ function Project({ currentUserGroups = [] }) {
     project?.name,
   ]);
 
-  const layoutModel = useMemo(() => {
-    if (!isValidLayoutModel(layoutModelJson)) {
-      return Model.fromJson(DEFAULT_LAYOUT_MODEL);
+  const renderMainPanel = () => {
+    if (activeMainTab === 'inspection') {
+      return (
+        <InspectionWorkbenchPanel
+          projectId={id}
+          projectType={project?.project_type}
+          hierarchy={interfaceHierarchy.inspection}
+        />
+      );
     }
-    return Model.fromJson(layoutModelJson);
-  }, [layoutModelJson]);
-
-  const handleLayoutModelChange = useCallback((model) => {
-    const nextJson = model.toJson();
-    setLayoutModelJson(nextJson);
-    try {
-      window.localStorage.setItem(layoutStorageKey, JSON.stringify(nextJson));
-    } catch (_error) {
-      // Ignore local storage write errors.
-    }
-  }, [layoutStorageKey]);
-
-  const layoutFactory = useCallback((node) => {
-    const component = node.getComponent();
-    if (component === 'inspection') {
-      return <InspectionWorkbenchPanel projectId={id} projectType={project?.project_type} />;
-    }
-    if (component === 'project-data') {
+    if (activeMainTab === 'project_data') {
       return projectDataContent;
     }
-    if (component === 'project-configuration') {
+    if (activeMainTab === 'project_configuration') {
       return (
         <ProjectConfigurationPanel
           projectId={id}
           projectType={project?.project_type}
-          currentInterfaceLayout={layoutModelJson}
+          currentInterfaceLayout={interfaceHierarchy}
           isAdminUser={currentUserGroups.includes('admin') || currentUserGroups.includes('admins')}
           onConfigurationSaved={(nextConfig) => setProjectConfiguration(nextConfig)}
         />
       );
     }
-    if (component === 'report') {
+    if (activeMainTab === 'report') {
       return <ProjectReportTab projectId={id} projectName={project?.name} setError={setError} />;
     }
     return null;
-  }, [id, project?.name, project?.project_type, projectDataContent, layoutModelJson, currentUserGroups]);
+  };
 
   return (
     <div className="App">
@@ -362,8 +307,24 @@ function Project({ currentUserGroups = [] }) {
         )}
 
         {!loading && (
-          <div className="project-content project-flexlayout-shell">
-            <Layout model={layoutModel} factory={layoutFactory} onModelChange={handleLayoutModelChange} />
+          <div className="project-content project-main-tab-shell">
+            <div className="project-tabs project-main-tabs" role="tablist" aria-label="Project sections">
+              {interfaceHierarchy.mainTabs.map((tabKey) => (
+                <button
+                  key={tabKey}
+                  type="button"
+                  className={`project-tab ${activeMainTab === tabKey ? 'active' : ''}`}
+                  role="tab"
+                  aria-selected={activeMainTab === tabKey}
+                  onClick={() => setActiveMainTab(tabKey)}
+                >
+                  {MAIN_TAB_DEFINITIONS[tabKey]?.label || tabKey}
+                </button>
+              ))}
+            </div>
+            <section className="project-main-panel" aria-label="Selected project section">
+              {renderMainPanel()}
+            </section>
           </div>
         )}
       </div>

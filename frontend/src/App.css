@@ -968,6 +968,9 @@ ul li:hover {
   padding: var(--space-2) var(--space-4);
   box-shadow: var(--shadow-lg);
   border-bottom: 1px solid var(--border-medium);
+  position: sticky;
+  top: 0;
+  z-index: 1000;
 }
 
 .project-header-content {
@@ -1054,13 +1057,23 @@ ul li:hover {
   gap: var(--space-8);
 }
 
-.project-flexlayout-shell {
+.project-main-tab-shell {
   min-height: 72vh;
-  height: 72vh;
 }
 
-.project-flexlayout-shell .flexlayout__layout {
-  --color-1: #f8fafc;
+.project-main-tabs {
+  position: sticky;
+  top: 74px;
+  z-index: 900;
+  background: var(--bg-primary);
+  padding: var(--space-2);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.project-main-panel {
+  margin-top: var(--space-4);
 }
 
 .gallery-section {
