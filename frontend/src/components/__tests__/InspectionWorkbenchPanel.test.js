@@ -508,10 +508,8 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getByText(`Parts: ${scenario.parts.length}`)).toBeInTheDocument();
       expect(screen.getByText(new RegExp(projectType))).toBeInTheDocument();
       expect(screen.getByTestId('inspector-common-controls')).toBeInTheDocument();
-      expect(screen.getByTestId('panel-layout-controls')).toBeInTheDocument();
-      fireEvent.change(screen.getByLabelText('part list width'), { target: { value: '9999' } });
-      fireEvent.change(screen.getByLabelText('part list height'), { target: { value: '100' } });
-      fireEvent.change(screen.getByLabelText('part list orientation'), { target: { value: 'horizontal' } });
+      expect(screen.queryByTestId('panel-layout-controls')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('hotkey-controls')).not.toBeInTheDocument();
 
       if (scenario.user === 'advanced') {
         expect(screen.getByTestId('manual-measurement-list')).toHaveTextContent('No measurements captured.');
@@ -538,6 +536,17 @@ describe('InspectionWorkbenchPanel', () => {
         expect(screen.getByTestId('inspector-viewport-state')).toHaveTextContent(/Zoom 1\.10x/);
         expect(screen.getByTestId('inspector-viewport-state')).toHaveTextContent(/Pan \(10, 0\)/);
       });
+      if (projectType === 'PT1') {
+        const viewport = screen.getAllByTestId(/inspector-image-viewport-/)[0];
+        fireEvent.wheel(viewport, { deltaY: -100 });
+        fireEvent.mouseDown(viewport, { button: 0, clientX: 40, clientY: 40 });
+        fireEvent.mouseMove(viewport, { clientX: 58, clientY: 64 });
+        fireEvent.mouseUp(viewport, { clientX: 58, clientY: 64 });
+        await waitFor(() => {
+          expect(screen.getByTestId('inspector-viewport-state')).toHaveTextContent(/Zoom 1\.20x/);
+          expect(screen.getByTestId('inspector-viewport-state')).toHaveTextContent(/Pan \(28, 24\)/);
+        });
+      }
 
       fireEvent.click(screen.getByTestId('toggle-image-visibility'));
       const initialImageEnabled = typeof scenario.workspaceState?.inspector?.image_enabled === 'boolean'
@@ -664,11 +673,16 @@ describe('InspectionWorkbenchPanel', () => {
       const lastWorkspaceSave = workspaceTracker.getWorkspaceSaves().at(-1);
       expect(lastWorkspaceSave?.state?.panel_layout?.part_list).toEqual(
         expect.objectContaining({
-          width_px: 1200,
-          height_px: 220,
-          orientation: 'horizontal',
+          is_open: true,
+          width_px: expect.any(Number),
+          height_px: expect.any(Number),
+          orientation: expect.stringMatching(/^(vertical|horizontal)$/),
         }),
       );
+      expect(lastWorkspaceSave.state.panel_layout.part_list.width_px).toBeGreaterThanOrEqual(220);
+      expect(lastWorkspaceSave.state.panel_layout.part_list.width_px).toBeLessThanOrEqual(1200);
+      expect(lastWorkspaceSave.state.panel_layout.part_list.height_px).toBeGreaterThanOrEqual(220);
+      expect(lastWorkspaceSave.state.panel_layout.part_list.height_px).toBeLessThanOrEqual(1400);
 
       unmount();
     }
@@ -733,39 +747,20 @@ describe('InspectionWorkbenchPanel', () => {
     }
   });
 
-  test.each(projectTypes)('saves configurable hotkeys for progressive %s workflows', async (projectType) => {
+  test.each(projectTypes)('keeps inspection configuration controls out of the workbench for %s', async (projectType) => {
     for (const scenario of scenarioByUser) {
-      const workspaceTracker = mockWorkbenchFetch(scenario);
+      mockWorkbenchFetch(scenario);
       const { unmount } = render(<InspectionWorkbenchPanel projectId="proj-1" projectType={projectType} />);
 
       await waitFor(() => {
-        expect(screen.getByLabelText('Hotkey pass')).toHaveValue(scenario.hotkeys.accept_classification);
+        expect(screen.getByTestId('inspector-hotkey-hints')).toHaveTextContent(
+          new RegExp(`pass \\(${scenario.hotkeys.accept_classification.toUpperCase()}\\)`),
+        );
       });
 
-      fireEvent.change(screen.getByLabelText('Hotkey pass'), { target: { value: '1' } });
-      fireEvent.change(screen.getByLabelText('Hotkey reject'), { target: { value: '1' } });
-      fireEvent.change(screen.getByLabelText('Hotkey help'), { target: { value: '2' } });
-      fireEvent.click(screen.getByRole('button', { name: 'Save Hotkeys' }));
-      await waitFor(() => {
-        expect(screen.getByText('Hotkeys must use unique key bindings.')).toBeInTheDocument();
-      });
-
-      fireEvent.change(screen.getByLabelText('Hotkey pass'), { target: { value: 'v' } });
-      fireEvent.change(screen.getByLabelText('Hotkey reject'), { target: { value: 'b' } });
-      fireEvent.change(screen.getByLabelText('Hotkey help'), { target: { value: 'n' } });
-      fireEvent.click(screen.getByRole('button', { name: 'Save Hotkeys' }));
-      await waitFor(() => {
-        expect(screen.getByText('Hotkeys saved for this project.')).toBeInTheDocument();
-      });
-      await waitFor(() => {
-        expect(screen.getByTestId('inspector-hotkey-hints')).toHaveTextContent(/pass \(V\), reject \(B\), shortcuts help \(N\)/);
-      });
-      const savedConfigPayload = workspaceTracker.getConfigurationSaves().at(-1);
-      expect(savedConfigPayload.config.process_settings.configurable_hotkeys).toEqual({
-        accept_classification: 'v',
-        reject_classification: 'b',
-        toggle_shortcut_help: 'n',
-      });
+      expect(screen.queryByLabelText('Hotkey pass')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Save Hotkeys' })).not.toBeInTheDocument();
+      expect(screen.queryByTestId('panel-layout-controls')).not.toBeInTheDocument();
       unmount();
     }
   });
