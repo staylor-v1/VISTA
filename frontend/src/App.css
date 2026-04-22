@@ -974,7 +974,7 @@ ul li:hover {
 }
 
 .project-header-content {
-  max-width: 1400px;
+  max-width: none;
   margin: 0 auto;
   display: flex;
   flex-direction: row;
@@ -1046,7 +1046,7 @@ ul li:hover {
 .project-container {
   flex: 1;
   padding: var(--space-6) var(--space-6) var(--space-8);
-  max-width: 1400px;
+  max-width: none;
   margin: 0 auto;
   width: 100%;
 }
@@ -3995,17 +3995,26 @@ ul li:hover {
 }
 
 .view-cell-body {
-  padding: 12px 8px;
-  min-height: 52px;
+  padding: 8px;
+  min-height: 240px;
   display: flex;
   align-items: center;
   justify-content: center;
   text-align: center;
+  background: #f8fafc;
 }
 
 .view-cell-has-data {
   color: #0c63e7;
   font-size: 0.82rem;
+}
+
+.inspection-view-image {
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: #fff;
 }
 
 .view-cell-empty {

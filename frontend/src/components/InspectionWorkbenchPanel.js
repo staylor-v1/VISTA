@@ -89,6 +89,16 @@ function getMprDimensions(part) {
   return dimensions;
 }
 
+function safeDecodeFilename(value) {
+  const raw = String(value || '');
+  if (!raw) return '';
+  try {
+    return decodeURIComponent(raw);
+  } catch (_) {
+    return raw;
+  }
+}
+
 function getLatestRunFromMetadata(part, key) {
   const runs = part?.metadata?.[key];
   if (!Array.isArray(runs) || runs.length === 0) return null;
@@ -295,9 +305,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
   const [panelLayout, setPanelLayout] = useState(DEFAULT_PANEL_LAYOUT);
   const [normalizationTriageField, setNormalizationTriageField] = useState('');
   const [leftPanelTab, setLeftPanelTab] = useState('part_summary');
-  const [centerPanelTab, setCenterPanelTab] = useState('inspector');
   const [rightPanelTab, setRightPanelTab] = useState('annotations');
   const [selectedImageRef, setSelectedImageRef] = useState('');
+  const [projectImageLookup, setProjectImageLookup] = useState({});
   const [viewportWidth, setViewportWidth] = useState(() => (
     typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth
   ));
@@ -306,11 +316,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
   const leftRegion = inspectionHierarchy.regions[inspectionHierarchy.leftColumn];
   const rightRegion = inspectionHierarchy.regions[inspectionHierarchy.rightColumn];
   const inspectorRegion = inspectionHierarchy.regions.inspector;
-  const imageMetadataRegion = inspectionHierarchy.regions.image_metadata;
-  const visualWorkspaceRegion = inspectionHierarchy.regions.visual_workspace;
   const inspectionLayoutCollapsed = viewportWidth <= inspectionHierarchy.layout.collapseBreakpointPx;
   const workbenchPanelGridStyle = {
-    '--inspection-grid-template-columns': inspectionLayoutCollapsed ? '1fr' : inspectionHierarchy.layout.gridTemplateColumns,
+    '--inspection-grid-template-columns': inspectionLayoutCollapsed ? '1fr' : '240px minmax(0, 1fr) 240px',
     '--inspection-layout-gap': `${inspectionHierarchy.layout.gapPx}px`,
     '--inspection-layout-min-height': inspectionLayoutCollapsed ? 'auto' : `${inspectionHierarchy.layout.minHeightPx}px`,
   };
@@ -321,11 +329,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
         setLoading(true);
         setError(null);
 
-        const [batchResp, partResp, workspaceResp, configResp] = await Promise.all([
+        const [batchResp, partResp, workspaceResp, configResp, imageResp] = await Promise.all([
           fetch(`/api/projects/${projectId}/batches`),
           fetch(`/api/projects/${projectId}/parts`),
           fetch(`/api/projects/${projectId}/workspace-state`),
           fetch(`/api/projects/${projectId}/configuration`),
+          fetch(`/api/projects/${projectId}/images?include_deleted=true&limit=5000`),
         ]);
         if (!batchResp.ok) {
           throw new Error(`Failed to load batches (${batchResp.status})`);
@@ -334,11 +343,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
           throw new Error(`Failed to load parts (${partResp.status})`);
         }
 
-        const [batchData, partData, workspaceData, configData] = await Promise.all([
+        const [batchData, partData, workspaceData, configData, imageData] = await Promise.all([
           batchResp.json(),
           partResp.json(),
           workspaceResp.ok ? workspaceResp.json() : Promise.resolve({ state: {} }),
           configResp.ok ? configResp.json() : Promise.resolve({}),
+          imageResp.ok ? imageResp.json() : Promise.resolve([]),
         ]);
         const safeBatches = Array.isArray(batchData) ? batchData : [];
         const safeParts = Array.isArray(partData) ? partData : [];
@@ -354,6 +364,13 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
         setWorkspaceHydration(savedState);
         setBatches(safeBatches);
         setParts(safeParts);
+        const imageLookup = (Array.isArray(imageData) ? imageData : []).reduce((acc, image) => {
+          const filename = String(image?.filename || '');
+          if (!filename) return acc;
+          acc[filename] = image;
+          return acc;
+        }, {});
+        setProjectImageLookup(imageLookup);
         const savedBatchId = String(savedState.selected_batch_id || '');
         setSelectedBatchId(savedBatchId);
         const savedReviewFilter = String(savedState.review_filter || 'all');
@@ -490,10 +507,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
   useEffect(() => {
     setLeftPanelTab(inspectionHierarchy.leftColumn);
     setRightPanelTab(inspectionHierarchy.rightColumn);
-    if (!inspectionHierarchy.centerTabs.includes(centerPanelTab)) {
-      setCenterPanelTab(inspectionHierarchy.centerTabs[0]);
-    }
-  }, [inspectionHierarchy, centerPanelTab]);
+  }, [inspectionHierarchy]);
 
   const mprDimensions = useMemo(() => getMprDimensions(selectedPart), [selectedPart]);
   const overlayLayers = useMemo(() => getOverlayLayers(selectedPart), [selectedPart]);
@@ -506,12 +520,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
     }
     return configuredViews[0] || '';
   }, [selectedPart, selectedViewName]);
-  const selectedPartMetadata = useMemo(() => {
-    if (!selectedPart?.metadata || typeof selectedPart.metadata !== 'object') {
-      return {};
-    }
-    return selectedPart.metadata;
-  }, [selectedPart]);
   const selectedPartImageRefs = useMemo(() => {
     if (!selectedPart?.metadata || typeof selectedPart.metadata !== 'object') return [];
     const imagesByView = selectedPart.metadata.view_images || {};
@@ -1300,7 +1308,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                                                       setSelectedImageRef(String(imageRef || ''));
                                                     }}
                                                   >
-                                                    {viewName}: {imageRef || 'none'}
+                                                    {viewName.toUpperCase()}
                                                   </button>
                                                 ))}
                                               </div>
@@ -1326,284 +1334,45 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                       style={panelRegionStyle(inspectorRegion)}
                       data-layout-region="center"
                     >
-                      <div className="project-tabs" role="tablist" aria-label="Center panel tabs">
-                        {inspectionHierarchy.centerTabs.includes('inspector') && (
-                          <button
-                            type="button"
-                            className={`project-tab ${centerPanelTab === 'inspector' ? 'active' : ''}`}
-                            role="tab"
-                            aria-selected={centerPanelTab === 'inspector'}
-                            onClick={() => setCenterPanelTab('inspector')}
-                          >
-                            {inspectorRegion?.label || 'Inspection'}
-                          </button>
-                        )}
-                        {inspectionHierarchy.centerTabs.includes('image_metadata') && (
-                          <button
-                            type="button"
-                            className={`project-tab ${centerPanelTab === 'image_metadata' ? 'active' : ''}`}
-                            role="tab"
-                            aria-selected={centerPanelTab === 'image_metadata'}
-                            onClick={() => setCenterPanelTab('image_metadata')}
-                          >
-                            {imageMetadataRegion?.label || 'Image Metadata'}
-                          </button>
-                        )}
-                      </div>
-                      {centerPanelTab === 'inspector' && (
-                        <div className="inspector-common-controls" data-testid="inspector-common-controls">
-                          <div className="workspace-panel-layout" data-testid="selected-image-panel">
-                            <strong>Selected Part Image</strong>
-                            {!selectedPart ? (
-                              <p className="muted">No part selected. Load or select a part to inspect mapped images.</p>
-                            ) : selectedPartImageRefs.length === 0 ? (
-                              <p className="muted">No mapped images for this part.</p>
-                            ) : (
-                              <>
-                                <p className="muted">Currently viewing: {selectedImageRef || selectedPartImageRefs[0].imageRef}</p>
-                                <div className="view-thumbnail-list">
-                                  {selectedPartImageRefs.map((entry) => (
-                                    <button
-                                      key={entry.id}
-                                      type="button"
-                                      className={`btn btn-secondary btn-sm ${(selectedImageRef || selectedPartImageRefs[0].imageRef) === entry.imageRef ? 'active' : ''}`}
-                                      onClick={() => setSelectedImageRef(entry.imageRef)}
-                                    >
-                                      {entry.viewName}: {entry.imageRef || 'none'}
-                                    </button>
-                                  ))}
-                                </div>
-                              </>
-                            )}
-                          </div>
-                          <div className="workspace-panel-layout" data-testid="hotkey-controls">
-                      <strong>Configurable hotkeys</strong>
-                      <div className="measurement-fields">
-                        <label>
-                          Mark pass key
-                          <input
-                            aria-label="Hotkey pass"
-                            type="text"
-                            maxLength={1}
-                            value={inspectorHotkeyDraft.accept_classification}
-                            onChange={(event) => {
-                              const value = String(event.target.value || '').trim().toLowerCase();
-                              setInspectorHotkeyDraft((prev) => ({ ...prev, accept_classification: value }));
-                              if (hotkeySaveState.message) {
-                                setHotkeySaveState({ loading: false, message: null, severity: null });
-                              }
-                            }}
-                          />
-                        </label>
-                        <label>
-                          Reject key
-                          <input
-                            aria-label="Hotkey reject"
-                            type="text"
-                            maxLength={1}
-                            value={inspectorHotkeyDraft.reject_classification}
-                            onChange={(event) => {
-                              const value = String(event.target.value || '').trim().toLowerCase();
-                              setInspectorHotkeyDraft((prev) => ({ ...prev, reject_classification: value }));
-                              if (hotkeySaveState.message) {
-                                setHotkeySaveState({ loading: false, message: null, severity: null });
-                              }
-                            }}
-                          />
-                        </label>
-                        <label>
-                          Help key
-                          <input
-                            aria-label="Hotkey help"
-                            type="text"
-                            maxLength={1}
-                            value={inspectorHotkeyDraft.toggle_shortcut_help}
-                            onChange={(event) => {
-                              const value = String(event.target.value || '').trim().toLowerCase();
-                              setInspectorHotkeyDraft((prev) => ({ ...prev, toggle_shortcut_help: value }));
-                              if (hotkeySaveState.message) {
-                                setHotkeySaveState({ loading: false, message: null, severity: null });
-                              }
-                            }}
-                          />
-                        </label>
-                        <button
-                          className="btn btn-secondary"
-                          onClick={saveInspectorHotkeys}
-                          disabled={hotkeySaveState.loading}
-                        >
-                          {hotkeySaveState.loading ? 'Saving hotkeys…' : 'Save Hotkeys'}
-                        </button>
-                      </div>
-                      {hotkeySaveState.message && (
-                        <p className={hotkeySaveState.severity === 'error' ? 'error-message' : 'muted'}>
-                          {hotkeySaveState.message}
-                        </p>
-                      )}
-                    </div>
-                          <div className="workspace-panel-layout" data-testid="panel-layout-controls">
-                      <strong>Workspace panels</strong>
-                      {PANEL_LAYOUT_KEYS.map((panelKey) => {
-                        const config = panelLayout[panelKey] || DEFAULT_PANEL_LAYOUT[panelKey];
-                        const panelLabel = panelKey.replace('_', ' ');
-                        return (
-                          <div className="measurement-fields" key={panelKey} data-testid={`panel-layout-row-${panelKey}`}>
-                            <label>
-                              <input
-                                type="checkbox"
-                                checked={config.is_open}
-                                onChange={(event) => updatePanelLayout(panelKey, { is_open: event.target.checked })}
-                              />
-                              {` ${panelLabel} open`}
-                            </label>
-                            <label>
-                              Width
-                              <input
-                                type="number"
-                                value={config.width_px}
-                                onChange={(event) => updatePanelLayout(panelKey, { width_px: event.target.value })}
-                                min={220}
-                                max={1200}
-                                aria-label={`${panelLabel} width`}
-                              />
-                            </label>
-                            <label>
-                              Height
-                              <input
-                                type="number"
-                                value={config.height_px}
-                                onChange={(event) => updatePanelLayout(panelKey, { height_px: event.target.value })}
-                                min={220}
-                                max={1400}
-                                aria-label={`${panelLabel} height`}
-                              />
-                            </label>
-                            <label>
-                              Orientation
-                              <select
-                                value={config.orientation}
-                                onChange={(event) => updatePanelLayout(panelKey, { orientation: event.target.value })}
-                                aria-label={`${panelLabel} orientation`}
-                              >
-                                <option value="vertical">Vertical</option>
-                                <option value="horizontal">Horizontal</option>
-                              </select>
-                            </label>
-                          </div>
-                        );
-                      })}
-                    </div>
-                          <div className="modality-controls">
-                      <strong>Modalities</strong>
-                      <div className="modality-list">
-                        {modalityOptions.map((modality) => (
-                          <label key={modality} className="overlay-toggle">
-                            <input
-                              type="checkbox"
-                              checked={enabledModalities.includes(modality)}
-                              onChange={() => toggleModality(modality)}
-                            />
-                            <span>{modality}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                          <div className="view-switcher">
-                      <strong>View quick switch</strong>
-                      <div className="view-thumbnail-list">
-                        {getPartViews(selectedPart).map((viewName) => (
-                          <button
-                            key={viewName}
-                            type="button"
-                            className={`btn btn-secondary btn-sm ${activeViewName === viewName ? 'active' : ''}`}
-                            onClick={() => setSelectedViewName(viewName)}
-                          >
-                            {viewName.toUpperCase()}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                          <div className="image-toggle">
-                      <button
-                        type="button"
-                        className="btn btn-secondary btn-sm"
-                        data-testid="toggle-image-visibility"
-                        onClick={() => setImageEnabled((prev) => !prev)}
-                      >
-                        {imageEnabled ? 'Hide image' : 'Show image'}
-                      </button>
-                    </div>
-                          <div className="measurement-capture">
-                      <strong>Measurements</strong>
-                      <div className="measurement-fields">
-                        <input
-                          type="text"
-                          placeholder="label"
-                          value={measurementDraft.label}
-                          onChange={(event) => setMeasurementDraft((prev) => ({ ...prev, label: event.target.value }))}
-                        />
-                        <input
-                          type="number"
-                          placeholder="value"
-                          value={measurementDraft.value}
-                          onChange={(event) => setMeasurementDraft((prev) => ({ ...prev, value: event.target.value }))}
-                        />
-                        <button type="button" className="btn btn-secondary btn-sm" onClick={saveMeasurement}>
-                          Save measurement
-                        </button>
-                      </div>
-                      <ul className="measurement-list" data-testid="manual-measurement-list">
-                        {measurementEntries.length === 0 ? (
-                          <li className="muted">No measurements captured.</li>
+                      <div className="workspace-panel-layout" data-testid="selected-image-panel">
+                        <strong>{inspectorRegion?.label || 'Inspection'}</strong>
+                        {!selectedPart ? (
+                          <p className="muted">No part selected. Select a part to inspect mapped images.</p>
+                        ) : selectedPartImageRefs.length === 0 ? (
+                          <p className="muted">No mapped images for this part.</p>
                         ) : (
-                          measurementEntries.map((entry) => (
-                            <li key={entry.id}>
-                              <span>
-                                {entry.label}: {entry.value}
-                                {entry.units} ({entry.modality} • {entry.view})
-                              </span>
-                              <button
-                                type="button"
-                                className="btn btn-secondary btn-sm"
-                                onClick={() => deleteMeasurement(entry.id)}
-                                aria-label={`Delete measurement ${entry.label}`}
-                              >
-                                Delete
-                              </button>
-                            </li>
-                          ))
-                        )}
-                      </ul>
-                    </div>
-                          <div className="inspector-nav-controls" data-testid="inspector-nav-controls">
-                      <strong>Inspector viewport</strong>
-                      <div className="mpr-nav-controls">
-                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => adjustInspectorZoom(0.1)}>Zoom +</button>
-                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => adjustInspectorZoom(-0.1)}>Zoom -</button>
-                        <button type="button" className="btn btn-secondary btn-sm" onClick={resetInspectorViewport}>Reset</button>
-                      </div>
-                      <div className="mpr-nav-controls">
-                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => panInspectorViewport(0, -10)}>Pan ↑</button>
-                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => panInspectorViewport(-10, 0)}>Pan ←</button>
-                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => panInspectorViewport(10, 0)}>Pan →</button>
-                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => panInspectorViewport(0, 10)}>Pan ↓</button>
-                      </div>
-                      <p className="muted" data-testid="inspector-viewport-state">
-                        Zoom {inspectorViewport.zoom.toFixed(2)}x • Pan ({inspectorViewport.panX}, {inspectorViewport.panY})
-                      </p>
-                    </div>
+                          <div className="view-board" data-layout-region="visual_workspace">
+                            {getPartViews(selectedPart).map((viewName) => {
+                              const imagesByView = selectedPart?.metadata?.view_images || {};
+                              const imageRef = String(imagesByView?.[viewName] || '');
+                              const imageRecord = projectImageLookup[imageRef];
+                              const imageId = imageRecord?.id;
+                              return (
+                                <div key={viewName} className={`view-cell ${activeViewName === viewName ? 'selected' : ''}`}>
+                                  <div className="view-cell-title">{viewName.toUpperCase()}</div>
+                                  <div className="view-cell-body">
+                                    {!imageEnabled ? (
+                                      <span className="view-cell-empty">Image hidden</span>
+                                    ) : imageId ? (
+                                      <img
+                                        className="inspection-view-image"
+                                        src={`/api/images/${encodeURIComponent(String(imageId))}/content`}
+                                        alt={`${viewName} view`}
+                                        loading="lazy"
+                                      />
+                                    ) : imageRef ? (
+                                      <span className="view-cell-empty">Image not found: {safeDecodeFilename(imageRef)}</span>
+                                    ) : (
+                                      <span className="view-cell-empty">No image mapped</span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
-                      )}
-                      {centerPanelTab === 'image_metadata' && (
-                        <div
-                          className="workspace-panel-layout"
-                          data-testid="image-metadata-panel"
-                          style={panelRegionStyle(imageMetadataRegion)}
-                        >
-                          <strong>{imageMetadataRegion?.label || 'Image Metadata'}</strong>
-                          <pre>{JSON.stringify(selectedPartMetadata, null, 2)}</pre>
-                        </div>
-                      )}
+                        )}
+                      </div>
+
                     </section>
 
                     <section
@@ -1777,239 +1546,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                     </section>
                   </div>
 
-                  {['PT2', 'PT3'].includes(projectType) ? (
-                    <div
-                      className="mpr-shell"
-                      data-testid="mpr-shell"
-                      style={panelRegionStyle(visualWorkspaceRegion)}
-                      data-layout-region="visual_workspace"
-                    >
-                      <div className="mpr-controls">
-                        <label htmlFor="contrastSlider">Contrast ({contrastPercent}%)</label>
-                        <input
-                          id="contrastSlider"
-                          data-testid="contrast-slider"
-                          type="range"
-                          min="50"
-                          max="150"
-                          value={contrastPercent}
-                          onChange={(e) => setContrastPercent(Number(e.target.value))}
-                        />
-                        <div className="overlay-toggles">
-                          {overlayLayers.map((overlay) => {
-                            const checked = activeOverlayIds.includes(overlay.id);
-                            return (
-                              <label key={overlay.id} className="overlay-toggle">
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={() => toggleOverlay(overlay.id)}
-                                />
-                                <span
-                                  className="overlay-swatch"
-                                  style={{ backgroundColor: overlay.color }}
-                                  aria-hidden="true"
-                                />
-                                {overlay.label}
-                              </label>
-                            );
-                          })}
-                        </div>
-                        <div className="probe-controls">
-                          <label htmlFor="probeX">Cursor X ({cursorProbe.x})</label>
-                          <input
-                            id="probeX"
-                            data-testid="probe-x"
-                            type="range"
-                            min="0"
-                            max="100"
-                            value={cursorProbe.x}
-                            onChange={(e) => setCursorProbe((prev) => ({ ...prev, x: Number(e.target.value) }))}
-                          />
-                          <label htmlFor="probeY">Cursor Y ({cursorProbe.y})</label>
-                          <input
-                            id="probeY"
-                            data-testid="probe-y"
-                            type="range"
-                            min="0"
-                            max="100"
-                            value={cursorProbe.y}
-                            onChange={(e) => setCursorProbe((prev) => ({ ...prev, y: Number(e.target.value) }))}
-                          />
-                        </div>
-                        <p data-testid="mpr-tooltip-values">
-                          Cursor ({cursorProbe.x}, {cursorProbe.y}) • Base {tooltipValues.base}
-                          {tooltipValues.overlays.length > 0
-                            ? ` • ${tooltipValues.overlays
-                              .map((entry) => `${entry.overlayId}: ${entry.value}%`)
-                              .join(' | ')}`
-                            : ' • No overlays selected'}
-                        </p>
-                        <div className="mpr-ml-actions">
-                          <button
-                            type="button"
-                            className="btn btn-secondary btn-sm"
-                            data-testid="run-segmentation"
-                            onClick={runSegmentation}
-                            disabled={mlActionLoading.segmentation}
-                          >
-                            {mlActionLoading.segmentation ? 'Running…' : 'Run Segmentation'}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-secondary btn-sm"
-                            data-testid="run-measurements"
-                            onClick={runMeasurements}
-                            disabled={mlActionLoading.measurement}
-                          >
-                            {mlActionLoading.measurement ? 'Running…' : 'Run AI Measurements'}
-                          </button>
-                        </div>
-                        {segmentationRun && (
-                          <p data-testid="segmentation-result">
-                            Segmentation {segmentationRun.status}: {segmentationRun.overlay_id} on {segmentationRun.axis} slice {segmentationRun.slice_index + 1}
-                          </p>
-                        )}
-                        {measurementRun && (
-                          <p data-testid="measurement-result">
-                            Measurements {measurementRun.status}: {Object.entries(measurementRun.values || {})
-                              .map(([key, value]) => `${key}=${value}${measurementRun.units || ''}`)
-                              .join(' • ')}
-                          </p>
-                        )}
-                      </div>
-                      <div className="mpr-grid">
-                        <section className="mpr-pane mpr-pane-axial" aria-label="Axial pane">
-                          <header>
-                            <strong>Axial</strong>
-                            <span>
-                              Slice {slicePosition.axial + 1} / {mprDimensions.axial}
-                            </span>
-                          </header>
-                          <label htmlFor="axialSlice">Axial slice</label>
-                          <input
-                            id="axialSlice"
-                            data-testid="slice-slider-axial"
-                            type="range"
-                            min="0"
-                            max={Math.max(0, mprDimensions.axial - 1)}
-                            value={slicePosition.axial}
-                            onChange={(e) => updateSlicePosition('axial', e.target.value, mprDimensions)}
-                          />
-                          <div className="mpr-crosshair-preview" aria-hidden="true">
-                            <span className="line line-coronal" style={{ top: `${((slicePosition.coronal + 1) / mprDimensions.coronal) * 100}%` }} />
-                            <span className="line line-sagittal" style={{ left: `${((slicePosition.sagittal + 1) / mprDimensions.sagittal) * 100}%` }} />
-                          </div>
-                          <p>Crosshair at C{slicePosition.coronal + 1} / S{slicePosition.sagittal + 1}</p>
-                          <p className="muted">Zoom {viewportTransform.zoom.toFixed(2)}x • Pan ({viewportTransform.panX}, {viewportTransform.panY})</p>
-                        </section>
-
-                        <section className="mpr-pane mpr-pane-coronal" aria-label="Coronal pane">
-                          <header>
-                            <strong>Coronal</strong>
-                            <span>
-                              Slice {slicePosition.coronal + 1} / {mprDimensions.coronal}
-                            </span>
-                          </header>
-                          <label htmlFor="coronalSlice">Coronal slice</label>
-                          <input
-                            id="coronalSlice"
-                            data-testid="slice-slider-coronal"
-                            type="range"
-                            min="0"
-                            max={Math.max(0, mprDimensions.coronal - 1)}
-                            value={slicePosition.coronal}
-                            onChange={(e) => updateSlicePosition('coronal', e.target.value, mprDimensions)}
-                          />
-                          <div className="mpr-crosshair-preview" aria-hidden="true">
-                            <span className="line line-axial" style={{ top: `${((slicePosition.axial + 1) / mprDimensions.axial) * 100}%` }} />
-                            <span className="line line-sagittal" style={{ left: `${((slicePosition.sagittal + 1) / mprDimensions.sagittal) * 100}%` }} />
-                          </div>
-                          <p>Crosshair at A{slicePosition.axial + 1} / S{slicePosition.sagittal + 1}</p>
-                          <p className="muted">Zoom {viewportTransform.zoom.toFixed(2)}x • Pan ({viewportTransform.panX}, {viewportTransform.panY})</p>
-                        </section>
-
-                        <section className="mpr-pane mpr-pane-sagittal" aria-label="Sagittal pane">
-                          <header>
-                            <strong>Sagittal</strong>
-                            <span>
-                              Slice {slicePosition.sagittal + 1} / {mprDimensions.sagittal}
-                            </span>
-                          </header>
-                          <label htmlFor="sagittalSlice">Sagittal slice</label>
-                          <input
-                            id="sagittalSlice"
-                            data-testid="slice-slider-sagittal"
-                            type="range"
-                            min="0"
-                            max={Math.max(0, mprDimensions.sagittal - 1)}
-                            value={slicePosition.sagittal}
-                            onChange={(e) => updateSlicePosition('sagittal', e.target.value, mprDimensions)}
-                          />
-                          <div className="mpr-crosshair-preview" aria-hidden="true">
-                            <span className="line line-axial" style={{ top: `${((slicePosition.axial + 1) / mprDimensions.axial) * 100}%` }} />
-                            <span className="line line-coronal" style={{ left: `${((slicePosition.coronal + 1) / mprDimensions.coronal) * 100}%` }} />
-                          </div>
-                          <p>Crosshair at A{slicePosition.axial + 1} / C{slicePosition.coronal + 1}</p>
-                          <p className="muted">Zoom {viewportTransform.zoom.toFixed(2)}x • Pan ({viewportTransform.panX}, {viewportTransform.panY})</p>
-                        </section>
-
-                        <section className="mpr-pane mpr-pane-3d" aria-label="3D orientation pane">
-                          <header>
-                            <strong>3D Orientation</strong>
-                            <span>Locator</span>
-                          </header>
-                          <p data-testid="mpr-locator">
-                            A{slicePosition.axial + 1} • C{slicePosition.coronal + 1} • S{slicePosition.sagittal + 1}
-                          </p>
-                          <div className="mpr-legend">
-                            <span className="chip chip-axial">Axial plane</span>
-                            <span className="chip chip-coronal">Coronal plane</span>
-                            <span className="chip chip-sagittal">Sagittal plane</span>
-                          </div>
-                          <div className="mpr-nav-controls">
-                            <button type="button" className="btn btn-secondary btn-sm" onClick={() => adjustZoom(0.1)}>Zoom +</button>
-                            <button type="button" className="btn btn-secondary btn-sm" onClick={() => adjustZoom(-0.1)}>Zoom -</button>
-                            <button type="button" className="btn btn-secondary btn-sm" onClick={resetViewport}>Reset</button>
-                          </div>
-                          <div className="mpr-nav-controls">
-                            <button type="button" className="btn btn-secondary btn-sm" onClick={() => panViewport(0, -10)}>Pan ↑</button>
-                            <button type="button" className="btn btn-secondary btn-sm" onClick={() => panViewport(-10, 0)}>Pan ←</button>
-                            <button type="button" className="btn btn-secondary btn-sm" onClick={() => panViewport(10, 0)}>Pan →</button>
-                            <button type="button" className="btn btn-secondary btn-sm" onClick={() => panViewport(0, 10)}>Pan ↓</button>
-                          </div>
-                          <p className="muted">
-                            Plane intersections are synchronized across orthographic panes.
-                          </p>
-                        </section>
-                      </div>
-                    </div>
-                  ) : (
-                    <div
-                      className="view-board"
-                      style={panelRegionStyle(visualWorkspaceRegion)}
-                      data-layout-region="visual_workspace"
-                    >
-                      {getPartViews(selectedPart).map((viewName) => {
-                        const imagesByView = selectedPart?.metadata?.view_images || {};
-                        const imageRef = imagesByView?.[viewName];
-                        return (
-                          <div key={viewName} className={`view-cell ${activeViewName === viewName ? 'selected' : ''}`}>
-                            <div className="view-cell-title">{viewName.toUpperCase()}</div>
-                            <div className="view-cell-body">
-                              {!imageEnabled ? (
-                                <span className="view-cell-empty">Image hidden</span>
-                              ) : imageRef ? (
-                                <span className="view-cell-has-data">Mapped: {imageRef}</span>
-                              ) : (
-                                <span className="view-cell-empty">No image mapped</span>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
             </div>
           </div>
         </>
