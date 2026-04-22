@@ -1081,14 +1081,23 @@ ul li:hover {
 }
 
 .upload-section {
-  order: 2;
+  order: 1;
+  grid-column: 1 / -1;
 }
 
 .management-sections {
-  order: 3;
+  order: 2;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: var(--space-6);
+}
+
+.metadata-section {
+  order: 2;
+}
+
+.classes-section {
+  order: 3;
 }
 
 .deletion-controls-section {
@@ -4001,6 +4010,31 @@ ul li:hover {
   align-items: center;
   justify-content: center;
   text-align: center;
+}
+
+.inspector-image-viewport {
+  min-height: 140px;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.inspector-image-viewport:active {
+  cursor: grabbing;
+}
+
+.inspector-image-content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 180px;
+  min-height: 88px;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  background: #eff6ff;
+  transform-origin: center;
+  will-change: transform;
 }
 
 .view-cell-has-data {

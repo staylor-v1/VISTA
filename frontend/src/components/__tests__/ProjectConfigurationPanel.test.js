@@ -344,7 +344,8 @@ describe('ProjectConfigurationPanel', () => {
 
         render(<ProjectConfigurationPanel projectId="proj-1" />);
 
-        await waitFor(() => expect(screen.getByLabelText('Accept hotkey')).toBeInTheDocument());
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'Inspection Configuration' })).toBeInTheDocument());
+        fireEvent.click(screen.getByRole('tab', { name: 'Inspection Configuration' }));
 
         fireEvent.change(screen.getByLabelText('Accept hotkey'), { target: { value: 'q' } });
         fireEvent.change(screen.getByLabelText('Reject hotkey'), { target: { value: 'w' } });
@@ -383,10 +384,12 @@ describe('ProjectConfigurationPanel', () => {
 
         render(<ProjectConfigurationPanel projectId="proj-1" />);
 
-        await waitFor(() => expect(screen.getByLabelText('Accept hotkey')).toBeInTheDocument());
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'Inspection Configuration' })).toBeInTheDocument());
+        fireEvent.click(screen.getByRole('tab', { name: 'Inspection Configuration' }));
 
         fireEvent.change(screen.getByLabelText('Accept hotkey'), { target: { value: 'q' } });
         fireEvent.change(screen.getByLabelText('Reject hotkey'), { target: { value: 'q' } });
+        fireEvent.click(screen.getByRole('tab', { name: 'Project Setup' }));
         fireEvent.change(screen.getByLabelText('Defect type color 1'), { target: { value: 'red' } });
         fireEvent.change(screen.getByLabelText('Part view required modalities 1'), {
           target: { value: 'nonexistent_modality' },
@@ -840,6 +843,7 @@ describe('ProjectConfigurationPanel', () => {
     );
 
     await waitFor(() => expect(screen.getByTestId('project-configuration-summary')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'Inspection Configuration' }));
 
     fireEvent.click(screen.getByRole('button', { name: 'Save Current Interface as Project Default' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save Current Interface as PT1 Default' }));
@@ -852,6 +856,44 @@ describe('ProjectConfigurationPanel', () => {
       expect(global.fetch).toHaveBeenCalledWith(
         '/api/projects/proj-1/configuration/interface-layout/project-type-default',
         expect.objectContaining({ method: 'POST' }),
+      );
+    });
+  });
+
+  test('saves inspection panel layout from the inspection configuration subtab', async () => {
+    const config = makeConfig('PT1', 'advanced');
+    mockFetch(config, 'PT1');
+
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Inspection Configuration' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'Inspection Configuration' }));
+
+    fireEvent.change(screen.getByLabelText('part list width'), { target: { value: '480' } });
+    fireEvent.change(screen.getByLabelText('part list orientation'), { target: { value: 'horizontal' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/projects/proj-1/configuration',
+        expect.objectContaining({
+          method: 'PUT',
+          body: expect.stringContaining('"inspection_panel_layout"'),
+        }),
+      );
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/projects/proj-1/configuration',
+        expect.objectContaining({
+          method: 'PUT',
+          body: expect.stringContaining('"width_px":480'),
+        }),
+      );
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/projects/proj-1/configuration',
+        expect.objectContaining({
+          method: 'PUT',
+          body: expect.stringContaining('"orientation":"horizontal"'),
+        }),
       );
     });
   });

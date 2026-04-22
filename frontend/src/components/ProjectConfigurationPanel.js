@@ -1,5 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { PROJECT_PHASE_LABELS, PROJECT_PHASE_SEQUENCE } from '../utils/projectPhases';
+import {
+  DEFAULT_PANEL_LAYOUT,
+  PANEL_LAYOUT_KEYS,
+  normalizePanelLayout,
+} from '../utils/inspectionSettings';
 
 
 function isSingleAlphanumeric(value) {
@@ -249,6 +254,7 @@ const EMPTY_CONFIG = {
     default_colormap: 'grayscale',
     anomaly_colormap: 'viridis',
     grayscale_base_image: true,
+    inspection_panel_layout: DEFAULT_PANEL_LAYOUT,
   },
   serial_number_scheme: {
     batch_sn_enabled: true,
@@ -282,6 +288,15 @@ function normalizePhaseSettings(config) {
   };
 }
 
+function normalizeDisplaySettings(config) {
+  const incoming = config?.display_settings || {};
+  return {
+    ...EMPTY_CONFIG.display_settings,
+    ...incoming,
+    inspection_panel_layout: normalizePanelLayout(incoming.inspection_panel_layout),
+  };
+}
+
 function ProjectConfigurationPanel({
   projectId,
   projectType,
@@ -300,6 +315,7 @@ function ProjectConfigurationPanel({
   const [copyingConfiguration, setCopyingConfiguration] = useState(false);
   const [savingInterfaceLayoutDefault, setSavingInterfaceLayoutDefault] = useState(false);
   const [savingProjectTypeLayoutDefault, setSavingProjectTypeLayoutDefault] = useState(false);
+  const [activeConfigurationTab, setActiveConfigurationTab] = useState('project_setup');
   const hasCompatibleCopySources = availableProjects.length > 0;
   const selectedCopySourceProject = availableProjects.find((project) => project.id === copySourceProjectId) || null;
 
@@ -324,6 +340,7 @@ function ProjectConfigurationPanel({
         setConfig({
           ...EMPTY_CONFIG,
           ...incomingConfig,
+          display_settings: normalizeDisplaySettings(incomingConfig),
           serial_number_scheme: normalizeSerialNumberScheme(incomingConfig),
           phase_settings: normalizePhaseSettings(incomingConfig),
         });
@@ -423,6 +440,7 @@ function ProjectConfigurationPanel({
         setConfig((previous) => ({
           ...previous,
           ...payload.config,
+          display_settings: normalizeDisplaySettings(payload.config),
           serial_number_scheme: normalizeSerialNumberScheme(payload.config),
           phase_settings: normalizePhaseSettings(payload.config),
         }));
@@ -556,6 +574,25 @@ function ProjectConfigurationPanel({
     }));
   };
 
+  const updateInspectionPanelLayout = (panelKey, updates) => {
+    setConfig((previous) => {
+      const currentLayout = normalizePanelLayout(previous.display_settings?.inspection_panel_layout);
+      return {
+        ...previous,
+        display_settings: {
+          ...previous.display_settings,
+          inspection_panel_layout: normalizePanelLayout({
+            ...currentLayout,
+            [panelKey]: {
+              ...(currentLayout[panelKey] || DEFAULT_PANEL_LAYOUT[panelKey]),
+              ...updates,
+            },
+          }),
+        },
+      };
+    });
+  };
+
   const copyConfiguration = async () => {
     if (!copySourceProjectId || copyingConfiguration) return;
 
@@ -578,6 +615,7 @@ function ProjectConfigurationPanel({
       setConfig({
         ...EMPTY_CONFIG,
         ...clonedConfig,
+        display_settings: normalizeDisplaySettings(clonedConfig),
         serial_number_scheme: normalizeSerialNumberScheme(clonedConfig),
         phase_settings: normalizePhaseSettings(clonedConfig),
       });
@@ -609,6 +647,29 @@ function ProjectConfigurationPanel({
 
       {!loading && !error && (
         <>
+          <div className="project-tabs project-configuration-tabs" role="tablist" aria-label="Project configuration sections">
+            <button
+              type="button"
+              className={`project-tab ${activeConfigurationTab === 'project_setup' ? 'active' : ''}`}
+              role="tab"
+              aria-selected={activeConfigurationTab === 'project_setup'}
+              onClick={() => setActiveConfigurationTab('project_setup')}
+            >
+              Project Setup
+            </button>
+            <button
+              type="button"
+              className={`project-tab ${activeConfigurationTab === 'inspection_configuration' ? 'active' : ''}`}
+              role="tab"
+              aria-selected={activeConfigurationTab === 'inspection_configuration'}
+              onClick={() => setActiveConfigurationTab('inspection_configuration')}
+            >
+              Inspection Configuration
+            </button>
+          </div>
+
+          {activeConfigurationTab === 'project_setup' && (
+            <>
           <div className="workbench-summary-grid" data-testid="project-configuration-summary">
             <article className="summary-card">
               <h3>Image Modalities</h3>
@@ -642,71 +703,6 @@ function ProjectConfigurationPanel({
               />
               Require disposition on submit
             </label>
-            <div className="workbench-controls-row">
-              <label htmlFor="hotkey-accept">Accept hotkey</label>
-              <input
-                id="hotkey-accept"
-                aria-label="Accept hotkey"
-                type="text"
-                maxLength={1}
-                value={config.process_settings?.configurable_hotkeys?.accept_classification || 'a'}
-                onChange={(event) => {
-                  const nextValue = event.target.value.toLowerCase();
-                  setConfig((previous) => ({
-                    ...previous,
-                    process_settings: {
-                      ...previous.process_settings,
-                      configurable_hotkeys: {
-                        ...(previous.process_settings?.configurable_hotkeys || {}),
-                        accept_classification: nextValue,
-                      },
-                    },
-                  }));
-                }}
-              />
-              <label htmlFor="hotkey-reject">Reject hotkey</label>
-              <input
-                id="hotkey-reject"
-                aria-label="Reject hotkey"
-                type="text"
-                maxLength={1}
-                value={config.process_settings?.configurable_hotkeys?.reject_classification || 'r'}
-                onChange={(event) => {
-                  const nextValue = event.target.value.toLowerCase();
-                  setConfig((previous) => ({
-                    ...previous,
-                    process_settings: {
-                      ...previous.process_settings,
-                      configurable_hotkeys: {
-                        ...(previous.process_settings?.configurable_hotkeys || {}),
-                        reject_classification: nextValue,
-                      },
-                    },
-                  }));
-                }}
-              />
-              <label htmlFor="hotkey-help">Help hotkey</label>
-              <input
-                id="hotkey-help"
-                aria-label="Help hotkey"
-                type="text"
-                maxLength={1}
-                value={config.process_settings?.configurable_hotkeys?.toggle_shortcut_help || 'h'}
-                onChange={(event) => {
-                  const nextValue = event.target.value.toLowerCase();
-                  setConfig((previous) => ({
-                    ...previous,
-                    process_settings: {
-                      ...previous.process_settings,
-                      configurable_hotkeys: {
-                        ...(previous.process_settings?.configurable_hotkeys || {}),
-                        toggle_shortcut_help: nextValue,
-                      },
-                    },
-                  }));
-                }}
-              />
-            </div>
           </section>
 
           <section className="part-detail-panel" aria-label="Serial number scheme">
@@ -1015,29 +1011,6 @@ function ProjectConfigurationPanel({
             )}
           </section>
 
-          <section className="part-detail-panel" aria-label="Display settings">
-            <h3>Display Settings</h3>
-            <label htmlFor="default-colormap">Default colormap</label>
-            <select
-              id="default-colormap"
-              value={config.display_settings?.default_colormap || 'grayscale'}
-              onChange={(event) => {
-                const nextValue = event.target.value;
-                setConfig((previous) => ({
-                  ...previous,
-                  display_settings: {
-                    ...previous.display_settings,
-                    default_colormap: nextValue,
-                  },
-                }));
-              }}
-            >
-              <option value="grayscale">grayscale</option>
-              <option value="magma">magma</option>
-              <option value="viridis">viridis</option>
-            </select>
-          </section>
-
           <section className="part-detail-panel" aria-label="Copy configuration">
             <h3>Copy Configuration</h3>
             <p>
@@ -1079,31 +1052,187 @@ function ProjectConfigurationPanel({
               </button>
             </div>
           </section>
+            </>
+          )}
+
+          {activeConfigurationTab === 'inspection_configuration' && (
+            <>
+              <section className="part-detail-panel" aria-label="Inspection hotkeys">
+                <h3>Inspection Hotkeys</h3>
+                <div className="workbench-controls-row">
+                  <label htmlFor="hotkey-accept">Accept hotkey</label>
+                  <input
+                    id="hotkey-accept"
+                    aria-label="Accept hotkey"
+                    type="text"
+                    maxLength={1}
+                    value={config.process_settings?.configurable_hotkeys?.accept_classification || 'a'}
+                    onChange={(event) => {
+                      const nextValue = event.target.value.toLowerCase();
+                      setConfig((previous) => ({
+                        ...previous,
+                        process_settings: {
+                          ...previous.process_settings,
+                          configurable_hotkeys: {
+                            ...(previous.process_settings?.configurable_hotkeys || {}),
+                            accept_classification: nextValue,
+                          },
+                        },
+                      }));
+                    }}
+                  />
+                  <label htmlFor="hotkey-reject">Reject hotkey</label>
+                  <input
+                    id="hotkey-reject"
+                    aria-label="Reject hotkey"
+                    type="text"
+                    maxLength={1}
+                    value={config.process_settings?.configurable_hotkeys?.reject_classification || 'r'}
+                    onChange={(event) => {
+                      const nextValue = event.target.value.toLowerCase();
+                      setConfig((previous) => ({
+                        ...previous,
+                        process_settings: {
+                          ...previous.process_settings,
+                          configurable_hotkeys: {
+                            ...(previous.process_settings?.configurable_hotkeys || {}),
+                            reject_classification: nextValue,
+                          },
+                        },
+                      }));
+                    }}
+                  />
+                  <label htmlFor="hotkey-help">Help hotkey</label>
+                  <input
+                    id="hotkey-help"
+                    aria-label="Help hotkey"
+                    type="text"
+                    maxLength={1}
+                    value={config.process_settings?.configurable_hotkeys?.toggle_shortcut_help || 'h'}
+                    onChange={(event) => {
+                      const nextValue = event.target.value.toLowerCase();
+                      setConfig((previous) => ({
+                        ...previous,
+                        process_settings: {
+                          ...previous.process_settings,
+                          configurable_hotkeys: {
+                            ...(previous.process_settings?.configurable_hotkeys || {}),
+                            toggle_shortcut_help: nextValue,
+                          },
+                        },
+                      }));
+                    }}
+                  />
+                </div>
+              </section>
+
+              <section className="part-detail-panel" aria-label="Inspection workspace panels">
+                <h3>Inspection Workspace Panels</h3>
+                {PANEL_LAYOUT_KEYS.map((panelKey) => {
+                  const panelLayout = normalizePanelLayout(config.display_settings?.inspection_panel_layout);
+                  const panelConfig = panelLayout[panelKey] || DEFAULT_PANEL_LAYOUT[panelKey];
+                  const panelLabel = panelKey.replace('_', ' ');
+                  return (
+                    <div className="workbench-controls-row" key={panelKey} data-testid={`inspection-panel-layout-row-${panelKey}`}>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={panelConfig.is_open}
+                          onChange={(event) => updateInspectionPanelLayout(panelKey, { is_open: event.target.checked })}
+                        />
+                        {` ${panelLabel} open`}
+                      </label>
+                      <label>
+                        Width
+                        <input
+                          type="number"
+                          value={panelConfig.width_px}
+                          onChange={(event) => updateInspectionPanelLayout(panelKey, { width_px: event.target.value })}
+                          min={220}
+                          max={1200}
+                          aria-label={`${panelLabel} width`}
+                        />
+                      </label>
+                      <label>
+                        Height
+                        <input
+                          type="number"
+                          value={panelConfig.height_px}
+                          onChange={(event) => updateInspectionPanelLayout(panelKey, { height_px: event.target.value })}
+                          min={220}
+                          max={1400}
+                          aria-label={`${panelLabel} height`}
+                        />
+                      </label>
+                      <label>
+                        Orientation
+                        <select
+                          value={panelConfig.orientation}
+                          onChange={(event) => updateInspectionPanelLayout(panelKey, { orientation: event.target.value })}
+                          aria-label={`${panelLabel} orientation`}
+                        >
+                          <option value="vertical">Vertical</option>
+                          <option value="horizontal">Horizontal</option>
+                        </select>
+                      </label>
+                    </div>
+                  );
+                })}
+              </section>
+
+              <section className="part-detail-panel" aria-label="Inspection display settings">
+                <h3>Inspection Display Settings</h3>
+                <div className="workbench-controls-row">
+                  <label htmlFor="default-colormap">Default colormap</label>
+                  <select
+                    id="default-colormap"
+                    value={config.display_settings?.default_colormap || 'grayscale'}
+                    onChange={(event) => {
+                      const nextValue = event.target.value;
+                      setConfig((previous) => ({
+                        ...previous,
+                        display_settings: {
+                          ...previous.display_settings,
+                          default_colormap: nextValue,
+                        },
+                      }));
+                    }}
+                  >
+                    <option value="grayscale">grayscale</option>
+                    <option value="magma">magma</option>
+                    <option value="viridis">viridis</option>
+                  </select>
+                </div>
+                <div className="workbench-controls-row">
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    disabled={!currentInterfaceLayout || savingInterfaceLayoutDefault}
+                    onClick={saveInterfaceLayoutAsProjectDefault}
+                  >
+                    {savingInterfaceLayoutDefault ? 'Saving Layout...' : 'Save Current Interface as Project Default'}
+                  </button>
+                  {isAdminUser && (
+                    <button
+                      className="btn btn-secondary"
+                      type="button"
+                      disabled={!currentInterfaceLayout || savingProjectTypeLayoutDefault}
+                      onClick={saveInterfaceLayoutAsProjectTypeDefault}
+                    >
+                      {savingProjectTypeLayoutDefault
+                        ? 'Saving Type Layout...'
+                        : `Save Current Interface as ${projectType || 'Type'} Default`}
+                    </button>
+                  )}
+                </div>
+              </section>
+            </>
+          )}
 
           <div className="workbench-controls-row">
             <button className="btn btn-primary" type="button" disabled={saving} onClick={saveConfiguration}>
               {saving ? 'Saving...' : 'Save Configuration'}
             </button>
-            <button
-              className="btn btn-secondary"
-              type="button"
-              disabled={!currentInterfaceLayout || savingInterfaceLayoutDefault}
-              onClick={saveInterfaceLayoutAsProjectDefault}
-            >
-              {savingInterfaceLayoutDefault ? 'Saving Layout...' : 'Save Current Interface as Project Default'}
-            </button>
-            {isAdminUser && (
-              <button
-                className="btn btn-secondary"
-                type="button"
-                disabled={!currentInterfaceLayout || savingProjectTypeLayoutDefault}
-                onClick={saveInterfaceLayoutAsProjectTypeDefault}
-              >
-                {savingProjectTypeLayoutDefault
-                  ? 'Saving Type Layout...'
-                  : `Save Current Interface as ${projectType || 'Type'} Default`}
-              </button>
-            )}
             <span>{hasConfiguration ? 'Configuration is populated.' : 'Using defaults until sections are configured.'}</span>
           </div>
         </>

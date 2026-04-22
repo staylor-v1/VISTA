@@ -1,5 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_INTERFACE_HIERARCHY } from '../utils/interfaceHierarchy';
+import {
+  DEFAULT_INSPECTOR_HOTKEYS,
+  DEFAULT_PANEL_LAYOUT,
+  normalizeInspectorHotkeys,
+  normalizePanelLayout,
+} from '../utils/inspectionSettings';
 
 const VIEW_ORDER = ['front', 'back', 'left', 'right', 'top', 'bottom'];
 const MPR_AXES = ['axial', 'coronal', 'sagittal'];
@@ -9,17 +15,6 @@ const DEFAULT_OVERLAY_LAYERS = [
   { id: 'voids', label: 'Voids', color: '#f59e0b' },
 ];
 const DEFAULT_MODALITIES = ['visual', 'infrared', 'uv'];
-const DEFAULT_INSPECTOR_HOTKEYS = {
-  accept_classification: 'a',
-  reject_classification: 'r',
-  toggle_shortcut_help: 'h',
-};
-const DEFAULT_PANEL_LAYOUT = {
-  part_list: { is_open: true, width_px: 320, height_px: 420, orientation: 'vertical' },
-  inspector: { is_open: true, width_px: 360, height_px: 420, orientation: 'vertical' },
-  mpr_controls: { is_open: true, width_px: 360, height_px: 360, orientation: 'vertical' },
-};
-const PANEL_LAYOUT_KEYS = ['part_list', 'inspector', 'mpr_controls'];
 const REVIEW_LABELS = {
   unreviewed: 'Unreviewed',
   in_review: 'In Review',
@@ -113,55 +108,6 @@ function clampRange(value, min, max, fallback) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return fallback;
   return Math.min(max, Math.max(min, numeric));
-}
-
-function normalizeInspectorHotkeys(candidate) {
-  const normalized = { ...DEFAULT_INSPECTOR_HOTKEYS };
-  if (!candidate || typeof candidate !== 'object') return normalized;
-  Object.entries(DEFAULT_INSPECTOR_HOTKEYS).forEach(([binding, fallback]) => {
-    const raw = typeof candidate[binding] === 'string' ? candidate[binding].trim().toLowerCase() : fallback;
-    normalized[binding] = /^[a-z0-9]$/.test(raw) ? raw : fallback;
-  });
-  return normalized;
-}
-
-function validateInspectorHotkeysDraft(candidate) {
-  const normalized = {};
-  const usedKeys = new Set();
-  for (const binding of Object.keys(DEFAULT_INSPECTOR_HOTKEYS)) {
-    const raw = String(candidate?.[binding] || '').trim().toLowerCase();
-    if (!/^[a-z0-9]$/.test(raw)) {
-      return { valid: false, message: 'Hotkeys must be single alphanumeric characters.', normalized: null };
-    }
-    if (usedKeys.has(raw)) {
-      return { valid: false, message: 'Hotkeys must use unique key bindings.', normalized: null };
-    }
-    usedKeys.add(raw);
-    normalized[binding] = raw;
-  }
-  return { valid: true, message: '', normalized };
-}
-
-function normalizePanelDimension(value, min, max, fallback) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return fallback;
-  return Math.min(max, Math.max(min, Math.round(numeric)));
-}
-
-function normalizePanelLayout(candidate) {
-  const safeCandidate = candidate && typeof candidate === 'object' ? candidate : {};
-  return PANEL_LAYOUT_KEYS.reduce((acc, key) => {
-    const defaults = DEFAULT_PANEL_LAYOUT[key];
-    const current = safeCandidate[key] && typeof safeCandidate[key] === 'object' ? safeCandidate[key] : {};
-    const orientation = String(current.orientation || defaults.orientation).toLowerCase();
-    acc[key] = {
-      is_open: current.is_open !== false,
-      width_px: normalizePanelDimension(current.width_px, 220, 1200, defaults.width_px),
-      height_px: normalizePanelDimension(current.height_px, 220, 1400, defaults.height_px),
-      orientation: orientation === 'horizontal' ? 'horizontal' : 'vertical',
-    };
-    return acc;
-  }, {});
 }
 
 function normalizeLayoutNumber(value, fallback) {
@@ -288,9 +234,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
     payload: null,
   });
   const [inspectorHotkeys, setInspectorHotkeys] = useState(DEFAULT_INSPECTOR_HOTKEYS);
-  const [inspectorHotkeyDraft, setInspectorHotkeyDraft] = useState(DEFAULT_INSPECTOR_HOTKEYS);
-  const [hotkeySaveState, setHotkeySaveState] = useState({ loading: false, message: null, severity: null });
-  const [projectConfiguration, setProjectConfiguration] = useState(null);
   const [shortcutHelpVisible, setShortcutHelpVisible] = useState(false);
   const [panelLayout, setPanelLayout] = useState(DEFAULT_PANEL_LAYOUT);
   const [normalizationTriageField, setNormalizationTriageField] = useState('');
@@ -301,6 +244,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
   const [viewportWidth, setViewportWidth] = useState(() => (
     typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth
   ));
+  const viewportDragRef = useRef(null);
 
   const inspectionHierarchy = useMemo(() => normalizeInspectionHierarchy(hierarchy), [hierarchy]);
   const leftRegion = inspectionHierarchy.regions[inspectionHierarchy.leftColumn];
@@ -343,14 +287,14 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
         const safeBatches = Array.isArray(batchData) ? batchData : [];
         const safeParts = Array.isArray(partData) ? partData : [];
         const savedState = workspaceData?.state && typeof workspaceData.state === 'object' ? workspaceData.state : {};
-        setPanelLayout(normalizePanelLayout(savedState.panel_layout));
         const resolvedConfig = configData?.config && typeof configData.config === 'object' ? configData.config : {};
-        setProjectConfiguration(resolvedConfig);
+        setPanelLayout(normalizePanelLayout(
+          resolvedConfig?.display_settings?.inspection_panel_layout || savedState.panel_layout,
+        ));
         const savedHotkeys = normalizeInspectorHotkeys(
           resolvedConfig?.process_settings?.configurable_hotkeys,
         );
         setInspectorHotkeys(savedHotkeys);
-        setInspectorHotkeyDraft(savedHotkeys);
         setWorkspaceHydration(savedState);
         setBatches(safeBatches);
         setParts(safeParts);
@@ -385,62 +329,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
-
-  const saveInspectorHotkeys = async () => {
-    const validation = validateInspectorHotkeysDraft(inspectorHotkeyDraft);
-    if (!validation.valid) {
-      setHotkeySaveState({ loading: false, message: validation.message, severity: 'error' });
-      return;
-    }
-
-    const nextConfig = {
-      ...(projectConfiguration && typeof projectConfiguration === 'object' ? projectConfiguration : {}),
-      process_settings: {
-        ...((projectConfiguration && projectConfiguration.process_settings) || {}),
-        configurable_hotkeys: validation.normalized,
-      },
-    };
-
-    try {
-      setHotkeySaveState({ loading: true, message: null, severity: null });
-      const resp = await fetch(`/api/projects/${projectId}/configuration`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config: nextConfig }),
-      });
-      if (!resp.ok) {
-        throw new Error(`Failed to save hotkeys (${resp.status})`);
-      }
-      const payload = await resp.json();
-      const persistedConfig = payload?.config && typeof payload.config === 'object' ? payload.config : nextConfig;
-      const persistedHotkeys = normalizeInspectorHotkeys(
-        persistedConfig?.process_settings?.configurable_hotkeys,
-      );
-      setProjectConfiguration(persistedConfig);
-      setInspectorHotkeys(persistedHotkeys);
-      setInspectorHotkeyDraft(persistedHotkeys);
-      setHotkeySaveState({ loading: false, message: 'Hotkeys saved for this project.', severity: 'success' });
-    } catch (err) {
-      setHotkeySaveState({
-        loading: false,
-        message: err?.message || 'Failed to save hotkeys.',
-        severity: 'error',
-      });
-    }
-  };
-
-  const updatePanelLayout = (panelKey, updates) => {
-    setPanelLayout((prev) => {
-      const next = normalizePanelLayout({
-        ...prev,
-        [panelKey]: {
-          ...(prev[panelKey] || DEFAULT_PANEL_LAYOUT[panelKey]),
-          ...updates,
-        },
-      });
-      return next;
-    });
-  };
 
   const filteredParts = useMemo(() => {
     let output = [...parts];
@@ -845,6 +733,44 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
 
   const resetInspectorViewport = () => {
     setInspectorViewport({ zoom: 1, panX: 0, panY: 0 });
+  };
+
+  const beginInspectorViewportDrag = (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    viewportDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startPanX: inspectorViewport.panX,
+      startPanY: inspectorViewport.panY,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const updateInspectorViewportDrag = (event) => {
+    const drag = viewportDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const nextPanX = drag.startPanX + event.clientX - drag.startX;
+    const nextPanY = drag.startPanY + event.clientY - drag.startY;
+    setInspectorViewport((prev) => ({
+      ...prev,
+      panX: Math.min(200, Math.max(-200, Math.round(nextPanX))),
+      panY: Math.min(200, Math.max(-200, Math.round(nextPanY))),
+    }));
+  };
+
+  const endInspectorViewportDrag = (event) => {
+    if (viewportDragRef.current?.pointerId === event.pointerId) {
+      viewportDragRef.current = null;
+    }
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+  };
+
+  const zoomInspectorViewportWithWheel = (event) => {
+    event.preventDefault();
+    const delta = event.deltaY < 0 ? 0.1 : -0.1;
+    adjustInspectorZoom(delta);
   };
 
   const runSegmentation = async () => {
@@ -1376,123 +1302,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                               </>
                             )}
                           </div>
-                          <div className="workspace-panel-layout" data-testid="hotkey-controls">
-                      <strong>Configurable hotkeys</strong>
-                      <div className="measurement-fields">
-                        <label>
-                          Mark pass key
-                          <input
-                            aria-label="Hotkey pass"
-                            type="text"
-                            maxLength={1}
-                            value={inspectorHotkeyDraft.accept_classification}
-                            onChange={(event) => {
-                              const value = String(event.target.value || '').trim().toLowerCase();
-                              setInspectorHotkeyDraft((prev) => ({ ...prev, accept_classification: value }));
-                              if (hotkeySaveState.message) {
-                                setHotkeySaveState({ loading: false, message: null, severity: null });
-                              }
-                            }}
-                          />
-                        </label>
-                        <label>
-                          Reject key
-                          <input
-                            aria-label="Hotkey reject"
-                            type="text"
-                            maxLength={1}
-                            value={inspectorHotkeyDraft.reject_classification}
-                            onChange={(event) => {
-                              const value = String(event.target.value || '').trim().toLowerCase();
-                              setInspectorHotkeyDraft((prev) => ({ ...prev, reject_classification: value }));
-                              if (hotkeySaveState.message) {
-                                setHotkeySaveState({ loading: false, message: null, severity: null });
-                              }
-                            }}
-                          />
-                        </label>
-                        <label>
-                          Help key
-                          <input
-                            aria-label="Hotkey help"
-                            type="text"
-                            maxLength={1}
-                            value={inspectorHotkeyDraft.toggle_shortcut_help}
-                            onChange={(event) => {
-                              const value = String(event.target.value || '').trim().toLowerCase();
-                              setInspectorHotkeyDraft((prev) => ({ ...prev, toggle_shortcut_help: value }));
-                              if (hotkeySaveState.message) {
-                                setHotkeySaveState({ loading: false, message: null, severity: null });
-                              }
-                            }}
-                          />
-                        </label>
-                        <button
-                          className="btn btn-secondary"
-                          onClick={saveInspectorHotkeys}
-                          disabled={hotkeySaveState.loading}
-                        >
-                          {hotkeySaveState.loading ? 'Saving hotkeys…' : 'Save Hotkeys'}
-                        </button>
-                      </div>
-                      {hotkeySaveState.message && (
-                        <p className={hotkeySaveState.severity === 'error' ? 'error-message' : 'muted'}>
-                          {hotkeySaveState.message}
-                        </p>
-                      )}
-                    </div>
-                          <div className="workspace-panel-layout" data-testid="panel-layout-controls">
-                      <strong>Workspace panels</strong>
-                      {PANEL_LAYOUT_KEYS.map((panelKey) => {
-                        const config = panelLayout[panelKey] || DEFAULT_PANEL_LAYOUT[panelKey];
-                        const panelLabel = panelKey.replace('_', ' ');
-                        return (
-                          <div className="measurement-fields" key={panelKey} data-testid={`panel-layout-row-${panelKey}`}>
-                            <label>
-                              <input
-                                type="checkbox"
-                                checked={config.is_open}
-                                onChange={(event) => updatePanelLayout(panelKey, { is_open: event.target.checked })}
-                              />
-                              {` ${panelLabel} open`}
-                            </label>
-                            <label>
-                              Width
-                              <input
-                                type="number"
-                                value={config.width_px}
-                                onChange={(event) => updatePanelLayout(panelKey, { width_px: event.target.value })}
-                                min={220}
-                                max={1200}
-                                aria-label={`${panelLabel} width`}
-                              />
-                            </label>
-                            <label>
-                              Height
-                              <input
-                                type="number"
-                                value={config.height_px}
-                                onChange={(event) => updatePanelLayout(panelKey, { height_px: event.target.value })}
-                                min={220}
-                                max={1400}
-                                aria-label={`${panelLabel} height`}
-                              />
-                            </label>
-                            <label>
-                              Orientation
-                              <select
-                                value={config.orientation}
-                                onChange={(event) => updatePanelLayout(panelKey, { orientation: event.target.value })}
-                                aria-label={`${panelLabel} orientation`}
-                              >
-                                <option value="vertical">Vertical</option>
-                                <option value="horizontal">Horizontal</option>
-                              </select>
-                            </label>
-                          </div>
-                        );
-                      })}
-                    </div>
                           <div className="modality-controls">
                       <strong>Modalities</strong>
                       <div className="modality-list">
@@ -1996,11 +1805,30 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                         return (
                           <div key={viewName} className={`view-cell ${activeViewName === viewName ? 'selected' : ''}`}>
                             <div className="view-cell-title">{viewName.toUpperCase()}</div>
-                            <div className="view-cell-body">
+                            <div
+                              className="view-cell-body inspector-image-viewport"
+                              data-testid={`inspector-image-viewport-${viewName}`}
+                              onPointerDown={beginInspectorViewportDrag}
+                              onPointerMove={updateInspectorViewportDrag}
+                              onPointerUp={endInspectorViewportDrag}
+                              onPointerCancel={endInspectorViewportDrag}
+                              onMouseDown={beginInspectorViewportDrag}
+                              onMouseMove={updateInspectorViewportDrag}
+                              onMouseUp={endInspectorViewportDrag}
+                              onMouseLeave={endInspectorViewportDrag}
+                              onWheel={zoomInspectorViewportWithWheel}
+                            >
                               {!imageEnabled ? (
                                 <span className="view-cell-empty">Image hidden</span>
                               ) : imageRef ? (
-                                <span className="view-cell-has-data">Mapped: {imageRef}</span>
+                                <span
+                                  className="view-cell-has-data inspector-image-content"
+                                  style={{
+                                    transform: `translate(${inspectorViewport.panX}px, ${inspectorViewport.panY}px) scale(${inspectorViewport.zoom})`,
+                                  }}
+                                >
+                                  Mapped: {imageRef}
+                                </span>
                               ) : (
                                 <span className="view-cell-empty">No image mapped</span>
                               )}
