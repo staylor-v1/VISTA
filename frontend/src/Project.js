@@ -147,18 +147,40 @@ function Project({ currentUserGroups = [] }) {
   }, [id, fetchImages, refreshProjectCounts]);
 
   useEffect(() => {
-    const loadHierarchy = async () => {
-      const hierarchy = await loadInterfaceHierarchy();
+    let cancelled = false;
+    let lastSerializedHierarchy = '';
+
+    const loadHierarchy = async ({ cacheBust = false } = {}) => {
+      const hierarchy = await loadInterfaceHierarchy({ cacheBust });
+      if (cancelled) return;
       const validTabs = hierarchy.mainTabs.filter((tabKey) => MAIN_TAB_DEFINITIONS[tabKey]);
+      const nextHierarchy = validTabs.length === 0
+        ? DEFAULT_INTERFACE_HIERARCHY
+        : { ...hierarchy, mainTabs: validTabs };
+      const serializedHierarchy = JSON.stringify(nextHierarchy);
+      if (serializedHierarchy === lastSerializedHierarchy) return;
+      lastSerializedHierarchy = serializedHierarchy;
+
       if (validTabs.length === 0) {
         setInterfaceHierarchy(DEFAULT_INTERFACE_HIERARCHY);
         setActiveMainTab(DEFAULT_INTERFACE_HIERARCHY.mainTabs[0]);
         return;
       }
-      setInterfaceHierarchy({ ...hierarchy, mainTabs: validTabs });
+      setInterfaceHierarchy(nextHierarchy);
       setActiveMainTab((prev) => (validTabs.includes(prev) ? prev : validTabs[0]));
     };
     loadHierarchy();
+
+    const pollMs = Number(window.__VISTA_INTERFACE_HIERARCHY_POLL_MS || 1500);
+    const shouldPollHierarchy = process.env.NODE_ENV === 'development' && Number.isFinite(pollMs) && pollMs > 0;
+    const intervalId = shouldPollHierarchy
+      ? window.setInterval(() => loadHierarchy({ cacheBust: true }), pollMs)
+      : null;
+
+    return () => {
+      cancelled = true;
+      if (intervalId) window.clearInterval(intervalId);
+    };
   }, []);
 
   const handleUploadComplete = useCallback(async () => {

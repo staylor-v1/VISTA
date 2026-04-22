@@ -3,6 +3,7 @@ const { test, expect } = require('@playwright/test');
 const { mockFullInspectionWorkflowRoutes } = require('../fixtures/fullInspectionWorkflowMocks');
 
 const screenshotPath = path.resolve(__dirname, '../../artifacts/e2e-full-inspection-workflow.png');
+const hierarchyScreenshotPath = path.resolve(__dirname, '../../artifacts/e2e-inspection-hierarchy.png');
 
 async function expectRawImageCount(page, expectedCount) {
   const rawImagesCard = page.locator('article.summary-card').filter({ has: page.getByRole('heading', { name: 'Raw Images' }) });
@@ -33,7 +34,7 @@ test.describe('Full inspection workflow end-to-end', () => {
 
     await expect(page).toHaveURL(new RegExp(`/project/${projectId}$`));
 
-    await page.getByRole('button', { name: 'Project Data' }).click();
+    await page.getByRole('tab', { name: 'Project Data' }).click();
     await expect(page.getByRole('heading', { name: 'Project Data' })).toBeVisible();
     await expectRawImageCount(page, 0);
 
@@ -50,7 +51,7 @@ test.describe('Full inspection workflow end-to-end', () => {
     await expect.poll(() => getUploadedImages().length).toBe(3);
     await expectRawImageCount(page, 3);
 
-    await page.getByRole('button', { name: 'Inspection' }).click();
+    await page.getByRole('tab', { name: 'Inspection' }).click();
     await expect(page.getByRole('heading', { name: 'Inspection Workbench' })).toBeVisible();
 
     await expect(page.getByRole('tab', { name: 'Part Summary' })).toBeVisible();
@@ -74,7 +75,7 @@ test.describe('Full inspection workflow end-to-end', () => {
 
     await expect.poll(() => getParts().map((part) => part.review_state)).toEqual(['pass', 'reject_pending']);
 
-    await page.getByRole('button', { name: 'Report' }).click();
+    await page.getByRole('tab', { name: 'Report' }).click();
     await expect(page.getByRole('heading', { name: 'Report' })).toBeVisible();
     await page.getByLabel('Export/report mode').selectOption('report_json');
     await page.getByRole('button', { name: 'Run Export/Report' }).click();
@@ -107,6 +108,7 @@ test.describe('Full inspection workflow end-to-end', () => {
     await page.getByRole('link', { name: 'PT1 Hierarchical Layout Regression' }).click();
     await expect(page).toHaveURL(new RegExp(`/project/${projectId}$`));
 
+    await page.getByRole('tab', { name: 'Inspection' }).click();
     const workbench = page.locator('section[aria-label="Inspection Workbench"]');
     await expect(workbench).toBeVisible();
 
@@ -119,5 +121,6 @@ test.describe('Full inspection workflow end-to-end', () => {
     await expect(workbench.getByRole('tablist', { name: 'Right panel tabs' })).toHaveCount(1);
 
     await expect(workbench.locator('.flexlayout__layout')).toHaveCount(0);
+    await page.screenshot({ path: hierarchyScreenshotPath, fullPage: true });
   });
 });

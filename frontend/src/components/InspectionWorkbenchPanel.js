@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { DEFAULT_INTERFACE_HIERARCHY } from '../utils/interfaceHierarchy';
 
 const VIEW_ORDER = ['front', 'back', 'left', 'right', 'top', 'bottom'];
 const MPR_AXES = ['axial', 'coronal', 'sagittal'];
@@ -60,12 +61,6 @@ function getDefectCount(part) {
   if (Array.isArray(defects)) return defects.length;
   const explicitCount = part?.metadata?.defect_count;
   return Number.isFinite(explicitCount) ? explicitCount : 0;
-}
-
-function getCriticalDefectCount(part) {
-  const defects = part?.metadata?.defects;
-  if (!Array.isArray(defects)) return 0;
-  return defects.filter((item) => (item?.severity || '').toLowerCase() === 'critical').length;
 }
 
 function getPartViews(part) {
@@ -169,6 +164,79 @@ function normalizePanelLayout(candidate) {
   }, {});
 }
 
+function normalizeLayoutNumber(value, fallback) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? Math.round(numeric) : fallback;
+}
+
+function normalizeInspectionRegion(regionKey, candidate = {}) {
+  const defaults = DEFAULT_INTERFACE_HIERARCHY.inspection.regions[regionKey] || {};
+  return {
+    ...defaults,
+    ...candidate,
+    label: String(candidate.label || defaults.label || regionKey),
+    order: normalizeLayoutNumber(candidate.order, defaults.order || 1),
+    isOpen: candidate.isOpen !== false,
+    widthPx: candidate.widthPx == null ? defaults.widthPx : normalizeLayoutNumber(candidate.widthPx, defaults.widthPx),
+    minWidthPx: candidate.minWidthPx == null ? defaults.minWidthPx : normalizeLayoutNumber(candidate.minWidthPx, defaults.minWidthPx),
+    maxWidthPx: candidate.maxWidthPx == null ? defaults.maxWidthPx : normalizeLayoutNumber(candidate.maxWidthPx, defaults.maxWidthPx),
+    heightPx: candidate.heightPx == null ? defaults.heightPx : normalizeLayoutNumber(candidate.heightPx, defaults.heightPx),
+    minHeightPx: candidate.minHeightPx == null ? defaults.minHeightPx : normalizeLayoutNumber(candidate.minHeightPx, defaults.minHeightPx),
+    maxHeightPx: candidate.maxHeightPx == null ? defaults.maxHeightPx : normalizeLayoutNumber(candidate.maxHeightPx, defaults.maxHeightPx),
+  };
+}
+
+function normalizeInspectionHierarchy(hierarchy) {
+  const safeHierarchy = hierarchy && typeof hierarchy === 'object' ? hierarchy : {};
+  const defaultInspection = DEFAULT_INTERFACE_HIERARCHY.inspection;
+  const mergedRegions = {
+    ...defaultInspection.regions,
+    ...(safeHierarchy.regions || {}),
+  };
+  const regions = Object.entries(mergedRegions).reduce((acc, [regionKey, region]) => {
+    acc[regionKey] = normalizeInspectionRegion(regionKey, region);
+    return acc;
+  }, {});
+  const centerTabs = Array.isArray(safeHierarchy.centerTabs) && safeHierarchy.centerTabs.length > 0
+    ? safeHierarchy.centerTabs
+    : defaultInspection.centerTabs;
+  const layout = {
+    ...defaultInspection.layout,
+    ...(safeHierarchy.layout || {}),
+  };
+
+  return {
+    leftColumn: safeHierarchy.leftColumn || defaultInspection.leftColumn,
+    centerTabs: centerTabs
+      .filter((tabKey) => regions[tabKey]?.isOpen !== false)
+      .sort((left, right) => (regions[left]?.order || 1) - (regions[right]?.order || 1)),
+    rightColumn: safeHierarchy.rightColumn || defaultInspection.rightColumn,
+    layout: {
+      ...layout,
+      gapPx: normalizeLayoutNumber(layout.gapPx, defaultInspection.layout.gapPx),
+      minHeightPx: normalizeLayoutNumber(layout.minHeightPx, defaultInspection.layout.minHeightPx),
+      collapseBreakpointPx: normalizeLayoutNumber(
+        layout.collapseBreakpointPx,
+        defaultInspection.layout.collapseBreakpointPx,
+      ),
+    },
+    regions,
+  };
+}
+
+function panelRegionStyle(region) {
+  const style = {};
+  if (!region) return style;
+  if (region.order != null) style.order = region.order;
+  if (region.widthPx != null) style.width = `${region.widthPx}px`;
+  if (region.minWidthPx != null) style.minWidth = `${region.minWidthPx}px`;
+  if (region.maxWidthPx != null) style.maxWidth = `${region.maxWidthPx}px`;
+  if (region.heightPx != null) style.height = `${region.heightPx}px`;
+  if (region.minHeightPx != null) style.minHeight = `${region.minHeightPx}px`;
+  if (region.maxHeightPx != null) style.maxHeight = `${region.maxHeightPx}px`;
+  return style;
+}
+
 function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
   const [batches, setBatches] = useState([]);
   const [parts, setParts] = useState([]);
@@ -230,14 +298,22 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
   const [centerPanelTab, setCenterPanelTab] = useState('inspector');
   const [rightPanelTab, setRightPanelTab] = useState('annotations');
   const [selectedImageRef, setSelectedImageRef] = useState('');
+  const [viewportWidth, setViewportWidth] = useState(() => (
+    typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth
+  ));
 
-  const inspectionHierarchy = useMemo(() => ({
-    leftColumn: hierarchy.leftColumn || 'part_summary',
-    centerTabs: Array.isArray(hierarchy.centerTabs) && hierarchy.centerTabs.length > 0
-      ? hierarchy.centerTabs
-      : ['inspector', 'image_metadata'],
-    rightColumn: hierarchy.rightColumn || 'annotations',
-  }), [hierarchy]);
+  const inspectionHierarchy = useMemo(() => normalizeInspectionHierarchy(hierarchy), [hierarchy]);
+  const leftRegion = inspectionHierarchy.regions[inspectionHierarchy.leftColumn];
+  const rightRegion = inspectionHierarchy.regions[inspectionHierarchy.rightColumn];
+  const inspectorRegion = inspectionHierarchy.regions.inspector;
+  const imageMetadataRegion = inspectionHierarchy.regions.image_metadata;
+  const visualWorkspaceRegion = inspectionHierarchy.regions.visual_workspace;
+  const inspectionLayoutCollapsed = viewportWidth <= inspectionHierarchy.layout.collapseBreakpointPx;
+  const workbenchPanelGridStyle = {
+    '--inspection-grid-template-columns': inspectionLayoutCollapsed ? '1fr' : inspectionHierarchy.layout.gridTemplateColumns,
+    '--inspection-layout-gap': `${inspectionHierarchy.layout.gapPx}px`,
+    '--inspection-layout-min-height': inspectionLayoutCollapsed ? 'auto' : `${inspectionHierarchy.layout.minHeightPx}px`,
+  };
 
   useEffect(() => {
     const loadWorkbenchData = async () => {
@@ -302,6 +378,13 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
 
     loadWorkbenchData();
   }, [projectId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const handleResize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const saveInspectorHotkeys = async () => {
     const validation = validateInspectorHotkeysDraft(inspectorHotkeyDraft);
@@ -1068,24 +1151,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
 
           <div className="workbench-layout">
             <div className="workbench-details">
-              {!selectedPart ? (
-                <div>
-                  {filteredParts.length === 0 ? (
-                    <>
-                      <p className="muted">No parts found for the current filters.</p>
-                      {normalizationTriageField && (
-                        <p className="muted" data-testid="normalization-triage-empty-guidance">
-                          {normalizationTriageMatchCount > 0
-                            ? `Triage matches exist for ${normalizationTriageField}, but they are hidden by the active filters.`
-                            : `No parts in this project contain mixed ${normalizationTriageField} metadata values.`}
-                        </p>
-                      )}
-                    </>
-                  ) : (
-                    <p className="muted">Select a part to inspect its configured view board.</p>
-                  )}
-                </div>
-              ) : (
+              {selectedPart ? (
                 <>
                   <div className="workbench-detail-header">
                     <h3>{selectedPart.display_name || selectedPart.serial_number}</h3>
@@ -1128,9 +1194,35 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                       </ul>
                     </div>
                   )}
+                </>
+              ) : (
+                <div className="workbench-notice" data-testid="inspection-empty-state">
+                  <strong>No part selected</strong>
+                  <p className="muted">
+                    {filteredParts.length === 0
+                      ? 'No parts found for the current filters. The configured inspection workspace is ready for incoming parts.'
+                      : 'Select a part from the summary panel to begin inspection.'}
+                  </p>
+                  {normalizationTriageField && (
+                    <p className="muted" data-testid="normalization-triage-empty-guidance">
+                      {normalizationTriageMatchCount > 0
+                        ? `Triage matches exist for ${normalizationTriageField}, but they are hidden by the active filters.`
+                        : `No parts in this project contain mixed ${normalizationTriageField} metadata values.`}
+                    </p>
+                  )}
+                </div>
+              )}
 
-                  <div className="workbench-tabbed-panels">
-                    <section className="workbench-tabbed-panel">
+                  <div
+                    className="workbench-tabbed-panels"
+                    style={workbenchPanelGridStyle}
+                    data-testid="inspection-layout-grid"
+                  >
+                    <section
+                      className="workbench-tabbed-panel"
+                      style={panelRegionStyle(leftRegion)}
+                      data-layout-region={inspectionHierarchy.leftColumn}
+                    >
                       <div className="project-tabs" role="tablist" aria-label="Left panel tabs">
                         <button
                           type="button"
@@ -1139,12 +1231,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                           aria-selected={leftPanelTab === inspectionHierarchy.leftColumn}
                           onClick={() => setLeftPanelTab(inspectionHierarchy.leftColumn)}
                         >
-                          Part Summary
+                          {leftRegion?.label || 'Part Summary'}
                         </button>
                       </div>
                       {leftPanelTab === inspectionHierarchy.leftColumn && (
                         <div className="workspace-panel-layout">
-                          <strong>Part Summary</strong>
+                          <strong>{leftRegion?.label || 'Part Summary'}</strong>
                           <p className="muted">Navigate by batch, part, and image.</p>
                           <div className="workbench-list">
                             {filteredParts.length === 0 ? (
@@ -1229,7 +1321,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                       )}
                     </section>
 
-                    <section className="workbench-tabbed-panel">
+                    <section
+                      className="workbench-tabbed-panel"
+                      style={panelRegionStyle(inspectorRegion)}
+                      data-layout-region="center"
+                    >
                       <div className="project-tabs" role="tablist" aria-label="Center panel tabs">
                         {inspectionHierarchy.centerTabs.includes('inspector') && (
                           <button
@@ -1239,7 +1335,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                             aria-selected={centerPanelTab === 'inspector'}
                             onClick={() => setCenterPanelTab('inspector')}
                           >
-                            Inspection
+                            {inspectorRegion?.label || 'Inspection'}
                           </button>
                         )}
                         {inspectionHierarchy.centerTabs.includes('image_metadata') && (
@@ -1250,7 +1346,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                             aria-selected={centerPanelTab === 'image_metadata'}
                             onClick={() => setCenterPanelTab('image_metadata')}
                           >
-                            Image Metadata
+                            {imageMetadataRegion?.label || 'Image Metadata'}
                           </button>
                         )}
                       </div>
@@ -1258,7 +1354,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                         <div className="inspector-common-controls" data-testid="inspector-common-controls">
                           <div className="workspace-panel-layout" data-testid="selected-image-panel">
                             <strong>Selected Part Image</strong>
-                            {selectedPartImageRefs.length === 0 ? (
+                            {!selectedPart ? (
+                              <p className="muted">No part selected. Load or select a part to inspect mapped images.</p>
+                            ) : selectedPartImageRefs.length === 0 ? (
                               <p className="muted">No mapped images for this part.</p>
                             ) : (
                               <>
@@ -1497,14 +1595,22 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                           </div>
                       )}
                       {centerPanelTab === 'image_metadata' && (
-                        <div className="workspace-panel-layout" data-testid="image-metadata-panel">
-                          <strong>Image Metadata</strong>
+                        <div
+                          className="workspace-panel-layout"
+                          data-testid="image-metadata-panel"
+                          style={panelRegionStyle(imageMetadataRegion)}
+                        >
+                          <strong>{imageMetadataRegion?.label || 'Image Metadata'}</strong>
                           <pre>{JSON.stringify(selectedPartMetadata, null, 2)}</pre>
                         </div>
                       )}
                     </section>
 
-                    <section className="workbench-tabbed-panel">
+                    <section
+                      className="workbench-tabbed-panel"
+                      style={panelRegionStyle(rightRegion)}
+                      data-layout-region={inspectionHierarchy.rightColumn}
+                    >
                       <div className="project-tabs" role="tablist" aria-label="Right panel tabs">
                         <button
                           type="button"
@@ -1513,13 +1619,13 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                           aria-selected={rightPanelTab === inspectionHierarchy.rightColumn}
                           onClick={() => setRightPanelTab(inspectionHierarchy.rightColumn)}
                         >
-                          Annotations
+                          {rightRegion?.label || 'Annotations'}
                         </button>
                       </div>
                       {rightPanelTab === inspectionHierarchy.rightColumn && (
                         <div className="annotation-controls" data-testid="annotation-controls">
-                          <strong>Annotations</strong>
-                          <p className="muted">For selected part: {selectedPart.serial_number}</p>
+                          <strong>{rightRegion?.label || 'Annotations'}</strong>
+                          <p className="muted">For selected part: {selectedPart?.serial_number || 'No part selected'}</p>
                       <div className="measurement-fields">
                         <select
                           aria-label="Annotation defect type"
@@ -1582,7 +1688,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                             }))}
                           />
                         ))}
-                        <button type="button" className="btn btn-secondary btn-sm" onClick={createAnnotation}>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          onClick={createAnnotation}
+                          disabled={!selectedPart}
+                        >
                           Add annotation
                         </button>
                       </div>
@@ -1667,7 +1778,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                   </div>
 
                   {['PT2', 'PT3'].includes(projectType) ? (
-                    <div className="mpr-shell" data-testid="mpr-shell">
+                    <div
+                      className="mpr-shell"
+                      data-testid="mpr-shell"
+                      style={panelRegionStyle(visualWorkspaceRegion)}
+                      data-layout-region="visual_workspace"
+                    >
                       <div className="mpr-controls">
                         <label htmlFor="contrastSlider">Contrast ({contrastPercent}%)</label>
                         <input
@@ -1869,7 +1985,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                       </div>
                     </div>
                   ) : (
-                    <div className="view-board">
+                    <div
+                      className="view-board"
+                      style={panelRegionStyle(visualWorkspaceRegion)}
+                      data-layout-region="visual_workspace"
+                    >
                       {getPartViews(selectedPart).map((viewName) => {
                         const imagesByView = selectedPart?.metadata?.view_images || {};
                         const imageRef = imagesByView?.[viewName];
@@ -1890,8 +2010,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                       })}
                     </div>
                   )}
-                </>
-              )}
             </div>
           </div>
         </>

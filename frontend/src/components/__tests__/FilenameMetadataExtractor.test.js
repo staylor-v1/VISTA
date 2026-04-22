@@ -62,6 +62,30 @@ describe('FilenameMetadataExtractor', () => {
   });
 
   describe('Simple mode - delimiter split', () => {
+    test('auto-applies VISTA hierarchy preset for matching filenames', async () => {
+      const onConfigChange = jest.fn();
+      const files = [makeFile('D1001_LOT01_BATCH01_SN0001_front_visual_false.jpg')];
+      renderExtractor({ files, onConfigChange });
+
+      await waitFor(() => {
+        expect(screen.getByLabelText('Delimiter')).toHaveValue('_');
+        expect(screen.getByLabelText('Keys (comma-separated)')).toHaveValue(
+          'design_number, lot_number, batch_number, serial_number, side, modality, overlay',
+        );
+      });
+
+      const lastCall = onConfigChange.mock.calls[onConfigChange.mock.calls.length - 1][0];
+      expect(lastCall.extractMetadata('D1001_LOT01_BATCH01_SN0001_front_visual_false.jpg')).toEqual({
+        design_number: 'D1001',
+        lot_number: 'LOT01',
+        batch_number: 'BATCH01',
+        serial_number: 'SN0001',
+        side: 'front',
+        modality: 'visual',
+        overlay: 'false',
+      });
+    });
+
     test('shows keys input after delimiter is entered', () => {
       renderExtractor();
       fireEvent.change(screen.getByLabelText('Delimiter'), { target: { value: '_' } });
