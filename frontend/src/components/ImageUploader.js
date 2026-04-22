@@ -2,6 +2,127 @@ import React, { useState, useCallback, useRef } from 'react';
 import FilenameMetadataExtractor from './FilenameMetadataExtractor';
 
 const CONCURRENT_UPLOADS = 6;
+const HIERARCHY_KEYS = [
+  'design_number',
+  'lot_number',
+  'batch_number',
+  'serial_number',
+  'side',
+  'modality',
+  'overlay',
+];
+
+function normalizeBoolean(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return false;
+  return ['true', '1', 'yes', 'y'].includes(value.trim().toLowerCase());
+}
+
+function normalizeHierarchyMetadata(candidate) {
+  if (!candidate || typeof candidate !== 'object') return null;
+  const normalized = {
+    ...candidate,
+    design_number: String(candidate.design_number || '').trim(),
+    lot_number: String(candidate.lot_number || '').trim(),
+    batch_number: String(candidate.batch_number || '').trim(),
+    serial_number: String(candidate.serial_number || '').trim(),
+    side: String(candidate.side || candidate.side_identifier || '').trim().toLowerCase(),
+    modality: String(candidate.modality || '').trim().toLowerCase(),
+    overlay: normalizeBoolean(candidate.overlay),
+  };
+  const hasRequiredHierarchy = HIERARCHY_KEYS
+    .filter((key) => key !== 'overlay')
+    .every((key) => normalized[key]);
+  return hasRequiredHierarchy ? normalized : null;
+}
+
+export function buildInspectionPartIngestPayload(uploadedRecords) {
+  const partsByKey = new Map();
+
+  uploadedRecords.forEach((record) => {
+    const metadata = normalizeHierarchyMetadata(record.metadata);
+    if (!metadata) return;
+
+    const batchName = [
+      metadata.design_number,
+      metadata.lot_number,
+      metadata.batch_number,
+    ].join('_');
+    const partKey = `${batchName}_${metadata.serial_number}`;
+    const filename = record.image?.filename || record.filename;
+    if (!filename) return;
+
+    if (!partsByKey.has(partKey)) {
+      partsByKey.set(partKey, {
+        batchName,
+        batchDescription: `Design ${metadata.design_number}, lot ${metadata.lot_number}, batch ${metadata.batch_number}`,
+        serialNumber: metadata.serial_number,
+        displayName: `${metadata.design_number} ${metadata.serial_number}`,
+        metadata: {
+          design_number: metadata.design_number,
+          lot_number: metadata.lot_number,
+          batch_number: metadata.batch_number,
+          serial_number: metadata.serial_number,
+          configured_views: [],
+          modalities: [],
+          view_images: {},
+          overlay_images: {},
+          source_images: [],
+        },
+      });
+    }
+
+    const part = partsByKey.get(partKey);
+    const side = metadata.side;
+    const modality = metadata.modality;
+    if (!part.metadata.configured_views.includes(side)) {
+      part.metadata.configured_views.push(side);
+    }
+    if (!part.metadata.modalities.includes(modality)) {
+      part.metadata.modalities.push(modality);
+    }
+    part.metadata.source_images.push({
+      filename,
+      side,
+      modality,
+      overlay: metadata.overlay,
+      image_id: record.image?.id || null,
+    });
+    if (metadata.overlay) {
+      part.metadata.overlay_images[side] = {
+        ...(part.metadata.overlay_images[side] || {}),
+        [modality]: filename,
+      };
+    } else if (!part.metadata.view_images[side]) {
+      part.metadata.view_images[side] = filename;
+    }
+  });
+
+  const batchesByName = new Map();
+  Array.from(partsByKey.values()).forEach((part) => {
+    if (!batchesByName.has(part.batchName)) {
+      batchesByName.set(part.batchName, {
+        name: part.batchName,
+        description: part.batchDescription,
+        parts: [],
+      });
+    }
+    part.metadata.configured_views.sort();
+    part.metadata.modalities.sort();
+    batchesByName.get(part.batchName).parts.push({
+      serial_number: part.serialNumber,
+      display_name: part.displayName,
+      metadata: part.metadata,
+    });
+  });
+
+  const batches = Array.from(batchesByName.values()).map((batch) => ({
+    ...batch,
+    parts: batch.parts.sort((left, right) => left.serial_number.localeCompare(right.serial_number)),
+  }));
+
+  return { batches };
+}
 
 function ImageUploader({ projectId, onUploadComplete, setError }) {
   const [selectedFiles, setSelectedFiles] = useState([]);
@@ -84,6 +205,7 @@ function ImageUploader({ projectId, onUploadComplete, setError }) {
     setUploadProgress({ completed: 0, failed: 0, total });
 
     const results = [];
+    const uploadedRecords = [];
     let completed = 0;
     let failed = 0;
 
@@ -102,9 +224,13 @@ function ImageUploader({ projectId, onUploadComplete, setError }) {
         const mergedMetadata = (extractedMetadata || manualMetadata)
           ? { ...(extractedMetadata || {}), ...(manualMetadata || {}) }
           : null;
+        const hierarchyMetadata = normalizeHierarchyMetadata(mergedMetadata);
+        const metadataForUpload = hierarchyMetadata
+          ? { ...mergedMetadata, ...hierarchyMetadata }
+          : mergedMetadata;
 
-        if (mergedMetadata) {
-          formData.append('metadata', JSON.stringify(mergedMetadata));
+        if (metadataForUpload) {
+          formData.append('metadata', JSON.stringify(metadataForUpload));
         }
 
         if (groupKey && extractedMetadata && extractedMetadata[groupKey]) {
@@ -119,7 +245,13 @@ function ImageUploader({ projectId, onUploadComplete, setError }) {
           if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
           }
-          results.push(await response.json());
+          const uploadedImage = await response.json();
+          results.push(uploadedImage);
+          uploadedRecords.push({
+            image: uploadedImage,
+            filename: file.name,
+            metadata: metadataForUpload || {},
+          });
         } catch (err) {
           console.error(`Error uploading ${file.name}:`, err);
           failed += 1;
@@ -135,11 +267,32 @@ function ImageUploader({ projectId, onUploadComplete, setError }) {
     );
     await Promise.all(workers);
 
+    let ingestError = null;
+    const ingestPayload = buildInspectionPartIngestPayload(uploadedRecords);
+    const partCount = ingestPayload.batches.reduce((acc, batch) => acc + batch.parts.length, 0);
+    if (partCount > 0) {
+      try {
+        const ingestResponse = await fetch(`/api/projects/${projectId}/ingest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(ingestPayload),
+        });
+        if (!ingestResponse.ok) {
+          throw new Error(`HTTP ${ingestResponse.status}`);
+        }
+      } catch (err) {
+        ingestError = err;
+        console.error('Error ingesting uploaded images as inspection parts:', err);
+      }
+    }
+
     if (results.length > 0) {
       onUploadComplete(results);
     }
     if (failed > 0) {
       setError(`Upload complete: ${results.length} succeeded, ${failed} failed out of ${total}.`);
+    } else if (ingestError) {
+      setError('Images uploaded, but parts could not be created from filename metadata.');
     } else {
       setError(null);
     }

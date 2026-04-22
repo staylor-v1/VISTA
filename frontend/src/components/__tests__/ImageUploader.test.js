@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import ImageUploader from '../ImageUploader';
+import ImageUploader, { buildInspectionPartIngestPayload } from '../ImageUploader';
 
 const makeFile = (name) => new File(['data'], name, { type: 'image/png' });
 
@@ -181,6 +181,140 @@ describe('ImageUploader', () => {
         lot: 'lot1',
         serial: 'SN001',
       });
+    });
+
+    test('auto-creates inspection parts from VISTA hierarchy filenames after upload', async () => {
+      const fetchSpy = jest.spyOn(global, 'fetch')
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            id: 'img-front',
+            filename: 'D1001_LOT01_BATCH01_SN0001_front_visual_false.jpg',
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            id: 'img-back',
+            filename: 'D1001_LOT01_BATCH01_SN0001_back_visual_false.jpg',
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            project_id: 'proj-1',
+            counters: { parts_created: 1 },
+            discrepancies: [],
+          }),
+        });
+
+      const { props } = renderUploader();
+      selectFiles([
+        makeFile('D1001_LOT01_BATCH01_SN0001_front_visual_false.jpg'),
+        makeFile('D1001_LOT01_BATCH01_SN0001_back_visual_false.jpg'),
+      ]);
+
+      await waitFor(() => {
+        expect(screen.getByLabelText('Delimiter')).toHaveValue('_');
+        expect(screen.getByRole('button', { name: /upload images/i })).not.toBeDisabled();
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /upload images/i }));
+
+      await waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalledTimes(3);
+      });
+
+      const firstUploadMetadata = JSON.parse(fetchSpy.mock.calls[0][1].body.get('metadata'));
+      expect(firstUploadMetadata).toEqual({
+        design_number: 'D1001',
+        lot_number: 'LOT01',
+        batch_number: 'BATCH01',
+        serial_number: 'SN0001',
+        side: 'front',
+        modality: 'visual',
+        overlay: false,
+      });
+
+      const ingestCall = fetchSpy.mock.calls[2];
+      expect(ingestCall[0]).toBe('/api/projects/proj-1/ingest');
+      expect(ingestCall[1].method).toBe('POST');
+      expect(JSON.parse(ingestCall[1].body)).toEqual({
+        batches: [
+          {
+            name: 'D1001_LOT01_BATCH01',
+            description: 'Design D1001, lot LOT01, batch BATCH01',
+            parts: [
+              expect.objectContaining({
+                serial_number: 'SN0001',
+                display_name: 'D1001 SN0001',
+                metadata: expect.objectContaining({
+                  design_number: 'D1001',
+                  lot_number: 'LOT01',
+                  batch_number: 'BATCH01',
+                  serial_number: 'SN0001',
+                  configured_views: ['back', 'front'],
+                  modalities: ['visual'],
+                  view_images: {
+                    back: 'D1001_LOT01_BATCH01_SN0001_back_visual_false.jpg',
+                    front: 'D1001_LOT01_BATCH01_SN0001_front_visual_false.jpg',
+                  },
+                }),
+              }),
+            ],
+          },
+        ],
+      });
+      expect(props.onUploadComplete).toHaveBeenCalledWith([
+        { id: 'img-front', filename: 'D1001_LOT01_BATCH01_SN0001_front_visual_false.jpg' },
+        { id: 'img-back', filename: 'D1001_LOT01_BATCH01_SN0001_back_visual_false.jpg' },
+      ]);
+    });
+  });
+
+  describe('buildInspectionPartIngestPayload', () => {
+    test('groups hierarchy metadata into batches and parts', () => {
+      const payload = buildInspectionPartIngestPayload([
+        {
+          image: { id: 'img-1', filename: 'D1001_LOT01_BATCH01_SN0001_front_visual_false.jpg' },
+          metadata: {
+            design_number: 'D1001',
+            lot_number: 'LOT01',
+            batch_number: 'BATCH01',
+            serial_number: 'SN0001',
+            side: 'front',
+            modality: 'visual',
+            overlay: 'false',
+          },
+        },
+        {
+          image: { id: 'img-2', filename: 'D1001_LOT01_BATCH01_SN0001_front_heatmap_true.jpg' },
+          metadata: {
+            design_number: 'D1001',
+            lot_number: 'LOT01',
+            batch_number: 'BATCH01',
+            serial_number: 'SN0001',
+            side: 'front',
+            modality: 'heatmap',
+            overlay: 'true',
+          },
+        },
+      ]);
+
+      expect(payload.batches).toHaveLength(1);
+      expect(payload.batches[0].parts).toHaveLength(1);
+      expect(payload.batches[0].parts[0].metadata).toEqual(expect.objectContaining({
+        configured_views: ['front'],
+        modalities: ['heatmap', 'visual'],
+        view_images: {
+          front: 'D1001_LOT01_BATCH01_SN0001_front_visual_false.jpg',
+        },
+        overlay_images: {
+          front: {
+            heatmap: 'D1001_LOT01_BATCH01_SN0001_front_heatmap_true.jpg',
+          },
+        },
+      }));
     });
   });
 

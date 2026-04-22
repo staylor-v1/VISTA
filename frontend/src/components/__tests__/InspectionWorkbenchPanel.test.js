@@ -770,4 +770,118 @@ describe('InspectionWorkbenchPanel', () => {
     }
   });
 
+  test('applies configured inspection layout labels, placement, and dimensions', async () => {
+    const scenario = scenarioByUser[0];
+    mockWorkbenchFetch(scenario);
+    const hierarchy = {
+      leftColumn: 'part_summary',
+      centerTabs: ['image_metadata', 'inspector'],
+      rightColumn: 'annotations',
+      layout: {
+        gridTemplateColumns: '300px minmax(620px, 1fr) 380px',
+        gapPx: 18,
+        minHeightPx: 680,
+      },
+      regions: {
+        part_summary: {
+          slot: 'left',
+          label: 'Configured Navigator',
+          order: 1,
+          widthPx: 300,
+          minWidthPx: 260,
+          maxWidthPx: 360,
+          minHeightPx: 500,
+        },
+        image_metadata: {
+          slot: 'center',
+          label: 'Configured Metadata',
+          tabGroup: 'center',
+          order: 1,
+          minWidthPx: 540,
+        },
+        inspector: {
+          slot: 'center',
+          label: 'Configured Inspector',
+          tabGroup: 'center',
+          order: 2,
+          minWidthPx: 620,
+        },
+        annotations: {
+          slot: 'right',
+          label: 'Configured Findings',
+          order: 1,
+          widthPx: 380,
+          minWidthPx: 300,
+          maxWidthPx: 460,
+        },
+      },
+    };
+
+    const { container, unmount } = render(
+      <InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" hierarchy={hierarchy} />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(`Batches: ${scenario.batches.length}`)).toBeInTheDocument();
+    });
+
+    const grid = screen.getByTestId('inspection-layout-grid');
+    expect(grid.style.getPropertyValue('--inspection-grid-template-columns')).toBe('300px minmax(620px, 1fr) 380px');
+    expect(grid.style.getPropertyValue('--inspection-layout-gap')).toBe('18px');
+    expect(grid.style.getPropertyValue('--inspection-layout-min-height')).toBe('680px');
+
+    expect(screen.getByRole('tab', { name: 'Configured Navigator' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Configured Metadata' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Configured Inspector' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Configured Findings' })).toBeInTheDocument();
+
+    const leftRegion = container.querySelector('[data-layout-region="part_summary"]');
+    const rightRegion = container.querySelector('[data-layout-region="annotations"]');
+    expect(leftRegion).toHaveStyle({
+      width: '300px',
+      minWidth: '260px',
+      maxWidth: '360px',
+      minHeight: '500px',
+    });
+    expect(rightRegion).toHaveStyle({
+      width: '380px',
+      minWidth: '300px',
+      maxWidth: '460px',
+    });
+
+    unmount();
+  });
+
+  test('renders the configured inspection layout before any parts are loaded', async () => {
+    mockWorkbenchFetch({
+      user: 'empty',
+      batches: [],
+      parts: [],
+      workspaceState: {},
+      hotkeys: { accept_classification: 'a', reject_classification: 'r', toggle_shortcut_help: 'h' },
+    });
+
+    const { unmount } = render(<InspectionWorkbenchPanel projectId="proj-empty" projectType="PT1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Batches: 0')).toBeInTheDocument();
+      expect(screen.getByText('Parts: 0')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('inspection-empty-state')).toHaveTextContent('No part selected');
+    expect(screen.getByTestId('inspection-layout-grid')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Part Summary' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Inspection' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Image Metadata' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Annotations' })).toBeInTheDocument();
+    expect(screen.getByTestId('selected-image-panel')).toHaveTextContent(
+      'No part selected. Load or select a part to inspect mapped images.',
+    );
+    expect(screen.getByTestId('annotation-controls')).toHaveTextContent('For selected part: No part selected');
+    expect(screen.getByRole('button', { name: 'Add annotation' })).toBeDisabled();
+    expect(screen.getAllByText('No image mapped').length).toBeGreaterThan(0);
+
+    unmount();
+  });
+
 });

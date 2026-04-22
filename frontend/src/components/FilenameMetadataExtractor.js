@@ -1,5 +1,16 @@
 import React, { useState, useMemo, useEffect } from 'react';
 
+export const VISTA_HIERARCHY_KEYS = [
+  'design_number',
+  'lot_number',
+  'batch_number',
+  'serial_number',
+  'side',
+  'modality',
+  'overlay',
+];
+const VISTA_HIERARCHY_DELIMITER = '_';
+
 /**
  * FilenameMetadataExtractor - extracts key-value metadata from filenames.
  *
@@ -46,9 +57,19 @@ function FilenameMetadataExtractor({ files, onConfigChange }) {
   const [mode, setMode] = useState('simple');
   const [pattern, setPattern] = useState('');
   const [keysInput, setKeysInput] = useState('');
+  const [userEditedConfig, setUserEditedConfig] = useState(false);
 
   // The filename stem used for the live preview (first selected file).
   const previewStem = files.length > 0 ? stripExtension(files[0].name) : '';
+
+  useEffect(() => {
+    if (userEditedConfig || !previewStem || pattern || keysInput) return;
+    const candidateValues = previewStem.split(VISTA_HIERARCHY_DELIMITER);
+    if (candidateValues.length !== VISTA_HIERARCHY_KEYS.length) return;
+    setMode('simple');
+    setPattern(VISTA_HIERARCHY_DELIMITER);
+    setKeysInput(VISTA_HIERARCHY_KEYS.join(', '));
+  }, [keysInput, pattern, previewStem, userEditedConfig]);
 
   // Live-preview results for the first selected filename.
   // Also validates the regex pattern even when no file is selected.
@@ -140,7 +161,10 @@ function FilenameMetadataExtractor({ files, onConfigChange }) {
               name="extractor-mode"
               value="simple"
               checked={mode === 'simple'}
-              onChange={() => setMode('simple')}
+              onChange={() => {
+                setUserEditedConfig(true);
+                setMode('simple');
+              }}
             />
             Simple
           </label>
@@ -150,7 +174,10 @@ function FilenameMetadataExtractor({ files, onConfigChange }) {
               name="extractor-mode"
               value="advanced"
               checked={mode === 'advanced'}
-              onChange={() => setMode('advanced')}
+              onChange={() => {
+                setUserEditedConfig(true);
+                setMode('advanced');
+              }}
             />
             Advanced (Regex)
           </label>
@@ -165,7 +192,10 @@ function FilenameMetadataExtractor({ files, onConfigChange }) {
           id="extractor-pattern"
           type="text"
           value={pattern}
-          onChange={(e) => setPattern(e.target.value)}
+          onChange={(e) => {
+            setUserEditedConfig(true);
+            setPattern(e.target.value);
+          }}
           placeholder={
             mode === 'simple'
               ? 'e.g. _ or - or .'
@@ -191,13 +221,16 @@ function FilenameMetadataExtractor({ files, onConfigChange }) {
         <div className="form-group">
           <label htmlFor="extractor-keys">Keys (comma-separated)</label>
           <input
-            id="extractor-keys"
-            type="text"
-            value={keysInput}
-            onChange={(e) => setKeysInput(e.target.value)}
-            placeholder="e.g. lot, serial_number, side_identifier, modality"
-          />
-        </div>
+          id="extractor-keys"
+          type="text"
+          value={keysInput}
+          onChange={(e) => {
+            setUserEditedConfig(true);
+            setKeysInput(e.target.value);
+          }}
+          placeholder="e.g. design_number, lot_number, batch_number, serial_number, side, modality, overlay"
+        />
+      </div>
       )}
 
       {mismatch && (

@@ -3,8 +3,59 @@
 main_tabs = ["project_configuration", "project_data", "inspection", "report"]
 
 [inspection_layout]
-# Left and right are fixed columns inside the Inspection tab.
+# Left and right are fixed columns inside the Inspection tab. The center column
+# owns the tabbed inspector workspace. Dimensions are applied directly by the
+# React inspection workbench and can be edited while the dev server is running.
 left_column = "part_summary"
 # Valid values today: "inspector", "image_metadata"
 center_tabs = ["inspector", "image_metadata"]
 right_column = "annotations"
+grid_template_columns = "320px minmax(560px, 1fr) 360px"
+gap_px = 12
+min_height_px = 640
+collapse_breakpoint_px = 900
+
+[inspection_layout.regions.part_summary]
+slot = "left"
+label = "Part Summary"
+order = 1
+is_open = true
+width_px = 320
+min_width_px = 280
+max_width_px = 420
+min_height_px = 420
+
+[inspection_layout.regions.inspector]
+slot = "center"
+tab_group = "center"
+label = "Inspection"
+order = 1
+is_open = true
+min_width_px = 520
+min_height_px = 420
+
+[inspection_layout.regions.image_metadata]
+slot = "center"
+tab_group = "center"
+label = "Image Metadata"
+order = 2
+is_open = true
+min_width_px = 520
+min_height_px = 420
+
+[inspection_layout.regions.annotations]
+slot = "right"
+label = "Annotations"
+order = 1
+is_open = true
+width_px = 360
+min_width_px = 280
+max_width_px = 460
+min_height_px = 420
+
+[inspection_layout.regions.visual_workspace]
+slot = "bottom"
+label = "Visual Workspace"
+order = 1
+is_open = true
+min_height_px = 360

@@ -3894,13 +3894,15 @@ ul li:hover {
 
 .workbench-tabbed-panels {
   display: grid;
-  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr) minmax(280px, 360px);
-  gap: 12px;
+  grid-template-columns: var(--inspection-grid-template-columns, minmax(280px, 360px) minmax(0, 1fr) minmax(280px, 360px));
+  gap: var(--inspection-layout-gap, 12px);
+  min-height: var(--inspection-layout-min-height, auto);
   margin-bottom: 12px;
 }
 
 .workbench-tabbed-panel {
   min-width: 0;
+  width: 100%;
 }
 
 .workbench-tabbed-panel .project-tabs {
@@ -3964,6 +3966,7 @@ ul li:hover {
 @media (max-width: 900px) {
   .workbench-tabbed-panels {
     grid-template-columns: 1fr;
+    min-height: auto;
   }
 
   .view-board {
