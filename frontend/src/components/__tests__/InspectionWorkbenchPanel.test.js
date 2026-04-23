@@ -466,6 +466,21 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
     if (url.includes('/parts')) {
       return Promise.resolve({ ok: true, json: async () => mutableParts });
     }
+    if (url.includes('/images?include_deleted=true&limit=5000')) {
+      const imageRecords = mutableParts.flatMap((part) => {
+        const viewImages = part?.metadata?.view_images || {};
+        return Object.entries(viewImages).map(([viewName, imageRef], index) => ({
+          id: `${part.id}-image-${index + 1}`,
+          filename: imageRef,
+          metadata: {
+            part_id: part.id,
+            serial_number: part.serial_number,
+            view_name: viewName,
+          },
+        }));
+      });
+      return Promise.resolve({ ok: true, json: async () => imageRecords });
+    }
     return Promise.resolve({ ok: false, status: 404 });
   });
 
@@ -726,8 +741,11 @@ describe('InspectionWorkbenchPanel', () => {
     expect(grid.style.getPropertyValue('--inspection-layout-min-height')).toBe('680px');
 
     expect(screen.getByRole('tab', { name: 'Configured Navigator' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Configured Metadata' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Configured Inspector' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Configured Findings' })).toBeInTheDocument();
-    expect(screen.getByText('Configured Inspector')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Configured Inspector' }));
+    expect(screen.getAllByText('Configured Inspector').length).toBeGreaterThan(0);
 
     const leftRegion = container.querySelector('[data-layout-region="part_summary"]');
     const rightRegion = container.querySelector('[data-layout-region="annotations"]');
@@ -765,8 +783,9 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('inspection-empty-state')).toHaveTextContent('No part selected');
     expect(screen.getByTestId('inspection-layout-grid')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Part Summary' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Image Metadata' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Inspection' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Annotations' })).toBeInTheDocument();
-    expect(screen.getByText('Inspection')).toBeInTheDocument();
     expect(screen.getByTestId('selected-image-panel')).toHaveTextContent(
       'No part selected. Select a part to inspect mapped images.',
     );
@@ -774,6 +793,24 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByRole('button', { name: 'Add annotation' })).toBeDisabled();
 
     unmount();
+  });
+
+  test('switches center pane between inspector images and selected image metadata', async () => {
+    mockWorkbenchFetch(scenarioByUser[0]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Basic Part').length).toBeGreaterThan(0);
+    });
+
+    expect(screen.getByTestId('selected-image-panel')).toHaveTextContent('Inspection');
+    fireEvent.click(screen.getByRole('tab', { name: 'Image Metadata' }));
+    expect(screen.getByRole('tab', { name: 'Image Metadata' })).toHaveAttribute('aria-selected', 'true');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('selected-image-metadata-panel')).toHaveTextContent(/Selected image:\s*front-basic\.png/);
+    });
+    expect(screen.getByTestId('selected-image-metadata-panel')).toHaveTextContent('"view_name": "front"');
   });
 
 });
