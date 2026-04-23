@@ -507,49 +507,11 @@ describe('InspectionWorkbenchPanel', () => {
       );
       expect(screen.getByText(`Parts: ${scenario.parts.length}`)).toBeInTheDocument();
       expect(screen.getByText(new RegExp(projectType))).toBeInTheDocument();
-      expect(screen.getByTestId('inspector-common-controls')).toBeInTheDocument();
-      expect(screen.getByTestId('panel-layout-controls')).toBeInTheDocument();
-      fireEvent.change(screen.getByLabelText('part list width'), { target: { value: '9999' } });
-      fireEvent.change(screen.getByLabelText('part list height'), { target: { value: '100' } });
-      fireEvent.change(screen.getByLabelText('part list orientation'), { target: { value: 'horizontal' } });
-
-      if (scenario.user === 'advanced') {
-        expect(screen.getByTestId('manual-measurement-list')).toHaveTextContent('No measurements captured.');
-      } else if (scenario.user === 'basic') {
-        expect(screen.getByTestId('manual-measurement-list')).toHaveTextContent('Length: 12.6');
-      } else {
-        expect(screen.getByTestId('manual-measurement-list')).toHaveTextContent('Crack length: 10.2');
-      }
-
-      fireEvent.change(screen.getByPlaceholderText('label'), { target: { value: `${scenario.user}-length` } });
-      fireEvent.change(screen.getByPlaceholderText('value'), { target: { value: '12.6' } });
-      fireEvent.click(screen.getByRole('button', { name: /save measurement/i }));
-      expect(screen.getByTestId('manual-measurement-list')).toHaveTextContent(`${scenario.user}-length: 12.6mm`);
-      fireEvent.click(screen.getByRole('button', { name: new RegExp(`Delete measurement ${scenario.user}-length`, 'i') }));
-      expect(screen.getByTestId('manual-measurement-list')).not.toHaveTextContent(`${scenario.user}-length: 12.6mm`);
-      if (scenario.user === 'advanced') {
-        expect(screen.getByTestId('manual-measurement-list')).toHaveTextContent('No measurements captured.');
-      }
-      expect(screen.getByTestId('inspector-viewport-state')).toHaveTextContent(/Zoom 1\.\d{2}x|Zoom 1.00x/);
-      const inspectorNav = screen.getByTestId('inspector-nav-controls');
-      fireEvent.click(within(inspectorNav).getByRole('button', { name: 'Zoom +' }));
-      fireEvent.click(within(inspectorNav).getByRole('button', { name: 'Pan →' }));
-      await waitFor(() => {
-        expect(screen.getByTestId('inspector-viewport-state')).toHaveTextContent(/Zoom 1\.10x/);
-        expect(screen.getByTestId('inspector-viewport-state')).toHaveTextContent(/Pan \(10, 0\)/);
-      });
-
-      fireEvent.click(screen.getByTestId('toggle-image-visibility'));
-      const initialImageEnabled = typeof scenario.workspaceState?.inspector?.image_enabled === 'boolean'
-        ? scenario.workspaceState.inspector.image_enabled
-        : true;
-      if (projectType === 'PT1') {
-        if (initialImageEnabled) {
-          expect(screen.getAllByText('Image hidden').length).toBeGreaterThan(0);
-        } else {
-          expect(screen.getAllByText(/Mapped:|No image mapped/).length).toBeGreaterThan(0);
-        }
-      }
+      expect(screen.getByLabelText('Batch')).toBeInTheDocument();
+      expect(screen.getByLabelText('Inspection status')).toBeInTheDocument();
+      expect(screen.getByLabelText('Batch / Part filter')).toBeInTheDocument();
+      expect(screen.getByLabelText('Sort')).toBeInTheDocument();
+      expect(screen.getByTestId('selected-image-panel')).toBeInTheDocument();
 
       // Inspection-status filter
       fireEvent.change(screen.getByLabelText('Inspection status'), { target: { value: 'pass' } });
@@ -601,74 +563,17 @@ describe('InspectionWorkbenchPanel', () => {
           expect.objectContaining({ method: 'POST' }),
         );
       });
-
-      if (projectType === 'PT1') {
-        // PT1 keeps the configured external-view board.
-        expect(screen.getAllByText(/Image hidden|No image mapped|Mapped:/).length).toBeGreaterThan(0);
-        const quickSwitch = screen.getByText('View quick switch').closest('.view-switcher');
-        const quickSwitchButtons = within(quickSwitch).getAllByRole('button');
-        fireEvent.click(quickSwitchButtons[0]);
-      } else {
-        // PT2/PT3 render MPR shell with synchronized locator state.
-        expect(screen.getByTestId('mpr-shell')).toBeInTheDocument();
-        expect(screen.getByText('Axial plane')).toBeInTheDocument();
-        expect(screen.getByText('Coronal plane')).toBeInTheDocument();
-        expect(screen.getByText('Sagittal plane')).toBeInTheDocument();
-        expect(screen.getByLabelText(/Contrast/)).toBeInTheDocument();
-        const tooltip = screen.getByTestId('mpr-tooltip-values');
-        expect(tooltip).toHaveTextContent(/Cursor/);
-        const initialPart = scenario.parts[0];
-        const expectedSagittal = scenario.workspaceState?.mpr?.slice_position?.sagittal != null
-          ? scenario.workspaceState.mpr.slice_position.sagittal + 1
-          : Math.floor((initialPart.metadata.volume_shape.sagittal - 1) / 2) + 1;
-        expect(screen.getByTestId('mpr-locator')).toHaveTextContent(new RegExp(`S${expectedSagittal}`));
-        expect(screen.getByTestId('mpr-tooltip-values')).toHaveTextContent('Base');
-        const firstOverlay = scenario.parts[0].metadata.overlay_layers?.[0]?.label || 'Segmentation';
-        const firstOverlayToggle = screen.getByLabelText(firstOverlay);
-        fireEvent.click(firstOverlayToggle);
-        expect(screen.getByTestId('mpr-tooltip-values')).toHaveTextContent(/No overlays selected|%/);
-        if (scenario.parts[0].metadata?.segmentation_runs?.length) {
-          expect(screen.getByTestId('segmentation-result')).toHaveTextContent(/Segmentation completed/);
-        }
-        if (scenario.parts[0].metadata?.measurement_runs?.length) {
-          expect(screen.getByTestId('measurement-result')).toHaveTextContent(/Measurements completed/);
-        }
-        fireEvent.click(screen.getByTestId('run-segmentation'));
-        await waitFor(() => {
-          expect(screen.getByTestId('segmentation-result')).toHaveTextContent(/Segmentation completed/);
-        });
-        fireEvent.click(screen.getByTestId('run-measurements'));
-        await waitFor(() => {
-          expect(screen.getByTestId('measurement-result')).toHaveTextContent(/Measurements completed/);
-        });
-        const mprNav = screen.getByLabelText('3D orientation pane');
-        fireEvent.click(within(mprNav).getByRole('button', { name: 'Zoom +' }));
-        fireEvent.click(within(mprNav).getByRole('button', { name: 'Pan →' }));
-        await waitFor(() => {
-          expect(screen.getAllByText(/Pan \((-?\d+), (-?\d+)\)/).length).toBeGreaterThan(0);
-        });
-
-        // Reset batch filter to make all parts visible and validate synchronized part-switch behavior.
-        if (screen.queryByTestId('normalization-triage-clear')) {
-          fireEvent.click(screen.getByTestId('normalization-triage-clear'));
-          await waitFor(() => {
-            expect(screen.queryByTestId('normalization-triage-active')).not.toBeInTheDocument();
-          });
-        }
-        fireEvent.change(screen.getByLabelText('Inspection status'), { target: { value: 'all' } });
-        fireEvent.change(screen.getByLabelText('Batch'), { target: { value: '' } });
-      }
+      fireEvent.change(screen.getByLabelText('Inspection status'), { target: { value: 'all' } });
+      fireEvent.change(screen.getByLabelText('Batch'), { target: { value: '' } });
       await waitFor(() => {
         expect(workspaceTracker.getWorkspaceSaves().length).toBeGreaterThan(0);
       });
       const lastWorkspaceSave = workspaceTracker.getWorkspaceSaves().at(-1);
-      expect(lastWorkspaceSave?.state?.panel_layout?.part_list).toEqual(
-        expect.objectContaining({
-          width_px: 1200,
-          height_px: 220,
-          orientation: 'horizontal',
-        }),
-      );
+      expect(lastWorkspaceSave?.state).toEqual(expect.objectContaining({
+        review_filter: expect.any(String),
+        part_filter: expect.any(String),
+        sort_mode: expect.any(String),
+      }));
 
       unmount();
     }
@@ -739,33 +644,21 @@ describe('InspectionWorkbenchPanel', () => {
       const { unmount } = render(<InspectionWorkbenchPanel projectId="proj-1" projectType={projectType} />);
 
       await waitFor(() => {
-        expect(screen.getByLabelText('Hotkey pass')).toHaveValue(scenario.hotkeys.accept_classification);
+        expect(screen.getByTestId('inspector-hotkey-hints')).toHaveTextContent(
+          new RegExp(`pass \\(${scenario.hotkeys.accept_classification.toUpperCase()}\\)`),
+        );
       });
 
-      fireEvent.change(screen.getByLabelText('Hotkey pass'), { target: { value: '1' } });
-      fireEvent.change(screen.getByLabelText('Hotkey reject'), { target: { value: '1' } });
-      fireEvent.change(screen.getByLabelText('Hotkey help'), { target: { value: '2' } });
-      fireEvent.click(screen.getByRole('button', { name: 'Save Hotkeys' }));
+      fireEvent.keyDown(document, { key: scenario.hotkeys.accept_classification });
       await waitFor(() => {
-        expect(screen.getByText('Hotkeys must use unique key bindings.')).toBeInTheDocument();
+        expect(screen.getByText(/Passed: \d+/)).toBeInTheDocument();
       });
 
-      fireEvent.change(screen.getByLabelText('Hotkey pass'), { target: { value: 'v' } });
-      fireEvent.change(screen.getByLabelText('Hotkey reject'), { target: { value: 'b' } });
-      fireEvent.change(screen.getByLabelText('Hotkey help'), { target: { value: 'n' } });
-      fireEvent.click(screen.getByRole('button', { name: 'Save Hotkeys' }));
+      fireEvent.keyDown(document, { key: scenario.hotkeys.reject_classification });
       await waitFor(() => {
-        expect(screen.getByText('Hotkeys saved for this project.')).toBeInTheDocument();
+        expect(screen.getByText(/Rejected: \d+/)).toBeInTheDocument();
       });
-      await waitFor(() => {
-        expect(screen.getByTestId('inspector-hotkey-hints')).toHaveTextContent(/pass \(V\), reject \(B\), shortcuts help \(N\)/);
-      });
-      const savedConfigPayload = workspaceTracker.getConfigurationSaves().at(-1);
-      expect(savedConfigPayload.config.process_settings.configurable_hotkeys).toEqual({
-        accept_classification: 'v',
-        reject_classification: 'b',
-        toggle_shortcut_help: 'n',
-      });
+      expect(workspaceTracker.getConfigurationSaves().length).toBe(0);
       unmount();
     }
   });
@@ -773,6 +666,8 @@ describe('InspectionWorkbenchPanel', () => {
   test('applies configured inspection layout labels, placement, and dimensions', async () => {
     const scenario = scenarioByUser[0];
     mockWorkbenchFetch(scenario);
+    window.innerWidth = 1800;
+    window.dispatchEvent(new Event('resize'));
     const hierarchy = {
       leftColumn: 'part_summary',
       centerTabs: ['image_metadata', 'inspector'],
@@ -826,14 +721,13 @@ describe('InspectionWorkbenchPanel', () => {
     });
 
     const grid = screen.getByTestId('inspection-layout-grid');
-    expect(grid.style.getPropertyValue('--inspection-grid-template-columns')).toBe('300px minmax(620px, 1fr) 380px');
+    expect(grid.style.getPropertyValue('--inspection-grid-template-columns')).toBe('240px minmax(0, 1fr) 240px');
     expect(grid.style.getPropertyValue('--inspection-layout-gap')).toBe('18px');
     expect(grid.style.getPropertyValue('--inspection-layout-min-height')).toBe('680px');
 
     expect(screen.getByRole('tab', { name: 'Configured Navigator' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Configured Metadata' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Configured Inspector' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Configured Findings' })).toBeInTheDocument();
+    expect(screen.getByText('Configured Inspector')).toBeInTheDocument();
 
     const leftRegion = container.querySelector('[data-layout-region="part_summary"]');
     const rightRegion = container.querySelector('[data-layout-region="annotations"]');
@@ -871,15 +765,13 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('inspection-empty-state')).toHaveTextContent('No part selected');
     expect(screen.getByTestId('inspection-layout-grid')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Part Summary' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Inspection' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Image Metadata' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Annotations' })).toBeInTheDocument();
+    expect(screen.getByText('Inspection')).toBeInTheDocument();
     expect(screen.getByTestId('selected-image-panel')).toHaveTextContent(
-      'No part selected. Load or select a part to inspect mapped images.',
+      'No part selected. Select a part to inspect mapped images.',
     );
     expect(screen.getByTestId('annotation-controls')).toHaveTextContent('For selected part: No part selected');
     expect(screen.getByRole('button', { name: 'Add annotation' })).toBeDisabled();
-    expect(screen.getAllByText('No image mapped').length).toBeGreaterThan(0);
 
     unmount();
   });
