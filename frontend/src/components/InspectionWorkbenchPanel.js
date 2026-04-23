@@ -247,7 +247,7 @@ function panelRegionStyle(region) {
   return style;
 }
 
-function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
+function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   const [batches, setBatches] = useState([]);
   const [parts, setParts] = useState([]);
   const [selectedBatchId, setSelectedBatchId] = useState('');
@@ -305,6 +305,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
   const [panelLayout, setPanelLayout] = useState(DEFAULT_PANEL_LAYOUT);
   const [normalizationTriageField, setNormalizationTriageField] = useState('');
   const [leftPanelTab, setLeftPanelTab] = useState('part_summary');
+  const [centerPanelTab, setCenterPanelTab] = useState('inspector');
   const [rightPanelTab, setRightPanelTab] = useState('annotations');
   const [selectedImageRef, setSelectedImageRef] = useState('');
   const [projectImageLookup, setProjectImageLookup] = useState({});
@@ -312,7 +313,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
     typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth
   ));
 
-  const inspectionHierarchy = useMemo(() => normalizeInspectionHierarchy(hierarchy), [hierarchy]);
+  const inspectionHierarchy = useMemo(() => normalizeInspectionHierarchy(hierarchy || {}), [hierarchy]);
   const leftRegion = inspectionHierarchy.regions[inspectionHierarchy.leftColumn];
   const rightRegion = inspectionHierarchy.regions[inspectionHierarchy.rightColumn];
   const inspectorRegion = inspectionHierarchy.regions.inspector;
@@ -522,6 +523,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
   );
   useEffect(() => {
     setLeftPanelTab(inspectionHierarchy.leftColumn);
+    setCenterPanelTab(inspectionHierarchy.centerTabs[0] || 'inspector');
     setRightPanelTab(inspectionHierarchy.rightColumn);
   }, [inspectionHierarchy]);
 
@@ -546,6 +548,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
       imageRef: imageRef ? String(imageRef) : '',
     }));
   }, [selectedPart]);
+  const selectedImageRecord = useMemo(() => {
+    if (!selectedImageRef) return null;
+    return projectImageLookup[selectedImageRef] || null;
+  }, [projectImageLookup, selectedImageRef]);
 
   const tooltipValues = useMemo(() => {
     const axisSeed = slicePosition.axial + slicePosition.coronal + slicePosition.sagittal;
@@ -1349,42 +1355,76 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                       style={applyFixedRegionWidths ? panelRegionStyle(inspectorRegion) : undefined}
                       data-layout-region="center"
                     >
+                      <div className="project-tabs" role="tablist" aria-label="Center panel tabs">
+                        {inspectionHierarchy.centerTabs.map((tabKey) => (
+                          <button
+                            type="button"
+                            key={tabKey}
+                            className={`project-tab ${centerPanelTab === tabKey ? 'active' : ''}`}
+                            role="tab"
+                            aria-selected={centerPanelTab === tabKey}
+                            onClick={() => setCenterPanelTab(tabKey)}
+                          >
+                            {inspectionHierarchy.regions[tabKey]?.label || tabKey}
+                          </button>
+                        ))}
+                      </div>
                       <div className="workspace-panel-layout" data-testid="selected-image-panel">
-                        <strong>{inspectorRegion?.label || 'Inspection'}</strong>
-                        {!selectedPart ? (
-                          <p className="muted">No part selected. Select a part to inspect mapped images.</p>
-                        ) : selectedPartImageRefs.length === 0 ? (
-                          <p className="muted">No mapped images for this part.</p>
+                        <strong>{inspectionHierarchy.regions[centerPanelTab]?.label || 'Inspection'}</strong>
+                        {centerPanelTab === 'image_metadata' ? (
+                          !selectedPart ? (
+                            <p className="muted">No part selected. Select a part to review image metadata.</p>
+                          ) : selectedPartImageRefs.length === 0 ? (
+                            <p className="muted">No mapped images for this part.</p>
+                          ) : !selectedImageRef ? (
+                            <p className="muted">Select an image in Part Summary to review metadata.</p>
+                          ) : (
+                            <div className="workbench-notice" data-testid="selected-image-metadata-panel">
+                              <p>
+                                <strong>Selected image:</strong> {safeDecodeFilename(selectedImageRef)}
+                              </p>
+                              <p className="muted">
+                                Image ID: {selectedImageRecord?.id ? String(selectedImageRecord.id) : 'Unavailable'}
+                              </p>
+                              <pre>{JSON.stringify(selectedImageRecord?.metadata || {}, null, 2)}</pre>
+                            </div>
+                          )
                         ) : (
-                          <div className="view-board" data-layout-region="visual_workspace">
-                            {getPartViews(selectedPart).map((viewName) => {
-                              const imagesByView = selectedPart?.metadata?.view_images || {};
-                              const imageRef = String(imagesByView?.[viewName] || '');
-                              const imageRecord = projectImageLookup[imageRef];
-                              const imageId = imageRecord?.id;
-                              return (
-                                <div key={viewName} className={`view-cell ${activeViewName === viewName ? 'selected' : ''}`}>
-                                  <div className="view-cell-title">{viewName.toUpperCase()}</div>
-                                  <div className="view-cell-body">
-                                    {!imageEnabled ? (
-                                      <span className="view-cell-empty">Image hidden</span>
-                                    ) : imageId ? (
-                                      <img
-                                        className="inspection-view-image"
-                                        src={`/api/images/${encodeURIComponent(String(imageId))}/content`}
-                                        alt={`${viewName} view`}
-                                        loading="lazy"
-                                      />
-                                    ) : imageRef ? (
-                                      <span className="view-cell-empty">Image not found: {safeDecodeFilename(imageRef)}</span>
-                                    ) : (
-                                      <span className="view-cell-empty">No image mapped</span>
-                                    )}
+                          !selectedPart ? (
+                            <p className="muted">No part selected. Select a part to inspect mapped images.</p>
+                          ) : selectedPartImageRefs.length === 0 ? (
+                            <p className="muted">No mapped images for this part.</p>
+                          ) : (
+                            <div className="view-board" data-layout-region="visual_workspace">
+                              {getPartViews(selectedPart).map((viewName) => {
+                                const imagesByView = selectedPart?.metadata?.view_images || {};
+                                const imageRef = String(imagesByView?.[viewName] || '');
+                                const imageRecord = projectImageLookup[imageRef];
+                                const imageId = imageRecord?.id;
+                                return (
+                                  <div key={viewName} className={`view-cell ${activeViewName === viewName ? 'selected' : ''}`}>
+                                    <div className="view-cell-title">{viewName.toUpperCase()}</div>
+                                    <div className="view-cell-body">
+                                      {!imageEnabled ? (
+                                        <span className="view-cell-empty">Image hidden</span>
+                                      ) : imageId ? (
+                                        <img
+                                          className="inspection-view-image"
+                                          src={`/api/images/${encodeURIComponent(String(imageId))}/content`}
+                                          alt={`${viewName} view`}
+                                          loading="lazy"
+                                        />
+                                      ) : imageRef ? (
+                                        <span className="view-cell-empty">Image not found: {safeDecodeFilename(imageRef)}</span>
+                                      ) : (
+                                        <span className="view-cell-empty">No image mapped</span>
+                                      )}
+                                    </div>
                                   </div>
-                                </div>
-                              );
-                            })}
-                          </div>
+                                );
+                              })}
+                            </div>
+                          )
                         )}
                       </div>
 

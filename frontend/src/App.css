@@ -3907,6 +3907,15 @@ ul li:hover {
 .workbench-tabbed-panel {
   min-width: 0;
   width: 100%;
+  border: 1px solid #dbe2ea;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 8px;
+}
+
+.workspace-panel-layout {
+  min-width: 0;
+  overflow: auto;
 }
 
 .workbench-tabbed-panel .project-tabs {
@@ -3965,6 +3974,7 @@ ul li:hover {
   display: grid;
   grid-template-columns: repeat(3, minmax(120px, 1fr));
   gap: 10px;
+  width: 100%;
 }
 
 @media (max-width: 900px) {
@@ -4006,6 +4016,7 @@ ul li:hover {
   justify-content: center;
   text-align: center;
   background: #f8fafc;
+  overflow: hidden;
 }
 
 .view-cell-has-data {
@@ -4015,6 +4026,8 @@ ul li:hover {
 
 .inspection-view-image {
   width: 100%;
+  max-width: 100%;
+  height: auto;
   max-height: 320px;
   object-fit: contain;
   border-radius: 4px;
