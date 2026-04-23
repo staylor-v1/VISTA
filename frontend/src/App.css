@@ -3796,6 +3796,10 @@ ul li:hover {
   margin-bottom: 12px;
 }
 
+.workbench-controls-compact {
+  grid-template-columns: 1fr;
+}
+
 .workbench-layout {
   display: block;
 }

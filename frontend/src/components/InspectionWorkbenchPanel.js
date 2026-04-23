@@ -316,7 +316,23 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
   const leftRegion = inspectionHierarchy.regions[inspectionHierarchy.leftColumn];
   const rightRegion = inspectionHierarchy.regions[inspectionHierarchy.rightColumn];
   const inspectorRegion = inspectionHierarchy.regions.inspector;
+  const minimumThreeColumnWidthPx = useMemo(() => {
+    const leftMin = normalizeLayoutNumber(leftRegion?.minWidthPx ?? leftRegion?.widthPx, 240);
+    const centerMin = normalizeLayoutNumber(inspectorRegion?.minWidthPx ?? inspectorRegion?.widthPx, 560);
+    const rightMin = normalizeLayoutNumber(rightRegion?.minWidthPx ?? rightRegion?.widthPx, 240);
+    const gapCount = 2;
+    return leftMin + centerMin + rightMin + inspectionHierarchy.layout.gapPx * gapCount;
+  }, [
+    inspectionHierarchy.layout.gapPx,
+    inspectorRegion?.minWidthPx,
+    inspectorRegion?.widthPx,
+    leftRegion?.minWidthPx,
+    leftRegion?.widthPx,
+    rightRegion?.minWidthPx,
+    rightRegion?.widthPx,
+  ]);
   const inspectionLayoutCollapsed = viewportWidth <= inspectionHierarchy.layout.collapseBreakpointPx;
+  const applyFixedRegionWidths = !inspectionLayoutCollapsed && viewportWidth >= minimumThreeColumnWidthPx;
   const workbenchPanelGridStyle = {
     '--inspection-grid-template-columns': inspectionLayoutCollapsed ? '1fr' : '240px minmax(0, 1fr) 240px',
     '--inspection-layout-gap': `${inspectionHierarchy.layout.gapPx}px`,
@@ -1095,68 +1111,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
             <span className="group-badge">Rejected: {reviewSummary.reject_confirmed + reviewSummary.reject_pending}</span>
           </div>
 
-          <div className="workbench-controls">
-            <label htmlFor="batchFilter" className="form-label">
-              Batch
-            </label>
-            <select
-              id="batchFilter"
-              className="form-control"
-              value={selectedBatchId}
-              onChange={(e) => setSelectedBatchId(e.target.value)}
-            >
-              <option value="">All batches</option>
-              {batches.map((batch) => (
-                <option key={batch.id} value={batch.id}>
-                  {batch.name}
-                </option>
-              ))}
-            </select>
-
-            <label htmlFor="reviewFilter" className="form-label">
-              Inspection status
-            </label>
-            <select
-              id="reviewFilter"
-              className="form-control"
-              value={reviewFilter}
-              onChange={(e) => setReviewFilter(e.target.value)}
-            >
-              <option value="all">All</option>
-              <option value="pass">Pass</option>
-              <option value="reject_pending">Fail</option>
-              <option value="reject_confirmed">Fail (confirmed)</option>
-              <option value="none">None</option>
-            </select>
-
-            <label htmlFor="partFilter" className="form-label">
-              Batch / Part filter
-            </label>
-            <input
-              id="partFilter"
-              className="form-control"
-              type="text"
-              value={partFilter}
-              onChange={(e) => setPartFilter(e.target.value)}
-              placeholder="Filter by batch # or part #"
-            />
-
-            <label htmlFor="sortMode" className="form-label">
-              Sort
-            </label>
-            <select
-              id="sortMode"
-              className="form-control"
-              value={sortMode}
-              onChange={(e) => setSortMode(e.target.value)}
-            >
-              <option value="part_asc">Part # (A → Z)</option>
-              <option value="batch_asc">Batch # (A → Z)</option>
-              <option value="status_asc">Inspection status</option>
-              <option value="defect_desc">Defect count (high → low)</option>
-            </select>
-          </div>
-
           <div className="workbench-layout">
             <div className="workbench-details">
               {selectedPart ? (
@@ -1228,7 +1182,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                   >
                     <section
                       className="workbench-tabbed-panel"
-                      style={panelRegionStyle(leftRegion)}
+                      style={applyFixedRegionWidths ? panelRegionStyle(leftRegion) : undefined}
                       data-layout-region={inspectionHierarchy.leftColumn}
                     >
                       <div className="project-tabs" role="tablist" aria-label="Left panel tabs">
@@ -1246,6 +1200,67 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
                         <div className="workspace-panel-layout">
                           <strong>{leftRegion?.label || 'Part Summary'}</strong>
                           <p className="muted">Navigate by batch, part, and image.</p>
+                          <div className="workbench-controls workbench-controls-compact">
+                            <label htmlFor="batchFilter" className="form-label">
+                              Batch
+                            </label>
+                            <select
+                              id="batchFilter"
+                              className="form-control"
+                              value={selectedBatchId}
+                              onChange={(e) => setSelectedBatchId(e.target.value)}
+                            >
+                              <option value="">All batches</option>
+                              {batches.map((batch) => (
+                                <option key={batch.id} value={batch.id}>
+                                  {batch.name}
+                                </option>
+                              ))}
+                            </select>
+
+                            <label htmlFor="reviewFilter" className="form-label">
+                              Inspection status
+                            </label>
+                            <select
+                              id="reviewFilter"
+                              className="form-control"
+                              value={reviewFilter}
+                              onChange={(e) => setReviewFilter(e.target.value)}
+                            >
+                              <option value="all">All</option>
+                              <option value="pass">Pass</option>
+                              <option value="reject_pending">Fail</option>
+                              <option value="reject_confirmed">Fail (confirmed)</option>
+                              <option value="none">None</option>
+                            </select>
+
+                            <label htmlFor="partFilter" className="form-label">
+                              Batch / Part filter
+                            </label>
+                            <input
+                              id="partFilter"
+                              className="form-control"
+                              type="text"
+                              value={partFilter}
+                              onChange={(e) => setPartFilter(e.target.value)}
+                              placeholder="Filter by batch # or part #"
+                            />
+
+                            <label htmlFor="sortMode" className="form-label">
+                              Sort
+                            </label>
+                            <select
+                              id="sortMode"
+                              className="form-control"
+                              value={sortMode}
+                              onChange={(e) => setSortMode(e.target.value)}
+                            >
+                              <option value="part_asc">Part # (A → Z)</option>
+                              <option value="batch_asc">Batch # (A → Z)</option>
+                              <option value="status_asc">Inspection status</option>
+                              <option value="defect_desc">Defect count (high → low)</option>
+                            </select>
+                          </div>
                           <div className="workbench-list">
                             {filteredParts.length === 0 ? (
                               <div>
@@ -1331,7 +1346,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
 
                     <section
                       className="workbench-tabbed-panel"
-                      style={panelRegionStyle(inspectorRegion)}
+                      style={applyFixedRegionWidths ? panelRegionStyle(inspectorRegion) : undefined}
                       data-layout-region="center"
                     >
                       <div className="workspace-panel-layout" data-testid="selected-image-panel">
@@ -1377,7 +1392,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy = {} }) {
 
                     <section
                       className="workbench-tabbed-panel"
-                      style={panelRegionStyle(rightRegion)}
+                      style={applyFixedRegionWidths ? panelRegionStyle(rightRegion) : undefined}
                       data-layout-region={inspectionHierarchy.rightColumn}
                     >
                       <div className="project-tabs" role="tablist" aria-label="Right panel tabs">
