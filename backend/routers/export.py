@@ -4,6 +4,7 @@ import json
 import logging
 import zipfile
 from collections import defaultdict
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse, StreamingResponse, Response
@@ -584,6 +585,9 @@ async def export_project_bundle_json(
         )
 
     discrepancy_total = sum(1 for summary in part_discrepancy_summaries if summary["discrepancy_codes"])
+    total_image_bytes = image_totals.total_image_bytes
+    if isinstance(total_image_bytes, Decimal):
+        total_image_bytes = int(total_image_bytes)
 
     bundle_payload = {
         "project": {
@@ -595,7 +599,7 @@ async def export_project_bundle_json(
         "bundle_summary": {
             "images": {
                 "total": image_totals.total_images,
-                "total_bytes": image_totals.total_image_bytes,
+                "total_bytes": total_image_bytes,
             },
             "parts": {
                 "total": len(part_metadata_rows),
