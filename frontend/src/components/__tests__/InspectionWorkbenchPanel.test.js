@@ -210,6 +210,13 @@ const scenarioByUser = [
             { id: 'heatmap', label: 'Heatmap', color: '#8b5cf6' },
             { id: 'porosity', label: 'Porosity', color: '#f59e0b' },
           ],
+          source_images: [
+            { filename: 'PT3_GEOMETRIC_DUAL_LABEL_Z000.png', image_id: 'pt3-z-000', metadata: { slice_index: 0 } },
+            { filename: 'PT3_GEOMETRIC_DUAL_LABEL_Z016.png', image_id: 'pt3-z-016', metadata: { slice_index: 16 } },
+            { filename: 'PT3_GEOMETRIC_DUAL_LABEL_Z032.png', image_id: 'pt3-z-032', metadata: { slice_index: 32 } },
+            { filename: 'PT3_GEOMETRIC_DUAL_LABEL_Z048.png', image_id: 'pt3-z-048', metadata: { slice_index: 48 } },
+            { filename: 'PT3_GEOMETRIC_DUAL_LABEL_Z063.png', image_id: 'pt3-z-063', metadata: { slice_index: 63 } },
+          ],
           annotations: [
             {
               id: 'seed-annotation-adv',
@@ -845,9 +852,15 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('mpr-panel')).toHaveTextContent('XZ');
     expect(screen.getByTestId('mpr-panel')).toHaveTextContent('YZ');
     expect(screen.getByTestId('mpr-pane-3d')).toHaveTextContent('3D');
+    expect(screen.getAllByAltText(/Volume reconstruction slice/).length).toBeGreaterThan(0);
     expect(screen.queryByText(/axial/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/coronal/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/sagittal/i)).not.toBeInTheDocument();
+
+    const coronalPreview = screen.getByTestId('mpr-preview-coronal');
+    const initialCoronalCrosshairY = coronalPreview.style.getPropertyValue('--crosshair-y');
+    fireEvent.wheel(screen.getByTestId('mpr-pane-axial'), { deltaY: 80 });
+    expect(coronalPreview.style.getPropertyValue('--crosshair-y')).not.toBe(initialCoronalCrosshairY);
 
     expect(screen.getByTestId('mpr-pane-coronal')).toHaveTextContent('Y 8 / 95');
     fireEvent.wheel(screen.getByTestId('mpr-pane-coronal'), { deltaY: 80 });
@@ -860,6 +873,20 @@ describe('InspectionWorkbenchPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Part Selection' }));
     expect(screen.getByRole('heading', { name: 'Part Selection' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Close Part Selection' })).toBeInTheDocument();
+  });
+
+  test('renders a fast visual shell fallback for PT3 parts without volume metadata', async () => {
+    mockWorkbenchFetch(scenarioByUser[0]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mpr-panel')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByAltText(/Volume reconstruction slice/)).not.toBeInTheDocument();
+    expect(screen.getAllByAltText(/fallback projection from front image/i).length).toBeGreaterThan(0);
+    expect(screen.getByAltText(/Fallback visual hull shell front view/i)).toBeInTheDocument();
+    expect(screen.queryByText('No stack')).not.toBeInTheDocument();
   });
 
 });

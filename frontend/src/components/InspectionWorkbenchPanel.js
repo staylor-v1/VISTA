@@ -11,19 +11,16 @@ const MPR_AXIS_CONFIG = {
     label: 'XY',
     sliceLabel: 'Z',
     color: '#3b82f6',
-    gradient: 'linear-gradient(135deg, rgba(59, 130, 246, 0.34), rgba(14, 165, 233, 0.08))',
   },
   coronal: {
     label: 'XZ',
     sliceLabel: 'Y',
     color: '#f59e0b',
-    gradient: 'linear-gradient(135deg, rgba(245, 158, 11, 0.34), rgba(251, 191, 36, 0.08))',
   },
   sagittal: {
     label: 'YZ',
     sliceLabel: 'X',
     color: '#10b981',
-    gradient: 'linear-gradient(135deg, rgba(16, 185, 129, 0.34), rgba(45, 212, 191, 0.08))',
   },
 };
 const DEFAULT_OVERLAY_LAYERS = [
@@ -119,6 +116,155 @@ function getMprDimensions(part) {
     return acc;
   }, {});
   return dimensions;
+}
+
+function getVolumeSourceImages(part, projectImageLookup = {}) {
+  const sourceImages = part?.metadata?.source_images;
+  if (!Array.isArray(sourceImages)) return [];
+  return sourceImages
+    .map((entry, index) => {
+      const filename = String(entry?.filename || '');
+      const imageId = entry?.image_id || projectImageLookup[filename]?.id;
+      if (!imageId) return null;
+      const sliceIndex = Number(entry?.metadata?.slice_index ?? entry?.slice_index ?? index);
+      return {
+        id: String(imageId),
+        filename,
+        sliceIndex: Number.isFinite(sliceIndex) ? sliceIndex : index,
+        url: `/api/images/${encodeURIComponent(String(imageId))}/content`,
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.sliceIndex - right.sliceIndex || left.filename.localeCompare(right.filename));
+}
+
+function getShellImageLayers(part, projectImageLookup = {}) {
+  const imagesByView = part?.metadata?.view_images;
+  if (!imagesByView || typeof imagesByView !== 'object') return [];
+  return Object.entries(imagesByView)
+    .map(([viewName, imageRef]) => {
+      const filename = String(imageRef || '');
+      const imageId = projectImageLookup[filename]?.id;
+      if (!imageId) return null;
+      return {
+        viewName: String(viewName || '').toLowerCase(),
+        filename,
+        id: String(imageId),
+        url: `/api/images/${encodeURIComponent(String(imageId))}/content`,
+      };
+    })
+    .filter(Boolean);
+}
+
+function getFallbackProjectionImage(axis, shellImageLayers) {
+  const preferredViews = {
+    axial: ['top', 'bottom', 'front', 'back', 'left', 'right'],
+    coronal: ['front', 'back', 'top', 'bottom', 'left', 'right'],
+    sagittal: ['left', 'right', 'front', 'back', 'top', 'bottom'],
+  };
+  const preferences = preferredViews[axis] || [];
+  return preferences.map((viewName) => shellImageLayers.find((entry) => entry.viewName === viewName)).find(Boolean)
+    || shellImageLayers[0]
+    || null;
+}
+
+function getFraction(value, maxValue) {
+  const upper = Math.max(1, Number(maxValue) || 1);
+  return Math.min(1, Math.max(0, (Number(value) || 0) / upper));
+}
+
+function getMprCrosshairStyle(axis, slicePosition, dimensions) {
+  const x = getFraction(slicePosition.sagittal, (dimensions.sagittal || 1) - 1) * 100;
+  const y = getFraction(slicePosition.coronal, (dimensions.coronal || 1) - 1) * 100;
+  const z = (1 - getFraction(slicePosition.axial, (dimensions.axial || 1) - 1)) * 100;
+  if (axis === 'axial') {
+    return { '--crosshair-x': `${x}%`, '--crosshair-y': `${y}%` };
+  }
+  if (axis === 'coronal') {
+    return { '--crosshair-x': `${x}%`, '--crosshair-y': `${z}%` };
+  }
+  return { '--crosshair-x': `${y}%`, '--crosshair-y': `${z}%` };
+}
+
+function MprSliceCanvas({ axis, imageStack, slicePosition, dimensions }) {
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || imageStack.length === 0) return undefined;
+    if (typeof window !== 'undefined' && /jsdom/i.test(window.navigator?.userAgent || '')) {
+      return undefined;
+    }
+    let cancelled = false;
+    const safeGetContext = () => {
+      try {
+        return typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
+      } catch (_) {
+        return null;
+      }
+    };
+    const ctx = safeGetContext();
+    if (!ctx) return undefined;
+
+    const selectedZ = clampRange(slicePosition.axial, 0, Math.max(0, imageStack.length - 1), 0);
+    const loadImage = (source) => new Promise((resolve) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => resolve(null);
+      image.src = source.url;
+    });
+
+    const draw = async () => {
+      if (axis === 'axial') {
+        const image = await loadImage(imageStack[selectedZ] || imageStack[0]);
+        if (cancelled || !image) return;
+        canvas.width = image.naturalWidth || image.width || 1;
+        canvas.height = image.naturalHeight || image.height || 1;
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+        return;
+      }
+
+      const images = await Promise.all(imageStack.map(loadImage));
+      if (cancelled) return;
+      const validImages = images.filter(Boolean);
+      if (validImages.length === 0) return;
+      const first = validImages[0];
+      const sourceWidth = first.naturalWidth || first.width || Math.max(1, dimensions.sagittal || 1);
+      const sourceHeight = first.naturalHeight || first.height || Math.max(1, dimensions.coronal || 1);
+      const outputWidth = axis === 'coronal' ? sourceWidth : sourceHeight;
+      const outputHeight = validImages.length;
+      canvas.width = outputWidth;
+      canvas.height = outputHeight;
+      ctx.clearRect(0, 0, outputWidth, outputHeight);
+
+      validImages.forEach((image, zIndex) => {
+        const scratch = document.createElement('canvas');
+        const scratchContext = scratch.getContext?.('2d');
+        if (!scratchContext) return;
+        scratch.width = sourceWidth;
+        scratch.height = sourceHeight;
+        scratchContext.drawImage(image, 0, 0, sourceWidth, sourceHeight);
+        if (axis === 'coronal') {
+          const y = clampRange(slicePosition.coronal, 0, sourceHeight - 1, Math.floor(sourceHeight / 2));
+          const row = scratchContext.getImageData(0, y, sourceWidth, 1);
+          ctx.putImageData(row, 0, outputHeight - 1 - zIndex);
+        } else {
+          const x = clampRange(slicePosition.sagittal, 0, sourceWidth - 1, Math.floor(sourceWidth / 2));
+          for (let y = 0; y < sourceHeight; y += 1) {
+            const pixel = scratchContext.getImageData(x, y, 1, 1);
+            ctx.putImageData(pixel, y, outputHeight - 1 - zIndex);
+          }
+        }
+      });
+    };
+
+    draw();
+    return () => {
+      cancelled = true;
+    };
+  }, [axis, dimensions.coronal, dimensions.sagittal, imageStack, slicePosition.axial, slicePosition.coronal, slicePosition.sagittal]);
+
+  return <canvas ref={canvasRef} className="mpr-slice-canvas" aria-hidden="true" />;
 }
 
 function safeDecodeFilename(value) {
@@ -745,6 +891,27 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
     if (!selectedImageRef) return null;
     return projectImageLookup[selectedImageRef] || null;
   }, [projectImageLookup, selectedImageRef]);
+  const volumeImageStack = useMemo(
+    () => getVolumeSourceImages(selectedPart, projectImageLookup),
+    [projectImageLookup, selectedPart],
+  );
+  const shellImageLayers = useMemo(
+    () => getShellImageLayers(selectedPart, projectImageLookup),
+    [projectImageLookup, selectedPart],
+  );
+  const volumePreviewLayers = useMemo(() => {
+    if (volumeImageStack.length === 0) return [];
+    const maxLayers = 12;
+    const step = Math.max(1, Math.floor(volumeImageStack.length / maxLayers));
+    return volumeImageStack
+      .filter((_, index) => index % step === 0)
+      .slice(0, maxLayers)
+      .map((entry, index, entries) => ({
+        ...entry,
+        depth: entries.length <= 1 ? 0 : -48 + (index / (entries.length - 1)) * 96,
+        opacity: entries.length <= 1 ? 0.86 : 0.18 + (index / (entries.length - 1)) * 0.26,
+      }));
+  }, [volumeImageStack]);
 
   const tooltipValues = useMemo(() => {
     const axisSeed = slicePosition.axial + slicePosition.coronal + slicePosition.sagittal;
@@ -1474,12 +1641,13 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
               const upper = Math.max(0, (mprDimensions[axis] || 1) - 1);
               const config = MPR_AXIS_CONFIG[axis];
               const label = config?.label || MPR_AXIS_LABELS[axis] || axis.toUpperCase();
-              const positionPercent = upper > 0 ? (slicePosition[axis] / upper) * 100 : 50;
+              const crosshairStyle = getMprCrosshairStyle(axis, slicePosition, mprDimensions);
+              const fallbackImage = getFallbackProjectionImage(axis, shellImageLayers);
               return (
                 <article
                   key={axis}
                   className={`mpr-pane mpr-pane-${axis} ${activeMprPane === axis ? 'active-pane' : ''}`}
-                  style={{ '--mpr-axis-color': config?.color, '--mpr-axis-gradient': config?.gradient }}
+                  style={{ '--mpr-axis-color': config?.color, ...crosshairStyle }}
                   data-testid={`mpr-pane-${axis}`}
                   onClick={() => setActiveMprPane(axis)}
                   onWheel={(event) => handleMprPaneWheel(axis, event)}
@@ -1491,18 +1659,29 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
                   <div
                     className="mpr-crosshair-preview"
                     aria-label={`${label} slice preview`}
-                    style={{
-                      '--slice-line-position': `${positionPercent}%`,
-                      '--probe-x': `${cursorProbe.x}%`,
-                      '--probe-y': `${cursorProbe.y}%`,
-                    }}
+                    data-testid={`mpr-preview-${axis}`}
+                    style={crosshairStyle}
                   >
-                    <span className="mpr-volume-label">{label}</span>
-                    <span className="mpr-volume-grid" />
-                    <span className="mpr-slice-line" />
+                    {volumeImageStack.length > 0 ? (
+                      <MprSliceCanvas
+                        axis={axis}
+                        imageStack={volumeImageStack}
+                        slicePosition={slicePosition}
+                        dimensions={mprDimensions}
+                      />
+                    ) : fallbackImage ? (
+                      <img
+                        className="mpr-fallback-projection"
+                        src={fallbackImage.url}
+                        alt={`${label} fallback projection from ${fallbackImage.viewName} image`}
+                        loading="lazy"
+                      />
+                    ) : (
+                      <span className="mpr-empty-volume">No volume stack images</span>
+                    )}
                     <span className="mpr-crosshair-h" />
                     <span className="mpr-crosshair-v" />
-                    <span className="mpr-probe-dot" />
+                    <span className="mpr-crosshair-center" />
                   </div>
                   <label className="mpr-slice-control" htmlFor={`mpr-slice-${axis}`}>
                     Slice
@@ -1543,11 +1722,38 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
                     '--volume-rotate-x': `${mprRotation.x}deg`,
                     '--volume-rotate-y': `${mprRotation.y}deg`,
                     '--volume-zoom': viewportTransform.zoom,
-                    '--slice-axial': `${(slicePosition.axial / Math.max(1, mprDimensions.axial - 1)) * 100}%`,
-                    '--slice-coronal': `${(slicePosition.coronal / Math.max(1, mprDimensions.coronal - 1)) * 100}%`,
-                    '--slice-sagittal': `${(slicePosition.sagittal / Math.max(1, mprDimensions.sagittal - 1)) * 100}%`,
+                    '--slice-axial-depth': `${(getFraction(slicePosition.axial, mprDimensions.axial - 1) - 0.5) * 108}px`,
+                    '--slice-coronal-y': `${(getFraction(slicePosition.coronal, mprDimensions.coronal - 1) - 0.5) * 138}px`,
+                    '--slice-sagittal-x': `${(getFraction(slicePosition.sagittal, mprDimensions.sagittal - 1) - 0.5) * 190}px`,
                   }}
                 >
+                  {volumePreviewLayers.length > 0 ? (
+                    volumePreviewLayers.map((layer) => (
+                      <img
+                        key={`${layer.id}-${layer.sliceIndex}`}
+                        className="volume-slice-layer"
+                        src={layer.url}
+                        alt={`Volume reconstruction slice ${layer.sliceIndex}`}
+                        style={{
+                          '--slice-depth': `${layer.depth}px`,
+                          '--slice-opacity': layer.opacity,
+                        }}
+                        loading="lazy"
+                      />
+                    ))
+                  ) : shellImageLayers.length > 0 ? (
+                    shellImageLayers.map((layer) => (
+                      <img
+                        key={`${layer.id}-${layer.viewName}`}
+                        className={`volume-shell-image shell-view-${layer.viewName}`}
+                        src={layer.url}
+                        alt={`Fallback visual hull shell ${layer.viewName} view`}
+                        loading="lazy"
+                      />
+                    ))
+                  ) : (
+                    <span className="volume-reconstruction-empty">No stack</span>
+                  )}
                   <span className="volume-box volume-face-front" />
                   <span className="volume-box volume-face-back" />
                   <span className="volume-box volume-face-left" />
