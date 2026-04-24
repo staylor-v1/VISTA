@@ -6,6 +6,26 @@ import { DEFAULT_INTERFACE_HIERARCHY } from '../utils/interfaceHierarchy';
 const VIEW_ORDER = ['front', 'back', 'left', 'right', 'top', 'bottom'];
 const MPR_AXES = ['axial', 'coronal', 'sagittal'];
 const MPR_AXIS_LABELS = { axial: 'XY', coronal: 'XZ', sagittal: 'YZ' };
+const MPR_AXIS_CONFIG = {
+  axial: {
+    label: 'XY',
+    sliceLabel: 'Z',
+    color: '#3b82f6',
+    gradient: 'linear-gradient(135deg, rgba(59, 130, 246, 0.34), rgba(14, 165, 233, 0.08))',
+  },
+  coronal: {
+    label: 'XZ',
+    sliceLabel: 'Y',
+    color: '#f59e0b',
+    gradient: 'linear-gradient(135deg, rgba(245, 158, 11, 0.34), rgba(251, 191, 36, 0.08))',
+  },
+  sagittal: {
+    label: 'YZ',
+    sliceLabel: 'X',
+    color: '#10b981',
+    gradient: 'linear-gradient(135deg, rgba(16, 185, 129, 0.34), rgba(45, 212, 191, 0.08))',
+  },
+};
 const DEFAULT_OVERLAY_LAYERS = [
   { id: 'segmentation', label: 'Segmentation', color: '#ef4444' },
   { id: 'heatmap', label: 'Heatmap', color: '#8b5cf6' },
@@ -351,6 +371,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   const [savingPartId, setSavingPartId] = useState(null);
   const [slicePosition, setSlicePosition] = useState({ axial: 0, coronal: 0, sagittal: 0 });
   const [viewportTransform, setViewportTransform] = useState({ zoom: 1, panX: 0, panY: 0 });
+  const [activeMprPane, setActiveMprPane] = useState('axial');
+  const [mprRotation, setMprRotation] = useState({ x: -22, y: 32 });
+  const [activeWorkbenchModal, setActiveWorkbenchModal] = useState(null);
   const [contrastPercent, setContrastPercent] = useState(100);
   const [activeOverlayIds, setActiveOverlayIds] = useState([]);
   const [cursorProbe, setCursorProbe] = useState({ x: 50, y: 50 });
@@ -399,6 +422,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   const [workbenchWidth, setWorkbenchWidth] = useState(0);
   const workbenchDetailsRef = useRef(null);
   const inspectionResizeSaveTimerRef = useRef(null);
+  const mprDragRef = useRef(null);
 
   const inspectionHierarchy = useMemo(() => {
     const normalized = normalizeInspectionHierarchy(hierarchy || {});
@@ -971,6 +995,56 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
     setSlicePosition((prev) => ({ ...prev, [axis]: nextValue }));
   };
 
+  const stepSlicePosition = (axis, delta) => {
+    const upper = Math.max(0, (mprDimensions?.[axis] || 1) - 1);
+    setSlicePosition((prev) => ({
+      ...prev,
+      [axis]: Math.min(upper, Math.max(0, Number(prev[axis] || 0) + delta)),
+    }));
+  };
+
+  const handleMprPaneWheel = (axis, event) => {
+    event.preventDefault();
+    setActiveMprPane(axis);
+    stepSlicePosition(axis, event.deltaY > 0 ? 1 : -1);
+  };
+
+  const handleMprVolumeWheel = (event) => {
+    event.preventDefault();
+    setActiveMprPane('volume');
+    adjustZoom(event.deltaY < 0 ? 0.12 : -0.12);
+  };
+
+  const handleMprVolumePointerDown = (event) => {
+    setActiveMprPane('volume');
+    mprDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      rotation: mprRotation,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const handleMprVolumePointerMove = (event) => {
+    const drag = mprDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    setMprRotation({
+      x: Math.min(72, Math.max(-72, drag.rotation.x - dy * 0.35)),
+      y: drag.rotation.y + dx * 0.35,
+    });
+  };
+
+  const handleMprVolumePointerUp = (event) => {
+    const drag = mprDragRef.current;
+    if (drag?.pointerId === event.pointerId) {
+      mprDragRef.current = null;
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    }
+  };
+
   const adjustZoom = (delta) => {
     setViewportTransform((prev) => {
       const nextZoom = Math.min(4, Math.max(0.5, Number((prev.zoom + delta).toFixed(2))));
@@ -978,16 +1052,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
     });
   };
 
-  const panViewport = (dx, dy) => {
-    setViewportTransform((prev) => ({
-      ...prev,
-      panX: Math.min(200, Math.max(-200, prev.panX + dx)),
-      panY: Math.min(200, Math.max(-200, prev.panY + dy)),
-    }));
-  };
-
   const resetViewport = () => {
     setViewportTransform({ zoom: 1, panX: 0, panY: 0 });
+    setMprRotation({ x: -22, y: 32 });
   };
 
   const toggleOverlay = (overlayId) => {
@@ -1355,32 +1422,21 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
         <p className="muted">No part selected. Select a part to inspect the volume.</p>
       ) : (
         <>
-          <div className="mpr-controls">
-            <div className="measurement-fields">
-              <label htmlFor="mpr-contrast">
-                Contrast
-                <input
-                  id="mpr-contrast"
-                  type="range"
-                  min="50"
-                  max="150"
-                  value={contrastPercent}
-                  onChange={(event) => setContrastPercent(Number(event.target.value))}
-                />
-              </label>
-              <span className="group-badge">{contrastPercent}%</span>
-              <div className="mpr-nav-controls" aria-label="MPR viewport controls">
-                <button type="button" className="btn btn-secondary btn-sm" onClick={() => adjustZoom(0.1)}>Zoom +</button>
-                <button type="button" className="btn btn-secondary btn-sm" onClick={() => adjustZoom(-0.1)}>Zoom -</button>
-                <button type="button" className="btn btn-secondary btn-sm" onClick={() => panViewport(-10, 0)}>Left</button>
-                <button type="button" className="btn btn-secondary btn-sm" onClick={() => panViewport(10, 0)}>Right</button>
-                <button type="button" className="btn btn-secondary btn-sm" onClick={() => panViewport(0, -10)}>Up</button>
-                <button type="button" className="btn btn-secondary btn-sm" onClick={() => panViewport(0, 10)}>Down</button>
-                <button type="button" className="btn btn-secondary btn-sm" onClick={resetViewport}>Reset</button>
-              </div>
-            </div>
+          <div className="mpr-control-strip">
+            <label htmlFor="mpr-contrast">
+              Contrast
+              <input
+                id="mpr-contrast"
+                type="range"
+                min="50"
+                max="150"
+                value={contrastPercent}
+                onChange={(event) => setContrastPercent(Number(event.target.value))}
+              />
+            </label>
+            <span className="group-badge">{contrastPercent}%</span>
             <div className="overlay-toggles">
-              {getOverlayLayers(selectedPart).map((overlay) => (
+              {overlayLayers.map((overlay) => (
                 <label key={overlay.id} className="overlay-toggle">
                   <input
                     type="checkbox"
@@ -1392,34 +1448,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
                 </label>
               ))}
             </div>
-            <div className="probe-controls">
-              <label htmlFor="probe-x">
-                Probe X
-                <input
-                  id="probe-x"
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={cursorProbe.x}
-                  onChange={(event) => setCursorProbe((prev) => ({ ...prev, x: Number(event.target.value) }))}
-                />
-              </label>
-              <label htmlFor="probe-y">
-                Probe Y
-                <input
-                  id="probe-y"
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={cursorProbe.y}
-                  onChange={(event) => setCursorProbe((prev) => ({ ...prev, y: Number(event.target.value) }))}
-                />
-              </label>
-            </div>
-            <p>
-              Zoom {viewportTransform.zoom.toFixed(2)}x, pan {viewportTransform.panX}, {viewportTransform.panY}.
-              Probe value {tooltipValues.base}.
-            </p>
+            <span className="mpr-probe-readout">Probe {tooltipValues.base}</span>
             <div className="mpr-ml-actions">
               <button
                 type="button"
@@ -1437,20 +1466,46 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
               >
                 {mlActionLoading.measurement ? 'Running Measurements...' : 'Run Measurements'}
               </button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={resetViewport}>Reset 3D</button>
             </div>
           </div>
-          <div className="mpr-grid">
+          <div className="mpr-grid mpr-grid-four">
             {MPR_AXES.map((axis) => {
               const upper = Math.max(0, (mprDimensions[axis] || 1) - 1);
-              const label = MPR_AXIS_LABELS[axis] || axis.toUpperCase();
+              const config = MPR_AXIS_CONFIG[axis];
+              const label = config?.label || MPR_AXIS_LABELS[axis] || axis.toUpperCase();
+              const positionPercent = upper > 0 ? (slicePosition[axis] / upper) * 100 : 50;
               return (
-                <article key={axis} className="mpr-pane">
-                  <header>
+                <article
+                  key={axis}
+                  className={`mpr-pane mpr-pane-${axis} ${activeMprPane === axis ? 'active-pane' : ''}`}
+                  style={{ '--mpr-axis-color': config?.color, '--mpr-axis-gradient': config?.gradient }}
+                  data-testid={`mpr-pane-${axis}`}
+                  onClick={() => setActiveMprPane(axis)}
+                  onWheel={(event) => handleMprPaneWheel(axis, event)}
+                >
+                  <header className="mpr-pane-header">
                     <strong>{label}</strong>
-                    <span>{slicePosition[axis]} / {upper}</span>
+                    <span>{config?.sliceLabel || axis.toUpperCase()} {slicePosition[axis]} / {upper}</span>
                   </header>
-                  <label htmlFor={`mpr-slice-${axis}`}>
-                    {label} slice
+                  <div
+                    className="mpr-crosshair-preview"
+                    aria-label={`${label} slice preview`}
+                    style={{
+                      '--slice-line-position': `${positionPercent}%`,
+                      '--probe-x': `${cursorProbe.x}%`,
+                      '--probe-y': `${cursorProbe.y}%`,
+                    }}
+                  >
+                    <span className="mpr-volume-label">{label}</span>
+                    <span className="mpr-volume-grid" />
+                    <span className="mpr-slice-line" />
+                    <span className="mpr-crosshair-h" />
+                    <span className="mpr-crosshair-v" />
+                    <span className="mpr-probe-dot" />
+                  </div>
+                  <label className="mpr-slice-control" htmlFor={`mpr-slice-${axis}`}>
+                    Slice
                     <input
                       id={`mpr-slice-${axis}`}
                       type="range"
@@ -1460,27 +1515,62 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
                       onChange={(event) => updateSlicePosition(axis, event.target.value, mprDimensions)}
                     />
                   </label>
-                  <div className="mpr-crosshair-preview" aria-label={`${label} slice preview`}>
-                    <span
-                      className={`line line-${axis}`}
-                      style={axis === 'sagittal'
-                        ? { left: `${cursorProbe.x}%` }
-                        : { top: `${cursorProbe.y}%` }}
-                    />
-                  </div>
-                  <p>
-                    {activeOverlayIds.length > 0
-                      ? `${activeOverlayIds.length} overlay layers active`
-                      : 'No overlay layers active'}
-                  </p>
                 </article>
               );
             })}
-          </div>
-          <div className="mpr-legend" aria-label="MPR axis legend">
-            {MPR_AXES.map((axis) => (
-              <span key={axis} className={`chip chip-${axis}`}>{MPR_AXIS_LABELS[axis]}</span>
-            ))}
+            <article
+              className={`mpr-pane mpr-pane-volume ${activeMprPane === 'volume' ? 'active-pane' : ''}`}
+              data-testid="mpr-pane-3d"
+              onClick={() => setActiveMprPane('volume')}
+              onWheel={handleMprVolumeWheel}
+            >
+              <header className="mpr-pane-header">
+                <strong>3D</strong>
+                <span>Zoom {viewportTransform.zoom.toFixed(2)}x</span>
+              </header>
+              <div
+                className="mpr-volume-scene"
+                role="img"
+                aria-label="3D part view with colored slicing plane reticle"
+                onPointerDown={handleMprVolumePointerDown}
+                onPointerMove={handleMprVolumePointerMove}
+                onPointerUp={handleMprVolumePointerUp}
+                onPointerCancel={handleMprVolumePointerUp}
+              >
+                <div
+                  className="mpr-volume-model"
+                  style={{
+                    '--volume-rotate-x': `${mprRotation.x}deg`,
+                    '--volume-rotate-y': `${mprRotation.y}deg`,
+                    '--volume-zoom': viewportTransform.zoom,
+                    '--slice-axial': `${(slicePosition.axial / Math.max(1, mprDimensions.axial - 1)) * 100}%`,
+                    '--slice-coronal': `${(slicePosition.coronal / Math.max(1, mprDimensions.coronal - 1)) * 100}%`,
+                    '--slice-sagittal': `${(slicePosition.sagittal / Math.max(1, mprDimensions.sagittal - 1)) * 100}%`,
+                  }}
+                >
+                  <span className="volume-box volume-face-front" />
+                  <span className="volume-box volume-face-back" />
+                  <span className="volume-box volume-face-left" />
+                  <span className="volume-box volume-face-right" />
+                  <span className="volume-box volume-face-top" />
+                  <span className="volume-box volume-face-bottom" />
+                  <span className="volume-plane plane-axial" />
+                  <span className="volume-plane plane-coronal" />
+                  <span className="volume-plane plane-sagittal" />
+                  <span className="volume-reticle reticle-x" />
+                  <span className="volume-reticle reticle-y" />
+                  <span className="volume-reticle reticle-z" />
+                </div>
+              </div>
+              <div className="mpr-volume-legend" aria-label="MPR axis legend">
+                {MPR_AXES.map((axis) => (
+                  <span key={axis} className={`chip chip-${axis}`}>
+                    <span className="overlay-swatch" style={{ backgroundColor: MPR_AXIS_CONFIG[axis].color }} />
+                    {MPR_AXIS_CONFIG[axis].label}
+                  </span>
+                ))}
+              </div>
+            </article>
           </div>
           {(segmentationRun || measurementRun) && (
             <div className="workbench-notice">
@@ -1752,6 +1842,95 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
     }, 250);
   };
 
+  const renderWorkbenchModal = () => {
+    if (!activeWorkbenchModal) return null;
+    const modalTitle = activeWorkbenchModal === 'parts' ? 'Part Selection' : 'Annotations';
+    return (
+      <div className="modal" style={{ display: 'flex' }} onClick={() => setActiveWorkbenchModal(null)}>
+        <div className="modal-content workbench-utility-modal" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-header">
+            <h3>{modalTitle}</h3>
+            <button
+              type="button"
+              className="modal-close-btn"
+              aria-label={`Close ${modalTitle}`}
+              onClick={() => setActiveWorkbenchModal(null)}
+            >
+              &times;
+            </button>
+          </div>
+          <div className="modal-body">
+            {activeWorkbenchModal === 'parts' ? renderPartSummaryPane() : renderAnnotationsPane()}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderPt3FocusedWorkbench = () => (
+    <div className="workbench-details workbench-details-pt3" ref={workbenchDetailsRef}>
+      <div className="pt3-mpr-topbar">
+        <div className="pt3-mpr-context">
+          <strong>{selectedPart?.display_name || selectedPart?.serial_number || 'No part selected'}</strong>
+          <span>Batches: {batches.length}</span>
+          <span>Parts: {parts.length}</span>
+          <span>Passed: {reviewSummary.pass}</span>
+          <span>Rejected: {reviewSummary.reject_confirmed + reviewSummary.reject_pending}</span>
+          <span className="pt3-hotkey-hints" data-testid="inspector-hotkey-hints">
+            Hotkeys: pass ({inspectorHotkeys.accept_classification.toUpperCase()}), reject (
+            {inspectorHotkeys.reject_classification.toUpperCase()}), shortcuts help (
+            {inspectorHotkeys.toggle_shortcut_help.toUpperCase()}).
+          </span>
+        </div>
+        <div className="workbench-detail-actions">
+          <button type="button" className="btn btn-secondary" onClick={() => setActiveWorkbenchModal('parts')}>
+            Part Selection
+          </button>
+          <button type="button" className="btn btn-secondary" onClick={() => setActiveWorkbenchModal('annotations')}>
+            Annotations
+          </button>
+          {selectedPart && (
+            <>
+              <button
+                className="btn btn-secondary"
+                disabled={savingPartId === selectedPart.id}
+                onClick={() => updatePartReviewState(selectedPart, 'in_review')}
+              >
+                In Review
+              </button>
+              <button
+                className="btn btn-success"
+                disabled={savingPartId === selectedPart.id}
+                onClick={() => updatePartReviewState(selectedPart, 'pass')}
+              >
+                Mark Pass
+              </button>
+              <button
+                className="btn btn-danger"
+                disabled={savingPartId === selectedPart.id}
+                onClick={() => updatePartReviewState(selectedPart, 'reject_pending')}
+              >
+                Flag Reject
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+      {shortcutHelpVisible && (
+        <div className="workbench-notice" data-testid="shortcut-help-panel">
+          <strong>Shortcut help</strong>
+          <ul>
+            <li>Mark Pass: {inspectorHotkeys.accept_classification.toUpperCase()}</li>
+            <li>Flag Reject: {inspectorHotkeys.reject_classification.toUpperCase()}</li>
+            <li>Toggle this help: {inspectorHotkeys.toggle_shortcut_help.toUpperCase()}</li>
+          </ul>
+        </div>
+      )}
+      {renderMprPane()}
+      {renderWorkbenchModal()}
+    </div>
+  );
+
   return (
     <section className="workbench-panel" aria-label="Inspection Workbench">
       {loading && <div className="loading-text">Loading inspection workbench…</div>}
@@ -1759,14 +1938,19 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
 
       {!loading && !error && (
         <>
-          <div className="workbench-stats">
-            <span className="group-badge">Batches: {batches.length}</span>
-            <span className="group-badge">Parts: {parts.length}</span>
-            <span className="group-badge">Passed: {reviewSummary.pass}</span>
-            <span className="group-badge">Rejected: {reviewSummary.reject_confirmed + reviewSummary.reject_pending}</span>
-          </div>
+          {projectType !== 'PT3' && (
+            <div className="workbench-stats">
+              <span className="group-badge">Batches: {batches.length}</span>
+              <span className="group-badge">Parts: {parts.length}</span>
+              <span className="group-badge">Passed: {reviewSummary.pass}</span>
+              <span className="group-badge">Rejected: {reviewSummary.reject_confirmed + reviewSummary.reject_pending}</span>
+            </div>
+          )}
 
           <div className="workbench-layout">
+            {projectType === 'PT3' ? (
+              renderPt3FocusedWorkbench()
+            ) : (
             <div className="workbench-details" ref={workbenchDetailsRef}>
               {selectedPart ? (
                 <>
@@ -1843,6 +2027,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
                   </div>
 
             </div>
+            )}
           </div>
         </>
       )}

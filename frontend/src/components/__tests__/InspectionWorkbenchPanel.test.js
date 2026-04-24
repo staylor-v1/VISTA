@@ -511,15 +511,19 @@ describe('InspectionWorkbenchPanel', () => {
       });
       expect(screen.queryByTestId('request-ingest-validation')).not.toBeInTheDocument();
       expect(screen.getByText(`Parts: ${scenario.parts.length}`)).toBeInTheDocument();
+      if (projectType === 'PT3') {
+        expect(screen.getByTestId('mpr-panel')).toBeInTheDocument();
+        expect(screen.queryByTestId('selected-image-panel')).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Part Selection' }));
+        expect(screen.getByRole('heading', { name: 'Part Selection' })).toBeInTheDocument();
+      }
       expect(screen.getByLabelText('Batch')).toBeInTheDocument();
       expect(screen.getByLabelText('Status')).toBeInTheDocument();
       expect(screen.getByLabelText('Filter')).toBeInTheDocument();
       expect(screen.getByLabelText('Sort')).toBeInTheDocument();
-      if (projectType === 'PT3') {
-        expect(screen.getByTestId('mpr-panel')).toBeInTheDocument();
-        fireEvent.click(screen.getByRole('tab', { name: 'Inspection' }));
+      if (projectType !== 'PT3') {
+        expect(screen.getByTestId('selected-image-panel')).toBeInTheDocument();
       }
-      expect(screen.getByTestId('selected-image-panel')).toBeInTheDocument();
 
       // Inspection-status filter
       fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'pass' } });
@@ -545,6 +549,10 @@ describe('InspectionWorkbenchPanel', () => {
         expect(screen.getByText('Passed: 1')).toBeInTheDocument();
       });
 
+      if (projectType === 'PT3') {
+        fireEvent.click(screen.getByRole('button', { name: 'Close Part Selection' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Annotations' }));
+      }
       await waitFor(() => {
         expect(screen.getByTestId('annotation-list')).toHaveTextContent(/@ 2026-03-28/);
       });
@@ -571,6 +579,10 @@ describe('InspectionWorkbenchPanel', () => {
           expect.objectContaining({ method: 'POST' }),
         );
       });
+      if (projectType === 'PT3') {
+        fireEvent.click(screen.getByRole('button', { name: 'Close Annotations' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Part Selection' }));
+      }
       fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'all' } });
       fireEvent.change(screen.getByLabelText('Batch'), { target: { value: '' } });
       await waitFor(() => {
@@ -819,7 +831,7 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('selected-image-metadata-panel')).toHaveTextContent('"view_name": "front"');
   });
 
-  test('defaults PT3 inspection center pane to MPR with axis-plane labels', async () => {
+  test('defaults PT3 to focused four-quadrant MPR with modal access and wheel controls', async () => {
     mockWorkbenchFetch(scenarioByUser[2]);
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
 
@@ -827,13 +839,27 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getByTestId('mpr-panel')).toBeInTheDocument();
     });
 
-    expect(screen.getByRole('tab', { name: 'MPR' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('tab', { name: 'MPR' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('inspection-layout-grid')).not.toBeInTheDocument();
     expect(screen.getByTestId('mpr-panel')).toHaveTextContent('XY');
     expect(screen.getByTestId('mpr-panel')).toHaveTextContent('XZ');
     expect(screen.getByTestId('mpr-panel')).toHaveTextContent('YZ');
+    expect(screen.getByTestId('mpr-pane-3d')).toHaveTextContent('3D');
     expect(screen.queryByText(/axial/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/coronal/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/sagittal/i)).not.toBeInTheDocument();
+
+    expect(screen.getByTestId('mpr-pane-coronal')).toHaveTextContent('Y 8 / 95');
+    fireEvent.wheel(screen.getByTestId('mpr-pane-coronal'), { deltaY: 80 });
+    expect(screen.getByTestId('mpr-pane-coronal')).toHaveTextContent('Y 9 / 95');
+
+    expect(screen.getByTestId('mpr-pane-3d')).toHaveTextContent('Zoom 1.30x');
+    fireEvent.wheel(screen.getByTestId('mpr-pane-3d'), { deltaY: -80 });
+    expect(screen.getByTestId('mpr-pane-3d')).toHaveTextContent('Zoom 1.42x');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Part Selection' }));
+    expect(screen.getByRole('heading', { name: 'Part Selection' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close Part Selection' })).toBeInTheDocument();
   });
 
 });
