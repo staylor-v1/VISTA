@@ -1189,6 +1189,126 @@ def test_project_type_interface_layout_default_requires_admin_and_applies_to_mat
     assert target_config_resp.json()["config"]["interface_layout"]["default_model"] == layout_model
 
 @pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+def test_load_test_data_seeds_project_type_fixtures(client, project_type):
+    headers = {
+        "X-User-Id": f"loader-{project_type.lower()}@example.com",
+        "X-User-Groups": f"[\"{project_type.lower()}-loader\"]",
+    }
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": f"{project_type} loader project",
+            "description": "test data loader coverage",
+            "meta_group_id": f"{project_type.lower()}-loader",
+            "project_type": project_type,
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+
+    with patch("routers.inspection_workbench.upload_file_to_s3", return_value=True):
+        load_resp = client.post(f"/api/projects/{project_id}/load-test-data", headers=headers)
+
+    assert load_resp.status_code == 200, load_resp.text
+    payload = load_resp.json()
+    assert payload["project_type"] == project_type
+    assert payload["images_received"] > 0
+    assert payload["ingest"]["counters"]["parts_received"] > 0
+
+    parts_resp = client.get(f"/api/projects/{project_id}/parts", headers=headers)
+    assert parts_resp.status_code == 200, parts_resp.text
+    parts = parts_resp.json()
+    assert parts
+    if project_type == "PT3":
+        assert parts[0]["metadata"]["mpr"]["axis_labels"] == ["XY", "XZ", "YZ"]
+        assert parts[0]["metadata"]["volume_shape"] == {"axial": 64, "coronal": 96, "sagittal": 128}
+        source_images = parts[0]["metadata"]["source_images"]
+        assert len(source_images) == 64
+        assert source_images[16]["filename"] == "PT3_GEOMETRIC_DUAL_LABEL_Z016.png"
+        assert source_images[16]["metadata"]["slice_index"] == 16
+    else:
+        assert parts[0]["metadata"]["design_number"].startswith("D")
+
+
+def test_pt3_load_test_data_survives_fixture_image_upload_failure(client):
+    headers = {
+        "X-User-Id": "loader-pt3-nos3@example.com",
+        "X-User-Groups": "[\"pt3-loader-nos3\"]",
+    }
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": "PT3 loader without object storage",
+            "description": "reproduce load test data button failure",
+            "meta_group_id": "pt3-loader-nos3",
+            "project_type": "PT3",
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+
+    with patch("routers.inspection_workbench.upload_file_to_s3", return_value=False):
+        load_resp = client.post(f"/api/projects/{project_id}/load-test-data", headers=headers)
+
+    assert load_resp.status_code == 200, load_resp.text
+    payload = load_resp.json()
+    assert payload["project_type"] == "PT3"
+    assert payload["images_created"] == 64
+    assert payload["ingest"]["counters"]["parts_created"] == 1
+
+    images_resp = client.get(f"/api/projects/{project_id}/images?include_deleted=true&limit=2000", headers=headers)
+    assert images_resp.status_code == 200, images_resp.text
+    images = images_resp.json()
+    assert len(images) == 64
+    assert images[0]["metadata"]["storage_status"] == "metadata_only"
+    assert images[16]["filename"] == "PT3_GEOMETRIC_DUAL_LABEL_Z016.png"
+    assert images[16]["metadata"]["slice_index"] == 16
+
+    parts_resp = client.get(f"/api/projects/{project_id}/parts", headers=headers)
+    assert parts_resp.status_code == 200, parts_resp.text
+    part_metadata = parts_resp.json()[0]["metadata"]
+    assert part_metadata["mpr"]["axis_labels"] == ["XY", "XZ", "YZ"]
+    assert part_metadata["volume_shape"] == {"axial": 64, "coronal": 96, "sagittal": 128}
+    assert len(part_metadata["source_images"]) == 64
+
+
+def test_pt3_load_test_data_survives_fixture_image_upload_exception(client):
+    headers = {
+        "X-User-Id": "loader-pt3-exception@example.com",
+        "X-User-Groups": "[\"pt3-loader-exception\"]",
+    }
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": "PT3 loader with object storage exception",
+            "description": "reproduce load test data button runtime upload failure",
+            "meta_group_id": "pt3-loader-exception",
+            "project_type": "PT3",
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+
+    with patch("routers.inspection_workbench.upload_file_to_s3", side_effect=RuntimeError("storage unavailable")):
+        load_resp = client.post(f"/api/projects/{project_id}/load-test-data", headers=headers)
+
+    assert load_resp.status_code == 200, load_resp.text
+    payload = load_resp.json()
+    assert payload["project_type"] == "PT3"
+    assert payload["images_created"] == 64
+    assert payload["ingest"]["counters"]["parts_created"] == 1
+
+    images_resp = client.get(f"/api/projects/{project_id}/images?include_deleted=true&limit=2000", headers=headers)
+    assert images_resp.status_code == 200, images_resp.text
+    images = images_resp.json()
+    assert len(images) == 64
+    assert images[0]["metadata"]["storage_status"] == "metadata_only"
+
+
+@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
 def test_bulk_ingest_supports_progressive_users_with_discrepancy_counters(client, project_type):
     scenarios = [
         {

@@ -5,6 +5,7 @@ import { DEFAULT_INTERFACE_HIERARCHY } from '../utils/interfaceHierarchy';
 
 const VIEW_ORDER = ['front', 'back', 'left', 'right', 'top', 'bottom'];
 const MPR_AXES = ['axial', 'coronal', 'sagittal'];
+const MPR_AXIS_LABELS = { axial: 'XY', coronal: 'XZ', sagittal: 'YZ' };
 const DEFAULT_OVERLAY_LAYERS = [
   { id: 'segmentation', label: 'Segmentation', color: '#ef4444' },
   { id: 'heatmap', label: 'Heatmap', color: '#8b5cf6' },
@@ -399,7 +400,20 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   const workbenchDetailsRef = useRef(null);
   const inspectionResizeSaveTimerRef = useRef(null);
 
-  const inspectionHierarchy = useMemo(() => normalizeInspectionHierarchy(hierarchy || {}), [hierarchy]);
+  const inspectionHierarchy = useMemo(() => {
+    const normalized = normalizeInspectionHierarchy(hierarchy || {});
+    if (projectType !== 'PT3' || normalized.centerTabs.includes('mpr')) {
+      return normalized;
+    }
+    return {
+      ...normalized,
+      centerTabs: ['mpr', ...normalized.centerTabs],
+      regions: {
+        ...normalized.regions,
+        mpr: normalizeInspectionRegion('mpr', DEFAULT_INTERFACE_HIERARCHY.inspection.regions.mpr),
+      },
+    };
+  }, [hierarchy, projectType]);
   const leftRegion = inspectionHierarchy.regions[inspectionHierarchy.leftColumn];
   const rightRegion = inspectionHierarchy.regions[inspectionHierarchy.rightColumn];
   const inspectorRegion = inspectionHierarchy.regions.inspector;
@@ -1335,13 +1349,159 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
     </section>
   );
 
+  const renderMprPane = () => (
+    <section className="mpr-shell" data-testid="mpr-panel" aria-label="Multi-Planar Reconstruction">
+      {!selectedPart ? (
+        <p className="muted">No part selected. Select a part to inspect the volume.</p>
+      ) : (
+        <>
+          <div className="mpr-controls">
+            <div className="measurement-fields">
+              <label htmlFor="mpr-contrast">
+                Contrast
+                <input
+                  id="mpr-contrast"
+                  type="range"
+                  min="50"
+                  max="150"
+                  value={contrastPercent}
+                  onChange={(event) => setContrastPercent(Number(event.target.value))}
+                />
+              </label>
+              <span className="group-badge">{contrastPercent}%</span>
+              <div className="mpr-nav-controls" aria-label="MPR viewport controls">
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => adjustZoom(0.1)}>Zoom +</button>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => adjustZoom(-0.1)}>Zoom -</button>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => panViewport(-10, 0)}>Left</button>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => panViewport(10, 0)}>Right</button>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => panViewport(0, -10)}>Up</button>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => panViewport(0, 10)}>Down</button>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={resetViewport}>Reset</button>
+              </div>
+            </div>
+            <div className="overlay-toggles">
+              {getOverlayLayers(selectedPart).map((overlay) => (
+                <label key={overlay.id} className="overlay-toggle">
+                  <input
+                    type="checkbox"
+                    checked={activeOverlayIds.includes(overlay.id)}
+                    onChange={() => toggleOverlay(overlay.id)}
+                  />
+                  <span className="overlay-swatch" style={{ backgroundColor: overlay.color }} />
+                  {overlay.label}
+                </label>
+              ))}
+            </div>
+            <div className="probe-controls">
+              <label htmlFor="probe-x">
+                Probe X
+                <input
+                  id="probe-x"
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={cursorProbe.x}
+                  onChange={(event) => setCursorProbe((prev) => ({ ...prev, x: Number(event.target.value) }))}
+                />
+              </label>
+              <label htmlFor="probe-y">
+                Probe Y
+                <input
+                  id="probe-y"
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={cursorProbe.y}
+                  onChange={(event) => setCursorProbe((prev) => ({ ...prev, y: Number(event.target.value) }))}
+                />
+              </label>
+            </div>
+            <p>
+              Zoom {viewportTransform.zoom.toFixed(2)}x, pan {viewportTransform.panX}, {viewportTransform.panY}.
+              Probe value {tooltipValues.base}.
+            </p>
+            <div className="mpr-ml-actions">
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                disabled={!selectedPart || mlActionLoading.segmentation}
+                onClick={runSegmentation}
+              >
+                {mlActionLoading.segmentation ? 'Running Segmentation...' : 'Run Segmentation'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                disabled={!selectedPart || mlActionLoading.measurement}
+                onClick={runMeasurements}
+              >
+                {mlActionLoading.measurement ? 'Running Measurements...' : 'Run Measurements'}
+              </button>
+            </div>
+          </div>
+          <div className="mpr-grid">
+            {MPR_AXES.map((axis) => {
+              const upper = Math.max(0, (mprDimensions[axis] || 1) - 1);
+              const label = MPR_AXIS_LABELS[axis] || axis.toUpperCase();
+              return (
+                <article key={axis} className="mpr-pane">
+                  <header>
+                    <strong>{label}</strong>
+                    <span>{slicePosition[axis]} / {upper}</span>
+                  </header>
+                  <label htmlFor={`mpr-slice-${axis}`}>
+                    {label} slice
+                    <input
+                      id={`mpr-slice-${axis}`}
+                      type="range"
+                      min="0"
+                      max={upper}
+                      value={slicePosition[axis]}
+                      onChange={(event) => updateSlicePosition(axis, event.target.value, mprDimensions)}
+                    />
+                  </label>
+                  <div className="mpr-crosshair-preview" aria-label={`${label} slice preview`}>
+                    <span
+                      className={`line line-${axis}`}
+                      style={axis === 'sagittal'
+                        ? { left: `${cursorProbe.x}%` }
+                        : { top: `${cursorProbe.y}%` }}
+                    />
+                  </div>
+                  <p>
+                    {activeOverlayIds.length > 0
+                      ? `${activeOverlayIds.length} overlay layers active`
+                      : 'No overlay layers active'}
+                  </p>
+                </article>
+              );
+            })}
+          </div>
+          <div className="mpr-legend" aria-label="MPR axis legend">
+            {MPR_AXES.map((axis) => (
+              <span key={axis} className={`chip chip-${axis}`}>{MPR_AXIS_LABELS[axis]}</span>
+            ))}
+          </div>
+          {(segmentationRun || measurementRun) && (
+            <div className="workbench-notice">
+              {segmentationRun && <p>Segmentation: {segmentationRun.status || 'complete'}</p>}
+              {measurementRun && <p>Measurements: {measurementRun.status || 'complete'}</p>}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+
   const renderCenterPane = (tabKey) => (
     <section
       className="workbench-tabbed-panel"
       data-layout-region="center"
     >
-      <div className="workspace-panel-layout" data-testid="selected-image-panel">
-        {tabKey === 'image_metadata' ? (
+      <div className="workspace-panel-layout" data-testid={tabKey === 'mpr' ? 'mpr-center-panel' : 'selected-image-panel'}>
+        {tabKey === 'mpr' ? (
+          renderMprPane()
+        ) : tabKey === 'image_metadata' ? (
           !selectedPart ? (
             <p className="muted">No part selected. Select a part to review image metadata.</p>
           ) : selectedPartImageRefs.length === 0 ? (

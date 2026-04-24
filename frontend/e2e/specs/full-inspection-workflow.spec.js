@@ -35,7 +35,8 @@ test.describe('Full inspection workflow end-to-end', () => {
     await expect(page).toHaveURL(new RegExp(`/project/${projectId}$`));
 
     await page.getByRole('tab', { name: 'Project Data' }).click();
-    await expect(page.getByRole('heading', { name: 'Project Data' })).toBeVisible();
+    await expect(page.getByTestId('project-data-summary')).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'Load Images' })).toHaveAttribute('aria-selected', 'true');
     await expectRawImageCount(page, 0);
 
     const uploads = [

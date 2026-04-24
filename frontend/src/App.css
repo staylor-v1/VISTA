@@ -1806,6 +1806,27 @@ ul li:hover {
   gap: var(--space-4);
 }
 
+.project-data-summary-panel {
+  margin-bottom: 10px;
+}
+
+.project-data-summary-panel .workbench-summary-grid {
+  margin-bottom: 0;
+}
+
+.project-data-subtabs {
+  margin: 0 0 10px;
+  border-bottom: 1px solid #dbe2ea;
+}
+
+.project-data-tab-panel {
+  min-width: 0;
+}
+
+.project-configuration-management {
+  margin-top: 12px;
+}
+
 .metadata-tree-viewer {
   border: 1px solid var(--border-light);
   border-radius: var(--radius-md);

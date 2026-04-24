@@ -124,7 +124,7 @@ export function buildInspectionPartIngestPayload(uploadedRecords) {
   return { batches };
 }
 
-function ImageUploader({ projectId, onUploadComplete, setError }) {
+function ImageUploader({ projectId, projectType = 'PT1', onUploadComplete, setError }) {
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [uploadMetadata, setUploadMetadata] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
@@ -136,6 +136,8 @@ function ImageUploader({ projectId, onUploadComplete, setError }) {
   });
   const [groupKey, setGroupKey] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [loadingTestData, setLoadingTestData] = useState(false);
+  const [testDataResult, setTestDataResult] = useState(null);
   const [uploadProgress, setUploadProgress] = useState(null);
   const cancelledRef = useRef(false);
 
@@ -302,6 +304,37 @@ function ImageUploader({ projectId, onUploadComplete, setError }) {
     setUploading(false);
   };
 
+  const handleLoadTestData = async () => {
+    setLoadingTestData(true);
+    setTestDataResult(null);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/load-test-data`, {
+        method: 'POST',
+      });
+      if (!response.ok) {
+        let detail = `HTTP ${response.status}`;
+        try {
+          const payload = await response.json();
+          detail = payload?.detail || detail;
+        } catch (parseError) {
+          detail = response.statusText || detail;
+        }
+        throw new Error(detail);
+      }
+      const payload = await response.json();
+      setTestDataResult(payload);
+      setError(null);
+      if (onUploadComplete) {
+        onUploadComplete(payload);
+      }
+    } catch (err) {
+      const detail = err?.message ? ` ${err.message}` : '';
+      setError(`Failed to load ${projectType || 'project'} test data.${detail}`);
+    } finally {
+      setLoadingTestData(false);
+    }
+  };
+
   return (
     <div className="card">
       <div className="card-header">
@@ -382,9 +415,18 @@ function ImageUploader({ projectId, onUploadComplete, setError }) {
             <button
               type="submit"
               className="btn btn-success"
-              disabled={uploading || !extractorConfig.isValid}
+              disabled={uploading || loadingTestData || !extractorConfig.isValid}
             >
               {uploading ? 'Uploading...' : 'Upload Images'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ marginLeft: '8px' }}
+              disabled={uploading || loadingTestData}
+              onClick={handleLoadTestData}
+            >
+              {loadingTestData ? 'Loading Test Data...' : 'Load Test Data'}
             </button>
             {uploading && (
               <button
@@ -415,6 +457,13 @@ function ImageUploader({ projectId, onUploadComplete, setError }) {
                   }}
                 />
               </div>
+            </div>
+          )}
+          {testDataResult && (
+            <div className="alert alert-success" data-testid="load-test-data-result">
+              Loaded {testDataResult.images_created || 0} new {projectType || 'project'} test images;
+              {' '}
+              created {testDataResult.ingest?.counters?.parts_created || 0} parts.
             </div>
           )}
         </form>

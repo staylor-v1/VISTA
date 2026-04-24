@@ -2,13 +2,7 @@ import React from 'react';
 
 function ProjectDataSummaryTab({ counts, loading }) {
   return (
-    <section className="workbench-panel" aria-label="Project data summary">
-      <header className="workbench-header">
-        <div>
-          <h2>Project Data</h2>
-          <p>Summary counts for loaded project data artifacts.</p>
-        </div>
-      </header>
+    <section className="workbench-panel project-data-summary-panel" aria-label="Project data summary">
       {loading ? (
         <div className="loading-text">Loading data counts…</div>
       ) : (

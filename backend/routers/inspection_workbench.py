@@ -1,6 +1,8 @@
 import uuid
 import json
+import mimetypes
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -13,6 +15,9 @@ from core.database import get_db
 from core.group_auth_helper import is_user_in_group
 from utils.dependencies import get_current_user
 import utils.crud as crud
+from core.config import settings
+from utils.boto3_client import upload_file_to_s3
+from utils.volume_loader import load_slice_stack
 
 
 router = APIRouter(tags=["Inspection Workbench"])
@@ -50,6 +55,8 @@ WORKSPACE_INSPECTOR_DEFAULTS = {
     "viewport_transform": {"zoom": 1.0, "panX": 0, "panY": 0},
     "measurements": [],
 }
+TEST_DATA_ROOT = Path(__file__).resolve().parents[2] / "test" / "data"
+PT3_TEST_STACK_ROOT = TEST_DATA_ROOT / "3D" / "geometric"
 
 
 async def _get_project_with_access_check(
@@ -266,6 +273,253 @@ def _default_project_configuration() -> dict:
 
 def _project_type_interface_layout_metadata_key(project_type: str) -> str:
     return f"{PROJECT_TYPE_INTERFACE_LAYOUT_KEY_PREFIX}:{project_type}"
+
+
+def _metadata_from_hierarchy_filename(path: Path) -> Optional[dict]:
+    tokens = path.stem.split("_")
+    if len(tokens) != 7:
+        return None
+    design_number, lot_number, batch_number, serial_number, side, modality, overlay = tokens
+    return {
+        "design_number": design_number,
+        "lot_number": lot_number,
+        "batch_number": batch_number,
+        "serial_number": serial_number,
+        "side": side.lower(),
+        "modality": modality.lower(),
+        "overlay": overlay.lower() in {"true", "1", "yes"},
+        "source": "vista-test-data",
+    }
+
+
+def _build_hierarchy_ingest_records(uploaded_records: List[dict]) -> schemas.InspectionBulkIngestPayload:
+    parts_by_key: dict[str, dict] = {}
+    for record in uploaded_records:
+        metadata = record.get("metadata") or {}
+        required = ["design_number", "lot_number", "batch_number", "serial_number", "side", "modality"]
+        if any(not metadata.get(key) for key in required):
+            continue
+        batch_name = "_".join([metadata["design_number"], metadata["lot_number"], metadata["batch_number"]])
+        part_key = f"{batch_name}_{metadata['serial_number']}"
+        part = parts_by_key.setdefault(
+            part_key,
+            {
+                "batch_name": batch_name,
+                "batch_description": (
+                    f"Design {metadata['design_number']}, lot {metadata['lot_number']}, "
+                    f"batch {metadata['batch_number']}"
+                ),
+                "serial_number": metadata["serial_number"],
+                "display_name": f"{metadata['design_number']} {metadata['serial_number']}",
+                "metadata": {
+                    "design_number": metadata["design_number"],
+                    "lot_number": metadata["lot_number"],
+                    "batch_number": metadata["batch_number"],
+                    "serial_number": metadata["serial_number"],
+                    "configured_views": [],
+                    "modalities": [],
+                    "view_images": {},
+                    "overlay_images": {},
+                    "source_images": [],
+                    "source": "vista-test-data",
+                },
+            },
+        )
+        side = metadata["side"]
+        modality = metadata["modality"]
+        if side not in part["metadata"]["configured_views"]:
+            part["metadata"]["configured_views"].append(side)
+        if modality not in part["metadata"]["modalities"]:
+            part["metadata"]["modalities"].append(modality)
+        part["metadata"]["source_images"].append({
+            "filename": record["filename"],
+            "side": side,
+            "modality": modality,
+            "overlay": metadata["overlay"],
+            "image_id": str(record["image_id"]),
+        })
+        if metadata["overlay"]:
+            part["metadata"]["overlay_images"].setdefault(side, {})[modality] = record["filename"]
+        elif side not in part["metadata"]["view_images"]:
+            part["metadata"]["view_images"][side] = record["filename"]
+
+    batches_by_name: dict[str, schemas.InspectionIngestBatchRecord] = {}
+    for part in parts_by_key.values():
+        part["metadata"]["configured_views"].sort()
+        part["metadata"]["modalities"].sort()
+        batch = batches_by_name.setdefault(
+            part["batch_name"],
+            schemas.InspectionIngestBatchRecord(
+                name=part["batch_name"],
+                description=part["batch_description"],
+                parts=[],
+            ),
+        )
+        batch.parts.append(
+            schemas.InspectionIngestPartRecord(
+                serial_number=part["serial_number"],
+                display_name=part["display_name"],
+                metadata=part["metadata"],
+            )
+        )
+    for batch in batches_by_name.values():
+        batch.parts.sort(key=lambda item: item.serial_number)
+    return schemas.InspectionBulkIngestPayload(batches=list(batches_by_name.values()))
+
+
+async def _create_test_image_if_missing(
+    *,
+    project_id: uuid.UUID,
+    file_path: Path,
+    metadata: dict,
+    db: AsyncSession,
+    current_user: schemas.User,
+    allow_metadata_only: bool = False,
+) -> tuple[models.DataInstance, bool]:
+    existing = await db.execute(
+        select(models.DataInstance).where(
+            models.DataInstance.project_id == project_id,
+            models.DataInstance.filename == file_path.name,
+            models.DataInstance.deleted_at.is_(None),
+        )
+    )
+    image = existing.scalars().first()
+    if image:
+        return image, False
+
+    object_storage_key = f"{project_id}/test-data/{file_path.name}"
+    content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+    try:
+        with file_path.open("rb") as file_obj:
+            uploaded = await upload_file_to_s3(
+                bucket_name=settings.S3_BUCKET,
+                object_name=object_storage_key,
+                file_data=file_obj,
+                length=file_path.stat().st_size,
+                content_type=content_type,
+            )
+    except Exception as exc:
+        if not allow_metadata_only:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to upload test data image",
+            ) from exc
+        uploaded = False
+    if not uploaded:
+        if allow_metadata_only:
+            metadata = {
+                **metadata,
+                "storage_status": "metadata_only",
+                "storage_warning": "Test data image object could not be uploaded.",
+            }
+        else:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to upload test data image")
+
+    image = await crud.create_data_instance(
+        db=db,
+        data_instance=schemas.DataInstanceCreate(
+            project_id=project_id,
+            filename=file_path.name,
+            object_storage_key=object_storage_key,
+            content_type=content_type,
+            size_bytes=file_path.stat().st_size,
+            metadata=metadata,
+            uploaded_by_user_id=current_user.email,
+        ),
+        created_by=current_user.email,
+    )
+    return image, True
+
+
+async def _bulk_ingest_project_parts(
+    *,
+    project_id: uuid.UUID,
+    payload: schemas.InspectionBulkIngestPayload,
+    db: AsyncSession,
+    current_user: schemas.User,
+):
+    existing_batches = await crud.list_inspection_batches(db=db, project_id=project_id)
+    batches_by_name = {batch.name: batch for batch in existing_batches}
+    existing_parts = await crud.list_inspection_parts(db=db, project_id=project_id)
+    parts_by_serial = {part.serial_number: part for part in existing_parts}
+
+    counters = {
+        "batches_received": len(payload.batches),
+        "parts_received": sum(len(batch.parts) for batch in payload.batches),
+        "batches_created": 0,
+        "parts_created": 0,
+        "parts_skipped_existing": 0,
+        "parts_skipped_discrepancy": 0,
+    }
+    discrepancies: List[dict] = []
+    payload_seen_serials: set[str] = set()
+
+    for ingest_batch in payload.batches:
+        target_batch = batches_by_name.get(ingest_batch.name)
+        if target_batch is None:
+            target_batch = await crud.create_inspection_batch(
+                db=db,
+                project_id=project_id,
+                batch=schemas.InspectionBatchCreate(
+                    name=ingest_batch.name,
+                    description=ingest_batch.description,
+                ),
+                created_by=current_user.email,
+            )
+            batches_by_name[ingest_batch.name] = target_batch
+            counters["batches_created"] += 1
+
+        for ingest_part in ingest_batch.parts:
+            serial_number = ingest_part.serial_number.strip()
+            if serial_number in payload_seen_serials:
+                counters["parts_skipped_discrepancy"] += 1
+                discrepancies.append(
+                    {
+                        "code": "duplicate_serial_in_payload",
+                        "batch_name": ingest_batch.name,
+                        "serial_number": serial_number,
+                        "message": "Serial number appears more than once in ingest payload",
+                    }
+                )
+                continue
+            payload_seen_serials.add(serial_number)
+
+            existing_part = parts_by_serial.get(serial_number)
+            if existing_part:
+                if existing_part.batch_id and existing_part.batch_id != target_batch.id:
+                    counters["parts_skipped_discrepancy"] += 1
+                    discrepancies.append(
+                        {
+                            "code": "serial_already_assigned_to_other_batch",
+                            "batch_name": ingest_batch.name,
+                            "serial_number": serial_number,
+                            "message": "Serial number already belongs to a different batch in this project",
+                        }
+                    )
+                    continue
+                counters["parts_skipped_existing"] += 1
+                continue
+
+            created_part = await crud.create_inspection_part(
+                db=db,
+                project_id=project_id,
+                part=schemas.InspectionPartCreate(
+                    batch_id=target_batch.id,
+                    serial_number=serial_number,
+                    display_name=ingest_part.display_name,
+                    metadata=ingest_part.metadata_json,
+                    review_state=ingest_part.review_state,
+                ),
+                created_by=current_user.email,
+            )
+            parts_by_serial[serial_number] = created_part
+            counters["parts_created"] += 1
+
+    return {
+        "project_id": project_id,
+        "counters": counters,
+        "discrepancies": discrepancies,
+    }
 
 
 def _normalize_layout_model(candidate: object) -> dict:
@@ -888,6 +1142,114 @@ async def clone_project_configuration(
 
 
 @router.post(
+    "/projects/{project_id}/load-test-data",
+)
+async def load_project_test_data(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    project = await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    project_type = (project.project_type or "PT1").upper()
+    uploaded_records: List[dict] = []
+    images_created = 0
+
+    if project_type == "PT3":
+        if not PT3_TEST_STACK_ROOT.exists():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PT3 test stack not found")
+        volume_info = load_slice_stack(PT3_TEST_STACK_ROOT)
+        for index, file_path in enumerate(sorted(PT3_TEST_STACK_ROOT.glob("*.png"))):
+            metadata = {
+                "source": "vista-test-data",
+                "project_type": "PT3",
+                "volume_stack_id": "PT3_SYNTH_MPR_001",
+                "slice_index": index,
+                "slice_axis": "Z",
+                "axis_labels": ["XY", "XZ", "YZ"],
+            }
+            image, created = await _create_test_image_if_missing(
+                project_id=project_id,
+                file_path=file_path,
+                metadata=metadata,
+                db=db,
+                current_user=current_user,
+                allow_metadata_only=True,
+            )
+            images_created += 1 if created else 0
+            uploaded_records.append({"filename": file_path.name, "image_id": str(image.id), "metadata": metadata})
+
+        ingest_payload = schemas.InspectionBulkIngestPayload(
+            batches=[
+                schemas.InspectionIngestBatchRecord(
+                    name="PT3_SYNTH_MPR_BATCH01",
+                    description="Synthetic PT3 3D stack test data",
+                    parts=[
+                        schemas.InspectionIngestPartRecord(
+                            serial_number="SN3D0001",
+                            display_name="PT3 synthetic MPR stack",
+                            metadata={
+                                "source": "vista-test-data",
+                                "volume_stack_id": "PT3_SYNTH_MPR_001",
+                                "volume_shape": {
+                                    "axial": volume_info.shape[0],
+                                    "coronal": volume_info.shape[1],
+                                    "sagittal": volume_info.shape[2],
+                                },
+                                "mpr": {
+                                    "volume_shape": {
+                                        "axial": volume_info.shape[0],
+                                        "coronal": volume_info.shape[1],
+                                        "sagittal": volume_info.shape[2],
+                                    },
+                                    "axis_labels": ["XY", "XZ", "YZ"],
+                                },
+                                "source_images": uploaded_records,
+                            },
+                        )
+                    ],
+                )
+            ]
+        )
+    else:
+        fixture_paths = sorted(
+            path
+            for path in TEST_DATA_ROOT.iterdir()
+            if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+        )
+        if not fixture_paths:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PT1/PT2 test data not found")
+        for file_path in fixture_paths:
+            metadata = _metadata_from_hierarchy_filename(file_path)
+            if metadata is None:
+                continue
+            metadata = {**metadata, "project_type": project_type}
+            image, created = await _create_test_image_if_missing(
+                project_id=project_id,
+                file_path=file_path,
+                metadata=metadata,
+                db=db,
+                current_user=current_user,
+            )
+            images_created += 1 if created else 0
+            uploaded_records.append({"filename": file_path.name, "image_id": str(image.id), "metadata": metadata})
+        ingest_payload = _build_hierarchy_ingest_records(uploaded_records)
+
+    ingest_result = await _bulk_ingest_project_parts(
+        project_id=project_id,
+        payload=ingest_payload,
+        db=db,
+        current_user=current_user,
+    )
+    return {
+        "project_id": project_id,
+        "project_type": project_type,
+        "images_received": len(uploaded_records),
+        "images_created": images_created,
+        "ingest": ingest_result,
+    }
+
+
+@router.post(
     "/projects/{project_id}/ingest",
     response_model=schemas.InspectionBulkIngestResponse,
 )
@@ -898,86 +1260,9 @@ async def bulk_ingest_project_parts(
     current_user: schemas.User = Depends(get_current_user),
 ):
     await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
-
-    existing_batches = await crud.list_inspection_batches(db=db, project_id=project_id)
-    batches_by_name = {batch.name: batch for batch in existing_batches}
-    existing_parts = await crud.list_inspection_parts(db=db, project_id=project_id)
-    parts_by_serial = {part.serial_number: part for part in existing_parts}
-
-    counters = {
-        "batches_received": len(payload.batches),
-        "parts_received": sum(len(batch.parts) for batch in payload.batches),
-        "batches_created": 0,
-        "parts_created": 0,
-        "parts_skipped_existing": 0,
-        "parts_skipped_discrepancy": 0,
-    }
-    discrepancies: List[dict] = []
-    payload_seen_serials: set[str] = set()
-
-    for ingest_batch in payload.batches:
-        target_batch = batches_by_name.get(ingest_batch.name)
-        if target_batch is None:
-            target_batch = await crud.create_inspection_batch(
-                db=db,
-                project_id=project_id,
-                batch=schemas.InspectionBatchCreate(
-                    name=ingest_batch.name,
-                    description=ingest_batch.description,
-                ),
-                created_by=current_user.email,
-            )
-            batches_by_name[ingest_batch.name] = target_batch
-            counters["batches_created"] += 1
-
-        for ingest_part in ingest_batch.parts:
-            serial_number = ingest_part.serial_number.strip()
-            if serial_number in payload_seen_serials:
-                counters["parts_skipped_discrepancy"] += 1
-                discrepancies.append(
-                    {
-                        "code": "duplicate_serial_in_payload",
-                        "batch_name": ingest_batch.name,
-                        "serial_number": serial_number,
-                        "message": "Serial number appears more than once in ingest payload",
-                    }
-                )
-                continue
-            payload_seen_serials.add(serial_number)
-
-            existing_part = parts_by_serial.get(serial_number)
-            if existing_part:
-                if existing_part.batch_id and existing_part.batch_id != target_batch.id:
-                    counters["parts_skipped_discrepancy"] += 1
-                    discrepancies.append(
-                        {
-                            "code": "serial_already_assigned_to_other_batch",
-                            "batch_name": ingest_batch.name,
-                            "serial_number": serial_number,
-                            "message": "Serial number already belongs to a different batch in this project",
-                        }
-                    )
-                    continue
-                counters["parts_skipped_existing"] += 1
-                continue
-
-            created_part = await crud.create_inspection_part(
-                db=db,
-                project_id=project_id,
-                part=schemas.InspectionPartCreate(
-                    batch_id=target_batch.id,
-                    serial_number=serial_number,
-                    display_name=ingest_part.display_name,
-                    metadata=ingest_part.metadata_json,
-                    review_state=ingest_part.review_state,
-                ),
-                created_by=current_user.email,
-            )
-            parts_by_serial[serial_number] = created_part
-            counters["parts_created"] += 1
-
-    return {
-        "project_id": project_id,
-        "counters": counters,
-        "discrepancies": discrepancies,
-    }
+    return await _bulk_ingest_project_parts(
+        project_id=project_id,
+        payload=payload,
+        db=db,
+        current_user=current_user,
+    )

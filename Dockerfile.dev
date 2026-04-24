@@ -40,6 +40,7 @@ RUN uv sync --frozen --no-install-project
 
 # Copy backend code (will be overridden by volume mount in development)
 COPY ./backend /app/backend
+COPY ./test /app/test
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1

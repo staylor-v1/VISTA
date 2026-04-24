@@ -30,6 +30,15 @@ const DEFAULT_INTERFACE_HIERARCHY = {
         minWidthPx: 520,
         minHeightPx: 420,
       },
+      mpr: {
+        slot: 'center',
+        label: 'MPR',
+        tabGroup: 'center',
+        order: 0,
+        isOpen: true,
+        minWidthPx: 560,
+        minHeightPx: 420,
+      },
       image_metadata: {
         slot: 'center',
         label: 'Image Metadata',

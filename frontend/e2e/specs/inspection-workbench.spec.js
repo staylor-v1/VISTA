@@ -18,14 +18,18 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
         await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
         await page.getByRole('tab', { name: 'Project Data' }).click();
 
-        await expect(page.getByRole('heading', { name: 'Project Data' })).toBeVisible();
+        await expect(page.getByTestId('project-data-summary')).toBeVisible();
+        await expect(page.getByRole('tab', { name: 'Load Images' })).toHaveAttribute('aria-selected', 'true');
+        await expect(page.getByRole('tab', { name: 'Batches' })).toBeVisible();
         await expect(page.getByRole('heading', { name: 'Upload Images' })).toBeVisible();
         await expect(page.getByRole('heading', { name: 'Data Validation' })).toBeVisible();
+        await page.getByRole('tab', { name: 'Project Configuration' }).click();
         await expect(page.getByRole('heading', { name: 'Project Metadata' })).toBeVisible();
         await expect(page.getByTestId('project-metadata-tree')).toContainText('inspection_profile');
-        const uploadBox = await page.getByRole('heading', { name: 'Upload Images' }).boundingBox();
-        const metadataBox = await page.getByRole('heading', { name: 'Project Metadata' }).boundingBox();
-        expect(uploadBox && metadataBox && uploadBox.y < metadataBox.y).toBeTruthy();
+        await page.getByRole('tab', { name: 'Project Data' }).click();
+        const summaryBox = await page.getByTestId('project-data-summary').boundingBox();
+        const tabsBox = await page.getByRole('tab', { name: 'Load Images' }).boundingBox();
+        expect(summaryBox && tabsBox && summaryBox.y < tabsBox.y).toBeTruthy();
         await page.getByTestId('request-ingest-validation').click();
         await expect(page.getByTestId('ingest-validation-result')).toContainText('Ingest validation complete');
 
@@ -37,6 +41,11 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
         await expect(inspectionPanel.locator('.flexlayout__tab_button', { hasText: 'Inspection' }).first()).toBeVisible();
         await expect(inspectionPanel.locator('.flexlayout__tab_button', { hasText: 'Image Metadata' }).first()).toBeVisible();
         await expect(inspectionPanel.locator('.flexlayout__tab_button', { hasText: 'Annotations' }).first()).toBeVisible();
+        if (projectType === 'PT3') {
+          await expect(page.getByTestId('mpr-panel')).toBeVisible();
+          await expect(inspectionPanel.locator('.flexlayout__tab_button--selected', { hasText: 'MPR' }).first()).toBeVisible();
+          await inspectionPanel.locator('.flexlayout__tab_button', { hasText: 'Inspection' }).first().click();
+        }
         await expect(page.getByLabel('Batch', { exact: true })).toBeVisible();
         await expect(page.getByLabel('Status')).toBeVisible();
         await expect(page.getByLabel('Filter')).toBeVisible();
@@ -252,7 +261,7 @@ test.describe('Project Data metadata hierarchy screenshot artifact', () => {
   test('captures PT3 advanced project metadata hierarchy screenshot', async ({ page }) => {
     const { projectId } = await mockInspectionWorkbenchRoutes(page, { type: 'PT3', scenario: 'advanced' });
     await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
-    await page.getByRole('tab', { name: 'Project Data' }).click();
+    await page.getByRole('tab', { name: 'Project Configuration' }).click();
     await expect(page.getByTestId('project-metadata-tree')).toContainText('inspection_profile');
     const panel = page.locator('.metadata-section');
     await expect(panel).toBeVisible();

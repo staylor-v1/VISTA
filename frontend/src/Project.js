@@ -21,6 +21,10 @@ const MAIN_TAB_DEFINITIONS = {
   inspection: { label: 'Inspection' },
   report: { label: 'Report' },
 };
+const PROJECT_DATA_TABS = {
+  load_images: { label: 'Load Images' },
+  batches: { label: 'Batches' },
+};
 
 function Project({ currentUserGroups = [] }) {
   const { id } = useParams();
@@ -35,6 +39,7 @@ function Project({ currentUserGroups = [] }) {
   const [projectConfiguration, setProjectConfiguration] = useState(null);
   const [interfaceHierarchy, setInterfaceHierarchy] = useState(DEFAULT_INTERFACE_HIERARCHY);
   const [activeMainTab, setActiveMainTab] = useState(DEFAULT_INTERFACE_HIERARCHY.mainTabs[0]);
+  const [activeProjectDataTab, setActiveProjectDataTab] = useState('load_images');
   const [dataCounts, setDataCounts] = useState({
     partsLoaded: 0,
     rawImages: 0,
@@ -253,85 +258,91 @@ function Project({ currentUserGroups = [] }) {
 
   const projectDataContent = useMemo(() => (
     <>
-      {!project?.is_archived && (
-        <div className="management-sections project-data-upload-first">
-          <div className="upload-section">
-            <ImageUploader projectId={id} onUploadComplete={handleUploadComplete} setError={setError} />
-          </div>
-        </div>
-      )}
       <ProjectDataSummaryTab counts={dataCounts} loading={countsLoading} />
-      <section className="workbench-panel project-data-action-panel" aria-label="Project data validation">
-        <header className="workbench-header">
-          <div>
-            <h2>Data Validation</h2>
-            <p>Run a synthetic ingest pass against the current batch and part structure.</p>
-          </div>
-          <div className="workbench-detail-actions">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              data-testid="request-ingest-validation"
-              disabled={ingestResult.loading}
-              onClick={requestIngestValidation}
-            >
-              {ingestResult.loading ? 'Running Ingest Validation...' : 'Run Ingest Validation'}
-            </button>
-          </div>
-        </header>
-        {ingestResult.error && <div className="alert alert-error">{ingestResult.error}</div>}
-        {ingestResult.payload && (
-          <div className="alert alert-success" data-testid="ingest-validation-result">
-            Ingest validation complete: created {ingestResult.payload?.counters?.parts_created || 0} parts, skipped{' '}
-            {ingestResult.payload?.counters?.parts_skipped_existing || 0} existing, discrepancies{' '}
-            {(ingestResult.payload?.discrepancies || []).length}.
-          </div>
-        )}
-      </section>
-      <div className="review-summary-row">
-        <ReviewStatusSummary projectId={id} />
-        {hasGroups && (
-          <input
-            type="text"
-            className="search-input group-search-inline"
-            placeholder="Search groups..."
-            value={groupSearch}
-            onChange={(e) => setGroupSearch(e.target.value)}
-          />
-        )}
+
+      <div className="project-data-subtabs project-tabs" role="tablist" aria-label="Project data sections">
+        {Object.entries(PROJECT_DATA_TABS).map(([tabKey, definition]) => (
+          <button
+            key={tabKey}
+            type="button"
+            className={`project-tab ${activeProjectDataTab === tabKey ? 'active' : ''}`}
+            role="tab"
+            aria-selected={activeProjectDataTab === tabKey}
+            onClick={() => setActiveProjectDataTab(tabKey)}
+          >
+            {definition.label}
+          </button>
+        ))}
       </div>
-      {hasGroups && (
-        <div className="gallery-section">
-          <GroupedImagesPage projectId={id} projectName={project?.name} onBack={() => navigate('/')} search={groupSearch} />
+
+      {activeProjectDataTab === 'load_images' && (
+        <div className="project-data-tab-panel" role="tabpanel" aria-label="Load Images">
+          {!project?.is_archived && (
+            <div className="management-sections project-data-upload-first">
+              <div className="upload-section">
+                <ImageUploader
+                  projectId={id}
+                  projectType={project?.project_type}
+                  onUploadComplete={handleUploadComplete}
+                  setError={setError}
+                />
+              </div>
+            </div>
+          )}
+          <section className="workbench-panel project-data-action-panel" aria-label="Project data validation">
+            <header className="workbench-header">
+              <div>
+                <h2>Data Validation</h2>
+                <p>Run a synthetic ingest pass against the current batch and part structure.</p>
+              </div>
+              <div className="workbench-detail-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  data-testid="request-ingest-validation"
+                  disabled={ingestResult.loading}
+                  onClick={requestIngestValidation}
+                >
+                  {ingestResult.loading ? 'Running Ingest Validation...' : 'Run Ingest Validation'}
+                </button>
+              </div>
+            </header>
+            {ingestResult.error && <div className="alert alert-error">{ingestResult.error}</div>}
+            {ingestResult.payload && (
+              <div className="alert alert-success" data-testid="ingest-validation-result">
+                Ingest validation complete: created {ingestResult.payload?.counters?.parts_created || 0} parts, skipped{' '}
+                {ingestResult.payload?.counters?.parts_skipped_existing || 0} existing, discrepancies{' '}
+                {(ingestResult.payload?.discrepancies || []).length}.
+              </div>
+            )}
+          </section>
         </div>
       )}
 
-      {!project?.is_archived && (
-        <div className="management-sections">
-          <div className="classes-section">
-            <ClassManager
-              projectId={id}
-              classes={classes}
-              setClasses={setClasses}
-              loading={loading}
-              setLoading={setLoading}
-              setError={setError}
-            />
+      {activeProjectDataTab === 'batches' && (
+        <div className="project-data-tab-panel" role="tabpanel" aria-label="Batches">
+          <div className="review-summary-row">
+            <ReviewStatusSummary projectId={id} />
+            {hasGroups && (
+              <input
+                type="text"
+                className="search-input group-search-inline"
+                placeholder="Search groups..."
+                value={groupSearch}
+                onChange={(e) => setGroupSearch(e.target.value)}
+              />
+            )}
           </div>
-          <div className="metadata-section">
-            <MetadataManager
-              projectId={id}
-              metadata={metadata}
-              setMetadata={setMetadata}
-              loading={loading}
-              setLoading={setLoading}
-              setError={setError}
-            />
-          </div>
+          {hasGroups && (
+            <div className="gallery-section">
+              <GroupedImagesPage projectId={id} projectName={project?.name} onBack={() => navigate('/')} search={groupSearch} />
+            </div>
+          )}
         </div>
       )}
     </>
   ), [
+    activeProjectDataTab,
     classes,
     countsLoading,
     dataCounts,
@@ -345,6 +356,7 @@ function Project({ currentUserGroups = [] }) {
     ingestResult,
     project?.is_archived,
     project?.name,
+    project?.project_type,
     requestIngestValidation,
   ]);
 
@@ -363,13 +375,39 @@ function Project({ currentUserGroups = [] }) {
     }
     if (activeMainTab === 'project_configuration') {
       return (
-        <ProjectConfigurationPanel
-          projectId={id}
-          projectType={project?.project_type}
-          currentInterfaceLayout={interfaceHierarchy}
-          isAdminUser={currentUserGroups.includes('admin') || currentUserGroups.includes('admins')}
-          onConfigurationSaved={(nextConfig) => setProjectConfiguration(nextConfig)}
-        />
+        <>
+          <ProjectConfigurationPanel
+            projectId={id}
+            projectType={project?.project_type}
+            currentInterfaceLayout={interfaceHierarchy}
+            isAdminUser={currentUserGroups.includes('admin') || currentUserGroups.includes('admins')}
+            onConfigurationSaved={(nextConfig) => setProjectConfiguration(nextConfig)}
+          />
+          {!project?.is_archived && (
+            <div className="management-sections project-configuration-management">
+              <div className="classes-section">
+                <ClassManager
+                  projectId={id}
+                  classes={classes}
+                  setClasses={setClasses}
+                  loading={loading}
+                  setLoading={setLoading}
+                  setError={setError}
+                />
+              </div>
+              <div className="metadata-section">
+                <MetadataManager
+                  projectId={id}
+                  metadata={metadata}
+                  setMetadata={setMetadata}
+                  loading={loading}
+                  setLoading={setLoading}
+                  setError={setError}
+                />
+              </div>
+            </div>
+          )}
+        </>
       );
     }
     if (activeMainTab === 'report') {

@@ -515,6 +515,10 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getByLabelText('Status')).toBeInTheDocument();
       expect(screen.getByLabelText('Filter')).toBeInTheDocument();
       expect(screen.getByLabelText('Sort')).toBeInTheDocument();
+      if (projectType === 'PT3') {
+        expect(screen.getByTestId('mpr-panel')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('tab', { name: 'Inspection' }));
+      }
       expect(screen.getByTestId('selected-image-panel')).toBeInTheDocument();
 
       // Inspection-status filter
@@ -813,6 +817,23 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getByTestId('selected-image-metadata-panel')).toHaveTextContent(/Selected image:\s*front-basic\.png/);
     });
     expect(screen.getByTestId('selected-image-metadata-panel')).toHaveTextContent('"view_name": "front"');
+  });
+
+  test('defaults PT3 inspection center pane to MPR with axis-plane labels', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mpr-panel')).toBeInTheDocument();
+    });
+
+    expect(screen.getByRole('tab', { name: 'MPR' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('mpr-panel')).toHaveTextContent('XY');
+    expect(screen.getByTestId('mpr-panel')).toHaveTextContent('XZ');
+    expect(screen.getByTestId('mpr-panel')).toHaveTextContent('YZ');
+    expect(screen.queryByText(/axial/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/coronal/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/sagittal/i)).not.toBeInTheDocument();
   });
 
 });

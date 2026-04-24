@@ -122,6 +122,56 @@ describe('ImageUploader', () => {
     });
   });
 
+  describe('Load Test Data', () => {
+    test('loads project-type test data through the backend endpoint', async () => {
+      const payload = {
+        project_type: 'PT3',
+        images_created: 64,
+        ingest: {
+          counters: { parts_created: 1 },
+          parts: [
+            {
+              metadata: {
+                volume_shape: { axial: 64, coronal: 96, sagittal: 128 },
+                mpr: { axis_labels: ['XY', 'XZ', 'YZ'] },
+              },
+            },
+          ],
+        },
+      };
+      const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => payload,
+      });
+
+      const { props } = renderUploader({ projectType: 'PT3' });
+      fireEvent.click(screen.getByRole('button', { name: /load test data/i }));
+
+      await waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalledWith('/api/projects/proj-1/load-test-data', { method: 'POST' });
+      });
+      expect(await screen.findByTestId('load-test-data-result')).toHaveTextContent('Loaded 64 new PT3 test images');
+      expect(props.onUploadComplete).toHaveBeenCalledWith(payload);
+      expect(props.setError).toHaveBeenCalledWith(null);
+    });
+
+    test('surfaces backend detail when project-type test data loading fails', async () => {
+      const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: false,
+        status: 404,
+        json: async () => ({ detail: 'PT3 test stack not found' }),
+      });
+
+      const { props } = renderUploader({ projectType: 'PT3' });
+      fireEvent.click(screen.getByRole('button', { name: /load test data/i }));
+
+      await waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalledWith('/api/projects/proj-1/load-test-data', { method: 'POST' });
+      });
+      expect(props.setError).toHaveBeenCalledWith('Failed to load PT3 test data. PT3 test stack not found');
+    });
+  });
+
   describe('Upload with manual metadata only', () => {
     test('sends manual JSON metadata in FormData', async () => {
       const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
