@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_INTERFACE_HIERARCHY } from '../utils/interfaceHierarchy';
 
 const VIEW_ORDER = ['front', 'back', 'left', 'right', 'top', 'bottom'];
@@ -312,6 +312,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   const [viewportWidth, setViewportWidth] = useState(() => (
     typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth
   ));
+  const [workbenchWidth, setWorkbenchWidth] = useState(0);
+  const workbenchDetailsRef = useRef(null);
 
   const inspectionHierarchy = useMemo(() => normalizeInspectionHierarchy(hierarchy || {}), [hierarchy]);
   const leftRegion = inspectionHierarchy.regions[inspectionHierarchy.leftColumn];
@@ -332,10 +334,15 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
     rightRegion?.minWidthPx,
     rightRegion?.widthPx,
   ]);
-  const inspectionLayoutCollapsed = viewportWidth <= inspectionHierarchy.layout.collapseBreakpointPx;
-  const applyFixedRegionWidths = !inspectionLayoutCollapsed && viewportWidth >= minimumThreeColumnWidthPx;
+  const availableLayoutWidth = workbenchWidth > 0 ? workbenchWidth : viewportWidth;
+  const inspectionLayoutCollapsed = availableLayoutWidth <= inspectionHierarchy.layout.collapseBreakpointPx;
+  const applyFixedRegionWidths = !inspectionLayoutCollapsed && availableLayoutWidth >= minimumThreeColumnWidthPx;
+  const leftColumnWidthPx = normalizeLayoutNumber(leftRegion?.widthPx, 240);
+  const rightColumnWidthPx = normalizeLayoutNumber(rightRegion?.widthPx, 240);
   const workbenchPanelGridStyle = {
-    '--inspection-grid-template-columns': inspectionLayoutCollapsed ? '1fr' : '240px minmax(0, 1fr) 240px',
+    '--inspection-grid-template-columns': inspectionLayoutCollapsed
+      ? '1fr'
+      : `${leftColumnWidthPx}px minmax(0, 1fr) ${rightColumnWidthPx}px`,
     '--inspection-layout-gap': `${inspectionHierarchy.layout.gapPx}px`,
     '--inspection-layout-min-height': inspectionLayoutCollapsed ? 'auto' : `${inspectionHierarchy.layout.minHeightPx}px`,
   };
@@ -418,6 +425,22 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
     const handleResize = () => setViewportWidth(window.innerWidth);
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    const container = workbenchDetailsRef.current;
+    if (!container) return undefined;
+
+    const updateWorkbenchWidth = () => {
+      const measuredWidth = Math.floor(container.getBoundingClientRect().width);
+      setWorkbenchWidth(Number.isFinite(measuredWidth) && measuredWidth > 0 ? measuredWidth : 0);
+    };
+    updateWorkbenchWidth();
+
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(updateWorkbenchWidth);
+    observer.observe(container);
+    return () => observer.disconnect();
   }, []);
 
   const saveInspectorHotkeys = async () => {
@@ -1118,7 +1141,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
           </div>
 
           <div className="workbench-layout">
-            <div className="workbench-details">
+            <div className="workbench-details" ref={workbenchDetailsRef}>
               {selectedPart ? (
                 <>
                   <div className="workbench-detail-header">
