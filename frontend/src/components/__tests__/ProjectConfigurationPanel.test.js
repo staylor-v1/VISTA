@@ -250,6 +250,34 @@ describe('ProjectConfigurationPanel', () => {
   });
 
   projectTypes.forEach((projectType) => {
+    test(`prepopulates default defect types for ${projectType} when configuration has no defect type list`, async () => {
+      const config = makeConfig(projectType, 'basic');
+      delete config.defect_types;
+      mockFetch(config, projectType);
+
+      render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+      await waitFor(() => {
+        expect(screen.getByDisplayValue(`DefectType1_${projectType}`)).toBeInTheDocument();
+      });
+      expect(screen.getByDisplayValue(`DefectType2_${projectType}`)).toBeInTheDocument();
+      expect(screen.getByDisplayValue(`DefectType3_${projectType}`)).toBeInTheDocument();
+    });
+
+    test(`preserves an explicitly empty defect type list for ${projectType}`, async () => {
+      const config = { ...makeConfig(projectType, 'basic'), defect_types: [] };
+      mockFetch(config, projectType);
+
+      render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+      await waitFor(() => {
+        expect(screen.getByText('No defect types configured yet.')).toBeInTheDocument();
+      });
+      expect(screen.queryByDisplayValue(`DefectType1_${projectType}`)).not.toBeInTheDocument();
+    });
+  });
+
+  projectTypes.forEach((projectType) => {
     syntheticUsers.forEach((syntheticUser) => {
       test(`loads and saves configuration for ${projectType} ${syntheticUser} synthetic user`, async () => {
         const config = makeConfig(projectType, syntheticUser);

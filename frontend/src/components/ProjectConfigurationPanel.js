@@ -262,6 +262,22 @@ const EMPTY_CONFIG = {
   },
 };
 
+const DEFAULT_DEFECT_TYPE_COLORS = ['#ef4444', '#f59e0b', '#3b82f6'];
+
+function normalizeProjectTypeSuffix(projectType) {
+  const suffix = String(projectType || 'PT1').trim().toUpperCase();
+  return suffix || 'PT1';
+}
+
+function getDefaultDefectTypes(projectType) {
+  const projectTypeSuffix = normalizeProjectTypeSuffix(projectType);
+  return DEFAULT_DEFECT_TYPE_COLORS.map((color, index) => ({
+    name: `DefectType${index + 1}_${projectTypeSuffix}`,
+    color,
+    definition: '',
+  }));
+}
+
 function normalizeSerialNumberScheme(config) {
   const candidate = config?.serial_number_scheme || {};
   return {
@@ -279,6 +295,21 @@ function normalizePhaseSettings(config) {
     manual_phase: PROJECT_PHASE_SEQUENCE.includes(candidate.manual_phase)
       ? candidate.manual_phase
       : 'data_ingestion',
+  };
+}
+
+function normalizeProjectConfiguration(config, projectType) {
+  const incomingConfig = config && typeof config === 'object' ? config : {};
+  const defectTypes = Array.isArray(incomingConfig.defect_types)
+    ? incomingConfig.defect_types
+    : getDefaultDefectTypes(projectType);
+
+  return {
+    ...EMPTY_CONFIG,
+    ...incomingConfig,
+    defect_types: defectTypes,
+    serial_number_scheme: normalizeSerialNumberScheme(incomingConfig),
+    phase_settings: normalizePhaseSettings(incomingConfig),
   };
 }
 
@@ -320,19 +351,14 @@ function ProjectConfigurationPanel({
         }
 
         const configData = await configResp.json();
-        const incomingConfig = configData?.config || EMPTY_CONFIG;
-        setConfig({
-          ...EMPTY_CONFIG,
-          ...incomingConfig,
-          serial_number_scheme: normalizeSerialNumberScheme(incomingConfig),
-          phase_settings: normalizePhaseSettings(incomingConfig),
-        });
+        const incomingConfig = configData?.config && typeof configData.config === 'object' ? configData.config : {};
+        let targetProjectType = configData?.project_type || projectType || '';
 
         if (projectsResp.ok) {
           const projectsData = await projectsResp.json();
           const projectList = Array.isArray(projectsData) ? projectsData : [];
           const currentProject = projectList.find((project) => project.id === projectId);
-          const targetProjectType = currentProject?.project_type || '';
+          targetProjectType = currentProject?.project_type || targetProjectType;
           setCurrentProjectType(targetProjectType);
           const filtered = projectList.filter((project) => {
             if (project.id === projectId) {
@@ -345,6 +371,8 @@ function ProjectConfigurationPanel({
           });
           setAvailableProjects(filtered);
         }
+
+        setConfig(normalizeProjectConfiguration(incomingConfig, targetProjectType));
       } catch (err) {
         setError(err.message || 'Failed to load project configuration');
       } finally {
@@ -353,7 +381,7 @@ function ProjectConfigurationPanel({
     };
 
     loadConfiguration();
-  }, [projectId]);
+  }, [projectId, projectType]);
 
   useEffect(() => {
     if (!copySourceProjectId) {
