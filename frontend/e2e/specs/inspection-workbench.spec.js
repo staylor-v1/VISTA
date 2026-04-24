@@ -38,8 +38,8 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
         await expect(inspectionPanel.locator('.flexlayout__tab_button', { hasText: 'Image Metadata' }).first()).toBeVisible();
         await expect(inspectionPanel.locator('.flexlayout__tab_button', { hasText: 'Annotations' }).first()).toBeVisible();
         await expect(page.getByLabel('Batch', { exact: true })).toBeVisible();
-        await expect(page.getByLabel('Inspection status')).toBeVisible();
-        await expect(page.getByLabel('Batch / Part filter')).toBeVisible();
+        await expect(page.getByLabel('Status')).toBeVisible();
+        await expect(page.getByLabel('Filter')).toBeVisible();
         await expect(page.getByLabel('Sort')).toBeVisible();
 
         if (simulatedUser === 'basic') {
@@ -65,6 +65,13 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
         await expect(page.getByText(expectedPassedCount)).toBeVisible();
 
         await expect(page.getByTestId('selected-image-panel')).toBeVisible();
+        if (simulatedUser === 'advanced') {
+          const topViewButton = inspectionPanel.locator('.part-summary-images button', { hasText: 'TOP' }).first();
+          await topViewButton.click();
+          await expect(inspectionPanel.locator('.view-cell.selected .view-cell-title')).toHaveText('TOP');
+          await inspectionPanel.locator('.view-cell', { hasText: 'FRONT' }).first().click();
+          await expect(inspectionPanel.locator('.part-summary-images button.active', { hasText: 'FRONT' }).first()).toBeVisible();
+        }
         await expect(page.getByTestId('annotation-controls')).toBeVisible();
         await page.getByLabel('Annotation defect type').selectOption('Other');
         await page.getByPlaceholder('annotation modality').fill('visual');

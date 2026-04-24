@@ -52,13 +52,14 @@ test.describe('Full inspection workflow end-to-end', () => {
     await expectRawImageCount(page, 3);
 
     await page.getByRole('tab', { name: 'Inspection' }).click();
-    await expect(page.locator('section[aria-label="Inspection Workbench"]')).toBeVisible();
+    const workbench = page.locator('section[aria-label="Inspection Workbench"]');
+    await expect(workbench).toBeVisible();
 
-    await expect(page.getByRole('tab', { name: 'Part Summary' })).toBeVisible();
-    const frontImageButton = page.getByRole('button', { name: /^front: housing-e2e-a-front\.png$/ }).first();
+    await expect(workbench.locator('.flexlayout__tab_button', { hasText: 'Part Summary' }).first()).toBeVisible();
+    const frontImageButton = workbench.locator('.part-summary-images button', { hasText: 'FRONT' }).first();
     await expect(frontImageButton).toBeVisible();
     await frontImageButton.click();
-    await expect(page.getByText('Currently viewing: housing-e2e-a-front.png')).toBeVisible();
+    await expect(workbench.locator('.view-cell.selected .view-cell-title')).toHaveText('FRONT');
 
     await page.getByRole('button', { name: 'Mark Pass ✓' }).click();
     await expect(page.getByText('Passed: 1')).toBeVisible();
@@ -74,6 +75,7 @@ test.describe('Full inspection workflow end-to-end', () => {
     await expect(reviewBadges).toContainText(['Pass', 'Reject Pending']);
 
     await expect.poll(() => getParts().map((part) => part.review_state)).toEqual(['pass', 'reject_pending']);
+    await expect.poll(() => getSavedWorkspaceStates().length).toBeGreaterThan(0);
 
     await page.getByRole('tab', { name: 'Report' }).click();
     await expect(page.getByRole('heading', { name: 'Report' })).toBeVisible();
@@ -87,8 +89,6 @@ test.describe('Full inspection workflow end-to-end', () => {
       reject_pending: 1,
       total_images: 3,
     }));
-
-    await expect.poll(() => getSavedWorkspaceStates().length).toBeGreaterThan(0);
 
     await page.screenshot({ path: screenshotPath, fullPage: true });
   });
@@ -112,15 +112,11 @@ test.describe('Full inspection workflow end-to-end', () => {
     const workbench = page.locator('section[aria-label="Inspection Workbench"]');
     await expect(workbench).toBeVisible();
 
-    const tabbedPanels = workbench.locator('.workbench-tabbed-panels');
-    await expect(tabbedPanels).toBeVisible();
+    await expect(workbench.locator('.flexlayout__layout')).toBeVisible();
     await expect(workbench.locator('.workbench-tabbed-panel')).toHaveCount(3);
-
-    await expect(workbench.getByRole('tablist', { name: 'Left panel tabs' })).toHaveCount(1);
-    await expect(workbench.getByRole('tablist', { name: 'Center panel tabs' })).toHaveCount(1);
-    await expect(workbench.getByRole('tablist', { name: 'Right panel tabs' })).toHaveCount(1);
-
-    await expect(workbench.locator('.flexlayout__layout')).toHaveCount(0);
+    await expect(workbench.locator('.flexlayout__tab_button', { hasText: 'Part Summary' }).first()).toBeVisible();
+    await expect(workbench.locator('.flexlayout__tab_button', { hasText: 'Inspection' }).first()).toBeVisible();
+    await expect(workbench.locator('.flexlayout__tab_button', { hasText: 'Annotations' }).first()).toBeVisible();
     await page.screenshot({ path: hierarchyScreenshotPath, fullPage: true });
   });
 });

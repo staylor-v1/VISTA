@@ -512,13 +512,13 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.queryByTestId('request-ingest-validation')).not.toBeInTheDocument();
       expect(screen.getByText(`Parts: ${scenario.parts.length}`)).toBeInTheDocument();
       expect(screen.getByLabelText('Batch')).toBeInTheDocument();
-      expect(screen.getByLabelText('Inspection status')).toBeInTheDocument();
-      expect(screen.getByLabelText('Batch / Part filter')).toBeInTheDocument();
+      expect(screen.getByLabelText('Status')).toBeInTheDocument();
+      expect(screen.getByLabelText('Filter')).toBeInTheDocument();
       expect(screen.getByLabelText('Sort')).toBeInTheDocument();
       expect(screen.getByTestId('selected-image-panel')).toBeInTheDocument();
 
       // Inspection-status filter
-      fireEvent.change(screen.getByLabelText('Inspection status'), { target: { value: 'pass' } });
+      fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'pass' } });
       const filteredRows = screen.queryAllByTestId('part-review-state');
       if (filteredRows.length > 0) {
         const expectedPassedRows = scenario.parts.filter((part) => (part.review_state || '').toLowerCase() === 'pass');
@@ -528,7 +528,7 @@ describe('InspectionWorkbenchPanel', () => {
       }
 
       // Reset filter and test batch filter
-      fireEvent.change(screen.getByLabelText('Inspection status'), { target: { value: 'all' } });
+      fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'all' } });
       if (scenario.batches.length > 1) {
         fireEvent.change(screen.getByLabelText('Batch'), { target: { value: scenario.batches[0].id } });
         const expectedBatchRows = scenario.parts.filter((part) => part.batch_id === scenario.batches[0].id);
@@ -567,7 +567,7 @@ describe('InspectionWorkbenchPanel', () => {
           expect.objectContaining({ method: 'POST' }),
         );
       });
-      fireEvent.change(screen.getByLabelText('Inspection status'), { target: { value: 'all' } });
+      fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'all' } });
       fireEvent.change(screen.getByLabelText('Batch'), { target: { value: '' } });
       await waitFor(() => {
         expect(workspaceTracker.getWorkspaceSaves().length).toBeGreaterThan(0);
@@ -805,7 +805,7 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getAllByText('Basic Part').length).toBeGreaterThan(0);
     });
 
-    expect(screen.getByTestId('selected-image-panel')).toHaveTextContent('Inspection');
+    expect(screen.getByTestId('selected-image-panel')).toHaveTextContent('No image mapped');
     fireEvent.click(screen.getByRole('tab', { name: 'Image Metadata' }));
     expect(screen.getByRole('tab', { name: 'Image Metadata' })).toHaveAttribute('aria-selected', 'true');
 

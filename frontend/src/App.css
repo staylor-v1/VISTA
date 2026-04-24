@@ -965,7 +965,7 @@ ul li:hover {
 .project-header {
   background: linear-gradient(135deg, var(--gray-900) 0%, var(--gray-800) 100%);
   color: white;
-  padding: 6px var(--space-6) 0;
+  padding: 4px var(--space-6) 0;
   box-shadow: var(--shadow-lg);
   border-bottom: 1px solid var(--border-medium);
   position: relative;
@@ -977,7 +977,7 @@ ul li:hover {
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 0;
 }
 
 .project-header-top {
@@ -985,7 +985,7 @@ ul li:hover {
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-4);
-  min-height: 40px;
+  min-height: 36px;
 }
 
 .project-header-bottom {
@@ -993,12 +993,13 @@ ul li:hover {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;
   gap: var(--space-4);
+  margin-top: -2px;
 }
 
 .project-nav {
   display: flex;
   align-items: center;
-  transform: translateY(-1px);
+  transform: translateY(-2px);
 }
 
 .back-btn {
@@ -1028,9 +1029,17 @@ ul li:hover {
 
 .project-info {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-direction: row;
+  gap: var(--space-2);
   align-items: flex-end;
+}
+
+.project-title-row {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  flex-wrap: wrap;
 }
 
 .project-title {
@@ -1048,6 +1057,13 @@ ul li:hover {
   gap: var(--space-2);
   font-size: 0.8rem;
   color: var(--gray-300);
+}
+
+.project-group {
+  color: var(--gray-300);
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .project-meta span {
@@ -3948,14 +3964,15 @@ ul li:hover {
   flex-wrap: nowrap;
   align-items: flex-end;
   min-width: 0;
+  transform: translateY(2px);
 }
 
 .project-header-tabs .project-tab {
   flex: 0 0 auto;
-  min-height: 34px;
+  min-height: 32px;
   min-width: 128px;
   max-width: none;
-  padding: 7px 12px;
+  padding: 6px 12px;
   border-color: rgba(255, 255, 255, 0.18);
   border-bottom-color: rgba(255, 255, 255, 0.28);
   border-radius: 8px 8px 0 0;
@@ -4038,6 +4055,10 @@ ul li:hover {
   align-items: center;
   gap: 8px;
   cursor: pointer;
+}
+
+.workbench-part-row .group-status-badge {
+  align-self: flex-start;
 }
 
 .workbench-part-row > div {
@@ -4259,6 +4280,17 @@ ul li:hover {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+.part-summary-images .btn.active {
+  border-color: var(--primary-color);
+  background: var(--primary-light);
+  color: var(--primary-color);
+  box-shadow: 0 0 0 1px var(--primary-color) inset;
+}
+
+.view-cell {
+  cursor: pointer;
 }
 
 .workbench-tabbed-panel pre {
@@ -4659,12 +4691,13 @@ ul li:hover {
 }
 
 .phase-flow {
-  margin: 0 0 6px;
+  margin: 0;
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
+  transform: translateY(-5px);
 }
 
 .phase-flow-node {

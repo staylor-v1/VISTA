@@ -1216,7 +1216,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
             ))}
           </select>
 
-          <label htmlFor="reviewFilter" className="form-label">Inspection status</label>
+          <label htmlFor="reviewFilter" className="form-label">Status</label>
           <select
             id="reviewFilter"
             className="form-control"
@@ -1230,7 +1230,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
             <option value="none">None</option>
           </select>
 
-          <label htmlFor="partFilter" className="form-label">Batch / Part filter</label>
+          <label htmlFor="partFilter" className="form-label">Filter</label>
           <input
             id="partFilter"
             className="form-control"
@@ -1275,7 +1275,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
               }, new Map());
               return Array.from(partsByBatch.entries()).map(([batchKey, batchParts]) => (
                 <div key={batchKey} className="part-summary-batch">
-                  <h4>{batchKey}</h4>
                   {batchParts.map((part) => {
                     const state = part.review_state || 'unreviewed';
                     const defectCount = getDefectCount(part);
@@ -1298,9 +1297,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
                       >
                         <div>
                           <div className="group-row-name">{part.display_name || part.serial_number}</div>
-                          <div className="group-row-identifier">{part.serial_number}</div>
                           <div className="workbench-defect-count">
-                            Reviewed: {state === 'unreviewed' ? 'No' : 'Yes'} • Defects: {defectCount} • Annotations: {annotationCount}
+                            Defects: {defectCount} • Annotations: {annotationCount}
                           </div>
                           {imageEntries.length > 0 && (
                             <div className="part-summary-images">
@@ -1308,10 +1306,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
                                 <button
                                   type="button"
                                   key={`${part.id}-${viewName}`}
-                                  className={`btn btn-secondary btn-sm ${selectedImageRef === String(imageRef || '') ? 'active' : ''}`}
+                                  className={`btn btn-secondary btn-sm ${isSelected && activeViewName === viewName ? 'active' : ''}`}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     setSelectedPartId(part.id);
+                                    setSelectedViewName(viewName);
                                     setSelectedImageRef(String(imageRef || ''));
                                   }}
                                 >
@@ -1342,7 +1341,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
       data-layout-region="center"
     >
       <div className="workspace-panel-layout" data-testid="selected-image-panel">
-        <strong>{inspectionHierarchy.regions[tabKey]?.label || 'Inspection'}</strong>
         {tabKey === 'image_metadata' ? (
           !selectedPart ? (
             <p className="muted">No part selected. Select a part to review image metadata.</p>
@@ -1372,7 +1370,23 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
                 const imageRecord = projectImageLookup[imageRef];
                 const imageId = imageRecord?.id;
                 return (
-                  <div key={viewName} className={`view-cell ${activeViewName === viewName ? 'selected' : ''}`}>
+                  <div
+                    key={viewName}
+                    className={`view-cell ${activeViewName === viewName ? 'selected' : ''}`}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => {
+                      setSelectedViewName(viewName);
+                      setSelectedImageRef(imageRef);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        setSelectedViewName(viewName);
+                        setSelectedImageRef(imageRef);
+                      }
+                    }}
+                  >
                     <div className="view-cell-title">{viewName.toUpperCase()}</div>
                     <div className="view-cell-body">
                       {!imageEnabled ? (
@@ -1406,7 +1420,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
       data-layout-region={inspectionHierarchy.rightColumn}
     >
       <div className="annotation-controls" data-testid="annotation-controls">
-        <strong>{rightRegion?.label || 'Annotations'}</strong>
         <p className="muted">For selected part: {selectedPart?.serial_number || 'No part selected'}</p>
         <div className="measurement-fields">
           <select

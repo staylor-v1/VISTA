@@ -407,8 +407,8 @@ function Project({ currentUserGroups = [] }) {
               </button>
             </div>
             <div className="project-info">
-              <h1 className="project-title">{project ? project.name : 'Loading project...'}</h1>
-              <div className="project-meta">
+              <div className="project-title-row">
+                <h1 className="project-title">{project ? project.name : 'Loading project...'}</h1>
                 <span className="project-group">Type: {project?.project_type || 'PT1'}</span>
               </div>
             </div>
