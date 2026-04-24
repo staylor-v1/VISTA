@@ -337,8 +337,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   const availableLayoutWidth = workbenchWidth > 0 ? workbenchWidth : viewportWidth;
   const inspectionLayoutCollapsed = availableLayoutWidth <= inspectionHierarchy.layout.collapseBreakpointPx;
   const applyFixedRegionWidths = !inspectionLayoutCollapsed && availableLayoutWidth >= minimumThreeColumnWidthPx;
-  const leftColumnWidthPx = normalizeLayoutNumber(leftRegion?.widthPx, 240);
-  const rightColumnWidthPx = normalizeLayoutNumber(rightRegion?.widthPx, 240);
   const workbenchPanelGridStyle = {
     '--inspection-grid-template-columns': inspectionLayoutCollapsed
       ? '1fr'
