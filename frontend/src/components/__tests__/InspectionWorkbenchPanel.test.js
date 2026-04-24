@@ -852,15 +852,28 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('mpr-panel')).toHaveTextContent('XZ');
     expect(screen.getByTestId('mpr-panel')).toHaveTextContent('YZ');
     expect(screen.getByTestId('mpr-pane-3d')).toHaveTextContent('3D');
-    expect(screen.getAllByAltText(/Volume reconstruction slice/).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText('3D view')).toHaveValue('orientation');
+    expect(screen.queryByAltText(/Volume reconstruction slice/)).not.toBeInTheDocument();
     expect(screen.queryByText(/axial/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/coronal/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/sagittal/i)).not.toBeInTheDocument();
 
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'stack' } });
+    expect(screen.getAllByAltText(/Volume reconstruction slice/).length).toBeGreaterThan(0);
+    expect(screen.getAllByAltText(/Volume reconstruction slice/)[0]).toHaveAttribute('draggable', 'false');
+
     const coronalPreview = screen.getByTestId('mpr-preview-coronal');
     const initialCoronalCrosshairY = coronalPreview.style.getPropertyValue('--crosshair-y');
+    expect(coronalPreview.style.getPropertyValue('--crosshair-h-color')).toBe('#3b82f6');
+    expect(coronalPreview.style.getPropertyValue('--crosshair-v-color')).toBe('#10b981');
     fireEvent.wheel(screen.getByTestId('mpr-pane-axial'), { deltaY: 80 });
     expect(coronalPreview.style.getPropertyValue('--crosshair-y')).not.toBe(initialCoronalCrosshairY);
+
+    const axialPreview = screen.getByTestId('mpr-preview-axial');
+    const initialAxialCrosshairX = axialPreview.style.getPropertyValue('--crosshair-x');
+    fireEvent.click(screen.getByLabelText('Mirror', { selector: '#mpr-mirror-axial' }));
+    expect(axialPreview.style.getPropertyValue('--projection-scale-x')).toBe('-1');
+    expect(axialPreview.style.getPropertyValue('--crosshair-x')).not.toBe(initialAxialCrosshairX);
 
     expect(screen.getByTestId('mpr-pane-coronal')).toHaveTextContent('Y 8 / 95');
     fireEvent.wheel(screen.getByTestId('mpr-pane-coronal'), { deltaY: 80 });
@@ -885,6 +898,8 @@ describe('InspectionWorkbenchPanel', () => {
 
     expect(screen.queryByAltText(/Volume reconstruction slice/)).not.toBeInTheDocument();
     expect(screen.getAllByAltText(/fallback projection from front image/i).length).toBeGreaterThan(0);
+    expect(screen.queryByAltText(/Fallback visual hull shell front view/i)).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'shell' } });
     expect(screen.getByAltText(/Fallback visual hull shell front view/i)).toBeInTheDocument();
     expect(screen.queryByText('No stack')).not.toBeInTheDocument();
   });

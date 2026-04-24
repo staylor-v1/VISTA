@@ -36,16 +36,20 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
         await page.getByRole('tab', { name: 'Inspection' }).click();
         const inspectionPanel = page.locator('section[aria-label="Inspection Workbench"]');
         await expect(inspectionPanel).toBeVisible();
+        if (projectType === 'PT3') {
+          await expect(page.getByTestId('inspection-layout-grid')).toHaveCount(0);
+          await expect(page.getByTestId('mpr-panel')).toBeVisible();
+          await expect(page.getByLabel('3D view')).toHaveValue('orientation');
+          await expect(page.getByTestId('mpr-pane-3d')).toContainText('3D');
+          await expect(page.locator('.mpr-mirror-toggle').first()).toBeVisible();
+          await expect.poll(() => getWorkspaceStates().length).toBeGreaterThan(0);
+          return;
+        }
         await expect(page.getByTestId('inspection-layout-grid')).toBeVisible();
         await expect(inspectionPanel.locator('.flexlayout__tab_button', { hasText: 'Part Summary' }).first()).toBeVisible();
         await expect(inspectionPanel.locator('.flexlayout__tab_button', { hasText: 'Inspection' }).first()).toBeVisible();
         await expect(inspectionPanel.locator('.flexlayout__tab_button', { hasText: 'Image Metadata' }).first()).toBeVisible();
         await expect(inspectionPanel.locator('.flexlayout__tab_button', { hasText: 'Annotations' }).first()).toBeVisible();
-        if (projectType === 'PT3') {
-          await expect(page.getByTestId('mpr-panel')).toBeVisible();
-          await expect(inspectionPanel.locator('.flexlayout__tab_button--selected', { hasText: 'MPR' }).first()).toBeVisible();
-          await inspectionPanel.locator('.flexlayout__tab_button', { hasText: 'Inspection' }).first().click();
-        }
         await expect(page.getByLabel('Batch', { exact: true })).toBeVisible();
         await expect(page.getByLabel('Status')).toBeVisible();
         await expect(page.getByLabel('Filter')).toBeVisible();

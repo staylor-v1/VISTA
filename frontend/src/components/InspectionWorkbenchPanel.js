@@ -23,6 +23,20 @@ const MPR_AXIS_CONFIG = {
     color: '#10b981',
   },
 };
+const MPR_CROSSHAIR_AXES_BY_VIEW = {
+  axial: { horizontal: 'coronal', vertical: 'sagittal' },
+  coronal: { horizontal: 'axial', vertical: 'sagittal' },
+  sagittal: { horizontal: 'axial', vertical: 'coronal' },
+};
+const MPR_RECONSTRUCTION_MODES = {
+  orientation: 'orientation',
+  stack: 'stack',
+  shell: 'shell',
+};
+const DEFAULT_MPR_PROJECTION_MIRROR = { axial: false, coronal: false, sagittal: false };
+const MPR_VOLUME_CACHE_LIMIT = 4;
+const MPR_SLICE_CANVAS_CACHE_LIMIT = 96;
+const mprVolumeCacheStore = new Map();
 const DEFAULT_OVERLAY_LAYERS = [
   { id: 'segmentation', label: 'Segmentation', color: '#ef4444' },
   { id: 'heatmap', label: 'Heatmap', color: '#8b5cf6' },
@@ -173,29 +187,225 @@ function getFraction(value, maxValue) {
   return Math.min(1, Math.max(0, (Number(value) || 0) / upper));
 }
 
-function getMprCrosshairStyle(axis, slicePosition, dimensions) {
+function normalizeMprProjectionMirror(candidate) {
+  return MPR_AXES.reduce((acc, axis) => {
+    acc[axis] = candidate?.[axis] === true;
+    return acc;
+  }, { ...DEFAULT_MPR_PROJECTION_MIRROR });
+}
+
+function getScaledIndex(value, sourceMaxValue, targetLength) {
+  const upper = Math.max(0, (Number(targetLength) || 1) - 1);
+  return clampRange(Math.round(getFraction(value, sourceMaxValue) * upper), 0, upper, 0);
+}
+
+function getMprVolumeCacheKey(imageStack) {
+  if (!Array.isArray(imageStack) || imageStack.length === 0) return '';
+  return imageStack
+    .map((entry) => `${entry.id}:${entry.sliceIndex}:${entry.url}`)
+    .join('|');
+}
+
+function rememberMprVolumeCache(key, cache) {
+  if (!key || !cache) return;
+  mprVolumeCacheStore.delete(key);
+  mprVolumeCacheStore.set(key, cache);
+  while (mprVolumeCacheStore.size > MPR_VOLUME_CACHE_LIMIT) {
+    const oldestKey = mprVolumeCacheStore.keys().next().value;
+    mprVolumeCacheStore.delete(oldestKey);
+  }
+}
+
+function rememberSliceCanvas(volumeCache, key, canvas) {
+  if (!volumeCache?.sliceCanvases || !key || !canvas) return;
+  volumeCache.sliceCanvases.delete(key);
+  volumeCache.sliceCanvases.set(key, canvas);
+  while (volumeCache.sliceCanvases.size > MPR_SLICE_CANVAS_CACHE_LIMIT) {
+    const oldestKey = volumeCache.sliceCanvases.keys().next().value;
+    volumeCache.sliceCanvases.delete(oldestKey);
+  }
+}
+
+function loadMprImage(source) {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = source.url;
+  });
+}
+
+async function buildMprVolumeCache(cacheKey, imageStack, dimensions) {
+  const images = await Promise.all(imageStack.map(loadMprImage));
+  const validImages = images.filter(Boolean);
+  if (validImages.length === 0) return null;
+
+  const first = validImages[0];
+  const width = first.naturalWidth || first.width || Math.max(1, dimensions.sagittal || 1);
+  const height = first.naturalHeight || first.height || Math.max(1, dimensions.coronal || 1);
+  const scratch = document.createElement('canvas');
+  const scratchContext = scratch.getContext?.('2d');
+  if (!scratchContext) return null;
+
+  scratch.width = width;
+  scratch.height = height;
+
+  const slices = validImages.map((image) => {
+    scratchContext.clearRect(0, 0, width, height);
+    scratchContext.drawImage(image, 0, 0, width, height);
+    return {
+      image,
+      imageData: scratchContext.getImageData(0, 0, width, height),
+    };
+  });
+
+  return {
+    key: cacheKey,
+    width,
+    height,
+    depth: slices.length,
+    slices,
+    sliceCanvases: new Map(),
+  };
+}
+
+function getCachedMprSliceCanvas(axis, slicePosition, dimensions, volumeCache) {
+  if (!volumeCache || typeof document === 'undefined') return null;
+  const sourceMaxByAxis = {
+    axial: Math.max(0, (dimensions.axial || 1) - 1),
+    coronal: Math.max(0, (dimensions.coronal || 1) - 1),
+    sagittal: Math.max(0, (dimensions.sagittal || 1) - 1),
+  };
+  const cacheIndexByAxis = {
+    axial: getScaledIndex(slicePosition.axial, sourceMaxByAxis.axial, volumeCache.depth),
+    coronal: getScaledIndex(slicePosition.coronal, sourceMaxByAxis.coronal, volumeCache.height),
+    sagittal: getScaledIndex(slicePosition.sagittal, sourceMaxByAxis.sagittal, volumeCache.width),
+  };
+  const sliceKey = `${axis}:${cacheIndexByAxis[axis]}`;
+  const cachedCanvas = volumeCache.sliceCanvases.get(sliceKey);
+  if (cachedCanvas) return cachedCanvas;
+
+  const output = document.createElement('canvas');
+  const outputContext = output.getContext?.('2d');
+  if (!outputContext) return null;
+
+  if (axis === 'axial') {
+    const slice = volumeCache.slices[cacheIndexByAxis.axial] || volumeCache.slices[0];
+    output.width = volumeCache.width;
+    output.height = volumeCache.height;
+    outputContext.drawImage(slice.image, 0, 0, output.width, output.height);
+    rememberSliceCanvas(volumeCache, sliceKey, output);
+    return output;
+  }
+
+  if (axis === 'coronal') {
+    output.width = volumeCache.width;
+    output.height = volumeCache.depth;
+    const y = cacheIndexByAxis.coronal;
+    const outData = outputContext.createImageData(output.width, output.height);
+    volumeCache.slices.forEach((slice, zIndex) => {
+      const sourceOffset = y * volumeCache.width * 4;
+      const targetOffset = (volumeCache.depth - 1 - zIndex) * volumeCache.width * 4;
+      outData.data.set(
+        slice.imageData.data.subarray(sourceOffset, sourceOffset + volumeCache.width * 4),
+        targetOffset,
+      );
+    });
+    outputContext.putImageData(outData, 0, 0);
+    rememberSliceCanvas(volumeCache, sliceKey, output);
+    return output;
+  }
+
+  output.width = volumeCache.height;
+  output.height = volumeCache.depth;
+  const x = cacheIndexByAxis.sagittal;
+  const outData = outputContext.createImageData(output.width, output.height);
+  volumeCache.slices.forEach((slice, zIndex) => {
+    const targetRowOffset = (volumeCache.depth - 1 - zIndex) * volumeCache.height * 4;
+    for (let y = 0; y < volumeCache.height; y += 1) {
+      const sourceOffset = (y * volumeCache.width + x) * 4;
+      const targetOffset = targetRowOffset + y * 4;
+      outData.data[targetOffset] = slice.imageData.data[sourceOffset];
+      outData.data[targetOffset + 1] = slice.imageData.data[sourceOffset + 1];
+      outData.data[targetOffset + 2] = slice.imageData.data[sourceOffset + 2];
+      outData.data[targetOffset + 3] = slice.imageData.data[sourceOffset + 3];
+    }
+  });
+  outputContext.putImageData(outData, 0, 0);
+  rememberSliceCanvas(volumeCache, sliceKey, output);
+  return output;
+}
+
+function getMprCrosshairStyle(axis, slicePosition, dimensions, mirrored = false) {
   const x = getFraction(slicePosition.sagittal, (dimensions.sagittal || 1) - 1) * 100;
   const y = getFraction(slicePosition.coronal, (dimensions.coronal || 1) - 1) * 100;
   const z = (1 - getFraction(slicePosition.axial, (dimensions.axial || 1) - 1)) * 100;
+  const representedAxes = MPR_CROSSHAIR_AXES_BY_VIEW[axis] || MPR_CROSSHAIR_AXES_BY_VIEW.axial;
+  const representedStyle = {
+    '--crosshair-h-color': MPR_AXIS_CONFIG[representedAxes.horizontal]?.color || '#ffffff',
+    '--crosshair-v-color': MPR_AXIS_CONFIG[representedAxes.vertical]?.color || '#ffffff',
+    '--projection-scale-x': mirrored ? -1 : 1,
+  };
+  const displayX = (value) => `${mirrored ? 100 - value : value}%`;
   if (axis === 'axial') {
-    return { '--crosshair-x': `${x}%`, '--crosshair-y': `${y}%` };
+    return { '--crosshair-x': displayX(x), '--crosshair-y': `${y}%`, ...representedStyle };
   }
   if (axis === 'coronal') {
-    return { '--crosshair-x': `${x}%`, '--crosshair-y': `${z}%` };
+    return { '--crosshair-x': displayX(x), '--crosshair-y': `${z}%`, ...representedStyle };
   }
-  return { '--crosshair-x': `${y}%`, '--crosshair-y': `${z}%` };
+  return { '--crosshair-x': displayX(y), '--crosshair-y': `${z}%`, ...representedStyle };
 }
 
-function MprSliceCanvas({ axis, imageStack, slicePosition, dimensions }) {
+function useMprVolumeCache(imageStack, dimensions) {
+  const cacheKey = useMemo(() => getMprVolumeCacheKey(imageStack), [imageStack]);
+  const [cacheState, setCacheState] = useState({ key: '', status: 'idle', cache: null });
+
+  useEffect(() => {
+    if (!cacheKey || imageStack.length === 0) {
+      setCacheState({ key: '', status: 'idle', cache: null });
+      return undefined;
+    }
+    if (typeof window !== 'undefined' && /jsdom/i.test(window.navigator?.userAgent || '')) {
+      setCacheState({ key: cacheKey, status: 'idle', cache: null });
+      return undefined;
+    }
+
+    const cached = mprVolumeCacheStore.get(cacheKey);
+    if (cached) {
+      setCacheState({ key: cacheKey, status: 'ready', cache: cached });
+      return undefined;
+    }
+
+    let cancelled = false;
+    setCacheState({ key: cacheKey, status: 'loading', cache: null });
+    buildMprVolumeCache(cacheKey, imageStack, dimensions).then((cache) => {
+      if (cancelled) return;
+      if (!cache) {
+        setCacheState({ key: cacheKey, status: 'error', cache: null });
+        return;
+      }
+      rememberMprVolumeCache(cacheKey, cache);
+      setCacheState({ key: cacheKey, status: 'ready', cache });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [cacheKey, dimensions.coronal, dimensions.sagittal, imageStack]);
+
+  return cacheState;
+}
+
+function MprSliceCanvas({ axis, volumeCache, volumeCacheStatus, slicePosition, dimensions }) {
   const canvasRef = useRef(null);
+  const relevantSlicePosition = slicePosition[axis];
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || imageStack.length === 0) return undefined;
+    if (!canvas || !volumeCache) return undefined;
     if (typeof window !== 'undefined' && /jsdom/i.test(window.navigator?.userAgent || '')) {
       return undefined;
     }
-    let cancelled = false;
     const safeGetContext = () => {
       try {
         return typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
@@ -206,65 +416,23 @@ function MprSliceCanvas({ axis, imageStack, slicePosition, dimensions }) {
     const ctx = safeGetContext();
     if (!ctx) return undefined;
 
-    const selectedZ = clampRange(slicePosition.axial, 0, Math.max(0, imageStack.length - 1), 0);
-    const loadImage = (source) => new Promise((resolve) => {
-      const image = new Image();
-      image.onload = () => resolve(image);
-      image.onerror = () => resolve(null);
-      image.src = source.url;
-    });
+    const sliceCanvas = getCachedMprSliceCanvas(axis, slicePosition, dimensions, volumeCache);
+    if (!sliceCanvas) return undefined;
+    canvas.width = sliceCanvas.width || 1;
+    canvas.height = sliceCanvas.height || 1;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(sliceCanvas, 0, 0, canvas.width, canvas.height);
+    return undefined;
+  }, [axis, dimensions.axial, dimensions.coronal, dimensions.sagittal, relevantSlicePosition, slicePosition, volumeCache]);
 
-    const draw = async () => {
-      if (axis === 'axial') {
-        const image = await loadImage(imageStack[selectedZ] || imageStack[0]);
-        if (cancelled || !image) return;
-        canvas.width = image.naturalWidth || image.width || 1;
-        canvas.height = image.naturalHeight || image.height || 1;
-        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-        return;
-      }
-
-      const images = await Promise.all(imageStack.map(loadImage));
-      if (cancelled) return;
-      const validImages = images.filter(Boolean);
-      if (validImages.length === 0) return;
-      const first = validImages[0];
-      const sourceWidth = first.naturalWidth || first.width || Math.max(1, dimensions.sagittal || 1);
-      const sourceHeight = first.naturalHeight || first.height || Math.max(1, dimensions.coronal || 1);
-      const outputWidth = axis === 'coronal' ? sourceWidth : sourceHeight;
-      const outputHeight = validImages.length;
-      canvas.width = outputWidth;
-      canvas.height = outputHeight;
-      ctx.clearRect(0, 0, outputWidth, outputHeight);
-
-      validImages.forEach((image, zIndex) => {
-        const scratch = document.createElement('canvas');
-        const scratchContext = scratch.getContext?.('2d');
-        if (!scratchContext) return;
-        scratch.width = sourceWidth;
-        scratch.height = sourceHeight;
-        scratchContext.drawImage(image, 0, 0, sourceWidth, sourceHeight);
-        if (axis === 'coronal') {
-          const y = clampRange(slicePosition.coronal, 0, sourceHeight - 1, Math.floor(sourceHeight / 2));
-          const row = scratchContext.getImageData(0, y, sourceWidth, 1);
-          ctx.putImageData(row, 0, outputHeight - 1 - zIndex);
-        } else {
-          const x = clampRange(slicePosition.sagittal, 0, sourceWidth - 1, Math.floor(sourceWidth / 2));
-          for (let y = 0; y < sourceHeight; y += 1) {
-            const pixel = scratchContext.getImageData(x, y, 1, 1);
-            ctx.putImageData(pixel, y, outputHeight - 1 - zIndex);
-          }
-        }
-      });
-    };
-
-    draw();
-    return () => {
-      cancelled = true;
-    };
-  }, [axis, dimensions.coronal, dimensions.sagittal, imageStack, slicePosition.axial, slicePosition.coronal, slicePosition.sagittal]);
-
-  return <canvas ref={canvasRef} className="mpr-slice-canvas" aria-hidden="true" />;
+  return (
+    <canvas
+      ref={canvasRef}
+      className="mpr-slice-canvas"
+      aria-hidden="true"
+      data-volume-cache-status={volumeCacheStatus}
+    />
+  );
 }
 
 function safeDecodeFilename(value) {
@@ -519,6 +687,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   const [viewportTransform, setViewportTransform] = useState({ zoom: 1, panX: 0, panY: 0 });
   const [activeMprPane, setActiveMprPane] = useState('axial');
   const [mprRotation, setMprRotation] = useState({ x: -22, y: 32 });
+  const [mprReconstructionMode, setMprReconstructionMode] = useState(MPR_RECONSTRUCTION_MODES.orientation);
+  const [mprProjectionMirror, setMprProjectionMirror] = useState(DEFAULT_MPR_PROJECTION_MIRROR);
   const [activeWorkbenchModal, setActiveWorkbenchModal] = useState(null);
   const [contrastPercent, setContrastPercent] = useState(100);
   const [activeOverlayIds, setActiveOverlayIds] = useState([]);
@@ -895,6 +1065,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
     () => getVolumeSourceImages(selectedPart, projectImageLookup),
     [projectImageLookup, selectedPart],
   );
+  const volumeCacheState = useMprVolumeCache(volumeImageStack, mprDimensions);
   const shellImageLayers = useMemo(
     () => getShellImageLayers(selectedPart, projectImageLookup),
     [projectImageLookup, selectedPart],
@@ -912,6 +1083,23 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
         opacity: entries.length <= 1 ? 0.86 : 0.18 + (index / (entries.length - 1)) * 0.26,
       }));
   }, [volumeImageStack]);
+  const canShowStackReconstruction = volumePreviewLayers.length > 0;
+  const canShowShellReconstruction = shellImageLayers.length > 0;
+  const effectiveMprReconstructionMode = (
+    mprReconstructionMode === MPR_RECONSTRUCTION_MODES.stack && canShowStackReconstruction
+  )
+    ? MPR_RECONSTRUCTION_MODES.stack
+    : (
+      mprReconstructionMode === MPR_RECONSTRUCTION_MODES.shell && canShowShellReconstruction
+    )
+      ? MPR_RECONSTRUCTION_MODES.shell
+      : MPR_RECONSTRUCTION_MODES.orientation;
+
+  useEffect(() => {
+    if (mprReconstructionMode !== effectiveMprReconstructionMode) {
+      setMprReconstructionMode(effectiveMprReconstructionMode);
+    }
+  }, [effectiveMprReconstructionMode, mprReconstructionMode]);
 
   const tooltipValues = useMemo(() => {
     const axisSeed = slicePosition.axial + slicePosition.coronal + slicePosition.sagittal;
@@ -959,6 +1147,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
       panX: clampRange(savedViewport.panX, -200, 200, 0),
       panY: clampRange(savedViewport.panY, -200, 200, 0),
     });
+    setMprReconstructionMode(
+      Object.values(MPR_RECONSTRUCTION_MODES).includes(savedMpr.reconstruction_mode)
+        ? savedMpr.reconstruction_mode
+        : MPR_RECONSTRUCTION_MODES.orientation,
+    );
+    setMprProjectionMirror(normalizeMprProjectionMirror(savedMpr.projection_mirror));
     setContrastPercent(clampRange(savedMpr.contrast_percent, 50, 150, 100));
     const defaultActive = getOverlayLayers(selectedPart)
       .slice(0, 2)
@@ -1051,6 +1245,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
                 ? {
                   slice_position: slicePosition,
                   viewport_transform: viewportTransform,
+                  reconstruction_mode: mprReconstructionMode,
+                  projection_mirror: mprProjectionMirror,
                   contrast_percent: contrastPercent,
                   active_overlay_ids: activeOverlayIds,
                   cursor_probe: cursorProbe,
@@ -1091,6 +1287,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
     panelLayout,
     projectId,
     projectType,
+    mprReconstructionMode,
+    mprProjectionMirror,
     selectedBatchId,
     selectedPart,
     slicePosition,
@@ -1183,6 +1381,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   };
 
   const handleMprVolumePointerDown = (event) => {
+    event.preventDefault();
+    if (event.button !== undefined && event.button !== 0) return;
     setActiveMprPane('volume');
     mprDragRef.current = {
       pointerId: event.pointerId,
@@ -1196,6 +1396,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   const handleMprVolumePointerMove = (event) => {
     const drag = mprDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
     const dx = event.clientX - drag.startX;
     const dy = event.clientY - drag.startY;
     setMprRotation({
@@ -1207,9 +1408,14 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   const handleMprVolumePointerUp = (event) => {
     const drag = mprDragRef.current;
     if (drag?.pointerId === event.pointerId) {
+      event.preventDefault();
       mprDragRef.current = null;
       event.currentTarget.releasePointerCapture?.(event.pointerId);
     }
+  };
+
+  const preventMprNativeDrag = (event) => {
+    event.preventDefault();
   };
 
   const adjustZoom = (delta) => {
@@ -1229,6 +1435,13 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
       if (prev.includes(overlayId)) return prev.filter((id) => id !== overlayId);
       return [...prev, overlayId];
     });
+  };
+
+  const toggleMprProjectionMirror = (axis) => {
+    setMprProjectionMirror((prev) => ({
+      ...prev,
+      [axis]: !prev[axis],
+    }));
   };
 
   const toggleModality = (modality) => {
@@ -1602,6 +1815,22 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
               />
             </label>
             <span className="group-badge">{contrastPercent}%</span>
+            <label className="mpr-reconstruction-selector" htmlFor="mpr-reconstruction-mode">
+              3D view
+              <select
+                id="mpr-reconstruction-mode"
+                value={mprReconstructionMode}
+                onChange={(event) => setMprReconstructionMode(event.target.value)}
+              >
+                <option value={MPR_RECONSTRUCTION_MODES.orientation}>Orientation only</option>
+                <option value={MPR_RECONSTRUCTION_MODES.stack} disabled={!canShowStackReconstruction}>
+                  Stack reconstruction
+                </option>
+                <option value={MPR_RECONSTRUCTION_MODES.shell} disabled={!canShowShellReconstruction}>
+                  Reference shell
+                </option>
+              </select>
+            </label>
             <div className="overlay-toggles">
               {overlayLayers.map((overlay) => (
                 <label key={overlay.id} className="overlay-toggle">
@@ -1641,7 +1870,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
               const upper = Math.max(0, (mprDimensions[axis] || 1) - 1);
               const config = MPR_AXIS_CONFIG[axis];
               const label = config?.label || MPR_AXIS_LABELS[axis] || axis.toUpperCase();
-              const crosshairStyle = getMprCrosshairStyle(axis, slicePosition, mprDimensions);
+              const isMirrored = mprProjectionMirror[axis] === true;
+              const crosshairStyle = getMprCrosshairStyle(axis, slicePosition, mprDimensions, isMirrored);
               const fallbackImage = getFallbackProjectionImage(axis, shellImageLayers);
               return (
                 <article
@@ -1654,7 +1884,18 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
                 >
                   <header className="mpr-pane-header">
                     <strong>{label}</strong>
-                    <span>{config?.sliceLabel || axis.toUpperCase()} {slicePosition[axis]} / {upper}</span>
+                    <div className="mpr-pane-header-controls">
+                      <span>{config?.sliceLabel || axis.toUpperCase()} {slicePosition[axis]} / {upper}</span>
+                      <label className="mpr-mirror-toggle" htmlFor={`mpr-mirror-${axis}`} onClick={(event) => event.stopPropagation()}>
+                        <input
+                          id={`mpr-mirror-${axis}`}
+                          type="checkbox"
+                          checked={isMirrored}
+                          onChange={() => toggleMprProjectionMirror(axis)}
+                        />
+                        Mirror
+                      </label>
+                    </div>
                   </header>
                   <div
                     className="mpr-crosshair-preview"
@@ -1665,7 +1906,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
                     {volumeImageStack.length > 0 ? (
                       <MprSliceCanvas
                         axis={axis}
-                        imageStack={volumeImageStack}
+                        volumeCache={volumeCacheState.cache}
+                        volumeCacheStatus={volumeCacheState.status}
                         slicePosition={slicePosition}
                         dimensions={mprDimensions}
                       />
@@ -1715,9 +1957,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
                 onPointerMove={handleMprVolumePointerMove}
                 onPointerUp={handleMprVolumePointerUp}
                 onPointerCancel={handleMprVolumePointerUp}
+                onDragStart={preventMprNativeDrag}
               >
                 <div
-                  className="mpr-volume-model"
+                  className={`mpr-volume-model reconstruction-${effectiveMprReconstructionMode}`}
                   style={{
                     '--volume-rotate-x': `${mprRotation.x}deg`,
                     '--volume-rotate-y': `${mprRotation.y}deg`,
@@ -1727,13 +1970,15 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
                     '--slice-sagittal-x': `${(getFraction(slicePosition.sagittal, mprDimensions.sagittal - 1) - 0.5) * 190}px`,
                   }}
                 >
-                  {volumePreviewLayers.length > 0 ? (
+                  {effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.stack ? (
                     volumePreviewLayers.map((layer) => (
                       <img
                         key={`${layer.id}-${layer.sliceIndex}`}
                         className="volume-slice-layer"
                         src={layer.url}
                         alt={`Volume reconstruction slice ${layer.sliceIndex}`}
+                        draggable={false}
+                        onDragStart={preventMprNativeDrag}
                         style={{
                           '--slice-depth': `${layer.depth}px`,
                           '--slice-opacity': layer.opacity,
@@ -1741,18 +1986,23 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
                         loading="lazy"
                       />
                     ))
-                  ) : shellImageLayers.length > 0 ? (
+                  ) : effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.shell ? (
                     shellImageLayers.map((layer) => (
                       <img
                         key={`${layer.id}-${layer.viewName}`}
                         className={`volume-shell-image shell-view-${layer.viewName}`}
                         src={layer.url}
                         alt={`Fallback visual hull shell ${layer.viewName} view`}
+                        draggable={false}
+                        onDragStart={preventMprNativeDrag}
                         loading="lazy"
                       />
                     ))
-                  ) : (
-                    <span className="volume-reconstruction-empty">No stack</span>
+                  ) : !canShowStackReconstruction && !canShowShellReconstruction ? (
+                    <span className="volume-reconstruction-empty">No 3D reference</span>
+                  ) : null}
+                  {volumeCacheState.status === 'loading' && volumeImageStack.length > 0 && (
+                    <span className="volume-cache-status">Caching slices</span>
                   )}
                   <span className="volume-box volume-face-front" />
                   <span className="volume-box volume-face-back" />
