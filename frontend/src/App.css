@@ -3902,6 +3902,26 @@ ul li:hover {
   gap: var(--inspection-layout-gap, 12px);
   min-height: var(--inspection-layout-min-height, auto);
   margin-bottom: 12px;
+  position: relative;
+}
+
+.workbench-pane-divider {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  margin-left: calc(-1 * var(--inspection-resize-handle-half, 5px));
+  border: none;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.16);
+  cursor: col-resize;
+  z-index: 3;
+  padding: 0;
+}
+
+.workbench-pane-divider:hover,
+.workbench-pane-divider:focus-visible {
+  background: rgba(37, 99, 235, 0.3);
+  outline: none;
 }
 
 .workbench-tabbed-panel {
