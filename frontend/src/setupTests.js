@@ -4,6 +4,104 @@
 // learn more: https://github.com/testing-library/jest-dom
 import '@testing-library/jest-dom';
 
+jest.mock('flexlayout-react', () => {
+  const React = require('react');
+
+  class TestModel {
+    constructor(json) {
+      this.json = json;
+    }
+
+    toJson() {
+      return this.json;
+    }
+  }
+
+  const Model = {
+    fromJson: (json) => new TestModel(json),
+  };
+
+  const Actions = {
+    ADJUST_WEIGHTS: 'FlexLayout_AdjustWeights',
+  };
+
+  function TestTabSet({ tabset, factory }) {
+    const initialSelected = Number.isFinite(tabset.selected) ? tabset.selected : 0;
+    const [selected, setSelected] = React.useState(initialSelected);
+    const tabs = Array.isArray(tabset.children) ? tabset.children : [];
+    const selectedTab = tabs[Math.min(selected, Math.max(0, tabs.length - 1))];
+
+    return (
+      <section className="flexlayout__tabset" data-testid={tabset.id || undefined}>
+        <div className="flexlayout__tabset_tabbar_outer" role="tablist">
+          {tabs.map((tab, index) => (
+            <button
+              type="button"
+              key={tab.id || tab.component || tab.name}
+              className={`flexlayout__tab_button ${index === selected ? 'flexlayout__tab_button--selected' : ''}`}
+              role="tab"
+              aria-selected={index === selected}
+              onClick={() => setSelected(index)}
+            >
+              {tab.name}
+            </button>
+          ))}
+        </div>
+        <div className="flexlayout__tabset_content">
+          {selectedTab
+            ? factory({
+              getComponent: () => selectedTab.component,
+              getName: () => selectedTab.name,
+            })
+            : null}
+        </div>
+      </section>
+    );
+  }
+
+  function Layout({ model, factory, onModelChange }) {
+    const json = model.toJson();
+    const tabsets = Array.isArray(json?.layout?.children) ? json.layout.children : [];
+
+    const notifyResize = () => {
+      const nextJson = {
+        ...json,
+        layout: {
+          ...json.layout,
+          children: tabsets.map((tabset, index) => ({
+            ...tabset,
+            weight: Number(tabset.weight || 0) + (index === 0 ? 40 : index === tabsets.length - 1 ? -20 : 0),
+          })),
+        },
+      };
+      model.json = nextJson;
+      onModelChange?.(model, { type: Actions.ADJUST_WEIGHTS });
+    };
+
+    return (
+      <div className="flexlayout__layout">
+        {tabsets.map((tabset, index) => (
+          <React.Fragment key={tabset.id}>
+            {index > 0 && (
+              <button
+                type="button"
+                data-testid={index === 1 ? 'inspection-divider-left' : 'inspection-divider-right'}
+                onPointerDown={notifyResize}
+                onPointerUp={notifyResize}
+              >
+                splitter
+              </button>
+            )}
+            <TestTabSet tabset={tabset} factory={factory} />
+          </React.Fragment>
+        ))}
+      </div>
+    );
+  }
+
+  return { Actions, Layout, Model };
+});
+
 // Polyfill for crypto.randomUUID in Jest environment
 if (typeof global.crypto === 'undefined') {
   global.crypto = {};

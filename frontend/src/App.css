@@ -1773,6 +1773,163 @@ ul li:hover {
   font-size: 1.25rem;
 }
 
+.project-data-action-panel .workbench-header {
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.metadata-tree-viewer {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.metadata-tree-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--gray-50);
+  border-bottom: 1px solid var(--border-light);
+  flex-wrap: wrap;
+}
+
+.metadata-tree-toolbar .form-label {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--gray-700);
+}
+
+.metadata-tree-search {
+  min-width: 220px;
+  max-width: 360px;
+}
+
+.metadata-tree-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.metadata-tree-root {
+  padding: var(--space-2) 0;
+  max-height: 520px;
+  overflow: auto;
+}
+
+.metadata-tree-node {
+  margin: 0;
+}
+
+.metadata-tree-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 34px;
+  padding: var(--space-1) var(--space-3);
+  border-left: 3px solid transparent;
+  font-size: 0.875rem;
+}
+
+.metadata-tree-row:hover {
+  background: var(--gray-50);
+}
+
+.metadata-tree-match > .metadata-tree-row {
+  border-left-color: var(--primary-color);
+  background: var(--primary-light);
+}
+
+.metadata-tree-depth-1 > .metadata-tree-row { padding-left: calc(var(--space-3) + 18px); }
+.metadata-tree-depth-2 > .metadata-tree-row { padding-left: calc(var(--space-3) + 36px); }
+.metadata-tree-depth-3 > .metadata-tree-row { padding-left: calc(var(--space-3) + 54px); }
+.metadata-tree-depth-4 > .metadata-tree-row { padding-left: calc(var(--space-3) + 72px); }
+.metadata-tree-depth-5 > .metadata-tree-row { padding-left: calc(var(--space-3) + 90px); }
+.metadata-tree-depth-6 > .metadata-tree-row { padding-left: calc(var(--space-3) + 108px); }
+
+.metadata-tree-toggle,
+.metadata-tree-spacer {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+}
+
+.metadata-tree-toggle {
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-sm);
+  background: #ffffff;
+  color: var(--gray-700);
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.metadata-tree-key {
+  font-weight: 650;
+  color: var(--gray-900);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.metadata-tree-type,
+.metadata-tree-count {
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.metadata-tree-type {
+  background: var(--gray-100);
+  color: var(--gray-700);
+}
+
+.metadata-tree-type-string { background: #ecfdf5; color: #047857; }
+.metadata-tree-type-number { background: #eff6ff; color: #1d4ed8; }
+.metadata-tree-type-boolean { background: #fff7ed; color: #c2410c; }
+.metadata-tree-type-null { background: #f3f4f6; color: #4b5563; }
+.metadata-tree-type-array { background: #f5f3ff; color: #6d28d9; }
+.metadata-tree-type-object { background: #eef2ff; color: #4338ca; }
+
+.metadata-tree-count {
+  background: var(--gray-50);
+  color: var(--gray-500);
+}
+
+.metadata-tree-value {
+  min-width: 0;
+  color: var(--gray-800);
+  overflow-wrap: anywhere;
+}
+
+.metadata-tree-path {
+  margin-left: auto;
+  color: var(--gray-500);
+  background: var(--gray-50);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.metadata-tree-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: var(--space-2);
+}
+
+.metadata-tree-empty {
+  margin-left: 58px;
+  padding: var(--space-1) var(--space-3) var(--space-2);
+  color: var(--gray-500);
+  font-size: 0.8125rem;
+}
+
 /* Collapsible section styling */
 .card-content .collapse-section {
   border-top: 1px solid var(--border-light);
@@ -3905,6 +4062,87 @@ ul li:hover {
   position: relative;
 }
 
+.workbench-flexlayout-shell {
+  position: relative;
+  min-height: var(--inspection-layout-min-height, 620px);
+  height: var(--inspection-layout-min-height, 620px);
+  margin-bottom: 12px;
+  background: #ffffff;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.workbench-flexlayout-shell .flexlayout__layout {
+  --color-background: #ffffff;
+  --color-base: #ffffff;
+  --color-text: #1f2937;
+  --color-tabset-background: #ffffff;
+  --color-tabset-background-selected: #f8fafc;
+  --color-tab-selected-background: #e8f0fe;
+  --color-tab-unselected-background: #f8fafc;
+  --color-tabset-divider-line: #dbe2ea;
+  --color-splitter: rgba(148, 163, 184, 0.24);
+  --color-splitter-hover: rgba(37, 99, 235, 0.24);
+  --color-splitter-drag: rgba(37, 99, 235, 0.34);
+  --font-family: var(--font-family-sans);
+  --font-size: 0.875rem;
+  height: 100%;
+  min-height: 0;
+}
+
+.workbench-flexlayout-shell .flexlayout__tabset {
+  border: 1px solid #dbe2ea;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.workbench-flexlayout-shell .flexlayout__tab_button {
+  border-radius: 6px 6px 0 0;
+  font-weight: 500;
+}
+
+.workbench-flexlayout-shell .flexlayout__tabset_content,
+.workbench-flexlayout-shell .flexlayout__tab,
+.workbench-flexlayout-shell .flexlayout__tab_moveable {
+  min-width: 0;
+  min-height: 0;
+}
+
+.workbench-flexlayout-shell .workbench-tabbed-panel {
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  padding: 8px;
+  overflow: auto;
+}
+
+.workbench-flexlayout-shell .flexlayout__splitter {
+  border-radius: 999px;
+  cursor: col-resize;
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 20;
+  touch-action: none;
+}
+
+.workbench-flexlayout-shell .flexlayout__splitter::after {
+  content: "";
+  position: absolute;
+  inset: 8px 3px;
+  border-radius: 999px;
+  background: rgba(71, 85, 105, 0.32);
+  pointer-events: none;
+}
+
+.workbench-flexlayout-shell .flexlayout__splitter:hover::after,
+.workbench-flexlayout-shell .flexlayout__splitter_drag::after {
+  background: rgba(37, 99, 235, 0.58);
+}
+
+.workbench-flexlayout-shell .flexlayout__splitter_extra {
+  cursor: col-resize;
+}
+
 .workbench-pane-divider {
   position: absolute;
   top: 8px;
@@ -4001,6 +4239,11 @@ ul li:hover {
   .workbench-tabbed-panels {
     grid-template-columns: 1fr;
     min-height: auto;
+  }
+
+  .workbench-flexlayout-shell {
+    min-height: var(--inspection-layout-min-height, 520px);
+    height: var(--inspection-layout-min-height, 520px);
   }
 
   .view-board {

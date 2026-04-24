@@ -190,13 +190,18 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
   };
   const configurationByProjectId = {
     [projectId]: {
-      image_modalities: [{ id: `${type.toLowerCase()}-${scenario}-visual`, label: 'Visual', calibration_required: false }],
+      image_modalities: [{ id: 'visual', label: 'Visual', calibration_required: false }],
       part_views: [{ id: `${type.toLowerCase()}-${scenario}-front`, label: 'Front', required_modalities: ['visual'], source: 'manual' }],
       defect_types: [{ name: `${scenario}-surface`, color: '#ef4444', definition: 'Synthetic defect taxonomy baseline' }],
       process_settings: {
         require_disposition_on_submit: true,
         require_measurement_for_critical: scenario !== 'basic',
         require_second_reviewer_for_reject: scenario === 'advanced',
+        configurable_hotkeys: {
+          accept_classification: 'a',
+          reject_classification: 'r',
+          toggle_shortcut_help: 'h',
+        },
       },
       display_settings: {
         default_colormap: scenario === 'basic' ? 'grayscale' : 'magma',
@@ -205,13 +210,18 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
       },
     },
     'proj-copy': {
-      image_modalities: [{ id: `${type.toLowerCase()}-${scenario}-copied-visual`, label: 'Copied Visual', calibration_required: true }],
+      image_modalities: [{ id: 'visual', label: 'Copied Visual', calibration_required: true }],
       part_views: [{ id: `${type.toLowerCase()}-${scenario}-copied-top`, label: 'Top', required_modalities: ['visual'], source: 'auto' }],
       defect_types: [{ name: `${scenario}-copied-defect`, color: '#22c55e', definition: 'Copied synthetic defect definition' }],
       process_settings: {
         require_disposition_on_submit: true,
         require_measurement_for_critical: true,
         require_second_reviewer_for_reject: true,
+        configurable_hotkeys: {
+          accept_classification: 'a',
+          reject_classification: 'r',
+          toggle_shortcut_help: 'h',
+        },
       },
       display_settings: {
         default_colormap: 'viridis',
@@ -221,6 +231,7 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
     },
   };
   let mutableParts = [...parts];
+  let mutableAnnotations = {};
   const savedWorkspaceStates = [];
   const exportBundleArchiveRequests = [];
   const ingestValidationRequests = [];
@@ -249,7 +260,25 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
       return;
     }
     if (url.endsWith(`/api/projects/${projectId}/metadata-dict`)) {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          project_type: type,
+          inspection_profile: {
+            scenario,
+            required_views: scenario === 'basic' ? ['front', 'back'] : ['front', 'back', 'left', 'right'],
+            validation: {
+              ingest_enabled: true,
+              reviewer_level: scenario,
+            },
+          },
+          data_contract: {
+            batches: batches.length,
+            parts: parts.length,
+          },
+        }),
+      });
       return;
     }
     if (url.endsWith('/api/projects') || url.endsWith('/api/projects/')) {
@@ -349,6 +378,27 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
       });
       return;
     }
+    if (url.endsWith(`/api/projects/${projectId}/configuration/clone`) && method === 'POST') {
+      const payload = route.request().postDataJSON() || {};
+      const sourceProjectId = payload.source_project_id;
+      const sourceConfig = configurationByProjectId[sourceProjectId];
+      if (!sourceConfig) {
+        await route.fulfill({
+          status: 404,
+          contentType: 'application/json',
+          body: JSON.stringify({ detail: 'source configuration not found' }),
+        });
+        return;
+      }
+      configurationByProjectId[projectId] = sourceConfig;
+      savedConfigurations.push({ projectId, payload: { source_project_id: sourceProjectId, config: sourceConfig } });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ project_id: projectId, source_project_id: sourceProjectId, config: sourceConfig }),
+      });
+      return;
+    }
     if (url.match(/\/api\/projects\/[^/]+\/configuration$/) && method === 'GET') {
       const targetProjectId = url.split('/').at(-2);
       const config = configurationByProjectId[targetProjectId];
@@ -369,6 +419,38 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
         contentType: 'application/json',
         body: JSON.stringify({ project_id: targetProjectId, config: configurationByProjectId[targetProjectId] }),
       });
+      return;
+    }
+    if (url.includes(`/api/projects/${projectId}/parts/`) && url.endsWith('/annotations') && method === 'GET') {
+      const partId = url.split('/parts/').at(-1).split('/annotations')[0];
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ annotations: mutableAnnotations[partId] || [] }),
+      });
+      return;
+    }
+    if (url.includes(`/api/projects/${projectId}/parts/`) && url.endsWith('/annotations') && method === 'POST') {
+      const partId = url.split('/parts/').at(-1).split('/annotations')[0];
+      const payload = route.request().postDataJSON() || {};
+      const annotation = {
+        id: `ann-${partId}-${(mutableAnnotations[partId] || []).length + 1}`,
+        part_id: partId,
+        defect_class: payload.defect_class || 'Other',
+        modality: payload.modality || 'visual',
+        comment: payload.comment || null,
+        disposition: payload.disposition || 'open',
+        hidden: false,
+        measurements: payload.measurements || {},
+        bbox: payload.bbox || null,
+        created_by: 'e2e@example.com',
+        created_at: '2026-03-28T12:30:00Z',
+      };
+      mutableAnnotations = {
+        ...mutableAnnotations,
+        [partId]: [annotation, ...(mutableAnnotations[partId] || [])],
+      };
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(annotation) });
       return;
     }
     if (url.includes(`/api/projects/${projectId}/parts/`) && method === 'PATCH') {

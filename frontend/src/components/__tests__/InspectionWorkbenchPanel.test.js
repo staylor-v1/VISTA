@@ -509,17 +509,7 @@ describe('InspectionWorkbenchPanel', () => {
       await waitFor(() => {
         expect(screen.getByText(`Batches: ${scenario.batches.length}`)).toBeInTheDocument();
       });
-      fireEvent.click(screen.getByTestId('request-ingest-validation'));
-      await waitFor(() => {
-        expect(screen.getByTestId('ingest-validation-result')).toHaveTextContent(/Ingest validation complete:/);
-      });
-      expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('/ingest'),
-        expect.objectContaining({
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      );
+      expect(screen.queryByTestId('request-ingest-validation')).not.toBeInTheDocument();
       expect(screen.getByText(`Parts: ${scenario.parts.length}`)).toBeInTheDocument();
       expect(screen.getByText(new RegExp(projectType))).toBeInTheDocument();
       expect(screen.getByLabelText('Batch')).toBeInTheDocument();

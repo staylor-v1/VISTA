@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Actions, Layout, Model } from 'flexlayout-react';
+import 'flexlayout-react/style/light.css';
 import { DEFAULT_INTERFACE_HIERARCHY } from '../utils/interfaceHierarchy';
 
 const VIEW_ORDER = ['front', 'back', 'left', 'right', 'top', 'bottom'];
@@ -17,6 +19,12 @@ const DEFAULT_INSPECTOR_HOTKEYS = {
 const DEFAULT_INSPECTION_COLUMN_WIDTHS = { leftPx: null, rightPx: null };
 const RESIZABLE_COLUMN_MIN_PX = 220;
 const RESIZE_HANDLE_WIDTH_PX = 10;
+const FLEX_LAYOUT_CENTER_WEIGHT_PX = 760;
+const INSPECTION_FLEX_TABSET_IDS = {
+  left: 'inspection-left-tabset',
+  center: 'inspection-center-tabset',
+  right: 'inspection-right-tabset',
+};
 const DEFAULT_PANEL_LAYOUT = {
   part_list: { is_open: true, width_px: 320, height_px: 420, orientation: 'vertical' },
   inspector: { is_open: true, width_px: 360, height_px: 420, orientation: 'vertical' },
@@ -250,6 +258,89 @@ function panelRegionStyle(region) {
   return style;
 }
 
+function getInspectionPaneWeight(region, fallback) {
+  return normalizeLayoutNumber(region?.widthPx ?? region?.minWidthPx, fallback);
+}
+
+function createInspectionTab(tabKey, region, fallbackLabel) {
+  return {
+    type: 'tab',
+    id: `inspection-tab-${tabKey}`,
+    name: region?.label || fallbackLabel || tabKey,
+    component: tabKey,
+    enableClose: false,
+    enableRename: false,
+  };
+}
+
+function createInspectionFlexLayoutModel({
+  inspectionHierarchy,
+  leftRegion,
+  inspectorRegion,
+  rightRegion,
+  inspectionLayoutCollapsed,
+}) {
+  const leftWeight = getInspectionPaneWeight(leftRegion, 320);
+  const centerWeight = getInspectionPaneWeight(inspectorRegion, FLEX_LAYOUT_CENTER_WEIGHT_PX);
+  const rightWeight = getInspectionPaneWeight(rightRegion, 360);
+
+  return Model.fromJson({
+    global: {
+      rootOrientationVertical: inspectionLayoutCollapsed,
+      splitterSize: RESIZE_HANDLE_WIDTH_PX,
+      splitterExtra: 4,
+      tabEnableClose: false,
+      tabEnableRename: false,
+      tabEnablePopout: false,
+      tabSetEnableClose: false,
+      tabSetEnableDeleteWhenEmpty: false,
+      tabSetEnableMaximize: false,
+      tabSetEnableTabStrip: true,
+      tabSetTabLocation: 'top',
+    },
+    borders: [],
+    layout: {
+      type: 'row',
+      id: 'inspection-root-layout',
+      weight: 100,
+      children: [
+        {
+          type: 'tabset',
+          id: INSPECTION_FLEX_TABSET_IDS.left,
+          weight: leftWeight,
+          minWidth: normalizeLayoutNumber(leftRegion?.minWidthPx, RESIZABLE_COLUMN_MIN_PX),
+          maxWidth: normalizeLayoutNumber(leftRegion?.maxWidthPx, 1200),
+          minHeight: normalizeLayoutNumber(leftRegion?.minHeightPx, 220),
+          children: [
+            createInspectionTab(inspectionHierarchy.leftColumn, leftRegion, 'Part Summary'),
+          ],
+        },
+        {
+          type: 'tabset',
+          id: INSPECTION_FLEX_TABSET_IDS.center,
+          weight: centerWeight,
+          minWidth: normalizeLayoutNumber(inspectorRegion?.minWidthPx, 560),
+          minHeight: normalizeLayoutNumber(inspectorRegion?.minHeightPx, 320),
+          children: inspectionHierarchy.centerTabs.map((tabKey) => (
+            createInspectionTab(tabKey, inspectionHierarchy.regions[tabKey], tabKey)
+          )),
+        },
+        {
+          type: 'tabset',
+          id: INSPECTION_FLEX_TABSET_IDS.right,
+          weight: rightWeight,
+          minWidth: normalizeLayoutNumber(rightRegion?.minWidthPx, RESIZABLE_COLUMN_MIN_PX),
+          maxWidth: normalizeLayoutNumber(rightRegion?.maxWidthPx, 1200),
+          minHeight: normalizeLayoutNumber(rightRegion?.minHeightPx, 220),
+          children: [
+            createInspectionTab(inspectionHierarchy.rightColumn, rightRegion, 'Annotations'),
+          ],
+        },
+      ],
+    },
+  });
+}
+
 function normalizeInspectionColumnWidths(candidate = {}) {
   const leftRaw = Number(candidate.left_px ?? candidate.leftPx);
   const rightRaw = Number(candidate.right_px ?? candidate.rightPx);
@@ -304,11 +395,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
     measurement_value: '',
     bbox: { x: '', y: '', width: '', height: '' },
   });
-  const [ingestResult, setIngestResult] = useState({
-    loading: false,
-    error: null,
-    payload: null,
-  });
   const [inspectorHotkeys, setInspectorHotkeys] = useState(DEFAULT_INSPECTOR_HOTKEYS);
   const [inspectorHotkeyDraft, setInspectorHotkeyDraft] = useState(DEFAULT_INSPECTOR_HOTKEYS);
   const [hotkeySaveState, setHotkeySaveState] = useState({ loading: false, message: null, severity: null });
@@ -317,146 +403,66 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   const [shortcutHelpVisible, setShortcutHelpVisible] = useState(false);
   const [panelLayout, setPanelLayout] = useState(DEFAULT_PANEL_LAYOUT);
   const [normalizationTriageField, setNormalizationTriageField] = useState('');
-  const [leftPanelTab, setLeftPanelTab] = useState('part_summary');
-  const [centerPanelTab, setCenterPanelTab] = useState('inspector');
-  const [rightPanelTab, setRightPanelTab] = useState('annotations');
   const [selectedImageRef, setSelectedImageRef] = useState('');
   const [projectImageLookup, setProjectImageLookup] = useState({});
   const [viewportWidth, setViewportWidth] = useState(() => (
     typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth
   ));
   const [workbenchWidth, setWorkbenchWidth] = useState(0);
-  const [columnResizeState, setColumnResizeState] = useState(null);
   const workbenchDetailsRef = useRef(null);
-  const latestColumnWidthsRef = useRef(DEFAULT_INSPECTION_COLUMN_WIDTHS);
+  const inspectionResizeSaveTimerRef = useRef(null);
 
   const inspectionHierarchy = useMemo(() => normalizeInspectionHierarchy(hierarchy || {}), [hierarchy]);
   const leftRegion = inspectionHierarchy.regions[inspectionHierarchy.leftColumn];
   const rightRegion = inspectionHierarchy.regions[inspectionHierarchy.rightColumn];
   const inspectorRegion = inspectionHierarchy.regions.inspector;
-  const minimumThreeColumnWidthPx = useMemo(() => {
-    const leftMin = normalizeLayoutNumber(leftRegion?.minWidthPx ?? leftRegion?.widthPx, 240);
-    const centerMin = normalizeLayoutNumber(inspectorRegion?.minWidthPx ?? inspectorRegion?.widthPx, 560);
-    const rightMin = normalizeLayoutNumber(rightRegion?.minWidthPx ?? rightRegion?.widthPx, 240);
-    const gapCount = 2;
-    return leftMin + centerMin + rightMin + inspectionHierarchy.layout.gapPx * gapCount;
-  }, [
-    inspectionHierarchy.layout.gapPx,
-    inspectorRegion?.minWidthPx,
-    inspectorRegion?.widthPx,
-    leftRegion?.minWidthPx,
-    leftRegion?.widthPx,
-    rightRegion?.minWidthPx,
-    rightRegion?.widthPx,
-  ]);
   const availableLayoutWidth = workbenchWidth > 0 ? workbenchWidth : viewportWidth;
   const inspectionLayoutCollapsed = availableLayoutWidth <= inspectionHierarchy.layout.collapseBreakpointPx;
-  const applyFixedRegionWidths = !inspectionLayoutCollapsed && availableLayoutWidth >= minimumThreeColumnWidthPx;
-  const minLeftColumnWidthPx = normalizeLayoutNumber(leftRegion?.minWidthPx, RESIZABLE_COLUMN_MIN_PX);
-  const minRightColumnWidthPx = normalizeLayoutNumber(rightRegion?.minWidthPx, RESIZABLE_COLUMN_MIN_PX);
   const defaultLeftColumnWidthPx = normalizeLayoutNumber(leftRegion?.widthPx ?? leftRegion?.minWidthPx, 240);
   const defaultRightColumnWidthPx = normalizeLayoutNumber(rightRegion?.widthPx ?? rightRegion?.minWidthPx, 240);
-  const preferredLeftColumnWidthPx = normalizeLayoutNumber(
-    inspectionColumnWidths.leftPx ?? defaultLeftColumnWidthPx,
-    defaultLeftColumnWidthPx,
-  );
-  const preferredRightColumnWidthPx = normalizeLayoutNumber(
-    inspectionColumnWidths.rightPx ?? defaultRightColumnWidthPx,
-    defaultRightColumnWidthPx,
-  );
-  const totalGapWidthPx = inspectionHierarchy.layout.gapPx * 2;
-  const availableForColumnsPx = Math.max(0, availableLayoutWidth - totalGapWidthPx);
-  const minimumCenterWidthPx = normalizeLayoutNumber(inspectorRegion?.minWidthPx ?? inspectorRegion?.widthPx, 560);
-  const maxLeftAllowedPx = Math.max(
-    minLeftColumnWidthPx,
-    availableForColumnsPx - minimumCenterWidthPx - minRightColumnWidthPx,
-  );
-  const effectiveLeftColumnWidthPx = clampRange(
-    preferredLeftColumnWidthPx,
-    minLeftColumnWidthPx,
-    maxLeftAllowedPx,
-    defaultLeftColumnWidthPx,
-  );
-  const maxRightAllowedPx = Math.max(
-    minRightColumnWidthPx,
-    availableForColumnsPx - minimumCenterWidthPx - effectiveLeftColumnWidthPx,
-  );
-  const effectiveRightColumnWidthPx = clampRange(
-    preferredRightColumnWidthPx,
-    minRightColumnWidthPx,
-    maxRightAllowedPx,
-    defaultRightColumnWidthPx,
-  );
-  const centerWidthPx = Math.max(0, availableForColumnsPx - effectiveLeftColumnWidthPx - effectiveRightColumnWidthPx);
-  const leftDividerX = effectiveLeftColumnWidthPx + inspectionHierarchy.layout.gapPx / 2;
-  const rightDividerX = effectiveLeftColumnWidthPx
-    + inspectionHierarchy.layout.gapPx
-    + centerWidthPx
-    + inspectionHierarchy.layout.gapPx / 2;
-  const canShowColumnDividers = applyFixedRegionWidths && Number.isFinite(availableLayoutWidth) && availableLayoutWidth > 0;
-  const workbenchPanelGridStyle = {
+  const configuredLeftColumnWidthPx = inspectionColumnWidths.leftPx ?? defaultLeftColumnWidthPx;
+  const configuredRightColumnWidthPx = inspectionColumnWidths.rightPx ?? defaultRightColumnWidthPx;
+  const inspectionFlexLayoutModel = useMemo(() => createInspectionFlexLayoutModel({
+    inspectionHierarchy: {
+      ...inspectionHierarchy,
+      regions: {
+        ...inspectionHierarchy.regions,
+        [inspectionHierarchy.leftColumn]: {
+          ...leftRegion,
+          widthPx: configuredLeftColumnWidthPx,
+        },
+        [inspectionHierarchy.rightColumn]: {
+          ...rightRegion,
+          widthPx: configuredRightColumnWidthPx,
+        },
+      },
+    },
+    leftRegion: {
+      ...leftRegion,
+      widthPx: configuredLeftColumnWidthPx,
+    },
+    inspectorRegion,
+    rightRegion: {
+      ...rightRegion,
+      widthPx: configuredRightColumnWidthPx,
+    },
+    inspectionLayoutCollapsed,
+  }), [
+    configuredLeftColumnWidthPx,
+    configuredRightColumnWidthPx,
+    inspectionHierarchy,
+    inspectionLayoutCollapsed,
+    inspectorRegion,
+    leftRegion,
+    rightRegion,
+  ]);
+  const workbenchFlexLayoutStyle = {
     '--inspection-grid-template-columns': inspectionLayoutCollapsed
       ? '1fr'
-      : `${applyFixedRegionWidths ? effectiveLeftColumnWidthPx : 240}px minmax(0, 1fr) ${applyFixedRegionWidths ? effectiveRightColumnWidthPx : 240}px`,
+      : `${configuredLeftColumnWidthPx}px minmax(0, 1fr) ${configuredRightColumnWidthPx}px`,
     '--inspection-layout-gap': `${inspectionHierarchy.layout.gapPx}px`,
-    '--inspection-layout-min-height': inspectionLayoutCollapsed ? 'auto' : `${inspectionHierarchy.layout.minHeightPx}px`,
-    '--inspection-resize-handle-half': `${Math.round(RESIZE_HANDLE_WIDTH_PX / 2)}px`,
+    '--inspection-layout-min-height': inspectionLayoutCollapsed ? '520px' : `${inspectionHierarchy.layout.minHeightPx}px`,
   };
-
-  latestColumnWidthsRef.current = {
-    leftPx: effectiveLeftColumnWidthPx,
-    rightPx: effectiveRightColumnWidthPx,
-  };
-
-  useEffect(() => {
-    if (!columnResizeState) return undefined;
-    const onPointerMove = (event) => {
-      const pointerX = Number(event.clientX);
-      if (!Number.isFinite(pointerX)) return;
-      const delta = pointerX - columnResizeState.startX;
-      if (columnResizeState.side === 'left') {
-        setInspectionColumnWidths((prev) => ({ ...prev, leftPx: Math.round(columnResizeState.initial.leftPx + delta) }));
-      } else if (columnResizeState.side === 'right') {
-        setInspectionColumnWidths((prev) => ({ ...prev, rightPx: Math.round(columnResizeState.initial.rightPx - delta) }));
-      }
-    };
-    const onPointerUp = (event) => {
-      const pointerX = Number(event?.clientX);
-      const delta = Number.isFinite(pointerX) ? pointerX - columnResizeState.startX : 0;
-      const nextWidths = { ...latestColumnWidthsRef.current };
-      if (columnResizeState.side === 'left' && Number.isFinite(delta)) {
-        nextWidths.leftPx = Math.round(clampRange(
-          columnResizeState.initial.leftPx + delta,
-          minLeftColumnWidthPx,
-          maxLeftAllowedPx,
-          latestColumnWidthsRef.current.leftPx,
-        ));
-      } else if (columnResizeState.side === 'right' && Number.isFinite(delta)) {
-        nextWidths.rightPx = Math.round(clampRange(
-          columnResizeState.initial.rightPx - delta,
-          minRightColumnWidthPx,
-          maxRightAllowedPx,
-          latestColumnWidthsRef.current.rightPx,
-        ));
-      }
-      setInspectionColumnWidths((prev) => ({ ...prev, ...nextWidths }));
-      setColumnResizeState(null);
-      saveInspectionColumnWidths(nextWidths);
-    };
-    window.addEventListener('pointermove', onPointerMove);
-    window.addEventListener('pointerup', onPointerUp);
-    return () => {
-      window.removeEventListener('pointermove', onPointerMove);
-      window.removeEventListener('pointerup', onPointerUp);
-    };
-  }, [
-    columnResizeState,
-    maxLeftAllowedPx,
-    maxRightAllowedPx,
-    minLeftColumnWidthPx,
-    minRightColumnWidthPx,
-    saveInspectionColumnWidths,
-  ]);
 
   useEffect(() => {
     const loadWorkbenchData = async () => {
@@ -553,6 +559,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
     const observer = new ResizeObserver(updateWorkbenchWidth);
     observer.observe(container);
     return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => () => {
+    if (inspectionResizeSaveTimerRef.current) {
+      window.clearTimeout(inspectionResizeSaveTimerRef.current);
+    }
   }, []);
 
   const saveInspectorHotkeys = async () => {
@@ -683,12 +695,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
     () => filteredParts.find((part) => part.id === selectedPartId) || filteredParts[0] || null,
     [filteredParts, selectedPartId],
   );
-  useEffect(() => {
-    setLeftPanelTab(inspectionHierarchy.leftColumn);
-    setCenterPanelTab(inspectionHierarchy.centerTabs[0] || 'inspector');
-    setRightPanelTab(inspectionHierarchy.rightColumn);
-  }, [inspectionHierarchy]);
-
   const mprDimensions = useMemo(() => getMprDimensions(selectedPart), [selectedPart]);
   const overlayLayers = useMemo(() => getOverlayLayers(selectedPart), [selectedPart]);
   const modalityOptions = useMemo(() => getModalities(selectedPart), [selectedPart]);
@@ -1203,40 +1209,392 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
     }
   };
 
-  const requestIngestValidation = async () => {
-    const syntheticPayload = {
-      batches: batches.slice(0, 1).map((batch) => ({
-        name: batch.name,
-        description: `Validation run for ${batch.name}`,
-        parts: parts
-          .filter((part) => part.batch_id === batch.id)
-          .slice(0, 3)
-          .map((part) => ({
-            serial_number: part.serial_number,
-            display_name: part.display_name,
-            review_state: part.review_state || 'unreviewed',
-            metadata: {
-              source: 'project-data-ingest-validation',
-              existing_part_id: part.id,
-            },
-          })),
-      })),
+  const renderPartSummaryPane = () => (
+    <section
+      className="workbench-tabbed-panel"
+      style={panelRegionStyle(leftRegion)}
+      data-layout-region={inspectionHierarchy.leftColumn}
+    >
+      <div className="workspace-panel-layout">
+        <strong>{leftRegion?.label || 'Part Summary'}</strong>
+        <p className="muted">Navigate by batch, part, and image.</p>
+        <div className="workbench-controls workbench-controls-compact">
+          <label htmlFor="batchFilter" className="form-label">Batch</label>
+          <select
+            id="batchFilter"
+            className="form-control"
+            value={selectedBatchId}
+            onChange={(e) => setSelectedBatchId(e.target.value)}
+          >
+            <option value="">All batches</option>
+            {batches.map((batch) => (
+              <option key={batch.id} value={batch.id}>{batch.name}</option>
+            ))}
+          </select>
+
+          <label htmlFor="reviewFilter" className="form-label">Inspection status</label>
+          <select
+            id="reviewFilter"
+            className="form-control"
+            value={reviewFilter}
+            onChange={(e) => setReviewFilter(e.target.value)}
+          >
+            <option value="all">All</option>
+            <option value="pass">Pass</option>
+            <option value="reject_pending">Fail</option>
+            <option value="reject_confirmed">Fail (confirmed)</option>
+            <option value="none">None</option>
+          </select>
+
+          <label htmlFor="partFilter" className="form-label">Batch / Part filter</label>
+          <input
+            id="partFilter"
+            className="form-control"
+            type="text"
+            value={partFilter}
+            onChange={(e) => setPartFilter(e.target.value)}
+            placeholder="Filter by batch # or part #"
+          />
+
+          <label htmlFor="sortMode" className="form-label">Sort</label>
+          <select
+            id="sortMode"
+            className="form-control"
+            value={sortMode}
+            onChange={(e) => setSortMode(e.target.value)}
+          >
+            <option value="part_asc">Part # (A -> Z)</option>
+            <option value="batch_asc">Batch # (A -> Z)</option>
+            <option value="status_asc">Inspection status</option>
+            <option value="defect_desc">Defect count (high -> low)</option>
+          </select>
+        </div>
+        <div className="workbench-list">
+          {filteredParts.length === 0 ? (
+            <div>
+              <p className="muted">No parts found for the current filters.</p>
+              {normalizationTriageField && (
+                <p className="muted" data-testid="normalization-triage-empty-guidance">
+                  {normalizationTriageMatchCount > 0
+                    ? `Triage matches exist for ${normalizationTriageField}, but they are hidden by the active filters.`
+                    : `No parts in this project contain mixed ${normalizationTriageField} metadata values.`}
+                </p>
+              )}
+            </div>
+          ) : (
+            (() => {
+              const partsByBatch = filteredParts.reduce((acc, part) => {
+                const key = String(part.batch_id || 'No Batch');
+                if (!acc.has(key)) acc.set(key, []);
+                acc.get(key).push(part);
+                return acc;
+              }, new Map());
+              return Array.from(partsByBatch.entries()).map(([batchKey, batchParts]) => (
+                <div key={batchKey} className="part-summary-batch">
+                  <h4>{batchKey}</h4>
+                  {batchParts.map((part) => {
+                    const state = part.review_state || 'unreviewed';
+                    const defectCount = getDefectCount(part);
+                    const annotationCount = Array.isArray(part?.metadata?.annotations) ? part.metadata.annotations.length : 0;
+                    const isSelected = part.id === selectedPart?.id;
+                    const viewImages = part?.metadata?.view_images || {};
+                    const imageEntries = Object.entries(viewImages);
+                    return (
+                      <article
+                        key={part.id}
+                        className={`workbench-part-row ${isSelected ? 'selected' : ''}`}
+                        onClick={() => setSelectedPartId(part.id)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            setSelectedPartId(part.id);
+                          }
+                        }}
+                      >
+                        <div>
+                          <div className="group-row-name">{part.display_name || part.serial_number}</div>
+                          <div className="group-row-identifier">{part.serial_number}</div>
+                          <div className="workbench-defect-count">
+                            Reviewed: {state === 'unreviewed' ? 'No' : 'Yes'} • Defects: {defectCount} • Annotations: {annotationCount}
+                          </div>
+                          {imageEntries.length > 0 && (
+                            <div className="part-summary-images">
+                              {imageEntries.map(([viewName, imageRef]) => (
+                                <button
+                                  type="button"
+                                  key={`${part.id}-${viewName}`}
+                                  className={`btn btn-secondary btn-sm ${selectedImageRef === String(imageRef || '') ? 'active' : ''}`}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setSelectedPartId(part.id);
+                                    setSelectedImageRef(String(imageRef || ''));
+                                  }}
+                                >
+                                  {viewName.toUpperCase()}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <span className={`group-status-badge group-status-${state}`} data-testid="part-review-state">
+                          {REVIEW_LABELS[state] || REVIEW_LABELS.unreviewed}
+                        </span>
+                      </article>
+                    );
+                  })}
+                </div>
+              ));
+            })()
+          )}
+        </div>
+      </div>
+    </section>
+  );
+
+  const renderCenterPane = (tabKey) => (
+    <section
+      className="workbench-tabbed-panel"
+      style={panelRegionStyle(inspectorRegion)}
+      data-layout-region="center"
+    >
+      <div className="workspace-panel-layout" data-testid="selected-image-panel">
+        <strong>{inspectionHierarchy.regions[tabKey]?.label || 'Inspection'}</strong>
+        {tabKey === 'image_metadata' ? (
+          !selectedPart ? (
+            <p className="muted">No part selected. Select a part to review image metadata.</p>
+          ) : selectedPartImageRefs.length === 0 ? (
+            <p className="muted">No mapped images for this part.</p>
+          ) : !selectedImageRef ? (
+            <p className="muted">Select an image in Part Summary to review metadata.</p>
+          ) : (
+            <div className="workbench-notice" data-testid="selected-image-metadata-panel">
+              <p><strong>Selected image:</strong> {safeDecodeFilename(selectedImageRef)}</p>
+              <p className="muted">
+                Image ID: {selectedImageRecord?.id ? String(selectedImageRecord.id) : 'Unavailable'}
+              </p>
+              <pre>{JSON.stringify(selectedImageRecord?.metadata || {}, null, 2)}</pre>
+            </div>
+          )
+        ) : (
+          !selectedPart ? (
+            <p className="muted">No part selected. Select a part to inspect mapped images.</p>
+          ) : selectedPartImageRefs.length === 0 ? (
+            <p className="muted">No mapped images for this part.</p>
+          ) : (
+            <div className="view-board" data-layout-region="visual_workspace">
+              {getPartViews(selectedPart).map((viewName) => {
+                const imagesByView = selectedPart?.metadata?.view_images || {};
+                const imageRef = String(imagesByView?.[viewName] || '');
+                const imageRecord = projectImageLookup[imageRef];
+                const imageId = imageRecord?.id;
+                return (
+                  <div key={viewName} className={`view-cell ${activeViewName === viewName ? 'selected' : ''}`}>
+                    <div className="view-cell-title">{viewName.toUpperCase()}</div>
+                    <div className="view-cell-body">
+                      {!imageEnabled ? (
+                        <span className="view-cell-empty">Image hidden</span>
+                      ) : imageId ? (
+                        <img
+                          className="inspection-view-image"
+                          src={`/api/images/${encodeURIComponent(String(imageId))}/content`}
+                          alt={`${viewName} view`}
+                          loading="lazy"
+                        />
+                      ) : imageRef ? (
+                        <span className="view-cell-empty">Image not found: {safeDecodeFilename(imageRef)}</span>
+                      ) : (
+                        <span className="view-cell-empty">No image mapped</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )
+        )}
+      </div>
+    </section>
+  );
+
+  const renderAnnotationsPane = () => (
+    <section
+      className="workbench-tabbed-panel"
+      style={panelRegionStyle(rightRegion)}
+      data-layout-region={inspectionHierarchy.rightColumn}
+    >
+      <div className="annotation-controls" data-testid="annotation-controls">
+        <strong>{rightRegion?.label || 'Annotations'}</strong>
+        <p className="muted">For selected part: {selectedPart?.serial_number || 'No part selected'}</p>
+        <div className="measurement-fields">
+          <select
+            aria-label="Annotation defect type"
+            value={annotationDraft.defect_class}
+            onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, defect_class: event.target.value }))}
+          >
+            <option value="">Defect type</option>
+            <option value="Crack">Crack</option>
+            <option value="Dent">Dent</option>
+            <option value="Scratch">Scratch</option>
+            <option value="Other">Other</option>
+          </select>
+          <input
+            type="text"
+            placeholder="annotation modality"
+            value={annotationDraft.modality}
+            onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, modality: event.target.value }))}
+          />
+          <select
+            aria-label="Annotation disposition"
+            value={annotationDraft.disposition}
+            onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, disposition: event.target.value }))}
+          >
+            <option value="open">Open</option>
+            <option value="accepted">Accepted</option>
+            <option value="rejected">Rejected</option>
+            <option value="needs_info">Needs Info</option>
+          </select>
+        </div>
+        <div className="measurement-fields">
+          <input
+            type="text"
+            placeholder="measurement name"
+            value={annotationDraft.measurement_name}
+            onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, measurement_name: event.target.value }))}
+          />
+          <input
+            type="number"
+            placeholder="measurement value"
+            value={annotationDraft.measurement_value}
+            onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, measurement_value: event.target.value }))}
+          />
+          <input
+            type="text"
+            placeholder="annotation comment"
+            value={annotationDraft.comment}
+            onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, comment: event.target.value }))}
+          />
+        </div>
+        <div className="measurement-fields">
+          {['x', 'y', 'width', 'height'].map((key) => (
+            <input
+              key={key}
+              type="number"
+              placeholder={`bbox ${key}`}
+              value={annotationDraft.bbox[key]}
+              onChange={(event) => setAnnotationDraft((prev) => ({
+                ...prev,
+                bbox: { ...prev.bbox, [key]: event.target.value },
+              }))}
+            />
+          ))}
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={createAnnotation}
+            disabled={!selectedPart}
+          >
+            Add annotation
+          </button>
+        </div>
+        <ul className="measurement-list" data-testid="annotation-list">
+          {annotationsLoading ? (
+            <li className="muted">Loading annotations…</li>
+          ) : annotations.length === 0 ? (
+            <li className="muted">No annotations captured.</li>
+          ) : (
+            annotations.map((annotation) => (
+              <li key={annotation.id}>
+                {editingAnnotationId === annotation.id ? (
+                  <div className="measurement-fields">
+                    <input
+                      type="text"
+                      aria-label="Edit annotation defect class"
+                      value={annotationEditDraft.defect_class}
+                      onChange={(event) => setAnnotationEditDraft((prev) => ({ ...prev, defect_class: event.target.value }))}
+                    />
+                    <input
+                      type="text"
+                      aria-label="Edit annotation modality"
+                      value={annotationEditDraft.modality}
+                      onChange={(event) => setAnnotationEditDraft((prev) => ({ ...prev, modality: event.target.value }))}
+                    />
+                    <select
+                      aria-label="Edit annotation disposition"
+                      value={annotationEditDraft.disposition}
+                      onChange={(event) => setAnnotationEditDraft((prev) => ({ ...prev, disposition: event.target.value }))}
+                    >
+                      <option value="open">Open</option>
+                      <option value="accepted">Accepted</option>
+                      <option value="rejected">Rejected</option>
+                      <option value="needs_info">Needs Info</option>
+                    </select>
+                    <input
+                      type="text"
+                      aria-label="Edit annotation comment"
+                      value={annotationEditDraft.comment}
+                      onChange={(event) => setAnnotationEditDraft((prev) => ({ ...prev, comment: event.target.value }))}
+                    />
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => updateAnnotationDetails(annotation.id)}>
+                      Save
+                    </button>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={cancelAnnotationEdit}>
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <span>
+                      {annotation.defect_class} • {annotation.modality} • {annotation.disposition}
+                      {annotation.hidden ? ' • Hidden' : ' • Visible'}
+                      {' • '}
+                      {annotation.updated_by || annotation.created_by || 'unknown'}
+                      {' @ '}
+                      {(annotation.updated_at || annotation.created_at || '').slice(0, 19).replace('T', ' ')}
+                    </span>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => startAnnotationEdit(annotation)}>
+                      Edit
+                    </button>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => updateAnnotationVisibility(annotation.id, !annotation.hidden)}>
+                      {annotation.hidden ? 'Show' : 'Hide'}
+                    </button>
+                  </>
+                )}
+              </li>
+            ))
+          )}
+        </ul>
+      </div>
+    </section>
+  );
+
+  const inspectionFlexLayoutFactory = (node) => {
+    const component = node.getComponent();
+    if (component === inspectionHierarchy.leftColumn) return renderPartSummaryPane();
+    if (component === inspectionHierarchy.rightColumn) return renderAnnotationsPane();
+    if (inspectionHierarchy.centerTabs.includes(component)) return renderCenterPane(component);
+    return null;
+  };
+
+  const handleInspectionFlexLayoutChange = (model, action) => {
+    if (action?.type !== Actions.ADJUST_WEIGHTS || availableLayoutWidth <= 0) return;
+    const json = model.toJson();
+    const children = json?.layout?.children || [];
+    const left = children.find((child) => child.id === INSPECTION_FLEX_TABSET_IDS.left);
+    const right = children.find((child) => child.id === INSPECTION_FLEX_TABSET_IDS.right);
+    const totalWeight = children.reduce((sum, child) => sum + Number(child.weight || 0), 0);
+    if (!left || !right || totalWeight <= 0) return;
+    const availableWidth = Math.max(0, availableLayoutWidth - (children.length - 1) * RESIZE_HANDLE_WIDTH_PX);
+    const nextWidths = {
+      leftPx: Math.round((Number(left.weight || 0) / totalWeight) * availableWidth),
+      rightPx: Math.round((Number(right.weight || 0) / totalWeight) * availableWidth),
     };
-    try {
-      setIngestResult({ loading: true, error: null, payload: null });
-      const resp = await fetch(`/api/projects/${projectId}/ingest`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(syntheticPayload),
-      });
-      if (!resp.ok) {
-        throw new Error(`Failed to run ingest validation (${resp.status})`);
-      }
-      const payload = await resp.json();
-      setIngestResult({ loading: false, error: null, payload });
-    } catch (err) {
-      setIngestResult({ loading: false, error: err.message || 'Failed to run ingest validation', payload: null });
+    if (inspectionResizeSaveTimerRef.current) {
+      window.clearTimeout(inspectionResizeSaveTimerRef.current);
     }
+    inspectionResizeSaveTimerRef.current = window.setTimeout(() => {
+      saveInspectionColumnWidths(nextWidths);
+    }, 250);
   };
 
   return (
@@ -1246,29 +1604,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
         <p>
           Inspection workbench for <strong>{projectType || 'PT1'}</strong> projects.
         </p>
-        <div className="workbench-detail-actions">
-          <button
-            type="button"
-            className="btn btn-secondary"
-            data-testid="request-ingest-validation"
-            disabled={ingestResult.loading || batches.length === 0 || parts.length === 0}
-            onClick={requestIngestValidation}
-          >
-            {ingestResult.loading ? 'Running Ingest Validation…' : 'Run Ingest Validation'}
-          </button>
-        </div>
       </div>
 
       {loading && <div className="loading-text">Loading inspection workbench…</div>}
       {error && <div className="alert alert-error">{error}</div>}
-      {ingestResult.error && <div className="alert alert-error">{ingestResult.error}</div>}
-      {ingestResult.payload && (
-        <div className="alert alert-success" data-testid="ingest-validation-result">
-          Ingest validation complete: created {ingestResult.payload?.counters?.parts_created || 0} parts, skipped{' '}
-          {ingestResult.payload?.counters?.parts_skipped_existing || 0} existing, discrepancies{' '}
-          {(ingestResult.payload?.discrepancies || []).length}.
-        </div>
-      )}
 
       {!loading && !error && (
         <>
@@ -1344,465 +1683,15 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
               )}
 
                   <div
-                    className="workbench-tabbed-panels"
-                    style={workbenchPanelGridStyle}
+                    className="workbench-flexlayout-shell"
+                    style={workbenchFlexLayoutStyle}
                     data-testid="inspection-layout-grid"
                   >
-                    <section
-                      className="workbench-tabbed-panel"
-                      style={applyFixedRegionWidths ? panelRegionStyle(leftRegion) : undefined}
-                      data-layout-region={inspectionHierarchy.leftColumn}
-                    >
-                      <div className="project-tabs" role="tablist" aria-label="Left panel tabs">
-                        <button
-                          type="button"
-                          className={`project-tab ${leftPanelTab === inspectionHierarchy.leftColumn ? 'active' : ''}`}
-                          role="tab"
-                          aria-selected={leftPanelTab === inspectionHierarchy.leftColumn}
-                          onClick={() => setLeftPanelTab(inspectionHierarchy.leftColumn)}
-                        >
-                          {leftRegion?.label || 'Part Summary'}
-                        </button>
-                      </div>
-                      {leftPanelTab === inspectionHierarchy.leftColumn && (
-                        <div className="workspace-panel-layout">
-                          <strong>{leftRegion?.label || 'Part Summary'}</strong>
-                          <p className="muted">Navigate by batch, part, and image.</p>
-                          <div className="workbench-controls workbench-controls-compact">
-                            <label htmlFor="batchFilter" className="form-label">
-                              Batch
-                            </label>
-                            <select
-                              id="batchFilter"
-                              className="form-control"
-                              value={selectedBatchId}
-                              onChange={(e) => setSelectedBatchId(e.target.value)}
-                            >
-                              <option value="">All batches</option>
-                              {batches.map((batch) => (
-                                <option key={batch.id} value={batch.id}>
-                                  {batch.name}
-                                </option>
-                              ))}
-                            </select>
-
-                            <label htmlFor="reviewFilter" className="form-label">
-                              Inspection status
-                            </label>
-                            <select
-                              id="reviewFilter"
-                              className="form-control"
-                              value={reviewFilter}
-                              onChange={(e) => setReviewFilter(e.target.value)}
-                            >
-                              <option value="all">All</option>
-                              <option value="pass">Pass</option>
-                              <option value="reject_pending">Fail</option>
-                              <option value="reject_confirmed">Fail (confirmed)</option>
-                              <option value="none">None</option>
-                            </select>
-
-                            <label htmlFor="partFilter" className="form-label">
-                              Batch / Part filter
-                            </label>
-                            <input
-                              id="partFilter"
-                              className="form-control"
-                              type="text"
-                              value={partFilter}
-                              onChange={(e) => setPartFilter(e.target.value)}
-                              placeholder="Filter by batch # or part #"
-                            />
-
-                            <label htmlFor="sortMode" className="form-label">
-                              Sort
-                            </label>
-                            <select
-                              id="sortMode"
-                              className="form-control"
-                              value={sortMode}
-                              onChange={(e) => setSortMode(e.target.value)}
-                            >
-                              <option value="part_asc">Part # (A → Z)</option>
-                              <option value="batch_asc">Batch # (A → Z)</option>
-                              <option value="status_asc">Inspection status</option>
-                              <option value="defect_desc">Defect count (high → low)</option>
-                            </select>
-                          </div>
-                          <div className="workbench-list">
-                            {filteredParts.length === 0 ? (
-                              <div>
-                                <p className="muted">No parts found for the current filters.</p>
-                                {normalizationTriageField && (
-                                  <p className="muted" data-testid="normalization-triage-empty-guidance">
-                                    {normalizationTriageMatchCount > 0
-                                      ? `Triage matches exist for ${normalizationTriageField}, but they are hidden by the active filters.`
-                                      : `No parts in this project contain mixed ${normalizationTriageField} metadata values.`}
-                                  </p>
-                                )}
-                              </div>
-                            ) : (
-                              (() => {
-                                const partsByBatch = filteredParts.reduce((acc, part) => {
-                                  const key = String(part.batch_id || 'No Batch');
-                                  if (!acc.has(key)) acc.set(key, []);
-                                  acc.get(key).push(part);
-                                  return acc;
-                                }, new Map());
-                                return Array.from(partsByBatch.entries()).map(([batchKey, batchParts]) => (
-                                  <div key={batchKey} className="part-summary-batch">
-                                    <h4>{batchKey}</h4>
-                                    {batchParts.map((part) => {
-                                      const state = part.review_state || 'unreviewed';
-                                      const defectCount = getDefectCount(part);
-                                      const annotationCount = Array.isArray(part?.metadata?.annotations) ? part.metadata.annotations.length : 0;
-                                      const isSelected = part.id === selectedPart?.id;
-                                      const viewImages = part?.metadata?.view_images || {};
-                                      const imageEntries = Object.entries(viewImages);
-                                      return (
-                                        <article
-                                          key={part.id}
-                                          className={`workbench-part-row ${isSelected ? 'selected' : ''}`}
-                                          onClick={() => setSelectedPartId(part.id)}
-                                          role="button"
-                                          tabIndex={0}
-                                          onKeyDown={(event) => {
-                                            if (event.key === 'Enter' || event.key === ' ') {
-                                              setSelectedPartId(part.id);
-                                            }
-                                          }}
-                                        >
-                                          <div>
-                                            <div className="group-row-name">{part.display_name || part.serial_number}</div>
-                                            <div className="group-row-identifier">{part.serial_number}</div>
-                                            <div className="workbench-defect-count">
-                                              Reviewed: {state === 'unreviewed' ? 'No' : 'Yes'} • Defects: {defectCount} • Annotations: {annotationCount}
-                                            </div>
-                                            {imageEntries.length > 0 && (
-                                              <div className="part-summary-images">
-                                                {imageEntries.map(([viewName, imageRef]) => (
-                                                  <button
-                                                    type="button"
-                                                    key={`${part.id}-${viewName}`}
-                                                    className={`btn btn-secondary btn-sm ${selectedImageRef === String(imageRef || '') ? 'active' : ''}`}
-                                                    onClick={(event) => {
-                                                      event.stopPropagation();
-                                                      setSelectedPartId(part.id);
-                                                      setSelectedImageRef(String(imageRef || ''));
-                                                    }}
-                                                  >
-                                                    {viewName.toUpperCase()}
-                                                  </button>
-                                                ))}
-                                              </div>
-                                            )}
-                                          </div>
-                                          <span className={`group-status-badge group-status-${state}`} data-testid="part-review-state">
-                                            {REVIEW_LABELS[state] || REVIEW_LABELS.unreviewed}
-                                          </span>
-                                        </article>
-                                      );
-                                    })}
-                                  </div>
-                                ));
-                              })()
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </section>
-
-                    {canShowColumnDividers && (
-                      <button
-                        type="button"
-                        className="workbench-pane-divider"
-                        aria-label="Resize left and center panels"
-                        data-testid="inspection-divider-left"
-                        style={{ left: `${leftDividerX}px`, width: `${RESIZE_HANDLE_WIDTH_PX}px` }}
-                        onPointerDown={(event) => {
-                          event.preventDefault();
-                          setColumnResizeState({
-                            side: 'left',
-                            startX: event.clientX,
-                            initial: {
-                              leftPx: latestColumnWidthsRef.current.leftPx,
-                              rightPx: latestColumnWidthsRef.current.rightPx,
-                            },
-                          });
-                        }}
-                      />
-                    )}
-
-                    <section
-                      className="workbench-tabbed-panel"
-                      style={applyFixedRegionWidths ? panelRegionStyle(inspectorRegion) : undefined}
-                      data-layout-region="center"
-                    >
-                      <div className="project-tabs" role="tablist" aria-label="Center panel tabs">
-                        {inspectionHierarchy.centerTabs.map((tabKey) => (
-                          <button
-                            type="button"
-                            key={tabKey}
-                            className={`project-tab ${centerPanelTab === tabKey ? 'active' : ''}`}
-                            role="tab"
-                            aria-selected={centerPanelTab === tabKey}
-                            onClick={() => setCenterPanelTab(tabKey)}
-                          >
-                            {inspectionHierarchy.regions[tabKey]?.label || tabKey}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="workspace-panel-layout" data-testid="selected-image-panel">
-                        <strong>{inspectionHierarchy.regions[centerPanelTab]?.label || 'Inspection'}</strong>
-                        {centerPanelTab === 'image_metadata' ? (
-                          !selectedPart ? (
-                            <p className="muted">No part selected. Select a part to review image metadata.</p>
-                          ) : selectedPartImageRefs.length === 0 ? (
-                            <p className="muted">No mapped images for this part.</p>
-                          ) : !selectedImageRef ? (
-                            <p className="muted">Select an image in Part Summary to review metadata.</p>
-                          ) : (
-                            <div className="workbench-notice" data-testid="selected-image-metadata-panel">
-                              <p>
-                                <strong>Selected image:</strong> {safeDecodeFilename(selectedImageRef)}
-                              </p>
-                              <p className="muted">
-                                Image ID: {selectedImageRecord?.id ? String(selectedImageRecord.id) : 'Unavailable'}
-                              </p>
-                              <pre>{JSON.stringify(selectedImageRecord?.metadata || {}, null, 2)}</pre>
-                            </div>
-                          )
-                        ) : (
-                          !selectedPart ? (
-                            <p className="muted">No part selected. Select a part to inspect mapped images.</p>
-                          ) : selectedPartImageRefs.length === 0 ? (
-                            <p className="muted">No mapped images for this part.</p>
-                          ) : (
-                            <div className="view-board" data-layout-region="visual_workspace">
-                              {getPartViews(selectedPart).map((viewName) => {
-                                const imagesByView = selectedPart?.metadata?.view_images || {};
-                                const imageRef = String(imagesByView?.[viewName] || '');
-                                const imageRecord = projectImageLookup[imageRef];
-                                const imageId = imageRecord?.id;
-                                return (
-                                  <div key={viewName} className={`view-cell ${activeViewName === viewName ? 'selected' : ''}`}>
-                                    <div className="view-cell-title">{viewName.toUpperCase()}</div>
-                                    <div className="view-cell-body">
-                                      {!imageEnabled ? (
-                                        <span className="view-cell-empty">Image hidden</span>
-                                      ) : imageId ? (
-                                        <img
-                                          className="inspection-view-image"
-                                          src={`/api/images/${encodeURIComponent(String(imageId))}/content`}
-                                          alt={`${viewName} view`}
-                                          loading="lazy"
-                                        />
-                                      ) : imageRef ? (
-                                        <span className="view-cell-empty">Image not found: {safeDecodeFilename(imageRef)}</span>
-                                      ) : (
-                                        <span className="view-cell-empty">No image mapped</span>
-                                      )}
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )
-                        )}
-                      </div>
-
-                    </section>
-
-                    {canShowColumnDividers && (
-                      <button
-                        type="button"
-                        className="workbench-pane-divider"
-                        aria-label="Resize center and right panels"
-                        data-testid="inspection-divider-right"
-                        style={{ left: `${rightDividerX}px`, width: `${RESIZE_HANDLE_WIDTH_PX}px` }}
-                        onPointerDown={(event) => {
-                          event.preventDefault();
-                          setColumnResizeState({
-                            side: 'right',
-                            startX: event.clientX,
-                            initial: {
-                              leftPx: latestColumnWidthsRef.current.leftPx,
-                              rightPx: latestColumnWidthsRef.current.rightPx,
-                            },
-                          });
-                        }}
-                      />
-                    )}
-
-                    <section
-                      className="workbench-tabbed-panel"
-                      style={applyFixedRegionWidths ? panelRegionStyle(rightRegion) : undefined}
-                      data-layout-region={inspectionHierarchy.rightColumn}
-                    >
-                      <div className="project-tabs" role="tablist" aria-label="Right panel tabs">
-                        <button
-                          type="button"
-                          className={`project-tab ${rightPanelTab === inspectionHierarchy.rightColumn ? 'active' : ''}`}
-                          role="tab"
-                          aria-selected={rightPanelTab === inspectionHierarchy.rightColumn}
-                          onClick={() => setRightPanelTab(inspectionHierarchy.rightColumn)}
-                        >
-                          {rightRegion?.label || 'Annotations'}
-                        </button>
-                      </div>
-                      {rightPanelTab === inspectionHierarchy.rightColumn && (
-                        <div className="annotation-controls" data-testid="annotation-controls">
-                          <strong>{rightRegion?.label || 'Annotations'}</strong>
-                          <p className="muted">For selected part: {selectedPart?.serial_number || 'No part selected'}</p>
-                      <div className="measurement-fields">
-                        <select
-                          aria-label="Annotation defect type"
-                          value={annotationDraft.defect_class}
-                          onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, defect_class: event.target.value }))}
-                        >
-                          <option value="">Defect type</option>
-                          <option value="Crack">Crack</option>
-                          <option value="Dent">Dent</option>
-                          <option value="Scratch">Scratch</option>
-                          <option value="Other">Other</option>
-                        </select>
-                        <input
-                          type="text"
-                          placeholder="annotation modality"
-                          value={annotationDraft.modality}
-                          onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, modality: event.target.value }))}
-                        />
-                        <select
-                          aria-label="Annotation disposition"
-                          value={annotationDraft.disposition}
-                          onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, disposition: event.target.value }))}
-                        >
-                          <option value="open">Open</option>
-                          <option value="accepted">Accepted</option>
-                          <option value="rejected">Rejected</option>
-                          <option value="needs_info">Needs Info</option>
-                        </select>
-                      </div>
-                      <div className="measurement-fields">
-                        <input
-                          type="text"
-                          placeholder="measurement name"
-                          value={annotationDraft.measurement_name}
-                          onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, measurement_name: event.target.value }))}
-                        />
-                        <input
-                          type="number"
-                          placeholder="measurement value"
-                          value={annotationDraft.measurement_value}
-                          onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, measurement_value: event.target.value }))}
-                        />
-                        <input
-                          type="text"
-                          placeholder="annotation comment"
-                          value={annotationDraft.comment}
-                          onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, comment: event.target.value }))}
-                        />
-                      </div>
-                      <div className="measurement-fields">
-                        {['x', 'y', 'width', 'height'].map((key) => (
-                          <input
-                            key={key}
-                            type="number"
-                            placeholder={`bbox ${key}`}
-                            value={annotationDraft.bbox[key]}
-                            onChange={(event) => setAnnotationDraft((prev) => ({
-                              ...prev,
-                              bbox: { ...prev.bbox, [key]: event.target.value },
-                            }))}
-                          />
-                        ))}
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-sm"
-                          onClick={createAnnotation}
-                          disabled={!selectedPart}
-                        >
-                          Add annotation
-                        </button>
-                      </div>
-                      <ul className="measurement-list" data-testid="annotation-list">
-                        {annotationsLoading ? (
-                          <li className="muted">Loading annotations…</li>
-                        ) : annotations.length === 0 ? (
-                          <li className="muted">No annotations captured.</li>
-                        ) : (
-                          annotations.map((annotation) => (
-                            <li key={annotation.id}>
-                              {editingAnnotationId === annotation.id ? (
-                                <div className="measurement-fields">
-                                  <input
-                                    type="text"
-                                    aria-label="Edit annotation defect class"
-                                    value={annotationEditDraft.defect_class}
-                                    onChange={(event) => setAnnotationEditDraft((prev) => ({ ...prev, defect_class: event.target.value }))}
-                                  />
-                                  <input
-                                    type="text"
-                                    aria-label="Edit annotation modality"
-                                    value={annotationEditDraft.modality}
-                                    onChange={(event) => setAnnotationEditDraft((prev) => ({ ...prev, modality: event.target.value }))}
-                                  />
-                                  <select
-                                    aria-label="Edit annotation disposition"
-                                    value={annotationEditDraft.disposition}
-                                    onChange={(event) => setAnnotationEditDraft((prev) => ({ ...prev, disposition: event.target.value }))}
-                                  >
-                                    <option value="open">Open</option>
-                                    <option value="accepted">Accepted</option>
-                                    <option value="rejected">Rejected</option>
-                                    <option value="needs_info">Needs Info</option>
-                                  </select>
-                                  <input
-                                    type="text"
-                                    aria-label="Edit annotation comment"
-                                    value={annotationEditDraft.comment}
-                                    onChange={(event) => setAnnotationEditDraft((prev) => ({ ...prev, comment: event.target.value }))}
-                                  />
-                                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => updateAnnotationDetails(annotation.id)}>
-                                    Save
-                                  </button>
-                                  <button type="button" className="btn btn-secondary btn-sm" onClick={cancelAnnotationEdit}>
-                                    Cancel
-                                  </button>
-                                </div>
-                              ) : (
-                                <>
-                                  <span>
-                                    {annotation.defect_class} • {annotation.modality} • {annotation.disposition}
-                                    {annotation.hidden ? ' • Hidden' : ' • Visible'}
-                                    {' • '}
-                                    {annotation.updated_by || annotation.created_by || 'unknown'}
-                                    {' @ '}
-                                    {(annotation.updated_at || annotation.created_at || '').slice(0, 19).replace('T', ' ')}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    className="btn btn-secondary btn-sm"
-                                    onClick={() => startAnnotationEdit(annotation)}
-                                  >
-                                    Edit
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="btn btn-secondary btn-sm"
-                                    onClick={() => updateAnnotationVisibility(annotation.id, !annotation.hidden)}
-                                  >
-                                    {annotation.hidden ? 'Show' : 'Hide'}
-                                  </button>
-                                </>
-                              )}
-                            </li>
-                          ))
-                        )}
-                      </ul>
-                        </div>
-                      )}
-                    </section>
+                    <Layout
+                      model={inspectionFlexLayoutModel}
+                      factory={inspectionFlexLayoutFactory}
+                      onModelChange={handleInspectionFlexLayoutChange}
+                    />
                   </div>
 
             </div>

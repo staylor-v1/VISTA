@@ -13,60 +13,35 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
   for (const simulatedUser of simulatedUsers) {
     test.describe(`Inspection Workbench E2E (${projectType}) ${simulatedUser}`, () => {
       test(`renders project data workflow for ${projectType} ${simulatedUser}`, async ({ page }) => {
-        const { projectId, getWorkspaceStates, getExportBundleArchiveRequests, getIngestValidationRequests } = await mockInspectionWorkbenchRoutes(page, { type: projectType, scenario: simulatedUser });
+        const { projectId, getWorkspaceStates, getIngestValidationRequests } = await mockInspectionWorkbenchRoutes(page, { type: projectType, scenario: simulatedUser });
 
         await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
         await page.getByRole('tab', { name: 'Project Data' }).click();
 
         await expect(page.getByRole('heading', { name: 'Project Data' })).toBeVisible();
-        await expect(page.getByText(`Inspection workbench for ${projectType} projects.`)).toBeVisible();
-        await expect(page.getByTestId('inspector-common-controls')).toBeVisible();
-        await page.getByTestId('request-export-bundle-archive').click();
-        await expect(page.getByTestId('export-bundle-archive-result')).toContainText('Export archive ready');
-        await page.getByTestId('project-data-export-mode').selectOption('report_json');
-        await page.getByTestId('run-project-data-export-action').click();
-        await expect(page.getByTestId('project-report-result')).toContainText('Report ready');
-        if (simulatedUser === 'basic') {
-          await expect(page.getByTestId('project-report-normalization-summary')).toHaveCount(0);
-        } else {
-          await expect(page.getByTestId('project-report-normalization-summary')).toContainText('Metadata normalization');
-          await page.getByTestId('normalization-triage-segmentation-runs').click();
-          await expect(page.getByTestId('normalization-triage-active')).toContainText(
-            'Filtering parts with mixed segmentation_runs values',
-          );
-          const triageRows = page.locator('[data-testid=\"part-review-state\"]');
-          if (await triageRows.count()) {
-            await expect(triageRows.first()).toBeVisible();
-          } else {
-            await expect(page.getByText('No parts found for the current filters.')).toBeVisible();
-          }
-          if (simulatedUser === 'advanced') {
-            await page.getByLabel('Batch').selectOption('batch-adv-b');
-            await page.getByLabel('Defect filter').selectOption('critical_only');
-            await expect(page.getByTestId('normalization-triage-empty-guidance')).toContainText(
-              'Triage matches exist for segmentation_runs, but they are hidden by the active batch/defect filters.',
-            );
-            await page.getByLabel('Batch').selectOption('batch-adv-a');
-            await page.getByLabel('Defect filter').selectOption('all');
-          }
-          await page.getByTestId('normalization-triage-clear').click();
-          await expect(page.getByTestId('normalization-triage-active')).toHaveCount(0);
-        }
+        await expect(page.getByRole('heading', { name: 'Upload Images' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Data Validation' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Project Metadata' })).toBeVisible();
+        await expect(page.getByTestId('project-metadata-tree')).toContainText('inspection_profile');
+        const uploadBox = await page.getByRole('heading', { name: 'Upload Images' }).boundingBox();
+        const metadataBox = await page.getByRole('heading', { name: 'Project Metadata' }).boundingBox();
+        expect(uploadBox && metadataBox && uploadBox.y < metadataBox.y).toBeTruthy();
         await page.getByTestId('request-ingest-validation').click();
         await expect(page.getByTestId('ingest-validation-result')).toContainText('Ingest validation complete');
-        const measurementCapture = page.locator('.measurement-capture');
-        await measurementCapture.getByPlaceholder('label', { exact: true }).fill(`${simulatedUser}-distance`);
-        await measurementCapture.getByPlaceholder('value', { exact: true }).fill('12.5');
-        await page.getByRole('button', { name: 'Save measurement' }).click();
-        await expect(page.getByTestId('manual-measurement-list')).toContainText(`${simulatedUser}-distance: 12.5mm`);
-        await page.getByTestId('toggle-image-visibility').click();
-        await expect(page.getByTestId('toggle-image-visibility')).toContainText(/Show image|Hide image/);
-        const inspectorNavControls = page.getByTestId('inspector-nav-controls');
-        await expect(inspectorNavControls).toBeVisible();
-        await inspectorNavControls.getByRole('button', { name: 'Zoom +' }).click();
-        await inspectorNavControls.getByRole('button', { name: 'Pan →' }).click();
-        await expect(page.getByTestId('inspector-viewport-state')).toContainText(/Zoom 1\.10x|Zoom 1\.35x|Zoom 1\.40x/);
-        await expect(page.getByTestId('inspector-viewport-state')).toContainText(/Pan \(10, 0\)|Pan \(16, -12\)|Pan \(21, -14\)/);
+
+        await page.getByRole('tab', { name: 'Inspection' }).click();
+        await expect(page.getByRole('heading', { name: 'Inspection Workbench', exact: true })).toBeVisible();
+        const inspectionPanel = page.locator('section[aria-label="Inspection Workbench"]');
+        await expect(page.getByText(`Inspection workbench for ${projectType} projects.`)).toBeVisible();
+        await expect(page.getByTestId('inspection-layout-grid')).toBeVisible();
+        await expect(inspectionPanel.locator('.flexlayout__tab_button', { hasText: 'Part Summary' }).first()).toBeVisible();
+        await expect(inspectionPanel.locator('.flexlayout__tab_button', { hasText: 'Inspection' }).first()).toBeVisible();
+        await expect(inspectionPanel.locator('.flexlayout__tab_button', { hasText: 'Image Metadata' }).first()).toBeVisible();
+        await expect(inspectionPanel.locator('.flexlayout__tab_button', { hasText: 'Annotations' }).first()).toBeVisible();
+        await expect(page.getByLabel('Batch', { exact: true })).toBeVisible();
+        await expect(page.getByLabel('Inspection status')).toBeVisible();
+        await expect(page.getByLabel('Batch / Part filter')).toBeVisible();
+        await expect(page.getByLabel('Sort')).toBeVisible();
 
         if (simulatedUser === 'basic') {
           await expect(page.getByText('Batches: 1')).toBeVisible();
@@ -79,19 +54,10 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
           await expect(page.getByText('Parts: 3')).toBeVisible();
         }
 
-        await page.getByLabel('Defect filter').selectOption('critical_only');
-        if (simulatedUser === 'basic') {
-          await expect(page.getByText('No parts found for the current filters.')).toBeVisible();
-        } else {
-          const primaryPart = simulatedUser === 'intermediate' ? 'Housing Mid 1' : 'Housing Adv 1';
-          await expect(page.getByRole('heading', { name: primaryPart })).toBeVisible();
-        }
-
-        await page.getByLabel('Defect filter').selectOption('all');
         if (simulatedUser !== 'basic') {
           const primaryBatch = simulatedUser === 'intermediate' ? 'batch-mid-a' : 'batch-adv-a';
           const primaryPart = simulatedUser === 'intermediate' ? 'Housing Mid 1' : 'Housing Adv 1';
-          await page.getByLabel('Batch').selectOption(primaryBatch);
+          await page.getByLabel('Batch', { exact: true }).selectOption(primaryBatch);
           await expect(page.getByRole('heading', { name: primaryPart })).toBeVisible();
         }
 
@@ -99,26 +65,13 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
         const expectedPassedCount = simulatedUser === 'advanced' ? 'Passed: 2' : 'Passed: 1';
         await expect(page.getByText(expectedPassedCount)).toBeVisible();
 
-        if (projectType === 'PT1') {
-          await expect(page.getByText(/Mapped:|No image mapped/).first()).toBeVisible();
-        } else {
-          await expect(page.getByTestId('mpr-shell')).toBeVisible();
-          await expect(page.getByText('3D Orientation')).toBeVisible();
-          await expect(page.getByLabel(/Contrast/)).toBeVisible();
-          await expect(page.getByTestId('mpr-tooltip-values')).toContainText('Cursor');
-
-          if (simulatedUser !== 'basic') {
-            await expect(page.getByTestId('segmentation-result')).toContainText('Segmentation completed');
-            await expect(page.getByTestId('measurement-result')).toContainText('Measurements completed');
-          }
-
-          await page.getByTestId('run-segmentation').click();
-          await expect(page.getByTestId('segmentation-result')).toContainText('Segmentation completed');
-          await page.getByTestId('run-measurements').click();
-          await expect(page.getByTestId('measurement-result')).toContainText('Measurements completed');
-          await page.getByLabel('3D orientation pane').getByRole('button', { name: 'Zoom +' }).click();
-          await expect(page.getByText(/Zoom [0-9.]+x/).first()).toBeVisible();
-        }
+        await expect(page.getByTestId('selected-image-panel')).toBeVisible();
+        await expect(page.getByTestId('annotation-controls')).toBeVisible();
+        await page.getByLabel('Annotation defect type').selectOption('Other');
+        await page.getByPlaceholder('annotation modality').fill('visual');
+        await page.getByPlaceholder('annotation comment').fill(`${simulatedUser}-surface-note`);
+        await page.getByRole('button', { name: 'Add annotation' }).click();
+        await expect(page.getByTestId('annotation-list')).toContainText('Other • visual • open');
 
         await expect.poll(() => getWorkspaceStates().length).toBeGreaterThan(0);
         await expect.poll(() => {
@@ -129,7 +82,6 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
           panX: expect.any(Number),
           panY: expect.any(Number),
         }));
-        await expect.poll(() => getExportBundleArchiveRequests().length).toBeGreaterThan(0);
         await expect.poll(() => getIngestValidationRequests().length).toBeGreaterThan(0);
       });
     });
@@ -137,15 +89,12 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
 }
 
 test.describe('Inspection Workbench screenshot artifact', () => {
-  test('captures PT2 MPR workbench screenshot', async ({ page }) => {
+  test('captures PT2 inspection workbench screenshot', async ({ page }) => {
     const { projectId } = await mockInspectionWorkbenchRoutes(page, { type: 'PT2' });
 
     await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
-    await page.getByRole('tab', { name: 'Project Data' }).click();
-    await expect(page.getByTestId('mpr-shell')).toBeVisible();
-    await page.getByTestId('run-segmentation').click();
-    await expect(page.getByTestId('segmentation-result')).toContainText('Segmentation completed');
-    await page.getByLabel('3D orientation pane').getByRole('button', { name: 'Zoom +' }).click();
+    await page.getByRole('tab', { name: 'Inspection' }).click();
+    await expect(page.getByTestId('inspection-layout-grid')).toBeVisible();
 
     const panel = page.locator('section[aria-label="Inspection Workbench"]');
     await expect(panel).toBeVisible();
@@ -153,16 +102,14 @@ test.describe('Inspection Workbench screenshot artifact', () => {
   });
 });
 
-test.describe('PR-09 inspector controls screenshot artifact', () => {
-  test('captures PT1 modalities + measurements controls screenshot', async ({ page }) => {
+test.describe('PR-09 annotation controls screenshot artifact', () => {
+  test('captures PT1 annotation controls screenshot', async ({ page }) => {
     const { projectId } = await mockInspectionWorkbenchRoutes(page, { type: 'PT1', scenario: 'advanced' });
     await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
-    await page.getByRole('tab', { name: 'Project Data' }).click();
-    await expect(page.getByTestId('inspector-common-controls')).toBeVisible();
-    const measurementCapture = page.locator('.measurement-capture');
-    await measurementCapture.getByPlaceholder('label', { exact: true }).fill('qa-length');
-    await measurementCapture.getByPlaceholder('value', { exact: true }).fill('18.25');
-    await page.getByRole('button', { name: 'Save measurement' }).click();
+    await page.getByRole('tab', { name: 'Inspection' }).click();
+    await expect(page.getByTestId('annotation-controls')).toBeVisible();
+    await page.getByLabel('Annotation defect type').selectOption('Other');
+    await page.getByPlaceholder('annotation comment').fill('qa-length review note');
     const panel = page.locator('section[aria-label="Inspection Workbench"]');
     await expect(panel).toBeVisible();
     await panel.screenshot({ path: pr09ScreenshotPath });
@@ -269,7 +216,7 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
 
         await page.getByLabel('Source project').selectOption('proj-copy');
         await page.getByRole('button', { name: 'Copy from Project' }).click();
-        await expect(page.getByText('Configuration copied from existing project.')).toBeVisible();
+        await expect(page.getByText(/Configuration copied from/)).toBeVisible();
         await expect(page.getByLabel('Defect type name 1')).toHaveValue(`${simulatedUser}-copied-defect`);
 
         await expect.poll(() => getSavedConfigurations().length).toBeGreaterThanOrEqual(2);
@@ -295,15 +242,13 @@ test.describe('PR-11 project configuration screenshot artifact', () => {
   });
 });
 
-test.describe('PR-14 report normalization screenshot artifact', () => {
-  test('captures PT3 advanced report normalization telemetry screenshot', async ({ page }) => {
+test.describe('Project Data metadata hierarchy screenshot artifact', () => {
+  test('captures PT3 advanced project metadata hierarchy screenshot', async ({ page }) => {
     const { projectId } = await mockInspectionWorkbenchRoutes(page, { type: 'PT3', scenario: 'advanced' });
     await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
     await page.getByRole('tab', { name: 'Project Data' }).click();
-    await page.getByTestId('project-data-export-mode').selectOption('report_json');
-    await page.getByTestId('run-project-data-export-action').click();
-    await expect(page.getByTestId('project-report-normalization-summary')).toContainText('Metadata normalization');
-    const panel = page.locator('section[aria-label="Inspection Workbench"]');
+    await expect(page.getByTestId('project-metadata-tree')).toContainText('inspection_profile');
+    const panel = page.locator('.metadata-section');
     await expect(panel).toBeVisible();
     await panel.screenshot({ path: pr14ScreenshotPath });
   });

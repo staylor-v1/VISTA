@@ -43,6 +43,11 @@ function Project({ currentUserGroups = [] }) {
     annotations: 0,
   });
   const [countsLoading, setCountsLoading] = useState(true);
+  const [ingestResult, setIngestResult] = useState({
+    loading: false,
+    error: null,
+    payload: null,
+  });
 
   const fetchImages = useCallback(async (projId) => {
     const PAGE_SIZE = 200;
@@ -194,6 +199,52 @@ function Project({ currentUserGroups = [] }) {
     } catch (_) {}
   }, [id, refreshProjectCounts]);
 
+  const requestIngestValidation = useCallback(async () => {
+    try {
+      setIngestResult({ loading: true, error: null, payload: null });
+      const [batchResp, partResp] = await Promise.all([
+        fetch(`/api/projects/${id}/batches`),
+        fetch(`/api/projects/${id}/parts`),
+      ]);
+      if (!batchResp.ok) throw new Error(`Failed to load batches (${batchResp.status})`);
+      if (!partResp.ok) throw new Error(`Failed to load parts (${partResp.status})`);
+
+      const [batchData, partData] = await Promise.all([batchResp.json(), partResp.json()]);
+      const batches = Array.isArray(batchData) ? batchData : [];
+      const parts = Array.isArray(partData) ? partData : [];
+      const syntheticPayload = {
+        batches: batches.slice(0, 1).map((batch) => ({
+          name: batch.name,
+          description: `Validation run for ${batch.name}`,
+          parts: parts
+            .filter((part) => part.batch_id === batch.id)
+            .slice(0, 3)
+            .map((part) => ({
+              serial_number: part.serial_number,
+              display_name: part.display_name,
+              review_state: part.review_state || 'unreviewed',
+              metadata: {
+                source: 'project-data-ingest-validation',
+                existing_part_id: part.id,
+              },
+            })),
+        })),
+      };
+
+      const resp = await fetch(`/api/projects/${id}/ingest`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(syntheticPayload),
+      });
+      if (!resp.ok) throw new Error(`Failed to run ingest validation (${resp.status})`);
+      const payload = await resp.json();
+      setIngestResult({ loading: false, error: null, payload });
+      await refreshProjectCounts();
+    } catch (err) {
+      setIngestResult({ loading: false, error: err.message || 'Failed to run ingest validation', payload: null });
+    }
+  }, [id, refreshProjectCounts]);
+
   const currentPhase = resolveCurrentProjectPhase({
     phaseSettings: projectConfiguration?.phase_settings,
     partsLoaded: dataCounts.partsLoaded,
@@ -202,7 +253,41 @@ function Project({ currentUserGroups = [] }) {
 
   const projectDataContent = useMemo(() => (
     <>
+      {!project?.is_archived && (
+        <div className="management-sections project-data-upload-first">
+          <div className="upload-section">
+            <ImageUploader projectId={id} onUploadComplete={handleUploadComplete} setError={setError} />
+          </div>
+        </div>
+      )}
       <ProjectDataSummaryTab counts={dataCounts} loading={countsLoading} />
+      <section className="workbench-panel project-data-action-panel" aria-label="Project data validation">
+        <header className="workbench-header">
+          <div>
+            <h2>Data Validation</h2>
+            <p>Run a synthetic ingest pass against the current batch and part structure.</p>
+          </div>
+          <div className="workbench-detail-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              data-testid="request-ingest-validation"
+              disabled={ingestResult.loading}
+              onClick={requestIngestValidation}
+            >
+              {ingestResult.loading ? 'Running Ingest Validation...' : 'Run Ingest Validation'}
+            </button>
+          </div>
+        </header>
+        {ingestResult.error && <div className="alert alert-error">{ingestResult.error}</div>}
+        {ingestResult.payload && (
+          <div className="alert alert-success" data-testid="ingest-validation-result">
+            Ingest validation complete: created {ingestResult.payload?.counters?.parts_created || 0} parts, skipped{' '}
+            {ingestResult.payload?.counters?.parts_skipped_existing || 0} existing, discrepancies{' '}
+            {(ingestResult.payload?.discrepancies || []).length}.
+          </div>
+        )}
+      </section>
       <div className="review-summary-row">
         <ReviewStatusSummary projectId={id} />
         {hasGroups && (
@@ -223,24 +308,21 @@ function Project({ currentUserGroups = [] }) {
 
       {!project?.is_archived && (
         <div className="management-sections">
-          <div className="upload-section">
-            <ImageUploader projectId={id} onUploadComplete={handleUploadComplete} setError={setError} />
+          <div className="classes-section">
+            <ClassManager
+              projectId={id}
+              classes={classes}
+              setClasses={setClasses}
+              loading={loading}
+              setLoading={setLoading}
+              setError={setError}
+            />
           </div>
           <div className="metadata-section">
             <MetadataManager
               projectId={id}
               metadata={metadata}
               setMetadata={setMetadata}
-              loading={loading}
-              setLoading={setLoading}
-              setError={setError}
-            />
-          </div>
-          <div className="classes-section">
-            <ClassManager
-              projectId={id}
-              classes={classes}
-              setClasses={setClasses}
               loading={loading}
               setLoading={setLoading}
               setError={setError}
@@ -260,8 +342,10 @@ function Project({ currentUserGroups = [] }) {
     metadata,
     navigate,
     handleUploadComplete,
+    ingestResult,
     project?.is_archived,
     project?.name,
+    requestIngestValidation,
   ]);
 
   const renderMainPanel = () => {

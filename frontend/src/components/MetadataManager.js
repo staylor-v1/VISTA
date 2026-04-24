@@ -1,4 +1,172 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+
+function getJsonType(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
+}
+
+function isJsonContainer(value) {
+  return value !== null && typeof value === 'object';
+}
+
+function getContainerSize(value) {
+  if (Array.isArray(value)) return value.length;
+  if (isJsonContainer(value)) return Object.keys(value).length;
+  return 0;
+}
+
+function formatPrimitiveValue(value) {
+  if (value === null) return 'null';
+  if (typeof value === 'string') return `"${value}"`;
+  return String(value);
+}
+
+function createMetadataPath(parentPath, key, parentIsArray) {
+  if (parentIsArray) return `${parentPath}[${key}]`;
+  if (parentPath === '$') return `$.${key}`;
+  return `${parentPath}.${key}`;
+}
+
+function collectContainerPaths(value, path = '$', depth = 0, output = new Set(), maxDepth = 1) {
+  if (!isJsonContainer(value)) return output;
+  if (depth <= maxDepth) output.add(path);
+  const entries = Array.isArray(value) ? value.entries() : Object.entries(value);
+  for (const [key, childValue] of entries) {
+    if (isJsonContainer(childValue)) {
+      collectContainerPaths(childValue, createMetadataPath(path, key, Array.isArray(value)), depth + 1, output, maxDepth);
+    }
+  }
+  return output;
+}
+
+function nodeMatchesQuery(label, value, path, query) {
+  if (!query) return false;
+  const normalizedQuery = query.toLowerCase();
+  return String(label).toLowerCase().includes(normalizedQuery)
+    || String(path).toLowerCase().includes(normalizedQuery)
+    || formatPrimitiveValue(value).toLowerCase().includes(normalizedQuery);
+}
+
+function MetadataJsonNode({
+  label,
+  value,
+  path,
+  depth,
+  expandedPaths,
+  onToggle,
+  renderTopLevelActions,
+  query,
+}) {
+  const type = getJsonType(value);
+  const isContainer = isJsonContainer(value);
+  const isExpanded = expandedPaths.has(path);
+  const isArray = Array.isArray(value);
+  const entries = isContainer ? (isArray ? Array.from(value.entries()) : Object.entries(value)) : [];
+  const match = nodeMatchesQuery(label, value, path, query);
+
+  return (
+    <li className={`metadata-tree-node metadata-tree-depth-${Math.min(depth, 6)} ${match ? 'metadata-tree-match' : ''}`}>
+      <div className="metadata-tree-row">
+        {isContainer ? (
+          <button
+            type="button"
+            className="metadata-tree-toggle"
+            aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${path}`}
+            onClick={() => onToggle(path)}
+          >
+            {isExpanded ? '-' : '+'}
+          </button>
+        ) : (
+          <span className="metadata-tree-spacer" aria-hidden="true" />
+        )}
+        <span className="metadata-tree-key">{label}</span>
+        <span className={`metadata-tree-type metadata-tree-type-${type}`}>{type}</span>
+        {isContainer ? (
+          <span className="metadata-tree-count">
+            {getContainerSize(value)} {isArray ? 'items' : 'keys'}
+          </span>
+        ) : (
+          <span className={`metadata-tree-value metadata-tree-value-${type}`}>{formatPrimitiveValue(value)}</span>
+        )}
+        <code className="metadata-tree-path">{path}</code>
+        {depth === 1 && renderTopLevelActions ? renderTopLevelActions(label, value) : null}
+      </div>
+      {isContainer && isExpanded && (
+        entries.length === 0 ? (
+          <div className="metadata-tree-empty">{isArray ? 'Empty array' : 'Empty object'}</div>
+        ) : (
+          <ul className="metadata-tree-list">
+            {entries.map(([key, childValue]) => (
+              <MetadataJsonNode
+                key={createMetadataPath(path, key, isArray)}
+                label={String(key)}
+                value={childValue}
+                path={createMetadataPath(path, key, isArray)}
+                depth={depth + 1}
+                expandedPaths={expandedPaths}
+                onToggle={onToggle}
+                renderTopLevelActions={renderTopLevelActions}
+                query={query}
+              />
+            ))}
+          </ul>
+        )
+      )}
+    </li>
+  );
+}
+
+function MetadataTreeViewer({ metadata, renderTopLevelActions }) {
+  const [expandedPaths, setExpandedPaths] = useState(() => collectContainerPaths(metadata));
+  const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    setExpandedPaths(collectContainerPaths(metadata));
+  }, [metadata]);
+
+  const togglePath = (path) => {
+    setExpandedPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  const expandAll = () => setExpandedPaths(collectContainerPaths(metadata, '$', 0, new Set(), Number.POSITIVE_INFINITY));
+  const collapseAll = () => setExpandedPaths(new Set(['$']));
+
+  return (
+    <div className="metadata-tree-viewer" data-testid="project-metadata-tree">
+      <div className="metadata-tree-toolbar">
+        <label htmlFor="metadata-tree-search" className="form-label">Search metadata</label>
+        <input
+          id="metadata-tree-search"
+          type="search"
+          className="form-control metadata-tree-search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Filter by key, value, or path"
+        />
+        <button type="button" className="btn btn-secondary btn-small" onClick={expandAll}>Expand all</button>
+        <button type="button" className="btn btn-secondary btn-small" onClick={collapseAll}>Collapse all</button>
+      </div>
+      <ul className="metadata-tree-list metadata-tree-root">
+        <MetadataJsonNode
+          label="metadata"
+          value={metadata}
+          path="$"
+          depth={0}
+          expandedPaths={expandedPaths}
+          onToggle={togglePath}
+          renderTopLevelActions={renderTopLevelActions}
+          query={query}
+        />
+      </ul>
+    </div>
+  );
+}
 
 function MetadataManager({ 
   projectId, 
@@ -19,6 +187,10 @@ function MetadataManager({
   // Collapse states - both sections start collapsed
   const [addMetadataCollapsed, setAddMetadataCollapsed] = useState(true);
   const [bulkMetadataCollapsed, setBulkMetadataCollapsed] = useState(true);
+
+  useEffect(() => {
+    setBulkMetadata(JSON.stringify(metadata, null, 2));
+  }, [metadata]);
 
   // Helper function to parse metadata value
   const parseMetadataValue = (value) => {
@@ -202,29 +374,12 @@ function MetadataManager({
           )}
           
           {!loading && Object.keys(metadata).length > 0 && (
-            <table className="metadata-table">
-              <thead>
-                <tr>
-                  <th>Key</th>
-                  <th>Value</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(metadata).map(([key, value]) => (
-                  <tr key={key}>
-                    <td>{key}</td>
-                    <td className="metadata-value">
-                      {value === null ? (
-                        <span className="metadata-null">null</span>
-                      ) : typeof value === 'object' ? (
-                        <pre>{JSON.stringify(value, null, 2)}</pre>
-                      ) : (
-                        value.toString()
-                      )}
-                    </td>
-                    <td className="metadata-actions">
+            <MetadataTreeViewer
+              metadata={metadata}
+              renderTopLevelActions={(key, value) => (
+                <span className="metadata-tree-actions">
                       <button 
+                        type="button"
                         className="btn btn-small"
                         onClick={() => {
                           setEditingMetadata({
@@ -239,16 +394,15 @@ function MetadataManager({
                         Edit
                       </button>
                       <button 
+                        type="button"
                         className="btn btn-small btn-danger"
                         onClick={() => handleDeleteMetadata(key)}
                       >
                         Delete
                       </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                </span>
+              )}
+            />
           )}
         </div>
         
