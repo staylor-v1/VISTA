@@ -338,9 +338,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   const inspectionLayoutCollapsed = availableLayoutWidth <= inspectionHierarchy.layout.collapseBreakpointPx;
   const applyFixedRegionWidths = !inspectionLayoutCollapsed && availableLayoutWidth >= minimumThreeColumnWidthPx;
   const workbenchPanelGridStyle = {
-    '--inspection-grid-template-columns': inspectionLayoutCollapsed
-      ? '1fr'
-      : `${leftColumnWidthPx}px minmax(0, 1fr) ${rightColumnWidthPx}px`,
+    '--inspection-grid-template-columns': inspectionLayoutCollapsed ? '1fr' : '240px minmax(0, 1fr) 240px',
     '--inspection-layout-gap': `${inspectionHierarchy.layout.gapPx}px`,
     '--inspection-layout-min-height': inspectionLayoutCollapsed ? 'auto' : `${inspectionHierarchy.layout.minHeightPx}px`,
   };
