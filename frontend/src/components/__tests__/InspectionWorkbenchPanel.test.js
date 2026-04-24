@@ -736,7 +736,7 @@ describe('InspectionWorkbenchPanel', () => {
     });
 
     const grid = screen.getByTestId('inspection-layout-grid');
-    expect(grid.style.getPropertyValue('--inspection-grid-template-columns')).toBe('240px minmax(0, 1fr) 240px');
+    expect(grid.style.getPropertyValue('--inspection-grid-template-columns')).toBe('300px minmax(0, 1fr) 380px');
     expect(grid.style.getPropertyValue('--inspection-layout-gap')).toBe('18px');
     expect(grid.style.getPropertyValue('--inspection-layout-min-height')).toBe('680px');
 
@@ -762,6 +762,33 @@ describe('InspectionWorkbenchPanel', () => {
     });
 
     unmount();
+  });
+
+  test('supports drag-resizing side columns and persists widths to project configuration', async () => {
+    const scenario = scenarioByUser[0];
+    const workspaceTracker = mockWorkbenchFetch(scenario);
+    window.innerWidth = 1800;
+    window.dispatchEvent(new Event('resize'));
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText(`Batches: ${scenario.batches.length}`)).toBeInTheDocument();
+    });
+
+    const leftDivider = screen.getByTestId('inspection-divider-left');
+    fireEvent.pointerDown(leftDivider, { clientX: 320 });
+    fireEvent.pointerMove(window, { clientX: 360 });
+    fireEvent.pointerUp(window, { clientX: 360 });
+
+    await waitFor(() => {
+      expect(workspaceTracker.getConfigurationSaves().length).toBeGreaterThan(0);
+    });
+    const latestSave = workspaceTracker.getConfigurationSaves().at(-1);
+    expect(latestSave?.config?.inspection_layout?.column_widths).toEqual(expect.objectContaining({
+      left_px: expect.any(Number),
+      right_px: expect.any(Number),
+    }));
   });
 
   test('renders the configured inspection layout before any parts are loaded', async () => {

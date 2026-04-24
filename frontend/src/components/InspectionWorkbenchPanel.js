@@ -14,6 +14,9 @@ const DEFAULT_INSPECTOR_HOTKEYS = {
   reject_classification: 'r',
   toggle_shortcut_help: 'h',
 };
+const DEFAULT_INSPECTION_COLUMN_WIDTHS = { leftPx: null, rightPx: null };
+const RESIZABLE_COLUMN_MIN_PX = 220;
+const RESIZE_HANDLE_WIDTH_PX = 10;
 const DEFAULT_PANEL_LAYOUT = {
   part_list: { is_open: true, width_px: 320, height_px: 420, orientation: 'vertical' },
   inspector: { is_open: true, width_px: 360, height_px: 420, orientation: 'vertical' },
@@ -247,6 +250,15 @@ function panelRegionStyle(region) {
   return style;
 }
 
+function normalizeInspectionColumnWidths(candidate = {}) {
+  const leftRaw = Number(candidate.left_px ?? candidate.leftPx);
+  const rightRaw = Number(candidate.right_px ?? candidate.rightPx);
+  return {
+    leftPx: Number.isFinite(leftRaw) && leftRaw > 0 ? Math.round(leftRaw) : null,
+    rightPx: Number.isFinite(rightRaw) && rightRaw > 0 ? Math.round(rightRaw) : null,
+  };
+}
+
 function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   const [batches, setBatches] = useState([]);
   const [parts, setParts] = useState([]);
@@ -301,6 +313,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   const [inspectorHotkeyDraft, setInspectorHotkeyDraft] = useState(DEFAULT_INSPECTOR_HOTKEYS);
   const [hotkeySaveState, setHotkeySaveState] = useState({ loading: false, message: null, severity: null });
   const [projectConfiguration, setProjectConfiguration] = useState(null);
+  const [inspectionColumnWidths, setInspectionColumnWidths] = useState(DEFAULT_INSPECTION_COLUMN_WIDTHS);
   const [shortcutHelpVisible, setShortcutHelpVisible] = useState(false);
   const [panelLayout, setPanelLayout] = useState(DEFAULT_PANEL_LAYOUT);
   const [normalizationTriageField, setNormalizationTriageField] = useState('');
@@ -313,7 +326,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
     typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth
   ));
   const [workbenchWidth, setWorkbenchWidth] = useState(0);
+  const [columnResizeState, setColumnResizeState] = useState(null);
   const workbenchDetailsRef = useRef(null);
+  const latestColumnWidthsRef = useRef(DEFAULT_INSPECTION_COLUMN_WIDTHS);
 
   const inspectionHierarchy = useMemo(() => normalizeInspectionHierarchy(hierarchy || {}), [hierarchy]);
   const leftRegion = inspectionHierarchy.regions[inspectionHierarchy.leftColumn];
@@ -337,11 +352,111 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   const availableLayoutWidth = workbenchWidth > 0 ? workbenchWidth : viewportWidth;
   const inspectionLayoutCollapsed = availableLayoutWidth <= inspectionHierarchy.layout.collapseBreakpointPx;
   const applyFixedRegionWidths = !inspectionLayoutCollapsed && availableLayoutWidth >= minimumThreeColumnWidthPx;
+  const minLeftColumnWidthPx = normalizeLayoutNumber(leftRegion?.minWidthPx, RESIZABLE_COLUMN_MIN_PX);
+  const minRightColumnWidthPx = normalizeLayoutNumber(rightRegion?.minWidthPx, RESIZABLE_COLUMN_MIN_PX);
+  const defaultLeftColumnWidthPx = normalizeLayoutNumber(leftRegion?.widthPx ?? leftRegion?.minWidthPx, 240);
+  const defaultRightColumnWidthPx = normalizeLayoutNumber(rightRegion?.widthPx ?? rightRegion?.minWidthPx, 240);
+  const preferredLeftColumnWidthPx = normalizeLayoutNumber(
+    inspectionColumnWidths.leftPx ?? defaultLeftColumnWidthPx,
+    defaultLeftColumnWidthPx,
+  );
+  const preferredRightColumnWidthPx = normalizeLayoutNumber(
+    inspectionColumnWidths.rightPx ?? defaultRightColumnWidthPx,
+    defaultRightColumnWidthPx,
+  );
+  const totalGapWidthPx = inspectionHierarchy.layout.gapPx * 2;
+  const availableForColumnsPx = Math.max(0, availableLayoutWidth - totalGapWidthPx);
+  const minimumCenterWidthPx = normalizeLayoutNumber(inspectorRegion?.minWidthPx ?? inspectorRegion?.widthPx, 560);
+  const maxLeftAllowedPx = Math.max(
+    minLeftColumnWidthPx,
+    availableForColumnsPx - minimumCenterWidthPx - minRightColumnWidthPx,
+  );
+  const effectiveLeftColumnWidthPx = clampRange(
+    preferredLeftColumnWidthPx,
+    minLeftColumnWidthPx,
+    maxLeftAllowedPx,
+    defaultLeftColumnWidthPx,
+  );
+  const maxRightAllowedPx = Math.max(
+    minRightColumnWidthPx,
+    availableForColumnsPx - minimumCenterWidthPx - effectiveLeftColumnWidthPx,
+  );
+  const effectiveRightColumnWidthPx = clampRange(
+    preferredRightColumnWidthPx,
+    minRightColumnWidthPx,
+    maxRightAllowedPx,
+    defaultRightColumnWidthPx,
+  );
+  const centerWidthPx = Math.max(0, availableForColumnsPx - effectiveLeftColumnWidthPx - effectiveRightColumnWidthPx);
+  const leftDividerX = effectiveLeftColumnWidthPx + inspectionHierarchy.layout.gapPx / 2;
+  const rightDividerX = effectiveLeftColumnWidthPx
+    + inspectionHierarchy.layout.gapPx
+    + centerWidthPx
+    + inspectionHierarchy.layout.gapPx / 2;
+  const canShowColumnDividers = applyFixedRegionWidths && Number.isFinite(availableLayoutWidth) && availableLayoutWidth > 0;
   const workbenchPanelGridStyle = {
-    '--inspection-grid-template-columns': inspectionLayoutCollapsed ? '1fr' : '240px minmax(0, 1fr) 240px',
+    '--inspection-grid-template-columns': inspectionLayoutCollapsed
+      ? '1fr'
+      : `${applyFixedRegionWidths ? effectiveLeftColumnWidthPx : 240}px minmax(0, 1fr) ${applyFixedRegionWidths ? effectiveRightColumnWidthPx : 240}px`,
     '--inspection-layout-gap': `${inspectionHierarchy.layout.gapPx}px`,
     '--inspection-layout-min-height': inspectionLayoutCollapsed ? 'auto' : `${inspectionHierarchy.layout.minHeightPx}px`,
+    '--inspection-resize-handle-half': `${Math.round(RESIZE_HANDLE_WIDTH_PX / 2)}px`,
   };
+
+  latestColumnWidthsRef.current = {
+    leftPx: effectiveLeftColumnWidthPx,
+    rightPx: effectiveRightColumnWidthPx,
+  };
+
+  useEffect(() => {
+    if (!columnResizeState) return undefined;
+    const onPointerMove = (event) => {
+      const pointerX = Number(event.clientX);
+      if (!Number.isFinite(pointerX)) return;
+      const delta = pointerX - columnResizeState.startX;
+      if (columnResizeState.side === 'left') {
+        setInspectionColumnWidths((prev) => ({ ...prev, leftPx: Math.round(columnResizeState.initial.leftPx + delta) }));
+      } else if (columnResizeState.side === 'right') {
+        setInspectionColumnWidths((prev) => ({ ...prev, rightPx: Math.round(columnResizeState.initial.rightPx - delta) }));
+      }
+    };
+    const onPointerUp = (event) => {
+      const pointerX = Number(event?.clientX);
+      const delta = Number.isFinite(pointerX) ? pointerX - columnResizeState.startX : 0;
+      const nextWidths = { ...latestColumnWidthsRef.current };
+      if (columnResizeState.side === 'left' && Number.isFinite(delta)) {
+        nextWidths.leftPx = Math.round(clampRange(
+          columnResizeState.initial.leftPx + delta,
+          minLeftColumnWidthPx,
+          maxLeftAllowedPx,
+          latestColumnWidthsRef.current.leftPx,
+        ));
+      } else if (columnResizeState.side === 'right' && Number.isFinite(delta)) {
+        nextWidths.rightPx = Math.round(clampRange(
+          columnResizeState.initial.rightPx - delta,
+          minRightColumnWidthPx,
+          maxRightAllowedPx,
+          latestColumnWidthsRef.current.rightPx,
+        ));
+      }
+      setInspectionColumnWidths((prev) => ({ ...prev, ...nextWidths }));
+      setColumnResizeState(null);
+      saveInspectionColumnWidths(nextWidths);
+    };
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+    };
+  }, [
+    columnResizeState,
+    maxLeftAllowedPx,
+    maxRightAllowedPx,
+    minLeftColumnWidthPx,
+    minRightColumnWidthPx,
+    saveInspectionColumnWidths,
+  ]);
 
   useEffect(() => {
     const loadWorkbenchData = async () => {
@@ -376,6 +491,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
         setPanelLayout(normalizePanelLayout(savedState.panel_layout));
         const resolvedConfig = configData?.config && typeof configData.config === 'object' ? configData.config : {};
         setProjectConfiguration(resolvedConfig);
+        setInspectionColumnWidths(normalizeInspectionColumnWidths(resolvedConfig?.inspection_layout?.column_widths));
         const savedHotkeys = normalizeInspectorHotkeys(
           resolvedConfig?.process_settings?.configurable_hotkeys,
         );
@@ -481,6 +597,33 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
       });
     }
   };
+
+  async function saveInspectionColumnWidths(columnWidths) {
+    const nextConfig = {
+      ...(projectConfiguration && typeof projectConfiguration === 'object' ? projectConfiguration : {}),
+      inspection_layout: {
+        ...((projectConfiguration && projectConfiguration.inspection_layout) || {}),
+        column_widths: {
+          left_px: Number.isFinite(columnWidths.leftPx) ? Math.round(columnWidths.leftPx) : null,
+          right_px: Number.isFinite(columnWidths.rightPx) ? Math.round(columnWidths.rightPx) : null,
+        },
+      },
+    };
+
+    try {
+      const resp = await fetch(`/api/projects/${projectId}/configuration`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: nextConfig }),
+      });
+      if (!resp.ok) throw new Error(`Failed to save inspection column widths (${resp.status})`);
+      const payload = await resp.json();
+      const persistedConfig = payload?.config && typeof payload.config === 'object' ? payload.config : nextConfig;
+      setProjectConfiguration(persistedConfig);
+    } catch (_) {
+      // Best-effort persistence: keep interactive resize fluid even if save fails.
+    }
+  }
 
   const updatePanelLayout = (panelKey, updates) => {
     setPanelLayout((prev) => {
@@ -1369,6 +1512,27 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
                       )}
                     </section>
 
+                    {canShowColumnDividers && (
+                      <button
+                        type="button"
+                        className="workbench-pane-divider"
+                        aria-label="Resize left and center panels"
+                        data-testid="inspection-divider-left"
+                        style={{ left: `${leftDividerX}px`, width: `${RESIZE_HANDLE_WIDTH_PX}px` }}
+                        onPointerDown={(event) => {
+                          event.preventDefault();
+                          setColumnResizeState({
+                            side: 'left',
+                            startX: event.clientX,
+                            initial: {
+                              leftPx: latestColumnWidthsRef.current.leftPx,
+                              rightPx: latestColumnWidthsRef.current.rightPx,
+                            },
+                          });
+                        }}
+                      />
+                    )}
+
                     <section
                       className="workbench-tabbed-panel"
                       style={applyFixedRegionWidths ? panelRegionStyle(inspectorRegion) : undefined}
@@ -1448,6 +1612,27 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
                       </div>
 
                     </section>
+
+                    {canShowColumnDividers && (
+                      <button
+                        type="button"
+                        className="workbench-pane-divider"
+                        aria-label="Resize center and right panels"
+                        data-testid="inspection-divider-right"
+                        style={{ left: `${rightDividerX}px`, width: `${RESIZE_HANDLE_WIDTH_PX}px` }}
+                        onPointerDown={(event) => {
+                          event.preventDefault();
+                          setColumnResizeState({
+                            side: 'right',
+                            startX: event.clientX,
+                            initial: {
+                              leftPx: latestColumnWidthsRef.current.leftPx,
+                              rightPx: latestColumnWidthsRef.current.rightPx,
+                            },
+                          });
+                        }}
+                      />
+                    )}
 
                     <section
                       className="workbench-tabbed-panel"
