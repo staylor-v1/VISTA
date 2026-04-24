@@ -965,27 +965,40 @@ ul li:hover {
 .project-header {
   background: linear-gradient(135deg, var(--gray-900) 0%, var(--gray-800) 100%);
   color: white;
-  padding: var(--space-2) var(--space-4);
+  padding: 6px var(--space-6) 0;
   box-shadow: var(--shadow-lg);
   border-bottom: 1px solid var(--border-medium);
-  position: sticky;
-  top: 0;
-  z-index: 1000;
+  position: relative;
+  z-index: 10;
 }
 
 .project-header-content {
   max-width: none;
   margin: 0 auto;
   display: flex;
-  flex-direction: row;
-  align-items: center;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.project-header-top {
+  display: flex;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: var(--space-3);
+  gap: var(--space-4);
+  min-height: 40px;
+}
+
+.project-header-bottom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--space-4);
 }
 
 .project-nav {
   display: flex;
   align-items: center;
+  transform: translateY(-1px);
 }
 
 .back-btn {
@@ -995,7 +1008,7 @@ ul li:hover {
   background: rgba(255, 255, 255, 0.1);
   border: 1px solid rgba(255, 255, 255, 0.2);
   color: white;
-  padding: var(--space-2) var(--space-4);
+  padding: 6px var(--space-3);
   border-radius: var(--radius-md);
   font-size: 0.875rem;
   cursor: pointer;
@@ -1045,7 +1058,7 @@ ul li:hover {
 
 .project-container {
   flex: 1;
-  padding: var(--space-6) var(--space-6) var(--space-8);
+  padding: var(--space-3) var(--space-6) var(--space-8);
   max-width: none;
   margin: 0 auto;
   width: 100%;
@@ -1054,7 +1067,7 @@ ul li:hover {
 .project-content {
   display: flex;
   flex-direction: column;
-  gap: var(--space-8);
+  gap: 0;
 }
 
 .project-main-tab-shell {
@@ -1062,18 +1075,16 @@ ul li:hover {
 }
 
 .project-main-tabs {
-  position: sticky;
-  top: 74px;
-  z-index: 900;
-  background: var(--bg-primary);
-  padding: var(--space-2);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow-x: auto;
 }
 
 .project-main-panel {
-  margin-top: var(--space-4);
+  margin-top: 0;
 }
 
 .gallery-section {
@@ -2252,12 +2263,18 @@ ul li:hover {
 
 @media (max-width: 768px) {
   .project-header {
-    padding: var(--space-3);
+    padding: var(--space-2) var(--space-3) 0;
   }
 
-  .project-header-content {
+  .project-header-top,
+  .project-header-bottom {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .project-header-bottom {
+    display: flex;
+    gap: var(--space-2);
   }
 
   .project-info {
@@ -3927,6 +3944,37 @@ ul li:hover {
   color: #1a56db;
 }
 
+.project-header-tabs {
+  flex-wrap: nowrap;
+  align-items: flex-end;
+  min-width: 0;
+}
+
+.project-header-tabs .project-tab {
+  flex: 0 0 auto;
+  min-height: 34px;
+  min-width: 128px;
+  max-width: none;
+  padding: 7px 12px;
+  border-color: rgba(255, 255, 255, 0.18);
+  border-bottom-color: rgba(255, 255, 255, 0.28);
+  border-radius: 8px 8px 0 0;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.82);
+  box-shadow: none;
+}
+
+.project-header-tabs .project-tab:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+
+.project-header-tabs .project-tab.active {
+  background: var(--bg-secondary);
+  border-color: var(--bg-secondary);
+  color: var(--primary-color);
+}
+
 .workbench-panel {
   background: #fff;
   border: 1px solid #e9ecef;
@@ -3954,7 +4002,9 @@ ul li:hover {
 }
 
 .workbench-controls-compact {
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);
+  align-items: center;
+  column-gap: 10px;
 }
 
 .workbench-layout {
@@ -3986,12 +4036,29 @@ ul li:hover {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   cursor: pointer;
+}
+
+.workbench-part-row > div {
+  min-width: 0;
 }
 
 .workbench-part-row.selected {
   border-color: #1a56db;
   box-shadow: 0 0 0 1px #1a56db inset;
+}
+
+@container (max-width: 340px) {
+  .workbench-controls-compact {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .workbench-part-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
 .workbench-defect-count {
@@ -4114,6 +4181,7 @@ ul li:hover {
   border-radius: 0;
   padding: 8px;
   overflow: auto;
+  container-type: inline-size;
 }
 
 .workbench-flexlayout-shell .flexlayout__splitter {
@@ -4562,9 +4630,13 @@ ul li:hover {
 }
 
 @media (max-width: 900px) {
-  .project-tab {
+  .project-tabs:not(.project-header-tabs) .project-tab {
     flex: 1 1 100%;
     max-width: none;
+  }
+
+  .project-header-tabs .project-tab {
+    min-width: 112px;
   }
 
   .workbench-controls-row {
@@ -4587,21 +4659,23 @@ ul li:hover {
 }
 
 .phase-flow {
-  margin-top: 8px;
+  margin: 0 0 6px;
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .phase-flow-node {
-  padding: 4px 10px;
+  padding: 3px 9px;
   border-radius: 999px;
-  border: 1px solid #d0d7de;
-  background: #f6f8fa;
-  color: #57606a;
-  font-size: 0.8rem;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 0.75rem;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .phase-flow-node.active {
@@ -4611,6 +4685,6 @@ ul li:hover {
 }
 
 .phase-flow-arrow {
-  color: #8c959f;
+  color: rgba(255, 255, 255, 0.42);
   font-weight: 700;
 }

@@ -511,7 +511,6 @@ describe('InspectionWorkbenchPanel', () => {
       });
       expect(screen.queryByTestId('request-ingest-validation')).not.toBeInTheDocument();
       expect(screen.getByText(`Parts: ${scenario.parts.length}`)).toBeInTheDocument();
-      expect(screen.getByText(new RegExp(projectType))).toBeInTheDocument();
       expect(screen.getByLabelText('Batch')).toBeInTheDocument();
       expect(screen.getByLabelText('Inspection status')).toBeInTheDocument();
       expect(screen.getByLabelText('Batch / Part filter')).toBeInTheDocument();
@@ -717,7 +716,7 @@ describe('InspectionWorkbenchPanel', () => {
       },
     };
 
-    const { container, unmount } = render(
+    const { unmount } = render(
       <InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" hierarchy={hierarchy} />,
     );
 
@@ -736,20 +735,6 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByRole('tab', { name: 'Configured Findings' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'Configured Inspector' }));
     expect(screen.getAllByText('Configured Inspector').length).toBeGreaterThan(0);
-
-    const leftRegion = container.querySelector('[data-layout-region="part_summary"]');
-    const rightRegion = container.querySelector('[data-layout-region="annotations"]');
-    expect(leftRegion).toHaveStyle({
-      width: '300px',
-      minWidth: '260px',
-      maxWidth: '360px',
-      minHeight: '500px',
-    });
-    expect(rightRegion).toHaveStyle({
-      width: '380px',
-      minWidth: '300px',
-      maxWidth: '460px',
-    });
 
     unmount();
   });

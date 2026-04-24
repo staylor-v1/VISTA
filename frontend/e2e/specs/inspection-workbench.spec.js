@@ -30,9 +30,8 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
         await expect(page.getByTestId('ingest-validation-result')).toContainText('Ingest validation complete');
 
         await page.getByRole('tab', { name: 'Inspection' }).click();
-        await expect(page.getByRole('heading', { name: 'Inspection Workbench', exact: true })).toBeVisible();
         const inspectionPanel = page.locator('section[aria-label="Inspection Workbench"]');
-        await expect(page.getByText(`Inspection workbench for ${projectType} projects.`)).toBeVisible();
+        await expect(inspectionPanel).toBeVisible();
         await expect(page.getByTestId('inspection-layout-grid')).toBeVisible();
         await expect(inspectionPanel.locator('.flexlayout__tab_button', { hasText: 'Part Summary' }).first()).toBeVisible();
         await expect(inspectionPanel.locator('.flexlayout__tab_button', { hasText: 'Inspection' }).first()).toBeVisible();

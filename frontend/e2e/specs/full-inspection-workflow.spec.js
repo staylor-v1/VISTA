@@ -52,7 +52,7 @@ test.describe('Full inspection workflow end-to-end', () => {
     await expectRawImageCount(page, 3);
 
     await page.getByRole('tab', { name: 'Inspection' }).click();
-    await expect(page.getByRole('heading', { name: 'Inspection Workbench' })).toBeVisible();
+    await expect(page.locator('section[aria-label="Inspection Workbench"]')).toBeVisible();
 
     await expect(page.getByRole('tab', { name: 'Part Summary' })).toBeVisible();
     const frontImageButton = page.getByRole('button', { name: /^front: housing-e2e-a-front\.png$/ }).first();

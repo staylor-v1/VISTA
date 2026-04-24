@@ -378,21 +378,43 @@ function Project({ currentUserGroups = [] }) {
     return null;
   };
 
+  const renderMainTabs = (className = '') => (
+    <div className={`project-tabs project-main-tabs ${className}`.trim()} role="tablist" aria-label="Project sections">
+      {interfaceHierarchy.mainTabs.map((tabKey) => (
+        <button
+          key={tabKey}
+          type="button"
+          className={`project-tab ${activeMainTab === tabKey ? 'active' : ''}`}
+          role="tab"
+          aria-selected={activeMainTab === tabKey}
+          onClick={() => setActiveMainTab(tabKey)}
+        >
+          {MAIN_TAB_DEFINITIONS[tabKey]?.label || tabKey}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
     <div className="App">
       <header className="project-header">
         <div className="project-header-content">
-          <div className="project-nav">
-            <button className="back-btn" onClick={() => navigate('/')}>
-              <span className="back-icon">←</span>
-              <span>Back to Dashboard</span>
-            </button>
-          </div>
-          <div className="project-info">
-            <h1 className="project-title">{project ? project.name : 'Loading project...'}</h1>
-            <div className="project-meta">
-              <span className="project-group">Type: {project?.project_type || 'PT1'}</span>
+          <div className="project-header-top">
+            <div className="project-nav">
+              <button className="back-btn" onClick={() => navigate('/')}>
+                <span className="back-icon">←</span>
+                <span>Back to Dashboard</span>
+              </button>
             </div>
+            <div className="project-info">
+              <h1 className="project-title">{project ? project.name : 'Loading project...'}</h1>
+              <div className="project-meta">
+                <span className="project-group">Type: {project?.project_type || 'PT1'}</span>
+              </div>
+            </div>
+          </div>
+          <div className="project-header-bottom">
+            {!loading && renderMainTabs('project-header-tabs')}
             <ProjectPhaseFlow currentPhase={currentPhase} />
           </div>
         </div>
@@ -414,20 +436,6 @@ function Project({ currentUserGroups = [] }) {
 
         {!loading && (
           <div className="project-content project-main-tab-shell">
-            <div className="project-tabs project-main-tabs" role="tablist" aria-label="Project sections">
-              {interfaceHierarchy.mainTabs.map((tabKey) => (
-                <button
-                  key={tabKey}
-                  type="button"
-                  className={`project-tab ${activeMainTab === tabKey ? 'active' : ''}`}
-                  role="tab"
-                  aria-selected={activeMainTab === tabKey}
-                  onClick={() => setActiveMainTab(tabKey)}
-                >
-                  {MAIN_TAB_DEFINITIONS[tabKey]?.label || tabKey}
-                </button>
-              ))}
-            </div>
             <section className="project-main-panel" aria-label="Selected project section">
               {renderMainPanel()}
             </section>

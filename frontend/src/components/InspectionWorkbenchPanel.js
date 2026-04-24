@@ -245,19 +245,6 @@ function normalizeInspectionHierarchy(hierarchy) {
   };
 }
 
-function panelRegionStyle(region) {
-  const style = {};
-  if (!region) return style;
-  if (region.order != null) style.order = region.order;
-  if (region.widthPx != null) style.width = `${region.widthPx}px`;
-  if (region.minWidthPx != null) style.minWidth = `${region.minWidthPx}px`;
-  if (region.maxWidthPx != null) style.maxWidth = `${region.maxWidthPx}px`;
-  if (region.heightPx != null) style.height = `${region.heightPx}px`;
-  if (region.minHeightPx != null) style.minHeight = `${region.minHeightPx}px`;
-  if (region.maxHeightPx != null) style.maxHeight = `${region.maxHeightPx}px`;
-  return style;
-}
-
 function getInspectionPaneWeight(region, fallback) {
   return normalizeLayoutNumber(region?.widthPx ?? region?.minWidthPx, fallback);
 }
@@ -1212,12 +1199,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   const renderPartSummaryPane = () => (
     <section
       className="workbench-tabbed-panel"
-      style={panelRegionStyle(leftRegion)}
       data-layout-region={inspectionHierarchy.leftColumn}
     >
       <div className="workspace-panel-layout">
-        <strong>{leftRegion?.label || 'Part Summary'}</strong>
-        <p className="muted">Navigate by batch, part, and image.</p>
         <div className="workbench-controls workbench-controls-compact">
           <label htmlFor="batchFilter" className="form-label">Batch</label>
           <select
@@ -1355,7 +1339,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   const renderCenterPane = (tabKey) => (
     <section
       className="workbench-tabbed-panel"
-      style={panelRegionStyle(inspectorRegion)}
       data-layout-region="center"
     >
       <div className="workspace-panel-layout" data-testid="selected-image-panel">
@@ -1420,7 +1403,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
   const renderAnnotationsPane = () => (
     <section
       className="workbench-tabbed-panel"
-      style={panelRegionStyle(rightRegion)}
       data-layout-region={inspectionHierarchy.rightColumn}
     >
       <div className="annotation-controls" data-testid="annotation-controls">
@@ -1599,13 +1581,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
 
   return (
     <section className="workbench-panel" aria-label="Inspection Workbench">
-      <div className="workbench-header">
-        <h2>Inspection Workbench</h2>
-        <p>
-          Inspection workbench for <strong>{projectType || 'PT1'}</strong> projects.
-        </p>
-      </div>
-
       {loading && <div className="loading-text">Loading inspection workbench…</div>}
       {error && <div className="alert alert-error">{error}</div>}
 
