@@ -831,6 +831,11 @@ def test_project_configuration_round_trip_supports_progressive_users(client, pro
         assert "image_modalities" in initial_config
         assert "part_views" in initial_config
         assert "defect_types" in initial_config
+        assert initial_config["defect_types"] == [
+            {"name": f"DefectType1_{project_type}", "color": "#ef4444", "definition": ""},
+            {"name": f"DefectType2_{project_type}", "color": "#f59e0b", "definition": ""},
+            {"name": f"DefectType3_{project_type}", "color": "#3b82f6", "definition": ""},
+        ]
 
         save_resp = client.put(
             f"/api/projects/{project_id}/configuration",
@@ -838,11 +843,15 @@ def test_project_configuration_round_trip_supports_progressive_users(client, pro
             headers=headers,
         )
         assert save_resp.status_code == 200, save_resp.text
-        assert save_resp.json()["config"] == scenario["payload"]
+        saved_config = save_resp.json()["config"]
+        for key, value in scenario["payload"].items():
+            assert saved_config[key] == value
 
         reload_resp = client.get(f"/api/projects/{project_id}/configuration", headers=headers)
         assert reload_resp.status_code == 200, reload_resp.text
-        assert reload_resp.json()["config"] == scenario["payload"]
+        reloaded_config = reload_resp.json()["config"]
+        for key, value in scenario["payload"].items():
+            assert reloaded_config[key] == value
 
 
 @pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])

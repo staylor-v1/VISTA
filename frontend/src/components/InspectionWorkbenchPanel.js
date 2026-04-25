@@ -28,6 +28,11 @@ const MPR_CROSSHAIR_AXES_BY_VIEW = {
   coronal: { horizontal: 'axial', vertical: 'sagittal' },
   sagittal: { horizontal: 'axial', vertical: 'coronal' },
 };
+const MPR_DISPLAY_AXES_BY_VIEW = {
+  axial: { x: 'sagittal', y: 'coronal' },
+  coronal: { x: 'sagittal', y: 'axial' },
+  sagittal: { x: 'coronal', y: 'axial' },
+};
 const MPR_RECONSTRUCTION_MODES = {
   orientation: 'orientation',
   stack: 'stack',
@@ -336,24 +341,29 @@ function getCachedMprSliceCanvas(axis, slicePosition, dimensions, volumeCache) {
   return output;
 }
 
-function getMprCrosshairStyle(axis, slicePosition, dimensions, mirrored = false) {
+function getMprCrosshairStyle(axis, slicePosition, dimensions, mirroredAxes = DEFAULT_MPR_PROJECTION_MIRROR) {
   const x = getFraction(slicePosition.sagittal, (dimensions.sagittal || 1) - 1) * 100;
   const y = getFraction(slicePosition.coronal, (dimensions.coronal || 1) - 1) * 100;
   const z = (1 - getFraction(slicePosition.axial, (dimensions.axial || 1) - 1)) * 100;
   const representedAxes = MPR_CROSSHAIR_AXES_BY_VIEW[axis] || MPR_CROSSHAIR_AXES_BY_VIEW.axial;
+  const displayAxes = MPR_DISPLAY_AXES_BY_VIEW[axis] || MPR_DISPLAY_AXES_BY_VIEW.axial;
+  const mirrorX = mirroredAxes?.[displayAxes.x] === true;
+  const mirrorY = mirroredAxes?.[displayAxes.y] === true;
   const representedStyle = {
     '--crosshair-h-color': MPR_AXIS_CONFIG[representedAxes.horizontal]?.color || '#ffffff',
     '--crosshair-v-color': MPR_AXIS_CONFIG[representedAxes.vertical]?.color || '#ffffff',
-    '--projection-scale-x': mirrored ? -1 : 1,
+    '--projection-scale-x': mirrorX ? -1 : 1,
+    '--projection-scale-y': mirrorY ? -1 : 1,
   };
-  const displayX = (value) => `${mirrored ? 100 - value : value}%`;
+  const displayX = (value) => `${mirrorX ? 100 - value : value}%`;
+  const displayY = (value) => `${mirrorY ? 100 - value : value}%`;
   if (axis === 'axial') {
-    return { '--crosshair-x': displayX(x), '--crosshair-y': `${y}%`, ...representedStyle };
+    return { '--crosshair-x': displayX(x), '--crosshair-y': displayY(y), ...representedStyle };
   }
   if (axis === 'coronal') {
-    return { '--crosshair-x': displayX(x), '--crosshair-y': `${z}%`, ...representedStyle };
+    return { '--crosshair-x': displayX(x), '--crosshair-y': displayY(z), ...representedStyle };
   }
-  return { '--crosshair-x': displayX(y), '--crosshair-y': `${z}%`, ...representedStyle };
+  return { '--crosshair-x': displayX(y), '--crosshair-y': displayY(z), ...representedStyle };
 }
 
 function useMprVolumeCache(imageStack, dimensions) {
@@ -1871,7 +1881,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
               const config = MPR_AXIS_CONFIG[axis];
               const label = config?.label || MPR_AXIS_LABELS[axis] || axis.toUpperCase();
               const isMirrored = mprProjectionMirror[axis] === true;
-              const crosshairStyle = getMprCrosshairStyle(axis, slicePosition, mprDimensions, isMirrored);
+              const crosshairStyle = getMprCrosshairStyle(axis, slicePosition, mprDimensions, mprProjectionMirror);
               const fallbackImage = getFallbackProjectionImage(axis, shellImageLayers);
               return (
                 <article

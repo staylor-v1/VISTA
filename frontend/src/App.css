@@ -4707,7 +4707,7 @@ ul li:hover {
   height: 100%;
   object-fit: contain;
   image-rendering: auto;
-  transform: scaleX(var(--projection-scale-x, 1));
+  transform: scale(var(--projection-scale-x, 1), var(--projection-scale-y, 1));
 }
 
 .mpr-fallback-projection {
@@ -4718,7 +4718,7 @@ ul li:hover {
   object-fit: contain;
   background: #020617;
   filter: contrast(1.08) brightness(1.02);
-  transform: scaleX(var(--projection-scale-x, 1));
+  transform: scale(var(--projection-scale-x, 1), var(--projection-scale-y, 1));
 }
 
 .mpr-crosshair-h,

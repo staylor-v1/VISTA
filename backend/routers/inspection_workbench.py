@@ -231,7 +231,27 @@ def _normalize_workspace_state(raw_state: object) -> dict:
     return safe_state
 
 
-def _default_project_configuration() -> dict:
+DEFAULT_DEFECT_TYPE_COLORS = ("#ef4444", "#f59e0b", "#3b82f6")
+
+
+def _normalize_project_type(project_type: Optional[str]) -> str:
+    normalized = str(project_type or "PT1").strip().upper()
+    return normalized if normalized in {"PT1", "PT2", "PT3"} else "PT1"
+
+
+def _default_defect_types(project_type: Optional[str]) -> List[dict]:
+    project_type_suffix = _normalize_project_type(project_type)
+    return [
+        {
+            "name": f"DefectType{index + 1}_{project_type_suffix}",
+            "color": color,
+            "definition": "",
+        }
+        for index, color in enumerate(DEFAULT_DEFECT_TYPE_COLORS)
+    ]
+
+
+def _default_project_configuration(project_type: Optional[str] = "PT1") -> dict:
     return {
         "image_modalities": [
             {
@@ -245,7 +265,7 @@ def _default_project_configuration() -> dict:
             {"id": "front", "label": "Front", "required_modalities": ["visual"], "source": "manual"},
             {"id": "back", "label": "Back", "required_modalities": ["visual"], "source": "manual"},
         ],
-        "defect_types": [],
+        "defect_types": _default_defect_types(project_type),
         "process_settings": {
             "require_disposition_on_submit": True,
             "require_measurement_for_critical": False,
@@ -961,9 +981,10 @@ async def get_project_configuration(
         project_id=project_id,
         key=PROJECT_CONFIGURATION_KEY,
     )
-    raw_config = metadata.value if metadata and isinstance(metadata.value, dict) else _default_project_configuration()
+    default_config = _default_project_configuration(project.project_type)
+    raw_config = metadata.value if metadata and isinstance(metadata.value, dict) else default_config
     resolved_config = {
-        **_default_project_configuration(),
+        **default_config,
         **raw_config,
     }
     interface_layout = resolved_config.get("interface_layout")
@@ -997,7 +1018,7 @@ async def update_project_configuration(
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
 ):
-    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    project = await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
     updated = await crud.create_or_update_project_metadata(
         db=db,
         metadata=schemas.ProjectMetadataCreate(
@@ -1007,7 +1028,7 @@ async def update_project_configuration(
         ),
         created_by=current_user.email,
     )
-    persisted = updated.value if isinstance(updated.value, dict) else _default_project_configuration()
+    persisted = updated.value if isinstance(updated.value, dict) else _default_project_configuration(project.project_type)
     return {
         "project_id": project_id,
         "config": persisted,
@@ -1025,15 +1046,16 @@ async def save_project_default_interface_layout(
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
 ):
-    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    project = await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
     metadata = await crud.get_project_metadata_by_key(
         db=db,
         project_id=project_id,
         key=PROJECT_CONFIGURATION_KEY,
     )
-    raw_config = metadata.value if metadata and isinstance(metadata.value, dict) else _default_project_configuration()
+    default_config = _default_project_configuration(project.project_type)
+    raw_config = metadata.value if metadata and isinstance(metadata.value, dict) else default_config
     config = {
-        **_default_project_configuration(),
+        **default_config,
         **raw_config,
     }
     config["interface_layout"] = {
@@ -1048,7 +1070,7 @@ async def save_project_default_interface_layout(
         ),
         created_by=current_user.email,
     )
-    persisted = updated.value if isinstance(updated.value, dict) else _default_project_configuration()
+    persisted = updated.value if isinstance(updated.value, dict) else _default_project_configuration(project.project_type)
     return {
         "project_id": project_id,
         "config": persisted,
@@ -1121,7 +1143,7 @@ async def clone_project_configuration(
     source_config = (
         source_metadata.value
         if source_metadata and isinstance(source_metadata.value, dict)
-        else _default_project_configuration()
+        else _default_project_configuration(source_project.project_type)
     )
     updated = await crud.create_or_update_project_metadata(
         db=db,
@@ -1132,7 +1154,7 @@ async def clone_project_configuration(
         ),
         created_by=current_user.email,
     )
-    persisted = updated.value if isinstance(updated.value, dict) else _default_project_configuration()
+    persisted = updated.value if isinstance(updated.value, dict) else _default_project_configuration(target_project.project_type)
     return {
         "project_id": project_id,
         "source_project_id": payload.source_project_id,

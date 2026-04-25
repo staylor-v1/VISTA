@@ -870,10 +870,16 @@ describe('InspectionWorkbenchPanel', () => {
     expect(coronalPreview.style.getPropertyValue('--crosshair-y')).not.toBe(initialCoronalCrosshairY);
 
     const axialPreview = screen.getByTestId('mpr-preview-axial');
-    const initialAxialCrosshairX = axialPreview.style.getPropertyValue('--crosshair-x');
-    fireEvent.click(screen.getByLabelText('Mirror', { selector: '#mpr-mirror-axial' }));
-    expect(axialPreview.style.getPropertyValue('--projection-scale-x')).toBe('-1');
-    expect(axialPreview.style.getPropertyValue('--crosshair-x')).not.toBe(initialAxialCrosshairX);
+    const sagittalPreview = screen.getByTestId('mpr-preview-sagittal');
+    const initialAxialCrosshairY = axialPreview.style.getPropertyValue('--crosshair-y');
+    const initialSagittalCrosshairX = sagittalPreview.style.getPropertyValue('--crosshair-x');
+    fireEvent.click(screen.getByLabelText('Mirror', { selector: '#mpr-mirror-coronal' }));
+    expect(axialPreview.style.getPropertyValue('--projection-scale-y')).toBe('-1');
+    expect(axialPreview.style.getPropertyValue('--crosshair-y')).not.toBe(initialAxialCrosshairY);
+    expect(sagittalPreview.style.getPropertyValue('--projection-scale-x')).toBe('-1');
+    expect(sagittalPreview.style.getPropertyValue('--crosshair-x')).not.toBe(initialSagittalCrosshairX);
+    expect(coronalPreview.style.getPropertyValue('--projection-scale-x')).toBe('1');
+    expect(coronalPreview.style.getPropertyValue('--projection-scale-y')).toBe('1');
 
     expect(screen.getByTestId('mpr-pane-coronal')).toHaveTextContent('Y 8 / 95');
     fireEvent.wheel(screen.getByTestId('mpr-pane-coronal'), { deltaY: 80 });
