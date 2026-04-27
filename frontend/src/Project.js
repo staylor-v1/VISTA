@@ -12,6 +12,7 @@ import ProjectConfigurationPanel from './components/ProjectConfigurationPanel';
 import ProjectDataSummaryTab from './components/ProjectDataSummaryTab';
 import ProjectReportTab from './components/ProjectReportTab';
 import ProjectPhaseFlow from './components/ProjectPhaseFlow';
+import ImagesToPartsTab from './components/ImagesToPartsTab';
 import { resolveCurrentProjectPhase } from './utils/projectPhases';
 import { DEFAULT_INTERFACE_HIERARCHY, loadInterfaceHierarchy } from './utils/interfaceHierarchy';
 
@@ -24,6 +25,7 @@ const MAIN_TAB_DEFINITIONS = {
 const PROJECT_DATA_TABS = {
   load_images: { label: 'Load Images' },
   batches: { label: 'Batches' },
+  images_to_parts: { label: 'Images to Parts' },
 };
 
 function Project({ currentUserGroups = [] }) {
@@ -47,6 +49,8 @@ function Project({ currentUserGroups = [] }) {
     overlayImages: 0,
     annotations: 0,
   });
+  const [projectParts, setProjectParts] = useState([]);
+  const [projectImages, setProjectImages] = useState([]);
   const [countsLoading, setCountsLoading] = useState(true);
   const [ingestResult, setIngestResult] = useState({
     loading: false,
@@ -89,6 +93,8 @@ function Project({ currentUserGroups = [] }) {
       const configPayload = configResp.ok ? await configResp.json() : {};
 
       const allImages = Array.isArray(imagePayload) ? imagePayload : [];
+      setProjectImages(allImages);
+      setProjectParts(Array.isArray(partsPayload) ? partsPayload : []);
       const activeImageCount = allImages.filter((image) => !image?.deleted_at).length;
       const imageMetadata = allImages.reduce((count, image) => {
         const metadataObj = image?.metadata;
@@ -340,6 +346,16 @@ function Project({ currentUserGroups = [] }) {
           )}
         </div>
       )}
+
+      {activeProjectDataTab === 'images_to_parts' && (
+        <ImagesToPartsTab
+          projectId={id}
+          parts={projectParts}
+          images={projectImages}
+          onAssignmentsChanged={refreshProjectCounts}
+          setError={setError}
+        />
+      )}
     </>
   ), [
     activeProjectDataTab,
@@ -349,6 +365,8 @@ function Project({ currentUserGroups = [] }) {
     groupSearch,
     hasGroups,
     id,
+    projectImages,
+    projectParts,
     loading,
     metadata,
     navigate,
@@ -357,6 +375,7 @@ function Project({ currentUserGroups = [] }) {
     project?.is_archived,
     project?.name,
     project?.project_type,
+    refreshProjectCounts,
     requestIngestValidation,
   ]);
 

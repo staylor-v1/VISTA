@@ -5150,3 +5150,39 @@ ul li:hover {
   color: rgba(255, 255, 255, 0.42);
   font-weight: 700;
 }
+
+.images-to-parts-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(480px, 3fr);
+  gap: 16px;
+}
+
+.images-to-parts-column {
+  background: #fff;
+  border: 1px solid #d9e2ec;
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.images-to-parts-part-card {
+  border: 1px solid #d9e2ec;
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+  min-height: 90px;
+}
+
+.image-part-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.image-part-chip {
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  cursor: grab;
+}

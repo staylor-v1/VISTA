@@ -123,6 +123,34 @@ describe('ImageUploader', () => {
   });
 
   describe('Load Test Data', () => {
+    test.each([
+      ['PT1', 12, 3],
+      ['PT3', 64, 1],
+    ])('loads %s project test data and reports ingest counters', async (projectType, imagesCreated, partsCreated) => {
+      const payload = {
+        project_type: projectType,
+        images_created: imagesCreated,
+        ingest: { counters: { parts_created: partsCreated } },
+      };
+      const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => payload,
+      });
+      const { props } = renderUploader({ projectType });
+
+      fireEvent.click(screen.getByRole('button', { name: /load test data/i }));
+      expect(screen.getByRole('button', { name: /loading test data/i })).toBeDisabled();
+
+      await waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalledWith('/api/projects/proj-1/load-test-data', { method: 'POST' });
+      });
+      expect(await screen.findByTestId('load-test-data-result')).toHaveTextContent(
+        `Loaded ${imagesCreated} new ${projectType} test images`
+      );
+      expect(props.onUploadComplete).toHaveBeenCalledWith(payload);
+      expect(props.setError).toHaveBeenCalledWith(null);
+    });
+
     test('loads project-type test data through the backend endpoint', async () => {
       const payload = {
         project_type: 'PT3',
@@ -323,7 +351,7 @@ describe('ImageUploader', () => {
   });
 
   describe('buildInspectionPartIngestPayload', () => {
-    test('groups hierarchy metadata into batches and parts', () => {
+    test('groups PT1 Build-It hierarchy metadata into batches and parts', () => {
       const payload = buildInspectionPartIngestPayload([
         {
           image: { id: 'img-1', filename: 'D1001_LOT01_BATCH01_SN0001_front_visual_false.jpg' },
@@ -365,6 +393,42 @@ describe('ImageUploader', () => {
           },
         },
       }));
+    });
+
+    test('groups PT3 Build-It stack metadata and maps all images to the part', () => {
+      const payload = buildInspectionPartIngestPayload([
+        {
+          image: { id: 'img-z0', filename: 'PT3_GEOMETRIC_DUAL_LABEL_Z000.png' },
+          metadata: {
+            project_type: 'PT3',
+            volume_stack_id: 'PT3_SYNTH_MPR_001',
+            slice_axis: 'Z',
+            slice_index: 0,
+          },
+        },
+        {
+          image: { id: 'img-z1', filename: 'PT3_GEOMETRIC_DUAL_LABEL_Z001.png' },
+          metadata: {
+            project_type: 'PT3',
+            volume_stack_id: 'PT3_SYNTH_MPR_001',
+            slice_axis: 'Z',
+            slice_index: 1,
+          },
+        },
+      ]);
+
+      expect(payload.batches).toHaveLength(1);
+      expect(payload.batches[0].name).toBe('PT3_PT3_SYNTH_MPR_001');
+      expect(payload.batches[0].parts).toHaveLength(1);
+      expect(payload.batches[0].parts[0].serial_number).toBe('PT3_SYNTH_MPR_001');
+      expect(payload.batches[0].parts[0].metadata).toEqual(expect.objectContaining({
+        project_type: 'PT3',
+        volume_stack_id: 'PT3_SYNTH_MPR_001',
+      }));
+      expect(payload.batches[0].parts[0].metadata.source_images).toEqual([
+        expect.objectContaining({ filename: 'PT3_GEOMETRIC_DUAL_LABEL_Z000.png', image_id: 'img-z0', slice_index: 0 }),
+        expect.objectContaining({ filename: 'PT3_GEOMETRIC_DUAL_LABEL_Z001.png', image_id: 'img-z1', slice_index: 1 }),
+      ]);
     });
   });
 

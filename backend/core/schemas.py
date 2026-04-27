@@ -357,6 +357,19 @@ class InspectionBulkIngestResponse(BaseModel):
     counters: Dict[str, int]
     discrepancies: List[InspectionIngestDiscrepancy] = Field(default_factory=list)
 
+
+class InspectionPartImageAssignmentRequest(BaseModel):
+    filename: str = Field(..., min_length=1, max_length=1024)
+    to_part_id: uuid.UUID
+
+
+class InspectionPartImageAssignmentResponse(BaseModel):
+    project_id: uuid.UUID
+    filename: str
+    from_part_id: Optional[uuid.UUID] = None
+    to_part_id: uuid.UUID
+
+
 # ImageGroup schemas
 class ImageGroupBase(BaseModel):
     identifier: str = Field(..., min_length=1, max_length=255)

@@ -387,6 +387,52 @@ def _build_hierarchy_ingest_records(uploaded_records: List[dict]) -> schemas.Ins
     return schemas.InspectionBulkIngestPayload(batches=list(batches_by_name.values()))
 
 
+def _rebuild_part_image_maps(metadata: dict) -> dict:
+    source_images = metadata.get("source_images")
+    if not isinstance(source_images, list):
+        source_images = []
+    configured_views: set[str] = set()
+    modalities: set[str] = set()
+    view_images: dict[str, str] = {}
+    overlay_images: dict[str, dict[str, str]] = {}
+    normalized_source_images: list[dict] = []
+
+    for record in source_images:
+        if not isinstance(record, dict):
+            continue
+        filename = str(record.get("filename") or "").strip()
+        if not filename:
+            continue
+        side = str(record.get("side") or "").strip().lower()
+        modality = str(record.get("modality") or "").strip().lower()
+        overlay = bool(record.get("overlay"))
+        normalized_record = {
+            **record,
+            "filename": filename,
+            "side": side,
+            "modality": modality,
+            "overlay": overlay,
+        }
+        normalized_source_images.append(normalized_record)
+        if side:
+            configured_views.add(side)
+        if modality:
+            modalities.add(modality)
+        if side and overlay and modality:
+            overlay_images.setdefault(side, {})[modality] = filename
+        elif side and not overlay and side not in view_images:
+            view_images[side] = filename
+
+    return {
+        **metadata,
+        "source_images": normalized_source_images,
+        "configured_views": sorted(configured_views),
+        "modalities": sorted(modalities),
+        "view_images": view_images,
+        "overlay_images": overlay_images,
+    }
+
+
 async def _create_test_image_if_missing(
     *,
     project_id: uuid.UUID,
@@ -675,6 +721,99 @@ async def update_inspection_part_review_state(
     if not updated:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
     return _serialize_inspection_part(updated)
+
+
+@router.post(
+    "/projects/{project_id}/parts/image-assignments",
+    response_model=schemas.InspectionPartImageAssignmentResponse,
+)
+async def assign_image_to_part(
+    project_id: uuid.UUID,
+    payload: schemas.InspectionPartImageAssignmentRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    target_part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=payload.to_part_id)
+    if not target_part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target part not found")
+
+    all_parts = await crud.list_inspection_parts(db=db, project_id=project_id)
+    filename = payload.filename.strip()
+    source_entry = None
+    from_part_id = None
+
+    for part in all_parts:
+        metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+        source_images = metadata.get("source_images")
+        if not isinstance(source_images, list):
+            continue
+        retained = []
+        for record in source_images:
+            if isinstance(record, dict) and str(record.get("filename") or "").strip() == filename:
+                source_entry = {
+                    **record,
+                    "filename": filename,
+                    "image_id": record.get("image_id") or None,
+                }
+                from_part_id = part.id
+                continue
+            retained.append(record)
+        if len(retained) != len(source_images):
+            normalized = _rebuild_part_image_maps({**metadata, "source_images": retained})
+            await crud.update_inspection_part_metadata(
+                db=db,
+                project_id=project_id,
+                part_id=part.id,
+                metadata_patch=normalized,
+                updated_by=current_user.email,
+            )
+
+    if source_entry is None:
+        image_result = await db.execute(
+            select(models.DataInstance).where(
+                models.DataInstance.project_id == project_id,
+                models.DataInstance.filename == filename,
+                models.DataInstance.deleted_at.is_(None),
+            )
+        )
+        image = image_result.scalars().first()
+        if not image:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+        image_metadata = image.metadata_json if isinstance(image.metadata_json, dict) else {}
+        source_entry = {
+            "filename": filename,
+            "image_id": str(image.id),
+            "side": str(image_metadata.get("side") or "").strip().lower(),
+            "modality": str(image_metadata.get("modality") or "").strip().lower(),
+            "overlay": bool(image_metadata.get("overlay")),
+            "slice_axis": image_metadata.get("slice_axis"),
+            "slice_index": image_metadata.get("slice_index"),
+        }
+
+    target_metadata = target_part.metadata_json if isinstance(target_part.metadata_json, dict) else {}
+    target_source_images = target_metadata.get("source_images")
+    target_source_images = target_source_images if isinstance(target_source_images, list) else []
+    target_source_images = [
+        record for record in target_source_images
+        if not (isinstance(record, dict) and str(record.get("filename") or "").strip() == filename)
+    ]
+    target_source_images.append(source_entry)
+    normalized_target = _rebuild_part_image_maps({**target_metadata, "source_images": target_source_images})
+    await crud.update_inspection_part_metadata(
+        db=db,
+        project_id=project_id,
+        part_id=target_part.id,
+        metadata_patch=normalized_target,
+        updated_by=current_user.email,
+    )
+
+    return schemas.InspectionPartImageAssignmentResponse(
+        project_id=project_id,
+        filename=filename,
+        from_part_id=from_part_id,
+        to_part_id=payload.to_part_id,
+    )
 
 
 @router.post(
