@@ -38,10 +38,40 @@ function normalizeHierarchyMetadata(candidate) {
 
 export function buildInspectionPartIngestPayload(uploadedRecords) {
   const partsByKey = new Map();
+  const volumePartsByKey = new Map();
 
   uploadedRecords.forEach((record) => {
     const metadata = normalizeHierarchyMetadata(record.metadata);
-    if (!metadata) return;
+    if (!metadata) {
+      const recordMetadata = record?.metadata && typeof record.metadata === 'object' ? record.metadata : {};
+      const volumeStackId = String(recordMetadata.volume_stack_id || '').trim();
+      const filename = record.image?.filename || record.filename;
+      if (!volumeStackId || !filename) return;
+      if (!volumePartsByKey.has(volumeStackId)) {
+        volumePartsByKey.set(volumeStackId, {
+          batchName: `PT3_${volumeStackId}`,
+          batchDescription: `PT3 stack ${volumeStackId}`,
+          serialNumber: String(recordMetadata.serial_number || volumeStackId),
+          displayName: String(recordMetadata.display_name || `PT3 stack ${volumeStackId}`),
+          metadata: {
+            source: recordMetadata.source || 'manual-build-it',
+            project_type: 'PT3',
+            volume_stack_id: volumeStackId,
+            source_images: [],
+          },
+        });
+      }
+      const volumePart = volumePartsByKey.get(volumeStackId);
+      volumePart.metadata.source_images.push({
+        filename,
+        image_id: record.image?.id || null,
+        slice_axis: recordMetadata.slice_axis || null,
+        slice_index: typeof recordMetadata.slice_index === 'number' ? recordMetadata.slice_index : null,
+        modality: recordMetadata.modality || null,
+        overlay: normalizeBoolean(recordMetadata.overlay),
+      });
+      return;
+    }
 
     const batchName = [
       metadata.design_number,
@@ -99,7 +129,7 @@ export function buildInspectionPartIngestPayload(uploadedRecords) {
   });
 
   const batchesByName = new Map();
-  Array.from(partsByKey.values()).forEach((part) => {
+  [...Array.from(partsByKey.values()), ...Array.from(volumePartsByKey.values())].forEach((part) => {
     if (!batchesByName.has(part.batchName)) {
       batchesByName.set(part.batchName, {
         name: part.batchName,
@@ -107,8 +137,12 @@ export function buildInspectionPartIngestPayload(uploadedRecords) {
         parts: [],
       });
     }
-    part.metadata.configured_views.sort();
-    part.metadata.modalities.sort();
+    if (Array.isArray(part.metadata.configured_views)) {
+      part.metadata.configured_views.sort();
+    }
+    if (Array.isArray(part.metadata.modalities)) {
+      part.metadata.modalities.sort();
+    }
     batchesByName.get(part.batchName).parts.push({
       serial_number: part.serialNumber,
       display_name: part.displayName,
