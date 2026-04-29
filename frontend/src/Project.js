@@ -5,14 +5,13 @@ import './App.css';
 import ImageUploader from './components/ImageUploader';
 import MetadataManager from './components/MetadataManager';
 import ClassManager from './components/ClassManager';
-import GroupedImagesPage from './components/GroupedImagesPage';
-import ReviewStatusSummary from './components/ReviewStatusSummary';
 import InspectionWorkbenchPanel from './components/InspectionWorkbenchPanel';
 import ProjectConfigurationPanel from './components/ProjectConfigurationPanel';
 import ProjectDataSummaryTab from './components/ProjectDataSummaryTab';
 import ProjectReportTab from './components/ProjectReportTab';
 import ProjectPhaseFlow from './components/ProjectPhaseFlow';
 import ImagesToPartsTab from './components/ImagesToPartsTab';
+import BatchesTab from './components/BatchesTab';
 import { resolveCurrentProjectPhase } from './utils/projectPhases';
 import { DEFAULT_INTERFACE_HIERARCHY, loadInterfaceHierarchy } from './utils/interfaceHierarchy';
 
@@ -36,8 +35,6 @@ function Project({ currentUserGroups = [] }) {
   const [classes, setClasses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [hasGroups, setHasGroups] = useState(false);
-  const [groupSearch, setGroupSearch] = useState('');
   const [projectConfiguration, setProjectConfiguration] = useState(null);
   const [interfaceHierarchy, setInterfaceHierarchy] = useState(DEFAULT_INTERFACE_HIERARCHY);
   const [activeMainTab, setActiveMainTab] = useState(DEFAULT_INTERFACE_HIERARCHY.mainTabs[0]);
@@ -57,6 +54,7 @@ function Project({ currentUserGroups = [] }) {
     error: null,
     payload: null,
   });
+  const [inspectionLaunchFilters, setInspectionLaunchFilters] = useState(null);
 
   const fetchImages = useCallback(async (projId) => {
     const PAGE_SIZE = 200;
@@ -140,17 +138,7 @@ function Project({ currentUserGroups = [] }) {
           setClasses(classesData);
         }
 
-        const hasGroupsResponse = await fetch(`/api/projects/${id}/has-groups`);
-        let projectHasGroups = false;
-        if (hasGroupsResponse.ok) {
-          const hasGroupsData = await hasGroupsResponse.json();
-          projectHasGroups = hasGroupsData.has_groups;
-          setHasGroups(projectHasGroups);
-        }
-
-        if (!projectHasGroups) {
-          await fetchImages(id);
-        }
+        await fetchImages(id);
         await refreshProjectCounts();
         setLoading(false);
       } catch (err) {
@@ -201,14 +189,7 @@ function Project({ currentUserGroups = [] }) {
 
   const handleUploadComplete = useCallback(async () => {
     await refreshProjectCounts();
-    try {
-      const resp = await fetch(`/api/projects/${id}/has-groups`);
-      if (resp.ok) {
-        const data = await resp.json();
-        setHasGroups(data.has_groups);
-      }
-    } catch (_) {}
-  }, [id, refreshProjectCounts]);
+  }, [refreshProjectCounts]);
 
   const requestIngestValidation = useCallback(async () => {
     try {
@@ -326,25 +307,22 @@ function Project({ currentUserGroups = [] }) {
       )}
 
       {activeProjectDataTab === 'batches' && (
-        <div className="project-data-tab-panel" role="tabpanel" aria-label="Batches">
-          <div className="review-summary-row">
-            <ReviewStatusSummary projectId={id} />
-            {hasGroups && (
-              <input
-                type="text"
-                className="search-input group-search-inline"
-                placeholder="Search groups..."
-                value={groupSearch}
-                onChange={(e) => setGroupSearch(e.target.value)}
-              />
-            )}
-          </div>
-          {hasGroups && (
-            <div className="gallery-section">
-              <GroupedImagesPage projectId={id} projectName={project?.name} onBack={() => navigate('/')} search={groupSearch} />
-            </div>
-          )}
-        </div>
+        <BatchesTab
+          projectId={id}
+          parts={projectParts}
+          onAssignmentsChanged={refreshProjectCounts}
+          setError={setError}
+          onInspectBatch={(batch) => {
+            setInspectionLaunchFilters({
+              selected_batch_id: batch.id,
+              review_filter: 'manual',
+              source: 'batches_tab_inspect',
+              source_batch_name: batch.name,
+              at: Date.now(),
+            });
+            setActiveMainTab('inspection');
+          }}
+        />
       )}
 
       {activeProjectDataTab === 'images_to_parts' && (
@@ -362,8 +340,6 @@ function Project({ currentUserGroups = [] }) {
     classes,
     countsLoading,
     dataCounts,
-    groupSearch,
-    hasGroups,
     id,
     projectImages,
     projectParts,
@@ -386,6 +362,7 @@ function Project({ currentUserGroups = [] }) {
           projectId={id}
           projectType={project?.project_type}
           hierarchy={interfaceHierarchy.inspection}
+          launchFilters={inspectionLaunchFilters}
         />
       );
     }
