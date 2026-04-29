@@ -7,21 +7,23 @@ filename begins with `0001`.
 The files are renamed into the VISTA inspection hierarchy format:
 
 ```text
-design_number_lot_number_batch_number_serial_number_side_modality_overlay.jpg
+design_number_lot_number_set_number_serial_number_side_modality_overlay.jpg
 ```
 
 Example:
 
 ```text
-D1001_LOT01_BATCH01_SN0001_front_visual_false.jpg
+D1001_LOT01_SET01_SN0001_front_visual_false.jpg
 ```
 
 When these files are selected in the image uploader, the filename metadata
 extractor should auto-apply the delimiter `_` with keys:
 
 ```text
-design_number, lot_number, batch_number, serial_number, side, modality, overlay
+design_number, lot_number, set_number, serial_number, side, modality, overlay
 ```
 
-The upload flow then posts the raw images and creates inspection parts grouped by
-design, lot, batch, and serial number.
+The upload flow then posts the raw images and creates inspection parts named by
+design, lot, set, and serial number. These fixtures do not assign parts to
+inspection batches; `batch_number` remains available for filenames that should
+create internal VISTA batch groupings.

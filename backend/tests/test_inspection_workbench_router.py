@@ -1301,11 +1301,13 @@ def test_load_test_data_seeds_project_type_fixtures(client, project_type):
         ]
         filenames = {source_image["filename"] for source_image in source_images}
         assert payload["images_received"] == 16
-        assert "D1001_LOT01_BATCH01_SN0001_front_visual_false.jpg" in filenames
-        assert "D1002_LOT02_BATCH01_SN0004_back_heatmap_true.jpg" in filenames
+        assert "D1001_LOT01_SET01_SN0001_front_visual_false.jpg" in filenames
+        assert "D1002_LOT02_SET01_SN0004_back_heatmap_true.jpg" in filenames
         assert len(parts) == 4
+        assert all(part["batch_id"] is None for part in parts)
         assert parts[0]["metadata"]["source"] == "vista-test-data"
         assert parts[0]["metadata"]["design_number"].startswith("D")
+        assert parts[0]["metadata"]["set_number"].startswith("SET")
     else:
         assert parts[0]["metadata"]["design_number"].startswith("D")
 
@@ -1412,6 +1414,33 @@ def test_bulk_ingest_supports_progressive_users_with_discrepancy_counters(client
                 "parts_skipped_existing": 0,
                 "parts_skipped_discrepancy": 0,
             },
+        },
+        {
+            "name": "unassigned",
+            "group": f"{project_type.lower()}-ingest-unassigned",
+            "payload": {
+                "batches": [],
+                "unassigned_parts": [
+                    {
+                        "serial_number": "SN-SET-001",
+                        "display_name": "D1001 LOT01 SET01 SN-SET-001",
+                        "metadata": {
+                            "design_number": "D1001",
+                            "lot_number": "LOT01",
+                            "set_number": "SET01",
+                        },
+                    },
+                ],
+            },
+            "expected": {
+                "batches_received": 0,
+                "parts_received": 1,
+                "batches_created": 0,
+                "parts_created": 1,
+                "parts_skipped_existing": 0,
+                "parts_skipped_discrepancy": 0,
+            },
+            "expect_unassigned": True,
         },
         {
             "name": "intermediate",
@@ -1530,3 +1559,11 @@ def test_bulk_ingest_supports_progressive_users_with_discrepancy_counters(client
         expected_codes = scenario.get("expected_discrepancy_codes", set())
         discrepancy_codes = {entry["code"] for entry in payload["discrepancies"]}
         assert discrepancy_codes == expected_codes
+
+        if scenario.get("expect_unassigned"):
+            parts_resp = client.get(f"/api/projects/{project_id}/parts", headers=headers)
+            assert parts_resp.status_code == 200, parts_resp.text
+            parts = parts_resp.json()
+            assert len(parts) == 1
+            assert parts[0]["batch_id"] is None
+            assert parts[0]["metadata"]["set_number"] == "SET01"

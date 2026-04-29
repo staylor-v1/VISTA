@@ -299,42 +299,60 @@ def _metadata_from_hierarchy_filename(path: Path) -> Optional[dict]:
     tokens = path.stem.split("_")
     if len(tokens) != 7:
         return None
-    design_number, lot_number, batch_number, serial_number, side, modality, overlay = tokens
-    return {
+    design_number, lot_number, part_set_or_batch, serial_number, side, modality, overlay = tokens
+    metadata = {
         "design_number": design_number,
         "lot_number": lot_number,
-        "batch_number": batch_number,
         "serial_number": serial_number,
         "side": side.lower(),
         "modality": modality.lower(),
         "overlay": overlay.lower() in {"true", "1", "yes"},
         "source": "vista-test-data",
     }
+    if part_set_or_batch.upper().startswith("BATCH"):
+        metadata["batch_number"] = part_set_or_batch
+    else:
+        metadata["set_number"] = part_set_or_batch
+    return metadata
 
 
 def _build_hierarchy_ingest_records(uploaded_records: List[dict]) -> schemas.InspectionBulkIngestPayload:
     parts_by_key: dict[str, dict] = {}
     for record in uploaded_records:
         metadata = record.get("metadata") or {}
-        required = ["design_number", "lot_number", "batch_number", "serial_number", "side", "modality"]
+        part_set_number = metadata.get("set_number")
+        batch_number = metadata.get("batch_number")
+        required = ["design_number", "lot_number", "serial_number", "side", "modality"]
         if any(not metadata.get(key) for key in required):
             continue
-        batch_name = "_".join([metadata["design_number"], metadata["lot_number"], metadata["batch_number"]])
-        part_key = f"{batch_name}_{metadata['serial_number']}"
+        if not (part_set_number or batch_number):
+            continue
+        part_group_number = part_set_number or batch_number
+        part_key = "_".join([
+            metadata["design_number"],
+            metadata["lot_number"],
+            part_group_number,
+            metadata["serial_number"],
+        ])
+        batch_name = "_".join([metadata["design_number"], metadata["lot_number"], batch_number]) if batch_number else None
         part = parts_by_key.setdefault(
             part_key,
             {
                 "batch_name": batch_name,
                 "batch_description": (
                     f"Design {metadata['design_number']}, lot {metadata['lot_number']}, "
-                    f"batch {metadata['batch_number']}"
-                ),
+                    f"batch {batch_number}"
+                ) if batch_number else None,
                 "serial_number": metadata["serial_number"],
-                "display_name": f"{metadata['design_number']} {metadata['serial_number']}",
+                "display_name": " ".join([
+                    metadata["design_number"],
+                    metadata["lot_number"],
+                    part_group_number,
+                    metadata["serial_number"],
+                ]),
                 "metadata": {
                     "design_number": metadata["design_number"],
                     "lot_number": metadata["lot_number"],
-                    "batch_number": metadata["batch_number"],
                     "serial_number": metadata["serial_number"],
                     "configured_views": [],
                     "modalities": [],
@@ -345,6 +363,10 @@ def _build_hierarchy_ingest_records(uploaded_records: List[dict]) -> schemas.Ins
                 },
             },
         )
+        if part_set_number:
+            part["metadata"]["set_number"] = part_set_number
+        if batch_number:
+            part["metadata"]["batch_number"] = batch_number
         side = metadata["side"]
         modality = metadata["modality"]
         if side not in part["metadata"]["configured_views"]:
@@ -364,27 +386,34 @@ def _build_hierarchy_ingest_records(uploaded_records: List[dict]) -> schemas.Ins
             part["metadata"]["view_images"][side] = record["filename"]
 
     batches_by_name: dict[str, schemas.InspectionIngestBatchRecord] = {}
+    unassigned_parts: list[schemas.InspectionIngestPartRecord] = []
     for part in parts_by_key.values():
         part["metadata"]["configured_views"].sort()
         part["metadata"]["modalities"].sort()
-        batch = batches_by_name.setdefault(
-            part["batch_name"],
-            schemas.InspectionIngestBatchRecord(
-                name=part["batch_name"],
-                description=part["batch_description"],
-                parts=[],
-            ),
+        ingest_part = schemas.InspectionIngestPartRecord(
+            serial_number=part["serial_number"],
+            display_name=part["display_name"],
+            metadata=part["metadata"],
         )
-        batch.parts.append(
-            schemas.InspectionIngestPartRecord(
-                serial_number=part["serial_number"],
-                display_name=part["display_name"],
-                metadata=part["metadata"],
+        if part["batch_name"]:
+            batch = batches_by_name.setdefault(
+                part["batch_name"],
+                schemas.InspectionIngestBatchRecord(
+                    name=part["batch_name"],
+                    description=part["batch_description"],
+                    parts=[],
+                ),
             )
-        )
+            batch.parts.append(ingest_part)
+        else:
+            unassigned_parts.append(ingest_part)
     for batch in batches_by_name.values():
         batch.parts.sort(key=lambda item: item.serial_number)
-    return schemas.InspectionBulkIngestPayload(batches=list(batches_by_name.values()))
+    unassigned_parts.sort(key=lambda item: item.serial_number)
+    return schemas.InspectionBulkIngestPayload(
+        batches=list(batches_by_name.values()),
+        unassigned_parts=unassigned_parts,
+    )
 
 
 def _rebuild_part_image_maps(metadata: dict) -> dict:
@@ -511,7 +540,7 @@ async def _bulk_ingest_project_parts(
 
     counters = {
         "batches_received": len(payload.batches),
-        "parts_received": sum(len(batch.parts) for batch in payload.batches),
+        "parts_received": sum(len(batch.parts) for batch in payload.batches) + len(payload.unassigned_parts),
         "batches_created": 0,
         "parts_created": 0,
         "parts_skipped_existing": 0,
@@ -519,6 +548,58 @@ async def _bulk_ingest_project_parts(
     }
     discrepancies: List[dict] = []
     payload_seen_serials: set[str] = set()
+
+    async def ingest_parts(
+        ingest_parts_list: List[schemas.InspectionIngestPartRecord],
+        *,
+        ingest_batch_name: Optional[str],
+        target_batch_id: Optional[uuid.UUID],
+    ) -> None:
+        for ingest_part in ingest_parts_list:
+            serial_number = ingest_part.serial_number.strip()
+            if serial_number in payload_seen_serials:
+                counters["parts_skipped_discrepancy"] += 1
+                discrepancies.append(
+                    {
+                        "code": "duplicate_serial_in_payload",
+                        "batch_name": ingest_batch_name or "unassigned",
+                        "serial_number": serial_number,
+                        "message": "Serial number appears more than once in ingest payload",
+                    }
+                )
+                continue
+            payload_seen_serials.add(serial_number)
+
+            existing_part = parts_by_serial.get(serial_number)
+            if existing_part:
+                if target_batch_id and existing_part.batch_id and existing_part.batch_id != target_batch_id:
+                    counters["parts_skipped_discrepancy"] += 1
+                    discrepancies.append(
+                        {
+                            "code": "serial_already_assigned_to_other_batch",
+                            "batch_name": ingest_batch_name or "unassigned",
+                            "serial_number": serial_number,
+                            "message": "Serial number already belongs to a different batch in this project",
+                        }
+                    )
+                    continue
+                counters["parts_skipped_existing"] += 1
+                continue
+
+            created_part = await crud.create_inspection_part(
+                db=db,
+                project_id=project_id,
+                part=schemas.InspectionPartCreate(
+                    batch_id=target_batch_id,
+                    serial_number=serial_number,
+                    display_name=ingest_part.display_name,
+                    metadata=ingest_part.metadata_json,
+                    review_state=ingest_part.review_state,
+                ),
+                created_by=current_user.email,
+            )
+            parts_by_serial[serial_number] = created_part
+            counters["parts_created"] += 1
 
     for ingest_batch in payload.batches:
         target_batch = batches_by_name.get(ingest_batch.name)
@@ -534,52 +615,17 @@ async def _bulk_ingest_project_parts(
             )
             batches_by_name[ingest_batch.name] = target_batch
             counters["batches_created"] += 1
+        await ingest_parts(
+            ingest_batch.parts,
+            ingest_batch_name=ingest_batch.name,
+            target_batch_id=target_batch.id,
+        )
 
-        for ingest_part in ingest_batch.parts:
-            serial_number = ingest_part.serial_number.strip()
-            if serial_number in payload_seen_serials:
-                counters["parts_skipped_discrepancy"] += 1
-                discrepancies.append(
-                    {
-                        "code": "duplicate_serial_in_payload",
-                        "batch_name": ingest_batch.name,
-                        "serial_number": serial_number,
-                        "message": "Serial number appears more than once in ingest payload",
-                    }
-                )
-                continue
-            payload_seen_serials.add(serial_number)
-
-            existing_part = parts_by_serial.get(serial_number)
-            if existing_part:
-                if existing_part.batch_id and existing_part.batch_id != target_batch.id:
-                    counters["parts_skipped_discrepancy"] += 1
-                    discrepancies.append(
-                        {
-                            "code": "serial_already_assigned_to_other_batch",
-                            "batch_name": ingest_batch.name,
-                            "serial_number": serial_number,
-                            "message": "Serial number already belongs to a different batch in this project",
-                        }
-                    )
-                    continue
-                counters["parts_skipped_existing"] += 1
-                continue
-
-            created_part = await crud.create_inspection_part(
-                db=db,
-                project_id=project_id,
-                part=schemas.InspectionPartCreate(
-                    batch_id=target_batch.id,
-                    serial_number=serial_number,
-                    display_name=ingest_part.display_name,
-                    metadata=ingest_part.metadata_json,
-                    review_state=ingest_part.review_state,
-                ),
-                created_by=current_user.email,
-            )
-            parts_by_serial[serial_number] = created_part
-            counters["parts_created"] += 1
+    await ingest_parts(
+        payload.unassigned_parts,
+        ingest_batch_name=None,
+        target_batch_id=None,
+    )
 
     return {
         "project_id": project_id,

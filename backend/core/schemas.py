@@ -367,6 +367,7 @@ class InspectionIngestBatchRecord(BaseModel):
 
 class InspectionBulkIngestPayload(BaseModel):
     batches: List[InspectionIngestBatchRecord] = Field(default_factory=list)
+    unassigned_parts: List[InspectionIngestPartRecord] = Field(default_factory=list)
 
 
 class InspectionIngestDiscrepancy(BaseModel):
