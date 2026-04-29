@@ -10,17 +10,17 @@ VISTA is a web application with a browser-based React frontend, a FastAPI backen
 
 ```mermaid
 flowchart LR
-    U[User Browser] --> FE[React Frontend\n(port 3000 in dev)]
-    FE -->|/api via proxy| UV[Uvicorn ASGI Server\nserving FastAPI app\n(port 8000)]
+    U["User Browser"] --> FE["React Frontend<br/>(port 3000 in dev)"]
+    FE -->|/api via proxy| UV["Uvicorn ASGI Server<br/>serving FastAPI app<br/>(port 8000)"]
 
-    subgraph Backend Runtime
-      UV --> API[FastAPI routers\nprojects/images/comments/ML/reviews/groups]
-      API --> DB[(PostgreSQL)]
-      API --> S3[(MinIO\nS3-compatible object storage)]
-      API --> AUTH[Auth + group membership\nheaders/mock membership]
+    subgraph backend_runtime["Backend Runtime"]
+      UV --> API["FastAPI routers<br/>projects/images/comments/ML/reviews/groups"]
+      API --> DB[("PostgreSQL")]
+      API --> S3[("MinIO<br/>S3-compatible object storage")]
+      API --> AUTH["Auth + group membership<br/>headers/mock membership"]
     end
 
-    AL[Alembic CLI + migration scripts] -->|upgrade/downgrade| DB
+    AL["Alembic CLI + migration scripts"] -->|upgrade/downgrade| DB
 
     classDef infra fill:#eef7ff,stroke:#3b82f6,color:#111;
     classDef app fill:#ecfdf5,stroke:#10b981,color:#111;
