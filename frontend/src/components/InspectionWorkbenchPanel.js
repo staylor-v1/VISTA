@@ -682,7 +682,7 @@ function normalizeInspectionColumnWidths(candidate = {}) {
   };
 }
 
-function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
+function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFilters }) {
   const [batches, setBatches] = useState([]);
   const [parts, setParts] = useState([]);
   const [selectedBatchId, setSelectedBatchId] = useState('');
@@ -746,6 +746,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
     typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth
   ));
   const [workbenchWidth, setWorkbenchWidth] = useState(0);
+  const [manualFilterNotice, setManualFilterNotice] = useState('');
   const workbenchDetailsRef = useRef(null);
   const inspectionResizeSaveTimerRef = useRef(null);
   const mprDragRef = useRef(null);
@@ -867,7 +868,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
         const savedBatchId = String(savedState.selected_batch_id || '');
         setSelectedBatchId(savedBatchId);
         const savedReviewFilter = String(savedState.review_filter || 'all');
-        setReviewFilter(['all', 'pass', 'reject_pending', 'reject_confirmed', 'none'].includes(savedReviewFilter) ? savedReviewFilter : 'all');
+        setReviewFilter(['all', 'pass', 'reject_pending', 'reject_confirmed', 'none', 'manual'].includes(savedReviewFilter) ? savedReviewFilter : 'all');
         setPartFilter(String(savedState.part_filter || ''));
         const savedSortMode = String(savedState.sort_mode || 'part_asc');
         setSortMode(['part_asc', 'batch_asc', 'status_asc', 'defect_desc'].includes(savedSortMode) ? savedSortMode : 'part_asc');
@@ -888,6 +889,24 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
 
     loadWorkbenchData();
   }, [projectId]);
+
+  useEffect(() => {
+    if (!launchFilters || typeof launchFilters !== 'object') return;
+    if (String(launchFilters.selected_batch_id || '').trim()) {
+      setSelectedBatchId(String(launchFilters.selected_batch_id));
+    }
+    if (String(launchFilters.review_filter || '').trim()) {
+      setReviewFilter(String(launchFilters.review_filter));
+    }
+    if (launchFilters.review_filter === 'manual') {
+      const batchName = String(launchFilters.source_batch_name || '').trim();
+      setManualFilterNotice(
+        batchName
+          ? `Manual filter applied from Batches tab for ${batchName}.`
+          : 'Manual filter applied from Batches tab.',
+      );
+    }
+  }, [launchFilters]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -1008,7 +1027,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
       output = output.filter((part) => part.batch_id === selectedBatchId);
     }
     if (reviewFilter !== 'all') {
-      if (reviewFilter === 'none') {
+      if (reviewFilter === 'manual') {
+        output = output.filter((part) => part?.metadata?.manual_flagged === true);
+      } else if (reviewFilter === 'none') {
         output = output.filter((part) => !part.review_state || part.review_state === 'unreviewed');
       } else {
         output = output.filter((part) => String(part.review_state || '').toLowerCase() === reviewFilter);
@@ -1698,8 +1719,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy }) {
             <option value="pass">Pass</option>
             <option value="reject_pending">Fail</option>
             <option value="reject_confirmed">Fail (confirmed)</option>
+            <option value="manual">Manual</option>
             <option value="none">None</option>
           </select>
+          {manualFilterNotice && reviewFilter === 'manual' && (
+            <p className="muted">{manualFilterNotice}</p>
+          )}
 
           <label htmlFor="partFilter" className="form-label">Filter</label>
           <input

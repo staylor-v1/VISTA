@@ -5186,3 +5186,47 @@ ul li:hover {
   font-size: 0.8rem;
   cursor: grab;
 }
+
+.batches-grid {
+  grid-template-columns: minmax(260px, 1fr) minmax(560px, 3fr);
+}
+
+.batch-card {
+  min-height: 130px;
+}
+
+.batch-card-header {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.batch-summary {
+  margin-bottom: 8px;
+}
+
+.batch-card-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.batch-part-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.batch-part-chip-header {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.batch-manual-toggle {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 0.75rem;
+}
