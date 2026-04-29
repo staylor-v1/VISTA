@@ -15,6 +15,25 @@ RUN microdnf install -y --nodocs \
     ca-certificates \
     nodejs \
     npm \
+    atk \
+    at-spi2-atk \
+    alsa-lib \
+    cups-libs \
+    gtk3 \
+    libX11-xcb \
+    libXcomposite \
+    libXcursor \
+    libXdamage \
+    libXext \
+    libXfixes \
+    libXi \
+    libXrandr \
+    libXScrnSaver \
+    libXtst \
+    libdrm \
+    libgbm \
+    libxcb \
+    pango \
     shadow-utils \
     && microdnf clean all
 # Create symlinks for python
