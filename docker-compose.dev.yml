@@ -97,6 +97,7 @@ services:
     volumes:
       # Mount source code for hot reload (read-only)
       - ./backend:/app/backend:ro
+      - ./test_toolbox:/app/test_toolbox:ro
       - ./test:/app/test:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./uv.lock:/app/uv.lock:ro

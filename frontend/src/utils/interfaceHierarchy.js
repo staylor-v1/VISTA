@@ -1,5 +1,5 @@
 const DEFAULT_INTERFACE_HIERARCHY = {
-  mainTabs: ['project_configuration', 'project_data', 'inspection', 'report'],
+  mainTabs: ['project_configuration', 'project_data', 'analyze', 'inspection', 'report'],
   inspection: {
     leftColumn: 'part_summary',
     centerTabs: ['inspector', 'image_metadata'],

@@ -1,6 +1,6 @@
 # Controls top-level project page tabs.
-# Valid values today: "project_configuration", "project_data", "inspection", "report"
-main_tabs = ["project_configuration", "project_data", "inspection", "report"]
+# Valid values today: "project_configuration", "project_data", "analyze", "inspection", "report"
+main_tabs = ["project_configuration", "project_data", "analyze", "inspection", "report"]
 
 [inspection_layout]
 # Left and right are fixed columns inside the Inspection tab. The center column

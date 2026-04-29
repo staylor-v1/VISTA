@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { PROJECT_PHASE_LABELS, PROJECT_PHASE_SEQUENCE } from '../utils/projectPhases';
+import { buildErrorWithServiceDiagnostics } from '../utils/serviceDiagnostics';
 
 
 function isSingleAlphanumeric(value) {
@@ -333,6 +334,9 @@ function ProjectConfigurationPanel({
   const [savingProjectTypeLayoutDefault, setSavingProjectTypeLayoutDefault] = useState(false);
   const hasCompatibleCopySources = availableProjects.length > 0;
   const selectedCopySourceProject = availableProjects.find((project) => project.id === copySourceProjectId) || null;
+  const [primaryError, diagnosticError] = typeof error === 'string'
+    ? error.split('\n\n', 2)
+    : ['', ''];
 
   useEffect(() => {
     const loadConfiguration = async () => {
@@ -343,7 +347,7 @@ function ProjectConfigurationPanel({
 
         const [configResp, projectsResp] = await Promise.all([
           fetch(`/api/projects/${projectId}/configuration`),
-          fetch('/api/projects'),
+          fetch('/api/projects/'),
         ]);
 
         if (!configResp.ok) {
@@ -374,7 +378,8 @@ function ProjectConfigurationPanel({
 
         setConfig(normalizeProjectConfiguration(incomingConfig, targetProjectType));
       } catch (err) {
-        setError(err.message || 'Failed to load project configuration');
+        const message = err.message || 'Failed to load project configuration';
+        setError(await buildErrorWithServiceDiagnostics(message, projectId));
       } finally {
         setLoading(false);
       }
@@ -426,7 +431,8 @@ function ProjectConfigurationPanel({
         onConfigurationSaved(payload.config);
       }
     } catch (err) {
-      setError(err.message || 'Failed to save project configuration');
+      const message = err.message || 'Failed to save project configuration';
+      setError(await buildErrorWithServiceDiagnostics(message, projectId));
     } finally {
       setSaving(false);
     }
@@ -460,7 +466,8 @@ function ProjectConfigurationPanel({
       }
       setStatusMessage('Current interface saved as this project default.');
     } catch (err) {
-      setError(err.message || 'Failed to save project interface default');
+      const message = err.message || 'Failed to save project interface default';
+      setError(await buildErrorWithServiceDiagnostics(message, projectId));
     } finally {
       setSavingInterfaceLayoutDefault(false);
     }
@@ -486,7 +493,8 @@ function ProjectConfigurationPanel({
       }
       setStatusMessage(`Current interface saved as the default for ${projectType || 'this project type'}.`);
     } catch (err) {
-      setError(err.message || 'Failed to save project type interface default');
+      const message = err.message || 'Failed to save project type interface default';
+      setError(await buildErrorWithServiceDiagnostics(message, projectId));
     } finally {
       setSavingProjectTypeLayoutDefault(false);
     }
@@ -614,7 +622,8 @@ function ProjectConfigurationPanel({
       setStatusMessage(`Configuration copied from ${copiedFromProject}.`);
     } catch (err) {
       setStatusMessage('');
-      setError(err.message || 'Failed to copy project configuration');
+      const message = err.message || 'Failed to copy project configuration';
+      setError(await buildErrorWithServiceDiagnostics(message, projectId));
     } finally {
       setCopyingConfiguration(false);
     }
@@ -632,7 +641,12 @@ function ProjectConfigurationPanel({
       </header>
 
       {loading && <div className="loading-text">Loading project configuration…</div>}
-      {error && !loading && <div className="alert alert-error">{error}</div>}
+      {error && !loading && (
+        <div className="alert alert-error service-diagnostic-alert">
+          <div>{primaryError}</div>
+          {diagnosticError && <pre>{diagnosticError}</pre>}
+        </div>
+      )}
       {statusMessage && !loading && <div className="alert alert-success">{statusMessage}</div>}
 
       {!loading && !error && (

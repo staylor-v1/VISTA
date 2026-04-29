@@ -6,6 +6,7 @@ import ImageUploader from './components/ImageUploader';
 import MetadataManager from './components/MetadataManager';
 import ClassManager from './components/ClassManager';
 import InspectionWorkbenchPanel from './components/InspectionWorkbenchPanel';
+import AnalyzeWorkbenchTab from './components/AnalyzeWorkbenchTab';
 import ProjectConfigurationPanel from './components/ProjectConfigurationPanel';
 import ProjectDataSummaryTab from './components/ProjectDataSummaryTab';
 import ProjectReportTab from './components/ProjectReportTab';
@@ -18,6 +19,7 @@ import { DEFAULT_INTERFACE_HIERARCHY, loadInterfaceHierarchy } from './utils/int
 const MAIN_TAB_DEFINITIONS = {
   project_configuration: { label: 'Project Configuration' },
   project_data: { label: 'Project Data' },
+  analyze: { label: 'Analyze' },
   inspection: { label: 'Inspection' },
   report: { label: 'Report' },
 };
@@ -368,6 +370,15 @@ function Project({ currentUserGroups = [] }) {
     }
     if (activeMainTab === 'project_data') {
       return projectDataContent;
+    }
+    if (activeMainTab === 'analyze') {
+      return (
+        <AnalyzeWorkbenchTab
+          projectId={id}
+          projectType={project?.project_type}
+          setError={setError}
+        />
+      );
     }
     if (activeMainTab === 'project_configuration') {
       return (

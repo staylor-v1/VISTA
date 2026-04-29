@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
@@ -24,6 +24,43 @@ test('renders image management platform header', () => {
   );
   const headerElement = screen.getByText('VISTA an Image Management System');
   expect(headerElement).toBeInTheDocument();
+});
+
+test('stops loading and shows an error when projects request stalls', async () => {
+  jest.useFakeTimers();
+  window.__VISTA_DASHBOARD_FETCH_TIMEOUT_MS = 25;
+  global.fetch = jest.fn((input) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.endsWith('/api/users/me')) {
+      return Promise.resolve({ ok: false, status: 401, json: async () => ({ detail: 'Unauthorized' }) });
+    }
+    if (url.endsWith('/api/users/me/groups')) {
+      return Promise.resolve({ ok: true, status: 200, json: async () => [] });
+    }
+    if (url.endsWith('/api/projects/')) {
+      return new Promise(() => {});
+    }
+    return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+  });
+
+  render(
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
+  );
+
+  expect(screen.getByText('Loading your projects...')).toBeInTheDocument();
+
+  await act(async () => {
+    jest.advanceTimersByTime(30);
+    await Promise.resolve();
+  });
+
+  expect(await screen.findByText(/Failed to fetch projects: Request timed out/i)).toBeInTheDocument();
+  expect(screen.queryByText('Loading your projects...')).not.toBeInTheDocument();
+
+  delete window.__VISTA_DASHBOARD_FETCH_TIMEOUT_MS;
+  jest.useRealTimers();
 });
 
 describe('project type UI exposure', () => {
