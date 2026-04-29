@@ -653,6 +653,31 @@ async def list_inspection_batches(
     return await crud.list_inspection_batches(db=db, project_id=project_id)
 
 
+@router.patch("/projects/{project_id}/batches/{batch_id}", response_model=schemas.InspectionBatch)
+async def update_inspection_batch(
+    project_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    payload: schemas.InspectionBatchUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    try:
+        updated = await crud.update_inspection_batch(
+            db=db,
+            project_id=project_id,
+            batch_id=batch_id,
+            patch=payload,
+            updated_by=current_user.email,
+        )
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Batch name already exists in this project")
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection batch not found")
+    return updated
+
+
 @router.post(
     "/projects/{project_id}/parts",
     response_model=schemas.InspectionPart,
@@ -814,6 +839,59 @@ async def assign_image_to_part(
         from_part_id=from_part_id,
         to_part_id=payload.to_part_id,
     )
+
+
+@router.post(
+    "/projects/{project_id}/parts/batch-assignments",
+    response_model=schemas.InspectionPartBatchAssignmentResponse,
+)
+async def assign_part_to_batch(
+    project_id: uuid.UUID,
+    payload: schemas.InspectionPartBatchAssignmentRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    if payload.to_batch_id:
+        batch = await crud.get_inspection_batch(db=db, batch_id=payload.to_batch_id)
+        if not batch or batch.project_id != project_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="to_batch_id does not belong to this project")
+
+    updated = await crud.update_inspection_part_batch_assignment(
+        db=db,
+        project_id=project_id,
+        part_id=payload.part_id,
+        to_batch_id=payload.to_batch_id,
+        updated_by=current_user.email,
+    )
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+    return schemas.InspectionPartBatchAssignmentResponse(
+        project_id=project_id,
+        part_id=payload.part_id,
+        to_batch_id=payload.to_batch_id,
+    )
+
+
+@router.patch("/projects/{project_id}/parts/{part_id}/manual-flag", response_model=schemas.InspectionPart)
+async def update_inspection_part_manual_flag(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    payload: schemas.InspectionPartManualFlagUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    updated = await crud.update_inspection_part_metadata(
+        db=db,
+        project_id=project_id,
+        part_id=part_id,
+        metadata_patch={"manual_flagged": bool(payload.manual_flagged)},
+        updated_by=current_user.email,
+    )
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+    return _serialize_inspection_part(updated)
 
 
 @router.post(

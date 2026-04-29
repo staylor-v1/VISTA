@@ -343,6 +343,39 @@ async def get_inspection_batch(db: AsyncSession, batch_id: uuid.UUID) -> Optiona
     return result.scalars().first()
 
 
+async def update_inspection_batch(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    patch: schemas.InspectionBatchUpdate,
+    updated_by: Optional[str] = None,
+) -> Optional[models.InspectionBatch]:
+    batch = await db.execute(
+        select(models.InspectionBatch).where(
+            models.InspectionBatch.id == batch_id,
+            models.InspectionBatch.project_id == project_id,
+        )
+    )
+    db_batch = batch.scalars().first()
+    if not db_batch:
+        return None
+
+    updates = patch.model_dump(exclude_unset=True)
+    for key, value in updates.items():
+        setattr(db_batch, key, value)
+
+    await db.commit()
+    await db.refresh(db_batch)
+    log_db_operation(
+        "UPDATE",
+        "inspection_batches",
+        db_batch.id,
+        updated_by or "system",
+        {"project_id": str(project_id), "fields": sorted(updates.keys())},
+    )
+    return db_batch
+
+
 async def create_inspection_part(
     db: AsyncSession,
     project_id: uuid.UUID,
@@ -391,6 +424,30 @@ async def get_inspection_part(
         )
     )
     return result.scalars().first()
+
+
+async def update_inspection_part_batch_assignment(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    to_batch_id: Optional[uuid.UUID],
+    updated_by: Optional[str] = None,
+) -> Optional[models.InspectionPart]:
+    part = await get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        return None
+
+    part.batch_id = to_batch_id
+    await db.commit()
+    await db.refresh(part)
+    log_db_operation(
+        "UPDATE",
+        "inspection_parts",
+        part.id,
+        updated_by or "system",
+        {"project_id": str(project_id), "batch_id": str(to_batch_id) if to_batch_id else None},
+    )
+    return part
 
 
 async def update_inspection_part_review_state(

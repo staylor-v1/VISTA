@@ -84,10 +84,19 @@ class Project(ProjectBase):
 class InspectionBatchBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
+    owner: Optional[str] = Field(None, max_length=255)
+    status: str = Field(default="not_started", pattern=r"^(not_started|in_progress|complete)$")
 
 
 class InspectionBatchCreate(InspectionBatchBase):
     pass
+
+
+class InspectionBatchUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    owner: Optional[str] = Field(None, max_length=255)
+    status: Optional[str] = Field(default=None, pattern=r"^(not_started|in_progress|complete)$")
 
 
 class InspectionBatch(InspectionBatchBase):
@@ -124,6 +133,21 @@ class InspectionPartCreate(InspectionPartBase):
 
 class InspectionPartUpdate(BaseModel):
     review_state: str = Field(pattern=r"^(unreviewed|in_review|pass|reject_pending|reject_confirmed)$")
+
+
+class InspectionPartBatchAssignmentRequest(BaseModel):
+    part_id: uuid.UUID
+    to_batch_id: Optional[uuid.UUID] = None
+
+
+class InspectionPartBatchAssignmentResponse(BaseModel):
+    project_id: uuid.UUID
+    part_id: uuid.UUID
+    to_batch_id: Optional[uuid.UUID] = None
+
+
+class InspectionPartManualFlagUpdateRequest(BaseModel):
+    manual_flagged: bool = False
 
 
 class InspectionPart(InspectionPartBase):

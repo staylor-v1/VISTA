@@ -165,6 +165,63 @@ def test_create_part_rejects_batch_from_other_project(client):
     assert "does not belong" in part_resp.json()["detail"]
 
 
+def test_batches_support_owner_status_and_part_manual_assignment(client):
+    headers = {"X-User-Id": "batch-editor@example.com", "X-User-Groups": '["batch-editor-group"]'}
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": "Batch metadata project",
+            "description": "batch metadata",
+            "meta_group_id": "batch-editor-group",
+            "project_type": "PT1",
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201
+    project_id = project_resp.json()["id"]
+
+    batch_resp = client.post(
+        f"/api/projects/{project_id}/batches",
+        json={"name": "Batch A", "description": "initial"},
+        headers=headers,
+    )
+    assert batch_resp.status_code == 201
+    batch_id = batch_resp.json()["id"]
+
+    patch_batch_resp = client.patch(
+        f"/api/projects/{project_id}/batches/{batch_id}",
+        json={"owner": "alice", "status": "in_progress"},
+        headers=headers,
+    )
+    assert patch_batch_resp.status_code == 200
+    assert patch_batch_resp.json()["owner"] == "alice"
+    assert patch_batch_resp.json()["status"] == "in_progress"
+
+    part_resp = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={"serial_number": "PT1-BATCH-1", "display_name": "Part 1"},
+        headers=headers,
+    )
+    assert part_resp.status_code == 201
+    part_id = part_resp.json()["id"]
+
+    assign_resp = client.post(
+        f"/api/projects/{project_id}/parts/batch-assignments",
+        json={"part_id": part_id, "to_batch_id": batch_id},
+        headers=headers,
+    )
+    assert assign_resp.status_code == 200
+    assert assign_resp.json()["to_batch_id"] == batch_id
+
+    manual_resp = client.patch(
+        f"/api/projects/{project_id}/parts/{part_id}/manual-flag",
+        json={"manual_flagged": True},
+        headers=headers,
+    )
+    assert manual_resp.status_code == 200
+    assert manual_resp.json()["metadata"]["manual_flagged"] is True
+
+
 @pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
 def test_part_review_workflow_supports_three_simulated_users_with_progressive_data(client, project_type):
     scenarios = [
