@@ -124,7 +124,7 @@ describe('ImageUploader', () => {
 
   describe('Load Test Data', () => {
     test.each([
-      ['PT1', 12, 3],
+      ['PT1', 16, 4],
       ['PT3', 64, 1],
     ])('loads %s project test data and reports ingest counters', async (projectType, imagesCreated, partsCreated) => {
       const payload = {

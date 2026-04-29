@@ -1293,6 +1293,19 @@ def test_load_test_data_seeds_project_type_fixtures(client, project_type):
         assert len(source_images) == 64
         assert source_images[16]["filename"] == "PT3_GEOMETRIC_DUAL_LABEL_Z016.png"
         assert source_images[16]["metadata"]["slice_index"] == 16
+    elif project_type == "PT1":
+        source_images = [
+            source_image
+            for part in parts
+            for source_image in part["metadata"].get("source_images", [])
+        ]
+        filenames = {source_image["filename"] for source_image in source_images}
+        assert payload["images_received"] == 16
+        assert "D1001_LOT01_BATCH01_SN0001_front_visual_false.jpg" in filenames
+        assert "D1002_LOT02_BATCH01_SN0004_back_heatmap_true.jpg" in filenames
+        assert len(parts) == 4
+        assert parts[0]["metadata"]["source"] == "vista-test-data"
+        assert parts[0]["metadata"]["design_number"].startswith("D")
     else:
         assert parts[0]["metadata"]["design_number"].startswith("D")
 
