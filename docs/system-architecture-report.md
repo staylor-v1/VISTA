@@ -10,28 +10,34 @@ VISTA is a web application with a browser-based React frontend, a FastAPI backen
 
 ```mermaid
 flowchart LR
-    U["User Browser"] --> FE["React Frontend<br/>(port 3000 in dev)"]
-    FE -->|/api via proxy| UV["Uvicorn ASGI Server<br/>serving FastAPI app<br/>(port 8000)"]
+    U[User Browser] --> FE[React Frontend :3000 dev]
+    FE -->|/api via proxy| UV[Uvicorn FastAPI :8000]
 
-    subgraph backend_runtime["Backend Runtime"]
-      UV --> API["FastAPI routers<br/>projects/images/comments/ML/reviews/groups"]
-      API --> DB[("PostgreSQL")]
-      API --> S3[("MinIO<br/>S3-compatible object storage")]
-      API --> AUTH["Auth + group membership<br/>headers/mock membership"]
+    subgraph backend_runtime [Backend Runtime]
+      UV --> API[API Routers]
+      API --> DB[(PostgreSQL :5432)]
+      API --> S3[(MinIO S3 API :9000)]
+      API --> AUTH[Auth and Group Membership]
     end
 
-    AL["Alembic CLI + migration scripts"] -->|upgrade/downgrade| DB
-
-    classDef infra fill:#eef7ff,stroke:#3b82f6,color:#111;
-    classDef app fill:#ecfdf5,stroke:#10b981,color:#111;
-    classDef ops fill:#fff7ed,stroke:#f97316,color:#111;
-
-    class FE,UV,API,AUTH app;
-    class DB,S3 infra;
-    class AL ops;
+    AL[Alembic Migrations] -->|upgrade and downgrade| DB
 ```
 
-## 3) Component responsibilities
+
+## 3) Default ports you will commonly see in `docker ps` / `podman ps`
+
+| Service | Default container port(s) | Typical local bind examples | Notes |
+| --- | --- | --- | --- |
+| React frontend dev server | `3000/tcp` | `0.0.0.0:3000->3000/tcp` | Used during frontend development/HMR. |
+| FastAPI backend (Uvicorn) | `8000/tcp` | `0.0.0.0:8000->8000/tcp` | Serves `/api`, `/docs`, `/redoc`. |
+| PostgreSQL | `5432/tcp` | `0.0.0.0:5432->5432/tcp` | Main relational datastore. |
+| MinIO S3 API | `9000/tcp` | `0.0.0.0:9000->9000/tcp` | S3-compatible object API endpoint. |
+| MinIO Console UI | `9001/tcp` | `0.0.0.0:9001->9001/tcp` | Admin/browser console for MinIO. |
+| pgAdmin (optional) | `80/tcp` (container) | `0.0.0.0:5050->80/tcp` | Host port is commonly remapped to avoid conflicts. |
+
+> Note: actual **host** ports can differ if compose overrides are used; the container-side defaults above explain what developers most often see in container listings.
+
+## 4) Component responsibilities
 
 ### React frontend
 - Runs as the user-facing UI (project management, image browsing, overlays, reporting, API key screens, and group galleries).
@@ -58,7 +64,7 @@ flowchart LR
 - Backend initializes an S3 client, checks bucket access, and creates bucket if missing.
 - Presigned URL and object operations allow file upload/download flows without storing large blobs in PostgreSQL.
 
-## 4) How they work together (request/data flow)
+## 5) How they work together (request/data flow)
 
 1. User opens the React app in browser.
 2. UI actions (load project, list images, submit comments/reviews, request ML overlays, export data) trigger HTTP calls to `/api`.
@@ -69,7 +75,7 @@ flowchart LR
    - enforce auth/group access checks.
 5. Backend returns JSON and/or presigned URLs; frontend renders UI updates and visual overlays.
 
-## 5) Analyze workflow and processing output behavior
+## 6) Analyze workflow and processing output behavior
 
 The Analyze tab provides a graph-style image processing workspace for loaded project part images. The frontend loads the toolbox manifest from `/api/analyze/toolbox`, the default project image source from `/api/projects/{project_id}/analyze/input-source`, and the saved workflow from project metadata key `vista.analyze.workflow`. Workflow validation is contract-backed, while workflow execution loads the selected image bytes from VISTA storage and runs the toolbox image-processing methods in graph order.
 
@@ -93,13 +99,13 @@ The remaining persistence decisions are built in as VISTA policy: versions use r
 
 Current execution support runs the implemented Pillow-backed toolbox methods on actual selected image bytes. YOLOv8 blocks are explicit runtime dependencies: they report a failed node with a clear message until the optional `ultralytics` package and model runner are installed/configured.
 
-## 6) Deployment/runtime framing
+## 7) Deployment/runtime framing
 
 - Local infrastructure compose file defines `postgres`, `minio`, and optional `pgadmin`.
 - Dev compose expands to include `backend-dev` and `frontend-dev`; backend container runs migrations then starts Uvicorn with reload.
 - Frontend container uses environment variables (including backend URL) and HMR for fast iteration.
 
-## 7) Why this split is useful
+## 8) Why this split is useful
 
 - **PostgreSQL** keeps relational consistency and queryability.
 - **MinIO** handles scalable binary object storage cost-effectively.
