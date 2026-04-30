@@ -187,6 +187,25 @@ def _edge_mask(image: Image.Image, low_threshold: float, high_threshold: float) 
     return edges.point(lambda value: 255 if value >= cutoff else 0)
 
 
+def _asphalt_anomaly_heatmap(image: Image.Image, sensitivity: float, blur_radius: int) -> Image.Image:
+    gray = _grayscale(image)
+    blurred = gray.filter(ImageFilter.GaussianBlur(radius=max(0, int(blur_radius))))
+    edges = blurred.filter(ImageFilter.FIND_EDGES)
+    hist = edges.histogram()
+    total = sum(hist)
+    target_ratio = 0.03 + ((1.0 - max(0.0, min(1.0, sensitivity))) * 0.2)
+    target_pixels = max(1, int(total * target_ratio))
+    running = 0
+    threshold = 255
+    for level in range(255, -1, -1):
+        running += hist[level]
+        if running >= target_pixels:
+            threshold = level
+            break
+    binary = edges.point(lambda value: 255 if value >= threshold else 0)
+    return binary.filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.MaxFilter(3))
+
+
 def _morphology(mask: Image.Image, radius: int, operation: str) -> Image.Image:
     size = max(3, (int(radius) * 2) + 1)
     source = _grayscale(mask)
@@ -205,7 +224,8 @@ def _analysis_overlay_png(state: ImageState) -> Optional[Dict[str, Any]]:
     if overlay_source is None:
         return None
     mask = _grayscale(overlay_source).point(lambda value: 150 if value > 0 else 0)
-    color = Image.new("RGBA", state.source_image.size, (34, 197, 94, 0))
+    overlay_color = (239, 68, 68, 0) if (state.overlay_method_id or "").startswith("anomaly.") else (34, 197, 94, 0)
+    color = Image.new("RGBA", state.source_image.size, overlay_color)
     if mask.size != state.source_image.size:
         mask = mask.resize(state.source_image.size)
     color.putalpha(mask)
@@ -271,6 +291,12 @@ def _apply_node(state: ImageState, node, method) -> Tuple[ImageState, str, Dict[
         state.overlay_method_id = method.id
         state.overlay_method_name = method.name
         return state, "Computed edge mask.", _summarize_image(state.mask), artifacts
+    if node.method_id == "anomaly.asphalt_defects_heatmap":
+        state.mask = _asphalt_anomaly_heatmap(state.image, float(params["sensitivity"]), int(params["blur_radius"]))
+        state.overlay_label = _overlay_label("Anomaly Detection", method)
+        state.overlay_method_id = method.id
+        state.overlay_method_name = method.name
+        return state, "Detected crack/pothole anomaly regions.", _summarize_image(state.mask), artifacts
     if node.method_id == "measure.region_properties":
         if not state.measurements:
             _, state.measurements = _connected_components(state.labels or state.mask or _otsu_threshold(state.image)[0], 0)
