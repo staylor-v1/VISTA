@@ -115,6 +115,23 @@ async def lifespan(app: FastAPI):
     logger.info("Application shutdown complete.")
 
 
+
+
+def _build_error_detail(*, request: Request, status_code: int, base_detail):
+    """Return consistently detailed API error payloads for easier debugging."""
+    detail_text = base_detail if isinstance(base_detail, str) else "Request failed"
+    request_id = request.headers.get("x-request-id", "not-provided")
+    return {
+        "message": detail_text,
+        "status_code": status_code,
+        "method": request.method,
+        "path": request.url.path,
+        "query": str(request.url.query or ""),
+        "request_id": request_id,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "hint": "Check server logs with request_id, verify auth headers, and validate payload fields.",
+    }
+
 # Custom JSON encoder to handle MetaData objects
 class CustomJSONEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -170,7 +187,45 @@ def create_app() -> FastAPI:
         })
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            content={"detail": exc.errors()},
+            content={
+                "detail": _build_error_detail(
+                    request=request,
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    base_detail="Validation failed for one or more fields.",
+                ),
+                "validation_errors": exc.errors(),
+            },
+        )
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "detail": _build_error_detail(
+                    request=request,
+                    status_code=exc.status_code,
+                    base_detail=exc.detail,
+                )
+            },
+            headers=exc.headers,
+        )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception):
+        logger.exception(
+            "Unhandled application error",
+            extra={"request_path": request.url.path, "request_method": request.method},
+        )
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "detail": _build_error_detail(
+                    request=request,
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    base_detail="Unexpected server error.",
+                )
+            },
         )
 
     # Single /api router -- auth is handled per-endpoint via dependencies
