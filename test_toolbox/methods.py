@@ -70,30 +70,6 @@ TOOLBOX_METHODS = [
         jipipe_origin="ImageJ normalize operation",
     ),
     MethodSpec(
-        id="filter.gaussian_blur",
-        name="Gaussian Blur",
-        category="Filtering",
-        description="Smooths image noise using a Gaussian kernel before segmentation or measurement.",
-        output_types=["image"],
-        parameters=[
-            MethodParameter(name="sigma", label="Sigma", type="float", default=1.2, min_value=0.0, max_value=25.0),
-        ],
-        tags=["filter", "denoise"],
-        jipipe_origin="Gaussian blur filter",
-    ),
-    MethodSpec(
-        id="filter.median",
-        name="Median Filter",
-        category="Filtering",
-        description="Reduces salt-and-pepper noise while preserving edges.",
-        output_types=["image"],
-        parameters=[
-            MethodParameter(name="radius", label="Radius", type="integer", default=2, min_value=1, max_value=25),
-        ],
-        tags=["filter", "denoise"],
-        jipipe_origin="Median filter",
-    ),
-    MethodSpec(
         id="threshold.otsu",
         name="Otsu Threshold",
         category="Segmentation",
@@ -154,32 +130,6 @@ TOOLBOX_METHODS = [
         ],
         tags=["edges", "features"],
         jipipe_origin="Edge detection",
-    ),
-    MethodSpec(
-        id="morphology.open",
-        name="Morphological Open",
-        category="Morphology",
-        description="Removes small foreground islands with erosion followed by dilation.",
-        input_types=["mask"],
-        output_types=["mask"],
-        parameters=[
-            MethodParameter(name="radius", label="Radius", type="integer", default=2, min_value=1),
-        ],
-        tags=["morphology", "cleanup"],
-        jipipe_origin="Binary morphology",
-    ),
-    MethodSpec(
-        id="morphology.close",
-        name="Morphological Close",
-        category="Morphology",
-        description="Fills small gaps with dilation followed by erosion.",
-        input_types=["mask"],
-        output_types=["mask"],
-        parameters=[
-            MethodParameter(name="radius", label="Radius", type="integer", default=2, min_value=1),
-        ],
-        tags=["morphology", "cleanup"],
-        jipipe_origin="Binary morphology",
     ),
     MethodSpec(
         id="measure.region_properties",

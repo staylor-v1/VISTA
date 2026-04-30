@@ -239,13 +239,6 @@ def _apply_node(state: ImageState, node, method) -> Tuple[ImageState, str, Dict[
     if node.method_id == "preprocess.minmax_normalization":
         state.image = _minmax(state.image, float(params["output_min"]), float(params["output_max"]))
         return state, "Applied min-max normalization.", _summarize_image(state.image), artifacts
-    if node.method_id == "filter.gaussian_blur":
-        state.image = state.image.filter(ImageFilter.GaussianBlur(float(params["sigma"])))
-        return state, "Applied Gaussian blur.", _summarize_image(state.image), artifacts
-    if node.method_id == "filter.median":
-        size = max(3, (int(params["radius"]) * 2) + 1)
-        state.image = state.image.filter(ImageFilter.MedianFilter(size))
-        return state, "Applied median filter.", _summarize_image(state.image), artifacts
     if node.method_id == "threshold.otsu":
         state.mask, threshold = _otsu_threshold(state.image)
         state.overlay_label = _overlay_label("Segmentation", method)
@@ -278,18 +271,6 @@ def _apply_node(state: ImageState, node, method) -> Tuple[ImageState, str, Dict[
         state.overlay_method_id = method.id
         state.overlay_method_name = method.name
         return state, "Computed edge mask.", _summarize_image(state.mask), artifacts
-    if node.method_id == "morphology.open":
-        state.mask = _morphology(state.mask or _otsu_threshold(state.image)[0], int(params["radius"]), "open")
-        state.overlay_label = _overlay_label("Morphology", method)
-        state.overlay_method_id = method.id
-        state.overlay_method_name = method.name
-        return state, "Applied morphological open.", _summarize_image(state.mask), artifacts
-    if node.method_id == "morphology.close":
-        state.mask = _morphology(state.mask or _otsu_threshold(state.image)[0], int(params["radius"]), "close")
-        state.overlay_label = _overlay_label("Morphology", method)
-        state.overlay_method_id = method.id
-        state.overlay_method_name = method.name
-        return state, "Applied morphological close.", _summarize_image(state.mask), artifacts
     if node.method_id == "measure.region_properties":
         if not state.measurements:
             _, state.measurements = _connected_components(state.labels or state.mask or _otsu_threshold(state.image)[0], 0)
