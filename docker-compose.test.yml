@@ -78,7 +78,7 @@ services:
         echo 'Syncing dependencies...' &&
         cd /app && uv sync --frozen --no-install-project && cd /app/backend &&
         echo 'Running database migrations...' &&
-        alembic upgrade head &&
+        python /app/backend/scripts/run_migrations.py &&
         echo 'Running backend tests...' &&
         pytest tests/ -v
       "

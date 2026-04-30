@@ -140,7 +140,7 @@ services:
       bash -c "
         cd /app/backend &&
         echo 'Running database migrations...' &&
-        alembic upgrade head &&
+        python /app/backend/scripts/run_migrations.py &&
         echo 'Starting backend server with hot reload...' &&
         uvicorn main:app --host 0.0.0.0 --port 8000 --reload
       "
