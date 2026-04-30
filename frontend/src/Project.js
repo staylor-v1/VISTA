@@ -30,6 +30,30 @@ const PROJECT_DATA_TABS = {
   recently_deleted: { label: 'Recently Deleted' },
 };
 
+async function buildHttpErrorMessage(response, fallbackLabel) {
+  const requestId = response.headers.get('x-request-id') || response.headers.get('x-correlation-id');
+  let details = '';
+  try {
+    const payload = await response.clone().json();
+    if (payload?.detail) details = typeof payload.detail === 'string' ? payload.detail : JSON.stringify(payload.detail);
+    else if (payload?.message) details = String(payload.message);
+  } catch (_) {
+    try {
+      const text = (await response.clone().text()).trim();
+      if (text) details = text;
+    } catch (_) {
+      // Ignore response parse failures.
+    }
+  }
+
+  return [
+    `${fallbackLabel} (${response.status}${response.statusText ? ` ${response.statusText}` : ''})`,
+    `endpoint=${response.url || 'unknown'}`,
+    requestId ? `request_id=${requestId}` : null,
+    details ? `details=${details.slice(0, 280)}` : null,
+  ].filter(Boolean).join(' | ');
+}
+
 function Project({ currentUserGroups = [] }) {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -238,8 +262,8 @@ function Project({ currentUserGroups = [] }) {
         fetch(`/api/projects/${id}/batches`),
         fetch(`/api/projects/${id}/parts`),
       ]);
-      if (!batchResp.ok) throw new Error(`Failed to load batches (${batchResp.status})`);
-      if (!partResp.ok) throw new Error(`Failed to load parts (${partResp.status})`);
+      if (!batchResp.ok) throw new Error(await buildHttpErrorMessage(batchResp, 'Failed to load batches'));
+      if (!partResp.ok) throw new Error(await buildHttpErrorMessage(partResp, 'Failed to load parts'));
 
       const [batchData, partData] = await Promise.all([batchResp.json(), partResp.json()]);
       const batches = Array.isArray(batchData) ? batchData : [];
@@ -268,7 +292,7 @@ function Project({ currentUserGroups = [] }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(syntheticPayload),
       });
-      if (!resp.ok) throw new Error(`Failed to run ingest validation (${resp.status})`);
+      if (!resp.ok) throw new Error(await buildHttpErrorMessage(resp, 'Failed to run ingest validation'));
       const payload = await resp.json();
       setIngestResult({ loading: false, error: null, payload });
       await refreshProjectCounts();
