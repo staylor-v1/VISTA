@@ -175,6 +175,52 @@ function getShellImageLayers(part, projectImageLookup = {}) {
     .filter(Boolean);
 }
 
+function getPartImageRefs(part) {
+  const refs = [];
+  const seen = new Set();
+  const imagesByView = part?.metadata?.view_images;
+  if (imagesByView && typeof imagesByView === 'object') {
+    Object.entries(imagesByView).forEach(([viewName, imageRef]) => {
+      const ref = String(imageRef || '');
+      if (!ref || seen.has(ref)) return;
+      seen.add(ref);
+      refs.push({
+        id: `${part.id}-view-${viewName}`,
+        viewName: String(viewName || '').toLowerCase(),
+        label: String(viewName || 'image').toUpperCase(),
+        imageRef: ref,
+        overlay: false,
+      });
+    });
+  }
+  const sourceImages = part?.metadata?.source_images;
+  if (Array.isArray(sourceImages)) {
+    sourceImages.forEach((record, index) => {
+      if (!record || typeof record !== 'object') return;
+      if (record.overlay_delete_candidate || record.delete_candidate) return;
+      const imageRef = String(record.image_id || record.filename || '');
+      if (!imageRef || seen.has(imageRef)) return;
+      seen.add(imageRef);
+      const overlay = record.overlay === true || record.analysis_output === true;
+      const label = overlay
+        ? String(record.label || record.analysis_label || 'Analyze Overlay')
+        : String(record.side || record.modality || `IMAGE ${index + 1}`).toUpperCase();
+      refs.push({
+        id: `${part.id}-source-${index}`,
+        viewName: String(record.side || record.modality || (overlay ? 'overlay' : 'image')).toLowerCase(),
+        label,
+        imageRef,
+        filename: String(record.filename || ''),
+        imageId: record.image_id ? String(record.image_id) : '',
+        overlay,
+        overlayBaseImageId: record.overlay_base_image_id ? String(record.overlay_base_image_id) : '',
+        overlayBaseFilename: record.overlay_base_filename ? String(record.overlay_base_filename) : '',
+      });
+    });
+  }
+  return refs;
+}
+
 function getFallbackProjectionImage(axis, shellImageLayers) {
   const preferredViews = {
     axial: ['top', 'bottom', 'front', 'back', 'left', 'right'],
@@ -465,7 +511,7 @@ function getOverlayLayers(part) {
   const overlays = part?.metadata?.overlay_layers;
   if (Array.isArray(overlays) && overlays.length > 0) {
     return overlays
-      .filter((overlay) => overlay && overlay.id)
+      .filter((overlay) => overlay && overlay.id && !overlay.overlay_delete_candidate && !overlay.delete_candidate)
       .map((overlay) => ({
         id: String(overlay.id),
         label: overlay.label || String(overlay.id),
@@ -742,6 +788,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [normalizationTriageField, setNormalizationTriageField] = useState('');
   const [selectedImageRef, setSelectedImageRef] = useState('');
   const [projectImageLookup, setProjectImageLookup] = useState({});
+  const [deletingOverlayId, setDeletingOverlayId] = useState('');
   const [viewportWidth, setViewportWidth] = useState(() => (
     typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth
   ));
@@ -860,8 +907,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         setParts(safeParts);
         const imageLookup = (Array.isArray(imageData) ? imageData : []).reduce((acc, image) => {
           const filename = String(image?.filename || '');
-          if (!filename) return acc;
-          acc[filename] = image;
+          const id = image?.id ? String(image.id) : '';
+          if (filename) acc[filename] = image;
+          if (id) acc[id] = image;
           return acc;
         }, {});
         setProjectImageLookup(imageLookup);
@@ -1080,13 +1128,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   }, [selectedPart, selectedViewName]);
   const selectedPartImageRefs = useMemo(() => {
     if (!selectedPart?.metadata || typeof selectedPart.metadata !== 'object') return [];
-    const imagesByView = selectedPart.metadata.view_images || {};
-    if (!imagesByView || typeof imagesByView !== 'object') return [];
-    return Object.entries(imagesByView).map(([viewName, imageRef]) => ({
-      id: `${selectedPart.id}-${viewName}`,
-      viewName,
-      imageRef: imageRef ? String(imageRef) : '',
-    }));
+    return getPartImageRefs(selectedPart);
   }, [selectedPart]);
   const selectedImageRecord = useMemo(() => {
     if (!selectedImageRef) return null;
@@ -1504,6 +1546,25 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const deleteMeasurement = (measurementId) => {
     setMeasurementEntries((prev) => prev.filter((entry) => entry.id !== measurementId));
   };
+
+  const deleteAnalyzeOverlay = useCallback(async (entry) => {
+    const overlayId = entry?.imageId || entry?.imageRef;
+    if (!overlayId) return;
+    try {
+      setDeletingOverlayId(String(overlayId));
+      const resp = await fetch(`/api/projects/${projectId}/analyze/overlays/${encodeURIComponent(String(overlayId))}`, {
+        method: 'DELETE',
+      });
+      if (!resp.ok) throw new Error(`Failed to delete Analyze overlay (${resp.status})`);
+      const updatedPart = await resp.json();
+      setParts((prev) => prev.map((part) => (part.id === updatedPart.id ? updatedPart : part)));
+      setSelectedImageRef((current) => (String(current) === String(entry.imageRef) ? '' : current));
+    } catch (err) {
+      setError(err.message || 'Failed to delete Analyze overlay');
+    } finally {
+      setDeletingOverlayId('');
+    }
+  }, [projectId]);
 
   const adjustInspectorZoom = (delta) => {
     setInspectorViewport((prev) => ({
@@ -2105,14 +2166,18 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
             <p className="muted">No mapped images for this part.</p>
           ) : (
             <div className="view-board" data-layout-region="visual_workspace">
-              {getPartViews(selectedPart).map((viewName) => {
-                const imagesByView = selectedPart?.metadata?.view_images || {};
-                const imageRef = String(imagesByView?.[viewName] || '');
-                const imageRecord = projectImageLookup[imageRef];
+              {selectedPartImageRefs.map((entry) => {
+                const viewName = entry.viewName || 'image';
+                const imageRef = String(entry.imageRef || '');
+                const imageRecord = projectImageLookup[entry.imageId] || projectImageLookup[imageRef];
                 const imageId = imageRecord?.id;
+                const baseRecord = entry.overlay
+                  ? (projectImageLookup[entry.overlayBaseImageId] || projectImageLookup[entry.overlayBaseFilename])
+                  : null;
+                const baseImageId = baseRecord?.id;
                 return (
                   <div
-                    key={viewName}
+                    key={entry.id}
                     className={`view-cell ${activeViewName === viewName ? 'selected' : ''}`}
                     role="button"
                     tabIndex={0}
@@ -2128,10 +2193,41 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                       }
                     }}
                   >
-                    <div className="view-cell-title">{viewName.toUpperCase()}</div>
+                    <div className="view-cell-title">
+                      <span>{entry.label || viewName.toUpperCase()}</span>
+                      {entry.overlay && entry.imageId && (
+                        <button
+                          type="button"
+                          className="inspection-overlay-delete"
+                          aria-label={`Delete overlay ${entry.label || viewName}`}
+                          disabled={deletingOverlayId === String(entry.imageId)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            deleteAnalyzeOverlay(entry);
+                          }}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
                     <div className="view-cell-body">
                       {!imageEnabled ? (
                         <span className="view-cell-empty">Image hidden</span>
+                      ) : entry.overlay && imageId && baseImageId ? (
+                        <div className="inspection-overlay-composite" data-testid="inspection-overlay-composite">
+                          <img
+                            className="inspection-view-image"
+                            src={`/api/images/${encodeURIComponent(String(baseImageId))}/content`}
+                            alt={`${viewName} source`}
+                            loading="lazy"
+                          />
+                          <img
+                            className="inspection-view-image analysis-overlay-image"
+                            src={`/api/images/${encodeURIComponent(String(imageId))}/content`}
+                            alt={`${viewName} overlay`}
+                            loading="lazy"
+                          />
+                        </div>
                       ) : imageId ? (
                         <img
                           className="inspection-view-image"

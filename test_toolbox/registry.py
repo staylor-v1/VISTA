@@ -19,8 +19,8 @@ def validate_workflow(workflow: WorkflowGraph) -> ToolboxExecutionResult:
     nodes_by_id = {node.id: node for node in workflow.nodes}
     source_nodes = [node for node in workflow.nodes if node.method_id == "source.project_part_images"]
 
-    if workflow.source.kind == "project_parts" and len(source_nodes) != 1:
-        raise ValueError("Project part workflows must contain exactly one project image source node")
+    if workflow.source.kind == "project_parts" and len(source_nodes) < 1:
+        raise ValueError("Project part workflows must contain at least one project image source node")
 
     outgoing = {node.id: [] for node in workflow.nodes}
     incoming = {node.id: [] for node in workflow.nodes}
@@ -43,10 +43,11 @@ def validate_workflow(workflow: WorkflowGraph) -> ToolboxExecutionResult:
             visiting.remove(node_id)
             reachable.add(node_id)
 
-        walk(source_nodes[0].id)
+        for source_node in source_nodes:
+            walk(source_node.id)
         disconnected = sorted(set(nodes_by_id) - reachable)
         if disconnected:
-            raise ValueError(f"Workflow contains nodes disconnected from the source: {', '.join(disconnected)}")
+            raise ValueError(f"Workflow contains nodes disconnected from an input source: {', '.join(disconnected)}")
 
     for node in workflow.nodes:
         method = methods.get(node.method_id)

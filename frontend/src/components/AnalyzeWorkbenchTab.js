@@ -1,7 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 const DEFAULT_WORKFLOW_NAME = 'Part image analysis workflow';
+const ANALYZE_WORKFLOW_METADATA_KEY = 'vista.analyze.workflow';
+const SOURCE_METHOD_ID = 'source.project_part_images';
 const OUTPUT_METHOD_ID = 'output.versioned_image_artifact';
+const GRAPH_NODE_WIDTH = 168;
+const GRAPH_START_X = 72;
+const GRAPH_TOP_Y = 84;
+const GRAPH_CHAIN_GAP = 152;
+const GRAPH_ORDER_STEP = GRAPH_NODE_WIDTH + 56;
+const GRAPH_CHAIN_SNAP_PROGRESS = 0.8;
 
 function groupMethods(methods) {
   return methods.reduce((groups, method) => {
@@ -20,14 +28,15 @@ function parameterDefaults(method) {
 }
 
 function makeNode(method, index, overrides = {}) {
-  const horizontalStep = 175;
+  const chainId = overrides.chain_id || 'chain-1';
   return {
     id: overrides.id || `${method.id.replace(/[^A-Za-z0-9_.-]/g, '-')}-${index + 1}`,
     method_id: method.id,
     label: overrides.label || method.name,
+    chain_id: chainId,
     parameters: { ...parameterDefaults(method), ...(overrides.parameters || {}) },
-    x: overrides.x ?? 72 + (index * horizontalStep),
-    y: overrides.y ?? (index % 2 === 0 ? 84 : 188),
+    x: overrides.x ?? GRAPH_START_X + (index * 175),
+    y: overrides.y ?? GRAPH_TOP_Y,
   };
 }
 
@@ -44,17 +53,118 @@ function makeDefaultNodes(methods) {
     .map((method, index) => makeNode(method, index, {
       id: index === 0 ? 'input-source' : undefined,
       label: index === 0 ? 'Loaded Part Images' : method.name,
-      y: method.id === OUTPUT_METHOD_ID ? 132 : undefined,
+      x: GRAPH_START_X + (index * GRAPH_ORDER_STEP),
+      y: GRAPH_TOP_Y,
+    }));
+}
+
+function nodeChainId(node) {
+  return node.chain_id || 'chain-1';
+}
+
+function chainLaneY(index) {
+  return GRAPH_TOP_Y + (index * GRAPH_CHAIN_GAP);
+}
+
+function compareNodesInChain(a, b) {
+  if (a.node.method_id === SOURCE_METHOD_ID && b.node.method_id !== SOURCE_METHOD_ID) return -1;
+  if (b.node.method_id === SOURCE_METHOD_ID && a.node.method_id !== SOURCE_METHOD_ID) return 1;
+  const aCenter = a.node.x + (GRAPH_NODE_WIDTH / 2);
+  const bCenter = b.node.x + (GRAPH_NODE_WIDTH / 2);
+  if (aCenter !== bCenter) return aCenter - bCenter;
+  if (a.node.y !== b.node.y) return a.node.y - b.node.y;
+  return a.index - b.index;
+}
+
+function chainsFromNodes(nodes) {
+  const chains = [];
+  const chainById = new Map();
+  nodes.forEach((node, index) => {
+    const id = nodeChainId(node);
+    if (!chainById.has(id)) {
+      const chain = { id, firstIndex: index, minY: node.y, nodes: [] };
+      chainById.set(id, chain);
+      chains.push(chain);
+    }
+    const chain = chainById.get(id);
+    chain.minY = Math.min(chain.minY, node.y);
+    chain.nodes.push({ node: { ...node, chain_id: id }, index });
+  });
+  return chains
+    .sort((a, b) => {
+      if (a.minY !== b.minY) return a.minY - b.minY;
+      return a.firstIndex - b.firstIndex;
+    })
+    .map((chain) => ({
+      id: chain.id,
+      nodes: chain.nodes.sort(compareNodesInChain).map((item) => item.node),
     }));
 }
 
 function chainEdges(nodes) {
-  return nodes.slice(1).map((node, index) => ({
-    source_node: nodes[index].id,
-    target_node: node.id,
-    source_port: 'output',
-    target_port: 'input',
-  }));
+  return chainsFromNodes(nodes).flatMap((chain) => (
+    chain.nodes.slice(1).map((node, index) => ({
+      source_node: chain.nodes[index].id,
+      target_node: node.id,
+      source_port: 'output',
+      target_port: 'input',
+    }))
+  ));
+}
+
+function orderNodesByChains(nodes) {
+  return chainsFromNodes(nodes).flatMap((chain) => chain.nodes);
+}
+
+function layoutNodesForChains(nodes) {
+  return chainsFromNodes(nodes).flatMap((chain, chainIndex) => (
+    chain.nodes.map((node, nodeIndex) => ({
+      ...node,
+      chain_id: chain.id,
+      x: GRAPH_START_X + (nodeIndex * GRAPH_ORDER_STEP),
+      y: chainLaneY(chainIndex),
+    }))
+  ));
+}
+
+function nextChainId(nodes) {
+  const highest = nodes.reduce((value, node) => {
+    const match = /^chain-(\d+)$/.exec(nodeChainId(node));
+    return match ? Math.max(value, Number(match[1])) : value;
+  }, 0);
+  return `chain-${highest + 1}`;
+}
+
+function appendPositionForChain(nodes, chainId) {
+  const chains = chainsFromNodes(nodes);
+  const existingIndex = chains.findIndex((chain) => chain.id === chainId);
+  const chainIndex = existingIndex >= 0 ? existingIndex : chains.length;
+  const chain = existingIndex >= 0 ? chains[existingIndex] : { nodes: [] };
+  return {
+    x: GRAPH_START_X + (chain.nodes.length * GRAPH_ORDER_STEP),
+    y: chainLaneY(chainIndex),
+  };
+}
+
+function maybeSnapChainId(nodes, dragState, nextY) {
+  const draggedNode = nodes.find((node) => node.id === dragState.id);
+  if (!draggedNode || draggedNode.method_id === SOURCE_METHOD_ID) return nodeChainId(draggedNode || {});
+  const originChainId = dragState.chainId || nodeChainId(draggedNode);
+  const chains = chainsFromNodes(nodes);
+  let best = null;
+  chains.forEach((chain, index) => {
+    if (chain.id === originChainId) return;
+    const candidateY = chainLaneY(index);
+    const distance = Math.abs(candidateY - dragState.nodeY);
+    if (distance <= 0) return;
+    const progress = Math.abs(nextY - dragState.nodeY) / distance;
+    if (progress < GRAPH_CHAIN_SNAP_PROGRESS) return;
+    const proximity = Math.abs(nextY - candidateY);
+    if (!best || proximity < best.proximity) {
+      best = { id: chain.id, proximity };
+    }
+  });
+  return best?.id || originChainId;
 }
 
 function imageIdFor(image) {
@@ -97,12 +207,20 @@ function buildOutputConfig(nodes) {
   const outputNode = nodes.find((node) => node.method_id === OUTPUT_METHOD_ID);
   const params = outputNode?.parameters || {};
   return {
-    mode: params.mode || 'versioned_image',
-    version_strategy: params.version_strategy || 'append_vn',
+    mode: params.mode || 'processing_sequence',
+    version_strategy: params.version_strategy || 'recipe_metadata',
+    artifact_policy: params.artifact_policy || 'automatic_by_output_type',
+    cache_policy: params.cache_policy || 'local_on_demand',
+    invalidation_policy: params.invalidation_policy || 'source_workflow_toolbox_model',
+    provenance_level: params.provenance_level || 'full',
+    export_policy: params.export_policy || 'materialize_on_export',
+    volume_policy: params.volume_policy || 'recipe_volume_sparse_artifacts',
+    destination: 'analysis_artifacts',
     preserve_original: params.preserve_original !== false,
-    overlay_metadata: params.overlay_metadata !== false,
-    measurement_table: params.measurement_table !== false,
-    destination: 'project_images',
+    write_detection_metadata: params.write_detection_metadata !== false,
+    write_segmentation_overlays: params.write_segmentation_overlays !== false,
+    write_measurement_tables: params.write_measurement_tables !== false,
+    materialize_processed_images: params.materialize_processed_images === true,
   };
 }
 
@@ -136,6 +254,64 @@ function buildWorkflow({ nodes, inputSource, selectedImageIds, exampleImageId, r
     output: buildOutputConfig(nodes),
     nodes,
     edges: chainEdges(nodes),
+  };
+}
+
+function restoreSavedWorkflow(savedValue, methods, fallbackNodes, inputSource) {
+  const loadedImageIds = (inputSource?.images || []).map(imageIdFor).filter(Boolean).map(String);
+  const loadedImageSet = new Set(loadedImageIds);
+  if (!savedValue || typeof savedValue !== 'object' || !Array.isArray(savedValue.nodes)) {
+    return {
+      nodes: fallbackNodes,
+      processImageIds: loadedImageIds,
+      exampleImageId: loadedImageIds[0] || '',
+    };
+  }
+  const methodById = new Map(methods.map((method) => [method.id, method]));
+  const restoredNodes = savedValue.nodes
+    .filter((node) => node && methodById.has(node.method_id) && node.id)
+    .map((node, index) => {
+      const method = methodById.get(node.method_id);
+      return makeNode(method, index, {
+        id: String(node.id),
+        label: node.label || method.name,
+        chain_id: node.chain_id || 'chain-1',
+        parameters: node.parameters && typeof node.parameters === 'object' ? node.parameters : {},
+        x: Number.isFinite(node.x) ? node.x : undefined,
+        y: Number.isFinite(node.y) ? node.y : undefined,
+      });
+    });
+  const safeNodes = restoredNodes.some((node) => node.method_id === SOURCE_METHOD_ID)
+    ? restoredNodes
+    : fallbackNodes;
+  const savedProcessIds = Array.isArray(savedValue.process_image_ids)
+    ? savedValue.process_image_ids.map(String).filter((id) => loadedImageSet.has(id))
+    : [];
+  const processImageIds = savedProcessIds.length > 0 ? savedProcessIds : loadedImageIds;
+  const savedExample = String(savedValue.example_image_id || '');
+  return {
+    nodes: safeNodes,
+    processImageIds,
+    exampleImageId: loadedImageSet.has(savedExample) ? savedExample : processImageIds[0] || '',
+  };
+}
+
+function workflowMetadataValue({ nodes, processImageIds, exampleImageId }) {
+  return {
+    version: 1,
+    name: DEFAULT_WORKFLOW_NAME,
+    nodes: nodes.map((node) => ({
+      id: node.id,
+      method_id: node.method_id,
+      label: node.label,
+      chain_id: nodeChainId(node),
+      parameters: node.parameters || {},
+      x: node.x,
+      y: node.y,
+    })),
+    process_image_ids: processImageIds,
+    example_image_id: exampleImageId || '',
+    updated_at: new Date().toISOString(),
   };
 }
 
@@ -361,6 +537,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
   const [inputModalOpen, setInputModalOpen] = useState(false);
   const [dragPayload, setDragPayload] = useState(null);
   const [graphDrag, setGraphDrag] = useState(null);
+  const [workflowStateLoaded, setWorkflowStateLoaded] = useState(false);
   const [status, setStatus] = useState({ loading: true, message: 'Loading analyze workspace...', result: null });
   const graphDragRef = useRef(null);
   const suppressNodeClickRef = useRef(null);
@@ -395,23 +572,30 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
     async function loadAnalyzeWorkspace() {
       try {
         setStatus({ loading: true, message: 'Loading analyze workspace...', result: null });
-        const [toolboxResp, inputResp] = await Promise.all([
+        setWorkflowStateLoaded(false);
+        const [toolboxResp, inputResp, savedWorkflowResp] = await Promise.all([
           fetch('/api/analyze/toolbox'),
           fetch(`/api/projects/${projectId}/analyze/input-source`),
+          fetch(`/api/projects/${projectId}/metadata/${encodeURIComponent(ANALYZE_WORKFLOW_METADATA_KEY)}`),
         ]);
         if (!toolboxResp.ok) throw new Error(`Failed to load toolbox (${toolboxResp.status})`);
         if (!inputResp.ok) throw new Error(`Failed to load analyze inputs (${inputResp.status})`);
-        const [toolboxPayload, inputPayload] = await Promise.all([toolboxResp.json(), inputResp.json()]);
+        const [toolboxPayload, inputPayload, savedWorkflowPayload] = await Promise.all([
+          toolboxResp.json(),
+          inputResp.json(),
+          savedWorkflowResp.ok ? savedWorkflowResp.json() : Promise.resolve(null),
+        ]);
         if (cancelled) return;
         const loadedMethods = Array.isArray(toolboxPayload.methods) ? toolboxPayload.methods : [];
-        const initialNodes = makeDefaultNodes(loadedMethods);
+        const defaultNodes = makeDefaultNodes(loadedMethods);
+        const restored = restoreSavedWorkflow(savedWorkflowPayload?.value, loadedMethods, defaultNodes, inputPayload);
         setMethods(loadedMethods);
         setInputSource(inputPayload);
-        setNodes(initialNodes);
-        const initialImageIds = (inputPayload?.images || []).map(imageIdFor).filter(Boolean);
-        setProcessImageIds(initialImageIds);
-        setExampleImageId(initialImageIds[0] || '');
-        setSelectedNodeId(initialNodes[1]?.id || initialNodes[0]?.id || null);
+        setNodes(restored.nodes);
+        setProcessImageIds(restored.processImageIds);
+        setExampleImageId(restored.exampleImageId);
+        setSelectedNodeId(restored.nodes[1]?.id || restored.nodes[0]?.id || null);
+        setWorkflowStateLoaded(true);
         setStatus({
           loading: false,
           message: `${loadedMethods.length} methods ready for ${inputPayload?.source?.image_count || 0} images`,
@@ -421,6 +605,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
         const message = err.message || 'Failed to load analyze workspace';
         if (!cancelled) {
           setStatus({ loading: false, message, result: null });
+          setWorkflowStateLoaded(true);
           if (setError) setError(message);
         }
       }
@@ -431,16 +616,43 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
     };
   }, [projectId, setError]);
 
+  useEffect(() => {
+    if (!workflowStateLoaded || status.loading || nodes.length === 0) return undefined;
+    const saveHandle = setTimeout(async () => {
+      try {
+        await fetch(`/api/projects/${projectId}/metadata/${encodeURIComponent(ANALYZE_WORKFLOW_METADATA_KEY)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            key: ANALYZE_WORKFLOW_METADATA_KEY,
+            value: workflowMetadataValue({ nodes, processImageIds, exampleImageId }),
+          }),
+        });
+      } catch (_err) {
+        // Analyze workflow persistence is best-effort; users can keep editing if the save fails.
+      }
+    }, 350);
+    return () => clearTimeout(saveHandle);
+  }, [exampleImageId, nodes, processImageIds, projectId, status.loading, workflowStateLoaded]);
+
   const addMethodNode = useCallback((method) => {
     setNodes((prevNodes) => {
+      const selectedChainId = selectedNode ? nodeChainId(selectedNode) : nodeChainId(prevNodes[prevNodes.length - 1] || {});
+      const chainId = method.id === SOURCE_METHOD_ID ? nextChainId(prevNodes) : selectedChainId;
+      const chainPosition = appendPositionForChain(prevNodes, chainId);
+      const chainLabel = method.id === SOURCE_METHOD_ID
+        ? `Loaded Part Images ${chainsFromNodes(prevNodes).length + 1}`
+        : method.name;
       const nextNode = makeNode(method, prevNodes.length, {
-        x: 72 + (prevNodes.length * 175),
-        y: prevNodes.length % 2 === 0 ? 84 : 188,
+        chain_id: chainId,
+        label: chainLabel,
+        x: chainPosition.x,
+        y: chainPosition.y,
       });
       setSelectedNodeId(nextNode.id);
-      return [...prevNodes, nextNode];
+      return orderNodesByChains([...prevNodes, nextNode]);
     });
-  }, []);
+  }, [selectedNode]);
 
   const updateSelectedParameter = useCallback((name, value) => {
     if (!selectedNode) return;
@@ -503,9 +715,6 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
       return;
     }
     setSelectedNodeId(node.id);
-    if (node.method_id === 'source.project_part_images') {
-      setInputModalOpen(true);
-    }
   }, []);
 
   const beginNodeDrag = useCallback((event, node) => {
@@ -514,6 +723,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
     const { clientX, clientY } = eventPoint(event);
     const dragState = {
       id: node.id,
+      chainId: nodeChainId(node),
       startX: clientX,
       startY: clientY,
       nodeX: node.x,
@@ -539,9 +749,13 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
     const nextDrag = { ...dragState, moved };
     graphDragRef.current = nextDrag;
     setGraphDrag(nextDrag);
-    setNodes((prevNodes) => prevNodes.map((node) => (
-      node.id === dragState.id ? { ...node, x: nextX, y: nextY } : node
-    )));
+    setNodes((prevNodes) => {
+      const nextChainIdForNode = moved ? maybeSnapChainId(prevNodes, dragState, nextY) : dragState.chainId;
+      const movedNodes = prevNodes.map((node) => (
+        node.id === dragState.id ? { ...node, chain_id: nextChainIdForNode, x: nextX, y: nextY } : node
+      ));
+      return moved ? orderNodesByChains(movedNodes) : movedNodes;
+    });
   }, []);
 
   const endNodeDrag = useCallback((event) => {
@@ -550,6 +764,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
     if (!dragState) return;
     if (dragState.moved) {
       suppressNodeClickRef.current = dragState.id;
+      setNodes((prevNodes) => layoutNodesForChains(prevNodes));
     }
     graphDragRef.current = null;
     setGraphDrag(null);
@@ -563,7 +778,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
       const nextNodes = prevNodes.filter((node) => node.id !== selectedNode.id);
       const nextSelectedNode = nextNodes[Math.min(selectedIndex, nextNodes.length - 1)] || nextNodes[0] || null;
       setSelectedNodeId(nextSelectedNode?.id || null);
-      return nextNodes;
+      return layoutNodesForChains(nextNodes);
     });
     if (selectedNode.method_id === 'source.project_part_images') {
       setInputModalOpen(false);
@@ -574,7 +789,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
     try {
       const selectedIds = processImageIds.length > 0 ? processImageIds : loadedImages.map(imageIdFor).filter(Boolean);
       const runLabel = runScope === 'example' ? 'example image' : `${selectedIds.length || 0} configured images`;
-      setStatus({ loading: true, message: mode === 'execute' ? `Simulating ${runLabel}...` : 'Validating workflow...', result: null });
+      setStatus({ loading: true, message: mode === 'execute' ? `Running ${runLabel}...` : 'Validating workflow...', result: null });
       const workflow = buildWorkflow({
         nodes,
         inputSource,
@@ -592,7 +807,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
       setStatus({
         loading: false,
         message: mode === 'execute'
-          ? `Workflow simulation completed for ${runScope === 'example' ? 'the example image' : 'the configured image set'}; no image artifacts were generated.`
+          ? `Workflow execution ${payload.status || 'completed'} for ${runScope === 'example' ? 'the example image' : 'the configured image set'}.`
           : 'Workflow contract validated',
         result: payload,
       });
@@ -727,6 +942,14 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
           </div>
           {selectedMethod && (
             <div className="analyze-parameters">
+              {selectedMethod.id === 'source.project_part_images' && (
+                <div className="analyze-input-actions">
+                  <button type="button" className="btn btn-secondary" onClick={() => setInputModalOpen(true)}>
+                    Select Images
+                  </button>
+                  <span>{stagedImages.length} images in Process</span>
+                </div>
+              )}
               {(selectedMethod.parameters || []).length === 0 && <p className="muted">No parameters</p>}
               {(selectedMethod.parameters || []).map((parameter) => {
                 if (selectedMethod.id === 'source.project_part_images' && parameter.name === 'example_image_id') {
@@ -753,13 +976,12 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
           )}
           {selectedMethod?.id === OUTPUT_METHOD_ID && (
             <div className="analyze-output-note">
-              <strong>Non-destructive output</strong>
+              <strong>Recipe-first output</strong>
               <p>
-                Source images are preserved. Versioned image output is modeled as a new filename using
+                Originals are preserved. Detection boxes are stored as metadata, segmentation outputs as overlay artifacts,
+                and processed image versions as reproducible sequences with an on-demand cache.
                 {' '}
-                <code>_vN</code>
-                {' '}
-                while VISTA displays the newest version and can roll back to the original.
+                <code>{outputConfig.version_strategy}</code>
               </p>
               <span>{outputConfig.mode}</span>
             </div>

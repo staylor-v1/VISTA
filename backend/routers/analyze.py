@@ -1,5 +1,9 @@
+import asyncio
+import base64
+import io
 import uuid
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -9,7 +13,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import models, schemas
+from core.config import settings
 from core.database import get_db
+import utils.boto3_client as object_storage
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -19,16 +25,19 @@ from test_toolbox import (
     ToolboxExecutionResult,
     ToolboxManifest,
     WorkflowGraph,
+    WorkflowImageInput,
     WorkflowInputSource,
-    execute_workflow,
+    execute_image_workflow,
     get_manifest,
     validate_workflow,
 )
-from utils.dependencies import get_current_user, get_project_or_403
+from utils.dependencies import get_current_user, get_project_or_403, get_project_or_403_writable
 import utils.crud as crud
 
 
 router = APIRouter(tags=["Analyze"])
+ANALYZE_WORKFLOW_METADATA_KEY = "vista.analyze.workflow"
+ANALYZE_OVERLAY_DELETE_RETENTION_HOURS = 48
 
 
 class AnalyzeImageSourceRecord(BaseModel):
@@ -61,15 +70,198 @@ class AnalyzeInputSourceResponse(BaseModel):
     images: List[AnalyzeImageSourceRecord] = Field(default_factory=list)
 
 
+class AnalyzeDeletedOverlayRecord(BaseModel):
+    project_id: uuid.UUID
+    part_id: uuid.UUID
+    part_serial_number: str
+    part_display_name: Optional[str] = None
+    image_id: Optional[uuid.UUID] = None
+    filename: str
+    label: str
+    deleted_at: str
+    pending_hard_delete_at: str
+    deleted_by: Optional[str] = None
+    source_image_id: Optional[str] = None
+    source_filename: Optional[str] = None
+
+
 def _metadata_dict(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _parse_datetime(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _overlay_record_image_id(record: Dict[str, Any]) -> str:
+    return str(record.get("image_id") or "").strip()
+
+
+def _is_overlay_delete_candidate(record: Dict[str, Any]) -> bool:
+    return bool(record.get("overlay_delete_candidate") or record.get("delete_candidate"))
+
+
+def _is_expired_overlay_delete_candidate(record: Dict[str, Any], now: datetime) -> bool:
+    if not _is_overlay_delete_candidate(record):
+        return False
+    pending_at = _parse_datetime(record.get("pending_hard_delete_at") or record.get("overlay_delete_after"))
+    return bool(pending_at and pending_at <= now)
+
+
+def _without_overlay_delete_fields(record: Dict[str, Any]) -> Dict[str, Any]:
+    cleaned = dict(record)
+    for field_name in (
+        "overlay_delete_candidate",
+        "delete_candidate",
+        "overlay_deleted_at",
+        "deleted_at",
+        "pending_hard_delete_at",
+        "overlay_delete_after",
+        "overlay_deleted_by",
+        "deleted_by",
+    ):
+        cleaned.pop(field_name, None)
+    return cleaned
+
+
+def _rebuild_deleted_overlay_safe_image_maps(metadata: dict) -> dict:
+    rebuilt = _rebuild_analyze_part_image_maps(metadata)
+    return rebuilt
+
+
+def _mark_overlay_deleted_in_metadata(
+    metadata: Dict[str, Any],
+    overlay_image_id: str,
+    *,
+    now: datetime,
+    actor_email: str,
+) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    pending_at = now + timedelta(hours=ANALYZE_OVERLAY_DELETE_RETENTION_HOURS)
+    deleted_fields = {
+        "overlay_delete_candidate": True,
+        "delete_candidate": True,
+        "overlay_deleted_at": now.isoformat(),
+        "deleted_at": now.isoformat(),
+        "pending_hard_delete_at": pending_at.isoformat(),
+        "overlay_delete_after": pending_at.isoformat(),
+        "overlay_deleted_by": actor_email,
+        "deleted_by": actor_email,
+    }
+    found_record: Optional[Dict[str, Any]] = None
+
+    def mark_records(records: Any) -> List[Any]:
+        nonlocal found_record
+        if not isinstance(records, list):
+            return []
+        next_records = []
+        for record in records:
+            if not isinstance(record, dict):
+                next_records.append(record)
+                continue
+            if _overlay_record_image_id(record) == overlay_image_id:
+                marked = {**record, **deleted_fields}
+                found_record = found_record or marked
+                next_records.append(marked)
+            else:
+                next_records.append(record)
+        return next_records
+
+    next_metadata = {
+        **metadata,
+        "source_images": mark_records(metadata.get("source_images")),
+        "analysis_outputs": mark_records(metadata.get("analysis_outputs")),
+        "overlay_layers": mark_records(metadata.get("overlay_layers")),
+    }
+    if found_record is None:
+        return metadata, None
+    return _rebuild_deleted_overlay_safe_image_maps(next_metadata), found_record
+
+
+def _restore_overlay_in_metadata(metadata: Dict[str, Any], overlay_image_id: str) -> tuple[Dict[str, Any], bool]:
+    restored = False
+
+    def restore_records(records: Any) -> List[Any]:
+        nonlocal restored
+        if not isinstance(records, list):
+            return []
+        next_records = []
+        for record in records:
+            if not isinstance(record, dict):
+                next_records.append(record)
+                continue
+            if _overlay_record_image_id(record) == overlay_image_id:
+                restored = True
+                next_records.append(_without_overlay_delete_fields(record))
+            else:
+                next_records.append(record)
+        return next_records
+
+    next_metadata = {
+        **metadata,
+        "source_images": restore_records(metadata.get("source_images")),
+        "analysis_outputs": restore_records(metadata.get("analysis_outputs")),
+        "overlay_layers": restore_records(metadata.get("overlay_layers")),
+    }
+    return _rebuild_deleted_overlay_safe_image_maps(next_metadata), restored
+
+
+def _purge_expired_deleted_overlays_from_metadata(
+    metadata: Dict[str, Any],
+    *,
+    now: datetime,
+) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    expired_ids = set()
+    purged_records: List[Dict[str, Any]] = []
+    for section_name in ("source_images", "analysis_outputs", "overlay_layers"):
+        records = metadata.get(section_name)
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            image_id = _overlay_record_image_id(record)
+            if image_id and _is_expired_overlay_delete_candidate(record, now):
+                expired_ids.add(image_id)
+
+    if not expired_ids:
+        return metadata, []
+
+    def keep_unexpired(records: Any) -> List[Any]:
+        if not isinstance(records, list):
+            return []
+        next_records = []
+        for record in records:
+            if isinstance(record, dict) and _overlay_record_image_id(record) in expired_ids:
+                purged_records.append(record)
+                continue
+            next_records.append(record)
+        return next_records
+
+    next_metadata = {
+        **metadata,
+        "source_images": keep_unexpired(metadata.get("source_images")),
+        "analysis_outputs": keep_unexpired(metadata.get("analysis_outputs")),
+        "overlay_layers": keep_unexpired(metadata.get("overlay_layers")),
+    }
+    return _rebuild_deleted_overlay_safe_image_maps(next_metadata), purged_records
 
 
 def _source_images_for_part(part: models.InspectionPart) -> List[Dict[str, Any]]:
     source_images = _metadata_dict(part.metadata_json).get("source_images")
     if not isinstance(source_images, list):
         return []
-    return [record for record in source_images if isinstance(record, dict)]
+    return [
+        record for record in source_images
+        if isinstance(record, dict) and not _is_overlay_delete_candidate(record)
+    ]
 
 
 def _safe_uuid(value: Any) -> Optional[uuid.UUID]:
@@ -207,6 +399,323 @@ async def _workflow_with_server_source(
     return workflow.model_copy(update={"source": server_source})
 
 
+def _inline_image_bytes(image: models.DataInstance) -> Optional[bytes]:
+    metadata = _metadata_dict(image.metadata_json)
+    encoded = metadata.get("analysis_inline_image_base64")
+    if not isinstance(encoded, str) or not encoded:
+        return None
+    try:
+        return base64.b64decode(encoded)
+    except Exception:
+        return None
+
+
+def _read_object_storage_bytes(object_key: str) -> bytes:
+    if object_storage.boto3_client is None:
+        raise ValueError("Object storage client is not available; cannot execute Analyze workflow on actual image bytes.")
+    response = object_storage.boto3_client.get_object(Bucket=settings.S3_BUCKET, Key=object_key)
+    body = response.get("Body")
+    if body is None:
+        raise ValueError(f"Object storage returned no body for '{object_key}'.")
+    return body.read()
+
+
+async def _load_execution_images(
+    *,
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    workflow: WorkflowGraph,
+) -> List[WorkflowImageInput]:
+    input_source = await _load_default_part_images(db, project_id)
+    if workflow.source.kind == "manual_selection":
+        selected_image_ids = set(workflow.source.selected_image_ids)
+        if workflow.source.example_image_id:
+            selected_image_ids.add(workflow.source.example_image_id)
+        selected_part_ids = set(workflow.source.selected_part_ids)
+        image_ids = [
+            image.image_id for image in input_source.images
+            if image.image_id and (image.image_id in selected_image_ids or image.part_id in selected_part_ids)
+        ]
+    else:
+        image_ids = [image.image_id for image in input_source.images if image.image_id]
+
+    image_ids = [image_id for image_id in dict.fromkeys(image_ids) if image_id]
+    if not image_ids:
+        return []
+
+    result = await db.execute(
+        select(models.DataInstance)
+        .where(models.DataInstance.project_id == project_id)
+        .where(models.DataInstance.deleted_at.is_(None))
+        .where(models.DataInstance.id.in_(image_ids))
+    )
+    images_by_id = {image.id: image for image in result.scalars().all()}
+    execution_images: List[WorkflowImageInput] = []
+    for image_id in image_ids:
+        image = images_by_id.get(image_id)
+        if image is None:
+            raise ValueError(f"Selected image '{image_id}' is not available for Analyze execution.")
+        image_bytes = _inline_image_bytes(image)
+        if image_bytes is None:
+            image_bytes = await asyncio.to_thread(_read_object_storage_bytes, image.object_storage_key)
+        execution_images.append(WorkflowImageInput(
+            image_id=image.id,
+            filename=image.filename,
+            content_type=image.content_type,
+            data=image_bytes,
+            metadata=_metadata_dict(image.metadata_json),
+        ))
+    return execution_images
+
+
+async def _store_analysis_artifact_image(
+    *,
+    project_id: uuid.UUID,
+    source_image_id: uuid.UUID,
+    source_filename: str,
+    artifact: Dict[str, Any],
+    db: AsyncSession,
+    current_user: schemas.User,
+) -> models.DataInstance:
+    encoded = artifact.get("data_base64")
+    if not isinstance(encoded, str) or not encoded:
+        raise ValueError("Analyze artifact is missing image data")
+    image_bytes = base64.b64decode(encoded)
+    filename_suffix = str(artifact.get("filename_suffix") or "analyze-overlay.png").strip()
+    source_stem = Path(source_filename or str(source_image_id)).stem
+    output_id = uuid.uuid4()
+    filename = f"{source_stem}_{output_id.hex[:8]}_{filename_suffix}"
+    object_key = f"{project_id}/analysis/{source_image_id}/{output_id}/{filename}"
+    content_type = str(artifact.get("content_type") or "image/png")
+    uploaded = False
+    try:
+        uploaded = await object_storage.upload_file_to_s3(
+            bucket_name=settings.S3_BUCKET,
+            object_name=object_key,
+            file_data=io.BytesIO(image_bytes),
+            length=len(image_bytes),
+            content_type=content_type,
+        )
+    except Exception:
+        uploaded = False
+
+    metadata = {
+        "analysis_output": True,
+        "analysis_output_kind": artifact.get("kind") or "overlay_image",
+        "analysis_source_image_id": str(source_image_id),
+        "overlay": artifact.get("kind") == "overlay_image",
+        "storage_status": "uploaded" if uploaded else "metadata_inline",
+    }
+    if not uploaded:
+        metadata["analysis_inline_image_base64"] = encoded
+    image = await crud.create_data_instance(
+        db=db,
+        data_instance=schemas.DataInstanceCreate(
+            project_id=project_id,
+            filename=filename,
+            object_storage_key=object_key,
+            content_type=content_type,
+            size_bytes=len(image_bytes),
+            metadata=metadata,
+            uploaded_by_user_id=current_user.email,
+        ),
+        created_by=current_user.email,
+    )
+    return image
+
+
+async def _attach_analysis_outputs_to_parts(
+    *,
+    project_id: uuid.UUID,
+    workflow: WorkflowGraph,
+    result: ToolboxExecutionResult,
+    db: AsyncSession,
+    current_user: schemas.User,
+) -> ToolboxExecutionResult:
+    source = await _load_default_part_images(db, project_id)
+    source_by_image_id = {
+        str(image.image_id): image
+        for image in source.images
+        if image.image_id
+    }
+    outputs_by_part: Dict[uuid.UUID, List[Dict[str, Any]]] = {}
+    created_outputs = 0
+
+    for node_result in result.node_results:
+        image_id_raw = node_result.summary.get("image_id") if isinstance(node_result.summary, dict) else None
+        source_record = source_by_image_id.get(str(image_id_raw or ""))
+        if not source_record or not source_record.image_id:
+            continue
+        for artifact in node_result.artifacts:
+            if artifact.get("kind") != "overlay_image":
+                continue
+            image = await _store_analysis_artifact_image(
+                project_id=project_id,
+                source_image_id=source_record.image_id,
+                source_filename=source_record.filename,
+                artifact=artifact,
+                db=db,
+                current_user=current_user,
+            )
+            output_record = {
+                "filename": image.filename,
+                "image_id": str(image.id),
+                "label": str(artifact.get("label") or "Analyze Overlay"),
+                "overlay": True,
+                "analysis_output": True,
+                "analysis_method_id": artifact.get("method_id"),
+                "analysis_method_name": artifact.get("method_name"),
+                "analysis_workflow_name": workflow.name,
+                "analysis_source_image_id": str(source_record.image_id),
+                "analysis_source_filename": source_record.filename,
+                "overlay_base_image_id": str(source_record.image_id),
+                "overlay_base_filename": source_record.filename,
+                "side": source_record.side or "analyze",
+                "modality": "analyze-overlay",
+                "slice_axis": source_record.slice_axis,
+                "slice_index": source_record.slice_index,
+                "content_type": image.content_type,
+            }
+            outputs_by_part.setdefault(source_record.part_id, []).append(output_record)
+            created_outputs += 1
+
+    for part_id, output_records in outputs_by_part.items():
+        part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+        if not part:
+            continue
+        metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+        source_images = list(metadata.get("source_images") or [])
+        analysis_outputs = list(metadata.get("analysis_outputs") or [])
+        overlay_layers = list(metadata.get("overlay_layers") or [])
+        existing_filenames = {
+            str(record.get("filename"))
+            for record in source_images
+            if isinstance(record, dict)
+        }
+        for record in output_records:
+            if record["filename"] not in existing_filenames:
+                source_images.append(record)
+            analysis_outputs.append(record)
+            layer_id = f"analyze-{record['image_id']}"
+            overlay_layers.append({
+                "id": layer_id,
+                "label": record.get("label") or "Analyze Overlay",
+                "color": "#22c55e",
+                "image_id": record["image_id"],
+                "source_image_id": record["analysis_source_image_id"],
+            })
+        normalized = {
+            **_rebuild_analyze_part_image_maps({**metadata, "source_images": source_images}),
+            "analysis_outputs": analysis_outputs,
+            "overlay_layers": overlay_layers,
+        }
+        await crud.update_inspection_part_metadata(
+            db=db,
+            project_id=project_id,
+            part_id=part_id,
+            metadata_patch=normalized,
+            updated_by=current_user.email,
+        )
+
+    if created_outputs == 0:
+        return result
+    warnings = [*result.warnings, f"Attached {created_outputs} Analyze overlay output(s) to inspection parts."]
+    return result.model_copy(update={"warnings": warnings})
+
+
+def _rebuild_analyze_part_image_maps(metadata: dict) -> dict:
+    source_images = metadata.get("source_images")
+    source_images = source_images if isinstance(source_images, list) else []
+    view_images: Dict[str, str] = {}
+    overlay_images: Dict[str, Dict[str, str]] = {}
+    for record in source_images:
+        if not isinstance(record, dict):
+            continue
+        if _is_overlay_delete_candidate(record):
+            continue
+        filename = str(record.get("filename") or "").strip()
+        if not filename:
+            continue
+        side = str(record.get("side") or "").strip().lower()
+        modality = str(record.get("modality") or "").strip().lower() or "image"
+        if record.get("overlay"):
+            overlay_images.setdefault(side or "analyze", {})[modality] = filename
+        elif side and side not in view_images:
+            view_images[side] = filename
+    return {
+        **metadata,
+        "source_images": source_images,
+        "view_images": view_images,
+        "overlay_images": overlay_images,
+    }
+
+
+async def _purge_expired_deleted_overlays(
+    *,
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    current_user: schemas.User,
+    now: Optional[datetime] = None,
+) -> int:
+    now = now or datetime.now(timezone.utc)
+    purged_count = 0
+    parts = await crud.list_inspection_parts(db=db, project_id=project_id)
+    for part in parts:
+        metadata = _metadata_dict(part.metadata_json)
+        next_metadata, purged_records = _purge_expired_deleted_overlays_from_metadata(metadata, now=now)
+        if not purged_records:
+            continue
+        purged_count += len({
+            _overlay_record_image_id(record)
+            for record in purged_records
+            if isinstance(record, dict) and _overlay_record_image_id(record)
+        })
+        await crud.update_inspection_part_metadata(
+            db=db,
+            project_id=project_id,
+            part_id=part.id,
+            metadata_patch=next_metadata,
+            updated_by=current_user.email,
+        )
+    return purged_count
+
+
+def _deleted_overlay_records_for_part(
+    *,
+    project_id: uuid.UUID,
+    part: models.InspectionPart,
+) -> List[AnalyzeDeletedOverlayRecord]:
+    metadata = _metadata_dict(part.metadata_json)
+    records = metadata.get("source_images")
+    records = records if isinstance(records, list) else []
+    deleted: List[AnalyzeDeletedOverlayRecord] = []
+    seen = set()
+    for record in records:
+        if not isinstance(record, dict) or not _is_overlay_delete_candidate(record):
+            continue
+        image_id_raw = _overlay_record_image_id(record)
+        if not image_id_raw or image_id_raw in seen:
+            continue
+        seen.add(image_id_raw)
+        deleted_at = str(record.get("deleted_at") or record.get("overlay_deleted_at") or "")
+        pending_at = str(record.get("pending_hard_delete_at") or record.get("overlay_delete_after") or "")
+        deleted.append(AnalyzeDeletedOverlayRecord(
+            project_id=project_id,
+            part_id=part.id,
+            part_serial_number=part.serial_number,
+            part_display_name=part.display_name,
+            image_id=_safe_uuid(image_id_raw),
+            filename=str(record.get("filename") or ""),
+            label=str(record.get("label") or "Analyze Overlay"),
+            deleted_at=deleted_at,
+            pending_hard_delete_at=pending_at,
+            deleted_by=record.get("deleted_by") or record.get("overlay_deleted_by"),
+            source_image_id=record.get("analysis_source_image_id") or record.get("overlay_base_image_id"),
+            source_filename=record.get("analysis_source_filename") or record.get("overlay_base_filename"),
+        ))
+    return deleted
+
+
 @router.get("/analyze/toolbox", response_model=ToolboxManifest)
 async def get_analyze_toolbox(
     current_user: schemas.User = Depends(get_current_user),
@@ -223,6 +732,80 @@ async def get_analyze_input_source(
 ):
     await get_project_or_403(project_id, db, current_user)
     return await _load_default_part_images(db, project_id)
+
+
+@router.get("/projects/{project_id}/analyze/overlays/recently-deleted", response_model=List[AnalyzeDeletedOverlayRecord])
+async def list_recently_deleted_analyze_overlays(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await get_project_or_403(project_id, db, current_user)
+    await _purge_expired_deleted_overlays(db=db, project_id=project_id, current_user=current_user)
+    parts = await crud.list_inspection_parts(db=db, project_id=project_id)
+    deleted_records: List[AnalyzeDeletedOverlayRecord] = []
+    for part in parts:
+        deleted_records.extend(_deleted_overlay_records_for_part(project_id=project_id, part=part))
+    return sorted(deleted_records, key=lambda record: record.deleted_at, reverse=True)
+
+
+@router.delete("/projects/{project_id}/analyze/overlays/{overlay_image_id}", response_model=schemas.InspectionPart)
+async def delete_analyze_overlay(
+    project_id: uuid.UUID,
+    overlay_image_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await get_project_or_403_writable(project_id, db, current_user)
+    await _purge_expired_deleted_overlays(db=db, project_id=project_id, current_user=current_user)
+    parts = await crud.list_inspection_parts(db=db, project_id=project_id)
+    overlay_id = str(overlay_image_id)
+    now = datetime.now(timezone.utc)
+    for part in parts:
+        metadata = _metadata_dict(part.metadata_json)
+        next_metadata, deleted_record = _mark_overlay_deleted_in_metadata(
+            metadata,
+            overlay_id,
+            now=now,
+            actor_email=current_user.email,
+        )
+        if deleted_record is None:
+            continue
+        updated = await crud.update_inspection_part_metadata(
+            db=db,
+            project_id=project_id,
+            part_id=part.id,
+            metadata_patch=next_metadata,
+            updated_by=current_user.email,
+        )
+        return updated
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analyze overlay not found")
+
+
+@router.post("/projects/{project_id}/analyze/overlays/{overlay_image_id}/restore", response_model=schemas.InspectionPart)
+async def restore_analyze_overlay(
+    project_id: uuid.UUID,
+    overlay_image_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await get_project_or_403_writable(project_id, db, current_user)
+    parts = await crud.list_inspection_parts(db=db, project_id=project_id)
+    overlay_id = str(overlay_image_id)
+    for part in parts:
+        metadata = _metadata_dict(part.metadata_json)
+        next_metadata, restored = _restore_overlay_in_metadata(metadata, overlay_id)
+        if not restored:
+            continue
+        updated = await crud.update_inspection_part_metadata(
+            db=db,
+            project_id=project_id,
+            part_id=part.id,
+            metadata_patch=next_metadata,
+            updated_by=current_user.email,
+        )
+        return updated
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recently deleted Analyze overlay not found")
 
 
 @router.post("/projects/{project_id}/analyze/workflows/validate", response_model=ToolboxExecutionResult)
@@ -250,6 +833,16 @@ async def execute_analyze_workflow(
     await get_project_or_403(project_id, db, current_user)
     workflow = await _workflow_with_server_source(project_id=project_id, workflow=workflow, db=db)
     try:
-        return execute_workflow(workflow)
+        images = await _load_execution_images(db=db, project_id=project_id, workflow=workflow)
+        result = execute_image_workflow(workflow, images)
+        return await _attach_analysis_outputs_to_parts(
+            project_id=project_id,
+            workflow=workflow,
+            result=result,
+            db=db,
+            current_user=current_user,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analyze execution failed: {exc}") from exc

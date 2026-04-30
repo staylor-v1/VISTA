@@ -59,18 +59,36 @@ class WorkflowInputSource(BaseModel):
 
 
 class WorkflowOutputConfig(BaseModel):
-    mode: Literal["versioned_image", "overlay_metadata", "measurements_table", "review_only"] = "versioned_image"
-    version_strategy: Literal["append_vn", "metadata_only"] = "append_vn"
+    mode: Literal[
+        "processing_sequence",
+        "metadata_only",
+        "overlay_artifact",
+        "materialized_image",
+        "review_only",
+        "versioned_image",
+        "overlay_metadata",
+        "measurements_table",
+    ] = "processing_sequence"
+    version_strategy: Literal["recipe_metadata", "append_vn", "materialized_file"] = "recipe_metadata"
+    artifact_policy: Literal["automatic_by_output_type", "metadata_only", "overlay_for_spatial_outputs", "materialize_all"] = "automatic_by_output_type"
+    cache_policy: Literal["local_on_demand", "server_on_demand", "no_cache"] = "local_on_demand"
+    invalidation_policy: Literal["source_workflow_toolbox_model", "source_and_parameters", "manual"] = "source_workflow_toolbox_model"
+    provenance_level: Literal["full", "minimal"] = "full"
+    export_policy: Literal["materialize_on_export", "recipe_plus_artifacts", "metadata_only"] = "materialize_on_export"
+    volume_policy: Literal["recipe_volume_sparse_artifacts", "materialize_selected_slices", "materialize_all_slices"] = "recipe_volume_sparse_artifacts"
+    destination: Literal["analysis_artifacts", "project_images"] = "analysis_artifacts"
     preserve_original: bool = True
-    overlay_metadata: bool = True
-    measurement_table: bool = True
-    destination: Literal["project_images", "analysis_artifacts"] = "project_images"
+    write_detection_metadata: bool = True
+    write_segmentation_overlays: bool = True
+    write_measurement_tables: bool = True
+    materialize_processed_images: bool = False
 
 
 class WorkflowNodeSpec(BaseModel):
     id: str = Field(..., min_length=1, max_length=96, pattern=r"^[A-Za-z0-9_.-]+$")
     method_id: str = Field(..., min_length=1, max_length=128)
     label: Optional[str] = Field(default=None, max_length=160)
+    chain_id: Optional[str] = Field(default=None, max_length=96)
     parameters: Dict[str, Any] = Field(default_factory=dict)
     x: float = 0
     y: float = 0
@@ -116,13 +134,23 @@ class WorkflowNodeResult(BaseModel):
     status: Literal["completed", "skipped", "failed"] = "completed"
     output_types: List[PortType] = Field(default_factory=list)
     message: str = ""
+    summary: Dict[str, Any] = Field(default_factory=dict)
+    artifacts: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class WorkflowImageInput(BaseModel):
+    image_id: uuid.UUID
+    filename: str
+    content_type: Optional[str] = None
+    data: bytes
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolboxExecutionResult(BaseModel):
     run_id: uuid.UUID = Field(default_factory=uuid.uuid4)
     workflow_name: str
-    status: Literal["validated", "simulated", "failed"]
-    execution_mode: Literal["validation", "simulation"] = "validation"
+    status: Literal["validated", "simulated", "completed", "failed"]
+    execution_mode: Literal["validation", "simulation", "execution"] = "validation"
     image_count: int = Field(default=0, ge=0)
     node_results: List[WorkflowNodeResult] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)

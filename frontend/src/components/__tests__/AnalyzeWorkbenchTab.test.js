@@ -18,7 +18,7 @@ const toolboxPayload = {
     },
     {
       id: 'output.versioned_image_artifact',
-      name: 'Versioned Image Output',
+      name: 'Recipe / Artifact Output',
       category: 'Output',
       description: 'Output',
       input_types: ['image', 'mask', 'labels', 'detections', 'measurements', 'metadata'],
@@ -28,19 +28,17 @@ const toolboxPayload = {
           name: 'mode',
           label: 'Output Mode',
           type: 'select',
-          default: 'versioned_image',
-          options: ['versioned_image', 'overlay_metadata', 'measurements_table', 'review_only'],
+          default: 'processing_sequence',
+          options: ['processing_sequence', 'metadata_only', 'overlay_artifact', 'materialized_image', 'review_only'],
         },
         {
-          name: 'version_strategy',
-          label: 'Version Strategy',
+          name: 'export_policy',
+          label: 'Export Policy',
           type: 'select',
-          default: 'append_vn',
-          options: ['append_vn', 'metadata_only'],
+          default: 'materialize_on_export',
+          options: ['materialize_on_export', 'recipe_plus_artifacts', 'metadata_only'],
         },
-        { name: 'preserve_original', label: 'Preserve Original', type: 'boolean', default: true },
-        { name: 'overlay_metadata', label: 'Write Overlay Metadata', type: 'boolean', default: true },
-        { name: 'measurement_table', label: 'Write Measurements Table', type: 'boolean', default: true },
+        { name: 'materialize_processed_images', label: 'Materialize Processed Images', type: 'boolean', default: false },
       ],
     },
     {
@@ -102,14 +100,21 @@ function mockFetch() {
     if (url === '/api/projects/proj-1/analyze/input-source') {
       return Promise.resolve({ ok: true, json: async () => inputPayload });
     }
+    if (url === '/api/projects/proj-1/metadata/vista.analyze.workflow' && (!options.method || options.method === 'GET')) {
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({ detail: 'not found' }) });
+    }
+    if (url === '/api/projects/proj-1/metadata/vista.analyze.workflow' && options.method === 'PUT') {
+      const body = JSON.parse(options.body);
+      return Promise.resolve({ ok: true, json: async () => ({ key: body.key, value: body.value }) });
+    }
     if (url === '/api/projects/proj-1/analyze/workflows/execute' && options.method === 'POST') {
       return Promise.resolve({
         ok: true,
         json: async () => ({
           run_id: 'run-1',
           workflow_name: 'Part image analysis workflow',
-          status: 'simulated',
-          execution_mode: 'simulation',
+          status: 'completed',
+          execution_mode: 'execution',
           image_count: 2,
           node_results: [{ node_id: 'input-source', method_id: 'source.project_part_images', status: 'completed' }],
           warnings: [],
@@ -150,11 +155,17 @@ describe('AnalyzeWorkbenchTab', () => {
     fireEvent.click(screen.getByRole('button', { name: /YOLOv8 Object Detection/i }));
     expect(screen.getByRole('button', { name: /Workflow block YOLOv8 Object Detection/i })).toBeInTheDocument();
 
+    fireEvent.click(screen.getByRole('button', { name: /Workflow block Recipe \/ Artifact Output/i }));
+    expect(screen.getByLabelText('Output Mode')).toBeInTheDocument();
+    expect(screen.getByLabelText('Export Policy')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Version Strategy')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Cache Policy')).not.toBeInTheDocument();
+
     fireEvent.click(screen.getByRole('button', { name: /Workflow block Window \/ Level Normalization/i }));
     fireEvent.change(screen.getByLabelText('Window'), { target: { value: '250' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run' }));
 
-    await waitFor(() => expect(screen.getByTestId('analyze-run-summary')).toHaveTextContent('simulated'));
+    await waitFor(() => expect(screen.getByTestId('analyze-run-summary')).toHaveTextContent('completed'));
     const executeCall = global.fetch.mock.calls.find(([url]) => url === '/api/projects/proj-1/analyze/workflows/execute');
     expect(executeCall).toEqual([
       '/api/projects/proj-1/analyze/workflows/execute',
@@ -164,7 +175,20 @@ describe('AnalyzeWorkbenchTab', () => {
     ]);
     const workflow = JSON.parse(executeCall[1].body);
     expect(workflow.nodes.some((node) => node.method_id === 'output.versioned_image_artifact')).toBe(true);
-    expect(workflow.output).toEqual(expect.objectContaining({ mode: 'versioned_image', version_strategy: 'append_vn', preserve_original: true }));
+    expect(workflow.output).toEqual(expect.objectContaining({
+      mode: 'processing_sequence',
+      version_strategy: 'recipe_metadata',
+      artifact_policy: 'automatic_by_output_type',
+      cache_policy: 'local_on_demand',
+      invalidation_policy: 'source_workflow_toolbox_model',
+      provenance_level: 'full',
+      export_policy: 'materialize_on_export',
+      volume_policy: 'recipe_volume_sparse_artifacts',
+      preserve_original: true,
+      write_detection_metadata: true,
+      write_segmentation_overlays: true,
+      materialize_processed_images: false,
+    }));
     expect(workflow.source.kind).toBe('project_parts');
     expect(executeCall[1].body).toContain('"window":250');
   });
@@ -177,6 +201,9 @@ describe('AnalyzeWorkbenchTab', () => {
     await waitFor(() => expect(screen.getByTestId('analyze-source-summary')).toHaveTextContent('2 images'));
 
     fireEvent.click(screen.getByRole('button', { name: /Workflow block Loaded Part Images/i }));
+    expect(screen.getByRole('heading', { name: 'Loaded Part Images' })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Loaded Images to Process' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Select Images' }));
     const dialog = screen.getByRole('dialog', { name: 'Loaded Images to Process' });
     expect(dialog).toBeInTheDocument();
     fireEvent.change(within(dialog).getByLabelText('Choose Example'), { target: { value: 'img-2' } });
@@ -184,7 +211,7 @@ describe('AnalyzeWorkbenchTab', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Run Example' }));
 
-    await waitFor(() => expect(screen.getByTestId('analyze-run-summary')).toHaveTextContent('simulated'));
+    await waitFor(() => expect(screen.getByTestId('analyze-run-summary')).toHaveTextContent('completed'));
     const executeCall = global.fetch.mock.calls.find(([url]) => url === '/api/projects/proj-1/analyze/workflows/execute');
     const workflow = JSON.parse(executeCall[1].body);
     expect(workflow.source.kind).toBe('manual_selection');
@@ -199,13 +226,15 @@ describe('AnalyzeWorkbenchTab', () => {
     await screen.findByRole('heading', { name: 'Workflow Studio' });
     await waitFor(() => expect(screen.getByTestId('analyze-source-summary')).toHaveTextContent('2 images'));
     fireEvent.click(screen.getByRole('button', { name: /Workflow block Loaded Part Images/i }));
+    expect(screen.queryByRole('dialog', { name: 'Loaded Images to Process' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Select Images' }));
     const dialog = screen.getByRole('dialog', { name: 'Loaded Images to Process' });
     fireEvent.click(within(dialog).getAllByRole('button', { name: 'Remove' })[0]);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close input source chooser' }));
 
     fireEvent.click(screen.getByRole('button', { name: 'Run' }));
 
-    await waitFor(() => expect(screen.getByTestId('analyze-run-summary')).toHaveTextContent('simulated'));
+    await waitFor(() => expect(screen.getByTestId('analyze-run-summary')).toHaveTextContent('completed'));
     const executeCall = global.fetch.mock.calls.find(([url]) => url === '/api/projects/proj-1/analyze/workflows/execute');
     const workflow = JSON.parse(executeCall[1].body);
     expect(workflow.source.kind).toBe('manual_selection');
@@ -223,7 +252,7 @@ describe('AnalyzeWorkbenchTab', () => {
     expect(screen.queryByRole('button', { name: /Workflow block Window \/ Level Normalization/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Run' }));
 
-    await waitFor(() => expect(screen.getByTestId('analyze-run-summary')).toHaveTextContent('simulated'));
+    await waitFor(() => expect(screen.getByTestId('analyze-run-summary')).toHaveTextContent('completed'));
     const executeCall = global.fetch.mock.calls.find(([url]) => url === '/api/projects/proj-1/analyze/workflows/execute');
     const workflow = JSON.parse(executeCall[1].body);
     expect(workflow.nodes.map((node) => node.method_id)).not.toContain('preprocess.window_level_normalization');
@@ -234,12 +263,183 @@ describe('AnalyzeWorkbenchTab', () => {
     render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
 
     const windowNode = await screen.findByRole('button', { name: /Workflow block Window \/ Level Normalization/i });
-    expect(windowNode).toHaveStyle({ left: '247px', top: '188px' });
+    expect(windowNode).toHaveStyle({ left: '296px', top: '84px' });
 
     fireEvent.mouseDown(windowNode, { button: 0, clientX: 100, clientY: 100 });
     fireEvent.mouseMove(windowNode, { clientX: 150, clientY: 132 });
     fireEvent.mouseUp(windowNode, { clientX: 150, clientY: 132 });
 
-    await waitFor(() => expect(windowNode).toHaveStyle({ left: '297px', top: '220px' }));
+    await waitFor(() => expect(windowNode).toHaveStyle({ left: '296px', top: '84px' }));
+  });
+
+  test('rewires workflow order when a block is dragged between two blocks', async () => {
+    mockFetch();
+    render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
+
+    const outputNode = await screen.findByRole('button', { name: /Workflow block Recipe \/ Artifact Output/i });
+
+    fireEvent.mouseDown(outputNode, { button: 0, clientX: 600, clientY: 132 });
+    fireEvent.mouseMove(outputNode, { clientX: 310, clientY: 132 });
+    fireEvent.mouseUp(outputNode, { clientX: 310, clientY: 132 });
+
+    await waitFor(() => expect(outputNode).toHaveStyle({ left: '520px', top: '84px' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run' }));
+
+    await waitFor(() => expect(screen.getByTestId('analyze-run-summary')).toHaveTextContent('completed'));
+    const executeCall = global.fetch.mock.calls.find(([url]) => url === '/api/projects/proj-1/analyze/workflows/execute');
+    const workflow = JSON.parse(executeCall[1].body);
+    expect(workflow.nodes.map((node) => node.method_id)).toEqual([
+      'source.project_part_images',
+      'preprocess.window_level_normalization',
+      'output.versioned_image_artifact',
+      'segmentation.watershed_seeds',
+    ]);
+    expect(workflow.edges.map((edge) => [edge.source_node, edge.target_node])).toEqual([
+      [workflow.nodes[0].id, workflow.nodes[1].id],
+      [workflow.nodes[1].id, workflow.nodes[2].id],
+      [workflow.nodes[2].id, workflow.nodes[3].id],
+    ]);
+  });
+
+  test('adds an additional input block as a separate processing chain', async () => {
+    mockFetch();
+    render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
+
+    await screen.findByRole('button', { name: /Workflow block Loaded Part Images/i });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Project Part Image Source/i }));
+    expect(screen.getByRole('button', { name: /Workflow block Loaded Part Images 2/i })).toHaveStyle({ left: '72px', top: '236px' });
+
+    fireEvent.click(screen.getByRole('button', { name: /^YOLOv8 Object Detection/i }));
+    expect(screen.getByRole('button', { name: /Workflow block YOLOv8 Object Detection/i })).toHaveStyle({ left: '296px', top: '236px' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run' }));
+
+    await waitFor(() => expect(screen.getByTestId('analyze-run-summary')).toHaveTextContent('completed'));
+    const executeCall = global.fetch.mock.calls.find(([url]) => url === '/api/projects/proj-1/analyze/workflows/execute');
+    const workflow = JSON.parse(executeCall[1].body);
+    const chain2 = workflow.nodes.filter((node) => node.chain_id === 'chain-2');
+    expect(chain2.map((node) => node.method_id)).toEqual([
+      'source.project_part_images',
+      'ml.yolov8.detect',
+    ]);
+    expect(workflow.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source_node: chain2[0].id, target_node: chain2[1].id }),
+    ]));
+  });
+
+  test('persists edited workflow graph as project metadata', async () => {
+    mockFetch();
+    render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
+
+    await screen.findByRole('button', { name: /Workflow block Loaded Part Images/i });
+    fireEvent.click(screen.getByRole('button', { name: /^Project Part Image Source/i }));
+
+    await waitFor(() => {
+      const saveCall = global.fetch.mock.calls.find(([url, options = {}]) => (
+        url === '/api/projects/proj-1/metadata/vista.analyze.workflow'
+        && options.method === 'PUT'
+        && JSON.parse(options.body).value.nodes.some((node) => node.chain_id === 'chain-2')
+      ));
+      expect(saveCall).toBeTruthy();
+    });
+  });
+
+  test('restores saved two-chain workflow from project metadata', async () => {
+    global.fetch = jest.fn((url, options = {}) => {
+      if (url === '/api/analyze/toolbox') {
+        return Promise.resolve({ ok: true, json: async () => toolboxPayload });
+      }
+      if (url === '/api/projects/proj-1/analyze/input-source') {
+        return Promise.resolve({ ok: true, json: async () => inputPayload });
+      }
+      if (url === '/api/projects/proj-1/metadata/vista.analyze.workflow' && (!options.method || options.method === 'GET')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            key: 'vista.analyze.workflow',
+            value: {
+              nodes: [
+                { id: 'saved-input-1', method_id: 'source.project_part_images', label: 'Loaded Part Images', chain_id: 'chain-1', parameters: {}, x: 72, y: 84 },
+                { id: 'saved-yolo', method_id: 'ml.yolov8.detect', label: 'YOLOv8 Object Detection', chain_id: 'chain-1', parameters: { model: 'yolov8n.pt' }, x: 296, y: 84 },
+                { id: 'saved-input-2', method_id: 'source.project_part_images', label: 'Loaded Part Images 2', chain_id: 'chain-2', parameters: {}, x: 72, y: 236 },
+                { id: 'saved-segment', method_id: 'segmentation.watershed_seeds', label: 'Watershed From Seeds', chain_id: 'chain-2', parameters: { seed_spacing_px: 18 }, x: 296, y: 236 },
+              ],
+              process_image_ids: ['img-2'],
+              example_image_id: 'img-2',
+            },
+          }),
+        });
+      }
+      if (url === '/api/projects/proj-1/metadata/vista.analyze.workflow' && options.method === 'PUT') {
+        const body = JSON.parse(options.body);
+        return Promise.resolve({ ok: true, json: async () => ({ key: body.key, value: body.value }) });
+      }
+      if (url === '/api/projects/proj-1/analyze/workflows/execute' && options.method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            run_id: 'run-1',
+            workflow_name: 'Part image analysis workflow',
+            status: 'completed',
+            execution_mode: 'execution',
+            image_count: 1,
+            node_results: [],
+            warnings: [],
+          }),
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({ detail: 'not found' }) });
+    });
+
+    render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
+
+    expect(await screen.findByRole('button', { name: /Workflow block Loaded Part Images 2/i })).toHaveStyle({ left: '72px', top: '236px' });
+    fireEvent.click(screen.getByRole('button', { name: 'Run Example' }));
+
+    await waitFor(() => expect(screen.getByTestId('analyze-run-summary')).toHaveTextContent('completed'));
+    const executeCall = global.fetch.mock.calls.find(([url]) => url === '/api/projects/proj-1/analyze/workflows/execute');
+    const workflow = JSON.parse(executeCall[1].body);
+    expect(workflow.nodes.filter((node) => node.chain_id === 'chain-2')).toHaveLength(2);
+    expect(workflow.source.selected_image_ids).toEqual(['img-2']);
+  });
+
+  test('snaps a dragged processing block into a nearby chain after the eighty percent threshold', async () => {
+    mockFetch();
+    render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
+
+    await screen.findByRole('button', { name: /Workflow block Loaded Part Images/i });
+    fireEvent.click(screen.getByRole('button', { name: /^Project Part Image Source/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^YOLOv8 Object Detection/i }));
+
+    const watershedNode = screen.getByRole('button', { name: /Workflow block Watershed From Seeds/i });
+    fireEvent.mouseDown(watershedNode, { button: 0, clientX: 600, clientY: 100 });
+    fireEvent.mouseMove(watershedNode, { clientX: 180, clientY: 225 });
+    fireEvent.mouseUp(watershedNode, { clientX: 180, clientY: 225 });
+
+    await waitFor(() => expect(watershedNode).toHaveStyle({ left: '296px', top: '236px' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run' }));
+
+    await waitFor(() => expect(screen.getByTestId('analyze-run-summary')).toHaveTextContent('completed'));
+    const executeCall = global.fetch.mock.calls.find(([url]) => url === '/api/projects/proj-1/analyze/workflows/execute');
+    const workflow = JSON.parse(executeCall[1].body);
+    const chain1 = workflow.nodes.filter((node) => node.chain_id === 'chain-1');
+    const chain2 = workflow.nodes.filter((node) => node.chain_id === 'chain-2');
+    expect(chain1.map((node) => node.method_id)).toEqual([
+      'source.project_part_images',
+      'preprocess.window_level_normalization',
+      'output.versioned_image_artifact',
+    ]);
+    expect(chain2.map((node) => node.method_id)).toEqual([
+      'source.project_part_images',
+      'segmentation.watershed_seeds',
+      'ml.yolov8.detect',
+    ]);
+    expect(workflow.edges.map((edge) => [edge.source_node, edge.target_node])).toEqual(expect.arrayContaining([
+      [chain2[0].id, chain2[1].id],
+      [chain2[1].id, chain2[2].id],
+    ]));
   });
 });

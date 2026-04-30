@@ -1,4 +1,5 @@
 import uuid
+import base64
 import io
 import os
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Body
@@ -23,6 +24,17 @@ from PIL import Image
 router = APIRouter(
     tags=["Images"],
 )
+
+
+def _inline_image_bytes(db_image: models.DataInstance) -> Optional[bytes]:
+    metadata = db_image.metadata_json if isinstance(db_image.metadata_json, dict) else {}
+    encoded = metadata.get("analysis_inline_image_base64")
+    if not isinstance(encoded, str) or not encoded:
+        return None
+    try:
+        return base64.b64decode(encoded)
+    except Exception:
+        return None
 
 @router.post("/projects/{project_id}/images", response_model=schemas.DataInstance, status_code=status.HTTP_201_CREATED)
 async def upload_image_to_project(
@@ -267,7 +279,7 @@ async def get_image_download_url(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"User '{current_user.email}' does not have access to image '{image_id}'",
         )
-    
+
     # Get the presigned URL for internal use
     internal_url = get_presigned_download_url(
         bucket_name=settings.S3_BUCKET,
@@ -354,6 +366,16 @@ async def get_image_content(
          raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"User '{current_user.email}' does not have access to image '{image_id}'",
+        )
+
+    inline_data = _inline_image_bytes(db_image)
+    if inline_data is not None:
+        return StreamingResponse(
+            content=io.BytesIO(inline_data),
+            media_type=db_image.content_type or "image/png",
+            headers={
+                "Content-Disposition": get_content_disposition_header(db_image.filename, "inline")
+            }
         )
 
     # Get the presigned URL for internal use
@@ -448,7 +470,35 @@ async def get_image_thumbnail(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"User '{current_user.email}' does not have access to image '{image_id}'",
         )
-    
+
+    inline_data = _inline_image_bytes(db_image)
+    if inline_data is not None:
+        try:
+            img = Image.open(io.BytesIO(inline_data))
+            img.thumbnail((width, height))
+            output_buffer = io.BytesIO()
+            img_format = 'PNG' if img.mode in ('RGBA', 'LA') else 'JPEG'
+            if img_format == 'JPEG' and img.mode not in ('RGB', 'L'):
+                img = img.convert('RGB')
+            img.save(output_buffer, format=img_format)
+            output_buffer.seek(0)
+            thumbnail_filename = f"thumbnail_{db_image.filename}" if db_image.filename else "thumbnail"
+            content_type = 'image/png' if img_format == 'PNG' else 'image/jpeg'
+            cache.set(cache_key, (output_buffer.getvalue(), content_type, thumbnail_filename), expire=24*3600)
+            output_buffer.seek(0)
+            return StreamingResponse(
+                content=output_buffer,
+                media_type=content_type,
+                headers={
+                    "Content-Disposition": get_content_disposition_header(thumbnail_filename, "inline")
+                }
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error generating thumbnail: {str(e)}"
+            )
+
     # Get the presigned URL for internal use
     internal_url = get_presigned_download_url(
         bucket_name=settings.S3_BUCKET,
