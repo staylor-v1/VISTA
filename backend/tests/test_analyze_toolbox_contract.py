@@ -1,5 +1,6 @@
 import io
 import uuid
+from importlib.util import find_spec
 
 from PIL import Image
 
@@ -123,3 +124,28 @@ def test_execute_image_workflow_runs_actual_image_algorithms_on_image_bytes():
     overlay_artifact = next(artifact for artifact in output_result.artifacts if artifact["kind"] == "overlay_image")
     assert overlay_artifact["label"] == "Segmentation Overlay :: Connected Components"
     assert overlay_artifact["method_id"] == "segmentation.connected_components"
+
+
+def test_yolov8_node_reports_dependency_or_runner_contract():
+    image_id = uuid.uuid4()
+    workflow = WorkflowGraph(
+        name="YOLO contract execution",
+        source={"kind": "manual_selection", "selected_image_ids": [image_id], "image_count": 1},
+        nodes=[
+            {"id": "input", "method_id": "source.project_part_images", "parameters": {}},
+            {"id": "yolo", "method_id": "ml.yolov8.detect", "parameters": {"model": "yolov8n.pt", "confidence": 0.25}},
+        ],
+        edges=[{"source_node": "input", "target_node": "yolo"}],
+    )
+
+    result = execute_image_workflow(
+        workflow,
+        [WorkflowImageInput(image_id=image_id, filename="tiny.png", content_type="image/png", data=_png_bytes())],
+    )
+
+    assert result.status == "failed"
+    yolo_node = next(node for node in result.node_results if node.node_id == "yolo")
+    if find_spec("ultralytics"):
+        assert "model runner is configured" in yolo_node.message
+    else:
+        assert "optional 'ultralytics' package" in yolo_node.message

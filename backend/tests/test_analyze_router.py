@@ -71,6 +71,10 @@ def test_analyze_toolbox_manifest_contains_yolov8_and_core_image_methods(client)
     assert "preprocess.window_level_normalization" in method_ids
     assert "segmentation.watershed_seeds" in method_ids
     assert "measure.region_properties" in method_ids
+    assert "filter.gaussian_blur" not in method_ids
+    assert "filter.median" not in method_ids
+    assert "morphology.open" not in method_ids
+    assert "morphology.close" not in method_ids
 
 
 def test_analyze_input_source_defaults_to_loaded_part_images(client):

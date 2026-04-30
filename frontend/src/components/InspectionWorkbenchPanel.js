@@ -2170,11 +2170,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 const viewName = entry.viewName || 'image';
                 const imageRef = String(entry.imageRef || '');
                 const imageRecord = projectImageLookup[entry.imageId] || projectImageLookup[imageRef];
-                const imageId = imageRecord?.id;
+                const imageId = imageRecord?.id || entry.imageId || '';
                 const baseRecord = entry.overlay
                   ? (projectImageLookup[entry.overlayBaseImageId] || projectImageLookup[entry.overlayBaseFilename])
                   : null;
-                const baseImageId = baseRecord?.id;
+                const baseImageId = baseRecord?.id || entry.overlayBaseImageId || '';
                 return (
                   <div
                     key={entry.id}
