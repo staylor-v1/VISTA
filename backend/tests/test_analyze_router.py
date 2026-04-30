@@ -66,6 +66,7 @@ def test_analyze_toolbox_manifest_contains_yolov8_and_core_image_methods(client)
     assert payload["contract_version"] == "vista-analyze.v1"
     assert "ml.yolov8.detect" in method_ids
     assert "ml.yolov8.segment" in method_ids
+    assert "output.versioned_image_artifact" in method_ids
     assert "preprocess.window_level_normalization" in method_ids
     assert "segmentation.watershed_seeds" in method_ids
     assert "measure.region_properties" in method_ids
@@ -106,17 +107,37 @@ def test_analyze_workflow_validation_and_execution_use_pydantic_contract(client)
                 "label": "YOLOv8",
                 "parameters": {"model": "yolov8n.pt", "confidence": 0.25},
             },
+            {
+                "id": "output",
+                "method_id": "output.versioned_image_artifact",
+                "label": "Versioned Output",
+                "parameters": {
+                    "mode": "versioned_image",
+                    "version_strategy": "append_vn",
+                    "preserve_original": True,
+                    "overlay_metadata": True,
+                    "measurement_table": True,
+                },
+            },
         ],
         "edges": [
             {"source_node": "input", "target_node": "window"},
             {"source_node": "window", "target_node": "yolo"},
+            {"source_node": "yolo", "target_node": "output"},
         ],
+        "output": {
+            "mode": "versioned_image",
+            "version_strategy": "append_vn",
+            "preserve_original": True,
+            "overlay_metadata": True,
+            "measurement_table": True,
+        },
     }
 
     validate_resp = client.post(f"/api/projects/{project_id}/analyze/workflows/validate", json=workflow, headers=headers)
     assert validate_resp.status_code == 200, validate_resp.text
     assert validate_resp.json()["status"] == "validated"
-    assert len(validate_resp.json()["node_results"]) == 3
+    assert len(validate_resp.json()["node_results"]) == 4
 
     execute_resp = client.post(f"/api/projects/{project_id}/analyze/workflows/execute", json=workflow, headers=headers)
     assert execute_resp.status_code == 200, execute_resp.text
@@ -128,6 +149,43 @@ def test_analyze_workflow_validation_and_execution_use_pydantic_contract(client)
     reject_resp = client.post(f"/api/projects/{project_id}/analyze/workflows/validate", json=workflow, headers=headers)
     assert reject_resp.status_code == 400
     assert "Unknown toolbox method" in reject_resp.json()["detail"]
+
+
+def test_analyze_workflow_manual_selection_counts_selected_images(client):
+    headers, project_id, image = _create_project_with_part_image(client)
+    workflow = {
+        "name": "Example workflow",
+        "source": {
+            "id": "example-selection",
+            "label": "Example image",
+            "kind": "manual_selection",
+            "project_id": project_id,
+            "selected_image_ids": [image["id"]],
+            "example_image_id": image["id"],
+            "image_count": 99,
+            "part_count": 99,
+        },
+        "nodes": [
+            {
+                "id": "input",
+                "method_id": "source.project_part_images",
+                "label": "Input",
+                "parameters": {"example_image_id": image["id"]},
+            },
+            {
+                "id": "output",
+                "method_id": "output.versioned_image_artifact",
+                "label": "Versioned Output",
+                "parameters": {"mode": "overlay_metadata", "version_strategy": "append_vn"},
+            },
+        ],
+        "edges": [{"source_node": "input", "target_node": "output"}],
+        "output": {"mode": "overlay_metadata", "version_strategy": "append_vn"},
+    }
+    resp = client.post(f"/api/projects/{project_id}/analyze/workflows/execute", json=workflow, headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "simulated"
+    assert resp.json()["image_count"] == 1
 
 
 def test_analyze_workflow_uses_server_source_counts_and_rejects_cross_project_source(client):

@@ -190,7 +190,21 @@ async def _workflow_with_server_source(
             detail="Workflow source project_id does not match route project_id",
         )
     input_source = await _load_default_part_images(db, project_id)
-    return workflow.model_copy(update={"source": input_source.source})
+    server_source = input_source.source
+    if workflow.source.kind == "manual_selection":
+        selected_image_ids = set(workflow.source.selected_image_ids)
+        selected_part_ids = set(workflow.source.selected_part_ids)
+        selected_images = [
+            image for image in input_source.images
+            if (image.image_id and image.image_id in selected_image_ids) or image.part_id in selected_part_ids
+        ]
+        selected_parts = {image.part_id for image in selected_images}
+        server_source = workflow.source.model_copy(update={
+            "project_id": project_id,
+            "image_count": len(selected_images),
+            "part_count": len(selected_parts),
+        })
+    return workflow.model_copy(update={"source": server_source})
 
 
 @router.get("/analyze/toolbox", response_model=ToolboxManifest)

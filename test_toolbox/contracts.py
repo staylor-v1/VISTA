@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 ParameterType = Literal["boolean", "integer", "float", "string", "select", "range", "json"]
-PortType = Literal["image", "mask", "labels", "detections", "measurements", "table", "any"]
+PortType = Literal["image", "mask", "labels", "detections", "measurements", "table", "metadata", "any"]
 
 
 class MethodParameter(BaseModel):
@@ -53,6 +53,18 @@ class WorkflowInputSource(BaseModel):
     project_id: Optional[uuid.UUID] = None
     image_count: int = Field(default=0, ge=0)
     part_count: int = Field(default=0, ge=0)
+    selected_image_ids: List[uuid.UUID] = Field(default_factory=list)
+    selected_part_ids: List[uuid.UUID] = Field(default_factory=list)
+    example_image_id: Optional[uuid.UUID] = None
+
+
+class WorkflowOutputConfig(BaseModel):
+    mode: Literal["versioned_image", "overlay_metadata", "measurements_table", "review_only"] = "versioned_image"
+    version_strategy: Literal["append_vn", "metadata_only"] = "append_vn"
+    preserve_original: bool = True
+    overlay_metadata: bool = True
+    measurement_table: bool = True
+    destination: Literal["project_images", "analysis_artifacts"] = "project_images"
 
 
 class WorkflowNodeSpec(BaseModel):
@@ -80,6 +92,7 @@ class EdgeSpec(BaseModel):
 class WorkflowGraph(BaseModel):
     name: str = Field(default="Untitled analysis workflow", min_length=1, max_length=160)
     source: WorkflowInputSource = Field(default_factory=WorkflowInputSource)
+    output: WorkflowOutputConfig = Field(default_factory=WorkflowOutputConfig)
     nodes: List[WorkflowNodeSpec] = Field(default_factory=list)
     edges: List[EdgeSpec] = Field(default_factory=list)
 
