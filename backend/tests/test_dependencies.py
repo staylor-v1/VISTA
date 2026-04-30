@@ -3,6 +3,8 @@ import asyncio
 import uuid
 import pytest
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
+from sqlalchemy.exc import ProgrammingError
 
 from core.config import settings
 import utils.dependencies as deps
@@ -52,3 +54,21 @@ async def test_resolve_user_id_creates_user(db_session):
     # Resolving again returns same id
     uid2 = await deps.resolve_user_id(user, db_session)
     assert uid2 == uid
+
+
+@pytest.mark.asyncio
+async def test_ensure_user_in_db_returns_actionable_error_when_users_table_missing(db_session, monkeypatch):
+    async def _raise_missing_table(*args, **kwargs):
+        raise ProgrammingError(
+            "SELECT ... FROM users ...",
+            {},
+            Exception('relation "users" does not exist'),
+        )
+
+    monkeypatch.setattr(crud, "get_user_by_email", _raise_missing_table)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await deps._ensure_user_in_db("missing@example.com", db_session)
+
+    assert exc_info.value.status_code == 503
+    assert "Run 'alembic upgrade head'" in exc_info.value.detail
