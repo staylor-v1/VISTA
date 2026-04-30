@@ -89,6 +89,20 @@ def _metadata_dict(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _serialize_inspection_part(part: models.InspectionPart) -> Dict[str, Any]:
+    return {
+        "id": part.id,
+        "project_id": part.project_id,
+        "batch_id": part.batch_id,
+        "serial_number": part.serial_number,
+        "display_name": part.display_name,
+        "metadata": part.metadata_json if isinstance(part.metadata_json, dict) else {},
+        "review_state": part.review_state,
+        "created_at": part.created_at,
+        "updated_at": part.updated_at,
+    }
+
+
 def _parse_datetime(value: Any) -> Optional[datetime]:
     if not isinstance(value, str) or not value:
         return None
@@ -211,6 +225,28 @@ def _restore_overlay_in_metadata(metadata: Dict[str, Any], overlay_image_id: str
         "overlay_layers": restore_records(metadata.get("overlay_layers")),
     }
     return _rebuild_deleted_overlay_safe_image_maps(next_metadata), restored
+
+
+def _record_is_deletable_analyze_overlay(record: Dict[str, Any]) -> bool:
+    return bool(
+        record.get("overlay")
+        or record.get("analysis_output")
+        or record.get("analysis_output_kind") == "overlay_image"
+    )
+
+
+def _is_original_project_image(metadata: Dict[str, Any], image_id: str) -> bool:
+    records = metadata.get("source_images")
+    if not isinstance(records, list):
+        return False
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if _overlay_record_image_id(record) != image_id:
+            continue
+        if not _record_is_deletable_analyze_overlay(record):
+            return True
+    return False
 
 
 def _purge_expired_deleted_overlays_from_metadata(
@@ -752,17 +788,22 @@ async def list_recently_deleted_analyze_overlays(
 @router.delete("/projects/{project_id}/analyze/overlays/{overlay_image_id}", response_model=schemas.InspectionPart)
 async def delete_analyze_overlay(
     project_id: uuid.UUID,
-    overlay_image_id: uuid.UUID,
+    overlay_image_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
 ):
     await get_project_or_403_writable(project_id, db, current_user)
     await _purge_expired_deleted_overlays(db=db, project_id=project_id, current_user=current_user)
     parts = await crud.list_inspection_parts(db=db, project_id=project_id)
-    overlay_id = str(overlay_image_id)
+    overlay_id = str(overlay_image_id).strip()
     now = datetime.now(timezone.utc)
     for part in parts:
         metadata = _metadata_dict(part.metadata_json)
+        if _is_original_project_image(metadata, overlay_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot delete original project image. Move the image out of the part if you do not want to view it.",
+            )
         next_metadata, deleted_record = _mark_overlay_deleted_in_metadata(
             metadata,
             overlay_id,
@@ -778,20 +819,20 @@ async def delete_analyze_overlay(
             metadata_patch=next_metadata,
             updated_by=current_user.email,
         )
-        return updated
+        return _serialize_inspection_part(updated)
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analyze overlay not found")
 
 
 @router.post("/projects/{project_id}/analyze/overlays/{overlay_image_id}/restore", response_model=schemas.InspectionPart)
 async def restore_analyze_overlay(
     project_id: uuid.UUID,
-    overlay_image_id: uuid.UUID,
+    overlay_image_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
 ):
     await get_project_or_403_writable(project_id, db, current_user)
     parts = await crud.list_inspection_parts(db=db, project_id=project_id)
-    overlay_id = str(overlay_image_id)
+    overlay_id = str(overlay_image_id).strip()
     for part in parts:
         metadata = _metadata_dict(part.metadata_json)
         next_metadata, restored = _restore_overlay_in_metadata(metadata, overlay_id)
@@ -804,7 +845,7 @@ async def restore_analyze_overlay(
             metadata_patch=next_metadata,
             updated_by=current_user.email,
         )
-        return updated
+        return _serialize_inspection_part(updated)
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recently deleted Analyze overlay not found")
 
 
