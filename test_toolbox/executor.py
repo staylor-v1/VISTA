@@ -60,7 +60,6 @@ def _grayscale(image: Image.Image) -> Image.Image:
 
 
 def _window_level(image: Image.Image, window: float, level: float, clip: bool) -> Image.Image:
-    gray = _grayscale(image)
     low = level - (window / 2.0)
     high = level + (window / 2.0)
     scale = 255.0 / max(high - low, 1.0)
@@ -71,21 +70,39 @@ def _window_level(image: Image.Image, window: float, level: float, clip: bool) -
             return max(0, min(255, mapped))
         return mapped % 256
 
+    if image.mode in ("RGB", "RGBA"):
+        channels = image.split()
+        normalized_channels = [channels[idx].point(map_pixel) for idx in range(3)]
+        if image.mode == "RGBA":
+            normalized_channels.append(channels[3])
+        return Image.merge(image.mode, tuple(normalized_channels))
+
+    gray = _grayscale(image)
     return gray.point(map_pixel)
 
 
 def _minmax(image: Image.Image, output_min: float, output_max: float) -> Image.Image:
+    def normalize_channel(channel: Image.Image) -> Image.Image:
+        min_value, max_value = channel.getextrema()
+        if max_value <= min_value:
+            return Image.new("L", channel.size, int(max(0, min(255, output_min * 255))))
+        scale = (output_max - output_min) / float(max_value - min_value)
+
+        def map_pixel(value: int) -> int:
+            mapped = (output_min + ((value - min_value) * scale)) * 255.0
+            return max(0, min(255, int(round(mapped))))
+
+        return channel.point(map_pixel)
+
+    if image.mode in ("RGB", "RGBA"):
+        channels = image.split()
+        normalized_channels = [normalize_channel(channels[idx]) for idx in range(3)]
+        if image.mode == "RGBA":
+            normalized_channels.append(channels[3])
+        return Image.merge(image.mode, tuple(normalized_channels))
+
     gray = _grayscale(image)
-    min_value, max_value = gray.getextrema()
-    if max_value <= min_value:
-        return Image.new("L", gray.size, int(max(0, min(255, output_min * 255))))
-    scale = (output_max - output_min) / float(max_value - min_value)
-
-    def map_pixel(value: int) -> int:
-        mapped = (output_min + ((value - min_value) * scale)) * 255.0
-        return max(0, min(255, int(round(mapped))))
-
-    return gray.point(map_pixel)
+    return normalize_channel(gray)
 
 
 def _otsu_threshold(image: Image.Image) -> Tuple[Image.Image, int]:
