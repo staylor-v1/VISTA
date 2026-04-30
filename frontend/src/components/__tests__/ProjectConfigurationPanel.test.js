@@ -52,7 +52,7 @@ function makeConfig(projectType, syntheticUser) {
 function mockFetch(config, projectType, mockOptions = {}) {
   const alternateProjectType = projectType === 'PT1' ? 'PT2' : 'PT1';
   global.fetch = jest.fn((url, requestOptions = {}) => {
-    if (url === '/api/projects') {
+    if (url === '/api/projects/') {
       return Promise.resolve({
         ok: true,
         json: async () => [
@@ -247,6 +247,60 @@ function mockFetch(config, projectType, mockOptions = {}) {
 describe('ProjectConfigurationPanel', () => {
   afterEach(() => {
     jest.clearAllMocks();
+  });
+
+  test('loads copy source projects from the canonical trailing-slash endpoint', async () => {
+    const config = makeConfig('PT1', 'basic');
+    mockFetch(config, 'PT1');
+
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('project-configuration-summary')).toBeInTheDocument());
+    expect(global.fetch).toHaveBeenCalledWith('/api/projects/');
+    expect(global.fetch).not.toHaveBeenCalledWith('/api/projects');
+  });
+
+  test('adds backend service diagnostics when project configuration fetch fails', async () => {
+    let configRequestCount = 0;
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/projects/proj-1/configuration') {
+        configRequestCount += 1;
+        if (configRequestCount === 1) {
+          return Promise.reject(new TypeError('Failed to fetch'));
+        }
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          statusText: 'Service Unavailable',
+          json: async () => ({ detail: 'database unavailable' }),
+        });
+      }
+      if (url === '/api/projects/') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          json: async () => [],
+        });
+      }
+      if (url === '/api/health') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          json: async () => ({ status: 'healthy' }),
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404, statusText: 'Not Found', json: async () => ({}) });
+    });
+
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    expect(await screen.findByText(/Failed to fetch/)).toBeInTheDocument();
+    expect(screen.getByText(/Backend service diagnostics/)).toBeInTheDocument();
+    expect(screen.getByText(/API health: responded at \/api\/health \(200 OK/)).toBeInTheDocument();
+    expect(screen.getByText(/Projects list \(Postgres\): responded at \/api\/projects\/ \(200 OK/)).toBeInTheDocument();
+    expect(screen.getByText(/Project configuration \(Postgres\): error at \/api\/projects\/proj-1\/configuration \(503 Service Unavailable/)).toBeInTheDocument();
   });
 
   projectTypes.forEach((projectType) => {
@@ -804,7 +858,7 @@ describe('ProjectConfigurationPanel', () => {
         const originalFetch = global.fetch;
         const incompatibleType = projectType === 'PT1' ? 'PT2' : 'PT1';
         global.fetch = jest.fn((url, requestOptions = {}) => {
-          if (url === '/api/projects') {
+          if (url === '/api/projects/') {
             return Promise.resolve({
               ok: true,
               json: async () => [

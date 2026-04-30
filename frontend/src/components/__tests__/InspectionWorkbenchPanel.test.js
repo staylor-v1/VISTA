@@ -470,13 +470,34 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
         json: async () => ({ part_id: partId, annotations: annotationsByPart[partId] || [] }),
       });
     }
+    if (url.includes('/analyze/overlays/') && options.method === 'DELETE') {
+      const overlayId = decodeURIComponent(url.split('/').pop());
+      const updatedPart = {
+        ...mutableParts[0],
+        metadata: {
+          ...mutableParts[0].metadata,
+          source_images: mutableParts[0].metadata.source_images.map((record) => (
+            record.image_id === overlayId
+              ? { ...record, overlay_delete_candidate: true, pending_hard_delete_at: '2026-05-02T12:00:00Z' }
+              : record
+          )),
+          analysis_outputs: (mutableParts[0].metadata.analysis_outputs || []).map((record) => (
+            record.image_id === overlayId
+              ? { ...record, overlay_delete_candidate: true, pending_hard_delete_at: '2026-05-02T12:00:00Z' }
+              : record
+          )),
+        },
+      };
+      mutableParts[0] = updatedPart;
+      return Promise.resolve({ ok: true, json: async () => updatedPart });
+    }
     if (url.includes('/parts')) {
       return Promise.resolve({ ok: true, json: async () => mutableParts });
     }
     if (url.includes('/images?include_deleted=true&limit=5000')) {
       const imageRecords = mutableParts.flatMap((part) => {
         const viewImages = part?.metadata?.view_images || {};
-        return Object.entries(viewImages).map(([viewName, imageRef], index) => ({
+        const viewRecords = Object.entries(viewImages).map(([viewName, imageRef], index) => ({
           id: `${part.id}-image-${index + 1}`,
           filename: imageRef,
           metadata: {
@@ -485,6 +506,18 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
             view_name: viewName,
           },
         }));
+        const sourceRecords = Array.isArray(part?.metadata?.source_images)
+          ? part.metadata.source_images.map((record, index) => ({
+            id: record.image_id || `${part.id}-source-${index + 1}`,
+            filename: record.filename,
+            metadata: {
+              part_id: part.id,
+              serial_number: part.serial_number,
+              ...record,
+            },
+          }))
+          : [];
+        return [...viewRecords, ...sourceRecords];
       });
       return Promise.resolve({ ok: true, json: async () => imageRecords });
     }
@@ -828,7 +861,7 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getAllByText('Basic Part').length).toBeGreaterThan(0);
     });
 
-    expect(screen.getByTestId('selected-image-panel')).toHaveTextContent('No image mapped');
+    expect(screen.getByAltText('front view')).toHaveAttribute('src', '/api/images/part-basic-1-image-1/content');
     fireEvent.click(screen.getByRole('tab', { name: 'Image Metadata' }));
     expect(screen.getByRole('tab', { name: 'Image Metadata' })).toHaveAttribute('aria-selected', 'true');
 
@@ -836,6 +869,62 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getByTestId('selected-image-metadata-panel')).toHaveTextContent(/Selected image:\s*front-basic\.png/);
     });
     expect(screen.getByTestId('selected-image-metadata-panel')).toHaveTextContent('"view_name": "front"');
+  });
+
+  test('renders Analyze overlay outputs over their source image in the inspection window', async () => {
+    mockWorkbenchFetch({
+      user: 'analyze-output',
+      batches: [{ id: 'batch-output', name: 'Batch Output' }],
+      parts: [
+        {
+          id: 'part-output-1',
+          batch_id: 'batch-output',
+          serial_number: 'SN-OUTPUT-1',
+          display_name: 'Analyze Output Part',
+          review_state: 'in_review',
+          metadata: {
+            source_images: [
+              { filename: 'source.png', image_id: 'source-image-1', side: 'front', modality: 'visual', overlay: false },
+              {
+                filename: 'source_analyze_overlay.png',
+                image_id: 'overlay-image-1',
+                label: 'Segmentation Overlay :: Watershed From Seeds',
+                side: 'front',
+                modality: 'analyze-overlay',
+                overlay: true,
+                analysis_output: true,
+                overlay_base_image_id: 'source-image-1',
+                overlay_base_filename: 'source.png',
+              },
+            ],
+            analysis_outputs: [
+              {
+                filename: 'source_analyze_overlay.png',
+                image_id: 'overlay-image-1',
+                label: 'Segmentation Overlay :: Watershed From Seeds',
+                overlay_base_image_id: 'source-image-1',
+              },
+            ],
+          },
+        },
+      ],
+      workspaceState: {},
+      hotkeys: { accept_classification: 'a', reject_classification: 'r', toggle_shortcut_help: 'h' },
+    });
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    await waitFor(() => expect(screen.getAllByText('Analyze Output Part').length).toBeGreaterThan(0));
+    const composite = screen.getByTestId('inspection-overlay-composite');
+    expect(screen.getByText('Segmentation Overlay :: Watershed From Seeds')).toBeInTheDocument();
+    expect(within(composite).getByAltText('front source')).toHaveAttribute('src', '/api/images/source-image-1/content');
+    expect(within(composite).getByAltText('front overlay')).toHaveAttribute('src', '/api/images/overlay-image-1/content');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete overlay Segmentation Overlay :: Watershed From Seeds' }));
+    await waitFor(() => {
+      expect(screen.queryByText('Segmentation Overlay :: Watershed From Seeds')).not.toBeInTheDocument();
+    });
+    expect(global.fetch).toHaveBeenCalledWith('/api/projects/proj-1/analyze/overlays/overlay-image-1', { method: 'DELETE' });
   });
 
   test('defaults PT3 to focused four-quadrant MPR with modal access and wheel controls', async () => {

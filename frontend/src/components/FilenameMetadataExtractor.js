@@ -3,7 +3,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 export const VISTA_HIERARCHY_KEYS = [
   'design_number',
   'lot_number',
-  'batch_number',
+  'set_number',
   'serial_number',
   'side',
   'modality',
@@ -66,9 +66,13 @@ function FilenameMetadataExtractor({ files, onConfigChange }) {
     if (userEditedConfig || !previewStem || pattern || keysInput) return;
     const candidateValues = previewStem.split(VISTA_HIERARCHY_DELIMITER);
     if (candidateValues.length !== VISTA_HIERARCHY_KEYS.length) return;
+    const hierarchyKeys = [...VISTA_HIERARCHY_KEYS];
+    if (String(candidateValues[2] || '').toUpperCase().startsWith('BATCH')) {
+      hierarchyKeys[2] = 'batch_number';
+    }
     setMode('simple');
     setPattern(VISTA_HIERARCHY_DELIMITER);
-    setKeysInput(VISTA_HIERARCHY_KEYS.join(', '));
+    setKeysInput(hierarchyKeys.join(', '));
   }, [keysInput, pattern, previewStem, userEditedConfig]);
 
   // Live-preview results for the first selected filename.
@@ -228,7 +232,7 @@ function FilenameMetadataExtractor({ files, onConfigChange }) {
             setUserEditedConfig(true);
             setKeysInput(e.target.value);
           }}
-          placeholder="e.g. design_number, lot_number, batch_number, serial_number, side, modality, overlay"
+          placeholder="e.g. design_number, lot_number, set_number, serial_number, side, modality, overlay"
         />
       </div>
       )}

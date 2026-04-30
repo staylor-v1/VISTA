@@ -97,6 +97,7 @@ services:
     volumes:
       # Mount source code for hot reload (read-only)
       - ./backend:/app/backend:ro
+      - ./test_toolbox:/app/test_toolbox:ro
       - ./test:/app/test:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./uv.lock:/app/uv.lock:ro
@@ -169,6 +170,7 @@ services:
       # Mount source for hot reload (read-only)
       - ./frontend/src:/app/frontend/src:ro
       - ./frontend/public:/app/frontend/public:ro
+      - ./frontend/scripts:/app/frontend/scripts:ro
       - ./frontend/package.json:/app/frontend/package.json:ro
       - ./frontend/package-lock.json:/app/frontend/package-lock.json:ro
       - ./frontend/config-overrides.js:/app/frontend/config-overrides.js:ro

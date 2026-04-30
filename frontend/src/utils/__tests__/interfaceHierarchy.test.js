@@ -1,6 +1,16 @@
 import { DEFAULT_INTERFACE_HIERARCHY, parseInterfaceHierarchyToml } from '../interfaceHierarchy';
 
 describe('parseInterfaceHierarchyToml', () => {
+  test('default main tabs include Analyze between Project Data and Inspection', () => {
+    expect(DEFAULT_INTERFACE_HIERARCHY.mainTabs).toEqual([
+      'project_configuration',
+      'project_data',
+      'analyze',
+      'inspection',
+      'report',
+    ]);
+  });
+
   test('parses detailed inspection placement and dimensions', () => {
     const parsed = parseInterfaceHierarchyToml(`
 main_tabs = ["project_configuration", "inspection", "report"]
@@ -79,7 +89,7 @@ max_width_px = 460
 
   test('keeps the legacy three-key inspection layout contract working', () => {
     const parsed = parseInterfaceHierarchyToml(`
-main_tabs = ["project_configuration", "project_data", "inspection", "report"]
+main_tabs = ["project_configuration", "project_data", "analyze", "inspection", "report"]
 
 [inspection_layout]
 left_column = "part_summary"
@@ -87,6 +97,7 @@ center_tabs = ["inspector", "image_metadata"]
 right_column = "annotations"
 `);
 
+    expect(parsed.mainTabs).toEqual(['project_configuration', 'project_data', 'analyze', 'inspection', 'report']);
     expect(parsed.inspection.leftColumn).toBe('part_summary');
     expect(parsed.inspection.centerTabs).toEqual(['inspector', 'image_metadata']);
     expect(parsed.inspection.rightColumn).toBe('annotations');

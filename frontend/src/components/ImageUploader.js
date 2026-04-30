@@ -5,7 +5,6 @@ const CONCURRENT_UPLOADS = 6;
 const HIERARCHY_KEYS = [
   'design_number',
   'lot_number',
-  'batch_number',
   'serial_number',
   'side',
   'modality',
@@ -24,6 +23,7 @@ function normalizeHierarchyMetadata(candidate) {
     ...candidate,
     design_number: String(candidate.design_number || '').trim(),
     lot_number: String(candidate.lot_number || '').trim(),
+    set_number: String(candidate.set_number || '').trim(),
     batch_number: String(candidate.batch_number || '').trim(),
     serial_number: String(candidate.serial_number || '').trim(),
     side: String(candidate.side || candidate.side_identifier || '').trim().toLowerCase(),
@@ -33,7 +33,10 @@ function normalizeHierarchyMetadata(candidate) {
   const hasRequiredHierarchy = HIERARCHY_KEYS
     .filter((key) => key !== 'overlay')
     .every((key) => normalized[key]);
-  return hasRequiredHierarchy ? normalized : null;
+  if (!hasRequiredHierarchy || (!normalized.set_number && !normalized.batch_number)) return null;
+  if (!normalized.set_number) delete normalized.set_number;
+  if (!normalized.batch_number) delete normalized.batch_number;
+  return normalized;
 }
 
 export function buildInspectionPartIngestPayload(uploadedRecords) {
@@ -73,25 +76,34 @@ export function buildInspectionPartIngestPayload(uploadedRecords) {
       return;
     }
 
-    const batchName = [
+    const partGroupNumber = metadata.set_number || metadata.batch_number;
+    const batchName = metadata.batch_number
+      ? [
+        metadata.design_number,
+        metadata.lot_number,
+        metadata.batch_number,
+      ].join('_')
+      : null;
+    const partKey = [
       metadata.design_number,
       metadata.lot_number,
-      metadata.batch_number,
+      partGroupNumber,
+      metadata.serial_number,
     ].join('_');
-    const partKey = `${batchName}_${metadata.serial_number}`;
     const filename = record.image?.filename || record.filename;
     if (!filename) return;
 
     if (!partsByKey.has(partKey)) {
       partsByKey.set(partKey, {
         batchName,
-        batchDescription: `Design ${metadata.design_number}, lot ${metadata.lot_number}, batch ${metadata.batch_number}`,
+        batchDescription: metadata.batch_number
+          ? `Design ${metadata.design_number}, lot ${metadata.lot_number}, batch ${metadata.batch_number}`
+          : null,
         serialNumber: metadata.serial_number,
-        displayName: `${metadata.design_number} ${metadata.serial_number}`,
+        displayName: `${metadata.design_number} ${metadata.lot_number} ${partGroupNumber} ${metadata.serial_number}`,
         metadata: {
           design_number: metadata.design_number,
           lot_number: metadata.lot_number,
-          batch_number: metadata.batch_number,
           serial_number: metadata.serial_number,
           configured_views: [],
           modalities: [],
@@ -100,6 +112,12 @@ export function buildInspectionPartIngestPayload(uploadedRecords) {
           source_images: [],
         },
       });
+      if (metadata.set_number) {
+        partsByKey.get(partKey).metadata.set_number = metadata.set_number;
+      }
+      if (metadata.batch_number) {
+        partsByKey.get(partKey).metadata.batch_number = metadata.batch_number;
+      }
     }
 
     const part = partsByKey.get(partKey);
@@ -129,8 +147,9 @@ export function buildInspectionPartIngestPayload(uploadedRecords) {
   });
 
   const batchesByName = new Map();
+  const unassignedParts = [];
   [...Array.from(partsByKey.values()), ...Array.from(volumePartsByKey.values())].forEach((part) => {
-    if (!batchesByName.has(part.batchName)) {
+    if (part.batchName && !batchesByName.has(part.batchName)) {
       batchesByName.set(part.batchName, {
         name: part.batchName,
         description: part.batchDescription,
@@ -143,11 +162,16 @@ export function buildInspectionPartIngestPayload(uploadedRecords) {
     if (Array.isArray(part.metadata.modalities)) {
       part.metadata.modalities.sort();
     }
-    batchesByName.get(part.batchName).parts.push({
+    const ingestPart = {
       serial_number: part.serialNumber,
       display_name: part.displayName,
       metadata: part.metadata,
-    });
+    };
+    if (part.batchName) {
+      batchesByName.get(part.batchName).parts.push(ingestPart);
+    } else {
+      unassignedParts.push(ingestPart);
+    }
   });
 
   const batches = Array.from(batchesByName.values()).map((batch) => ({
@@ -155,7 +179,12 @@ export function buildInspectionPartIngestPayload(uploadedRecords) {
     parts: batch.parts.sort((left, right) => left.serial_number.localeCompare(right.serial_number)),
   }));
 
-  return { batches };
+  return {
+    batches,
+    unassigned_parts: unassignedParts.sort((left, right) => (
+      left.serial_number.localeCompare(right.serial_number)
+    )),
+  };
 }
 
 function ImageUploader({ projectId, projectType = 'PT1', onUploadComplete, setError }) {
@@ -305,7 +334,8 @@ function ImageUploader({ projectId, projectType = 'PT1', onUploadComplete, setEr
 
     let ingestError = null;
     const ingestPayload = buildInspectionPartIngestPayload(uploadedRecords);
-    const partCount = ingestPayload.batches.reduce((acc, batch) => acc + batch.parts.length, 0);
+    const partCount = ingestPayload.batches.reduce((acc, batch) => acc + batch.parts.length, 0)
+      + ingestPayload.unassigned_parts.length;
     if (partCount > 0) {
       try {
         const ingestResponse = await fetch(`/api/projects/${projectId}/ingest`, {

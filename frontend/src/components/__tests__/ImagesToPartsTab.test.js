@@ -16,12 +16,12 @@ describe('ImagesToPartsTab', () => {
             id: 'part-1',
             serial_number: 'SN-001',
             display_name: 'Part 1',
-            metadata: { source_images: [{ filename: 'assigned-a.png' }] },
+            metadata: { source_images: [{ filename: 'assigned-a.png', image_id: 'img-assigned-a' }] },
           },
         ]}
         images={[
-          { filename: 'assigned-a.png' },
-          { filename: 'unassigned-z.png' },
+          { id: 'img-assigned-a', filename: 'assigned-a.png' },
+          { id: 'img-unassigned-z', filename: 'unassigned-z.png' },
         ]}
       />
     );
@@ -65,5 +65,88 @@ describe('ImagesToPartsTab', () => {
     await waitFor(() => {
       expect(onAssignmentsChanged).toHaveBeenCalled();
     });
+  });
+
+  test('opens a single-image modal when an image is clicked', () => {
+    render(
+      <ImagesToPartsTab
+        projectId="proj-1"
+        parts={[
+          {
+            id: 'part-1',
+            serial_number: 'SN-001',
+            display_name: 'Part 1',
+            metadata: { source_images: [{ filename: 'assigned-a.png', image_id: 'img-assigned-a' }] },
+          },
+        ]}
+        images={[{ id: 'img-assigned-a', filename: 'assigned-a.png' }]}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'assigned-a.png' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'assigned-a.png' });
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'assigned-a.png' })).toHaveAttribute(
+      'src',
+      '/api/images/img-assigned-a/content'
+    );
+  });
+
+  test('opens a tiled part modal when a part heading is clicked', () => {
+    render(
+      <ImagesToPartsTab
+        projectId="proj-1"
+        parts={[
+          {
+            id: 'part-1',
+            serial_number: 'SN-001',
+            display_name: 'Part 1',
+            metadata: {
+              source_images: [
+                { filename: 'assigned-a.png', image_id: 'img-assigned-a' },
+                { filename: 'assigned-b.png', image_id: 'img-assigned-b' },
+              ],
+            },
+          },
+        ]}
+        images={[
+          { id: 'img-assigned-a', filename: 'assigned-a.png' },
+          { id: 'img-assigned-b', filename: 'assigned-b.png' },
+        ]}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Part 1' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'Part 1' });
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'assigned-a.png' })).toHaveAttribute(
+      'src',
+      '/api/images/img-assigned-a/content'
+    );
+    expect(screen.getByRole('img', { name: 'assigned-b.png' })).toHaveAttribute(
+      'src',
+      '/api/images/img-assigned-b/content'
+    );
+  });
+
+  test('toggles inline image thumbnails on and off', () => {
+    const { container } = render(
+      <ImagesToPartsTab
+        projectId="proj-1"
+        parts={[]}
+        images={[
+          { id: 'img-a', filename: 'unassigned-a.png' },
+          { id: 'img-b', filename: 'unassigned-b.png' },
+        ]}
+      />
+    );
+
+    expect(container.querySelectorAll('.image-part-chip-thumbnail')).toHaveLength(2);
+
+    fireEvent.click(screen.getByLabelText('Show image thumbnails'));
+
+    expect(container.querySelectorAll('.image-part-chip-thumbnail')).toHaveLength(0);
   });
 });

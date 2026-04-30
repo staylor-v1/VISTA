@@ -6,6 +6,7 @@ import ImageUploader from './components/ImageUploader';
 import MetadataManager from './components/MetadataManager';
 import ClassManager from './components/ClassManager';
 import InspectionWorkbenchPanel from './components/InspectionWorkbenchPanel';
+import AnalyzeWorkbenchTab from './components/AnalyzeWorkbenchTab';
 import ProjectConfigurationPanel from './components/ProjectConfigurationPanel';
 import ProjectDataSummaryTab from './components/ProjectDataSummaryTab';
 import ProjectReportTab from './components/ProjectReportTab';
@@ -18,6 +19,7 @@ import { DEFAULT_INTERFACE_HIERARCHY, loadInterfaceHierarchy } from './utils/int
 const MAIN_TAB_DEFINITIONS = {
   project_configuration: { label: 'Project Configuration' },
   project_data: { label: 'Project Data' },
+  analyze: { label: 'Analyze' },
   inspection: { label: 'Inspection' },
   report: { label: 'Report' },
 };
@@ -25,6 +27,7 @@ const PROJECT_DATA_TABS = {
   load_images: { label: 'Load Images' },
   batches: { label: 'Batches' },
   images_to_parts: { label: 'Images to Parts' },
+  recently_deleted: { label: 'Recently Deleted' },
 };
 
 function Project({ currentUserGroups = [] }) {
@@ -48,6 +51,8 @@ function Project({ currentUserGroups = [] }) {
   });
   const [projectParts, setProjectParts] = useState([]);
   const [projectImages, setProjectImages] = useState([]);
+  const [recentlyDeletedOverlays, setRecentlyDeletedOverlays] = useState([]);
+  const [recentlyDeletedLoading, setRecentlyDeletedLoading] = useState(false);
   const [countsLoading, setCountsLoading] = useState(true);
   const [ingestResult, setIngestResult] = useState({
     loading: false,
@@ -190,6 +195,41 @@ function Project({ currentUserGroups = [] }) {
   const handleUploadComplete = useCallback(async () => {
     await refreshProjectCounts();
   }, [refreshProjectCounts]);
+
+  const refreshRecentlyDeletedOverlays = useCallback(async () => {
+    setRecentlyDeletedLoading(true);
+    try {
+      const resp = await fetch(`/api/projects/${id}/analyze/overlays/recently-deleted`);
+      if (!resp.ok) throw new Error(`Failed to load recently deleted overlays (${resp.status})`);
+      const payload = await resp.json();
+      setRecentlyDeletedOverlays(Array.isArray(payload) ? payload : []);
+    } catch (err) {
+      setError(err.message || 'Failed to load recently deleted overlays');
+    } finally {
+      setRecentlyDeletedLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    if (activeMainTab === 'project_data' && activeProjectDataTab === 'recently_deleted') {
+      refreshRecentlyDeletedOverlays();
+    }
+  }, [activeMainTab, activeProjectDataTab, refreshRecentlyDeletedOverlays]);
+
+  const restoreRecentlyDeletedOverlay = useCallback(async (overlay) => {
+    const overlayId = overlay?.image_id;
+    if (!overlayId) return;
+    try {
+      const resp = await fetch(`/api/projects/${id}/analyze/overlays/${encodeURIComponent(String(overlayId))}/restore`, {
+        method: 'POST',
+      });
+      if (!resp.ok) throw new Error(`Failed to restore overlay (${resp.status})`);
+      await refreshRecentlyDeletedOverlays();
+      await refreshProjectCounts();
+    } catch (err) {
+      setError(err.message || 'Failed to restore overlay');
+    }
+  }, [id, refreshProjectCounts, refreshRecentlyDeletedOverlays]);
 
   const requestIngestValidation = useCallback(async () => {
     try {
@@ -334,25 +374,81 @@ function Project({ currentUserGroups = [] }) {
           setError={setError}
         />
       )}
+
+      {activeProjectDataTab === 'recently_deleted' && (
+        <section className="workbench-panel recently-deleted-overlays-panel" role="tabpanel" aria-label="Recently Deleted">
+          <header className="workbench-header">
+            <div>
+              <h2>Recently Deleted Overlays</h2>
+              <p>Analyze overlays remain recoverable for 48 hours before their part metadata is purged.</p>
+            </div>
+            <div className="workbench-detail-actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={recentlyDeletedLoading}
+                onClick={refreshRecentlyDeletedOverlays}
+              >
+                {recentlyDeletedLoading ? 'Refreshing...' : 'Refresh'}
+              </button>
+            </div>
+          </header>
+          {recentlyDeletedLoading ? (
+            <div className="loading-text">Loading recently deleted overlays...</div>
+          ) : recentlyDeletedOverlays.length === 0 ? (
+            <p className="muted">No Analyze overlays are waiting for deletion.</p>
+          ) : (
+            <div className="recently-deleted-overlay-list">
+              {recentlyDeletedOverlays.map((overlay) => (
+                <article key={`${overlay.part_id}-${overlay.image_id}`} className="recently-deleted-overlay-row">
+                  <div>
+                    <h3>{overlay.label || 'Analyze Overlay'}</h3>
+                    <p>
+                      {overlay.part_display_name || overlay.part_serial_number}
+                      {' '}
+                      -
+                      {' '}
+                      {overlay.filename}
+                    </p>
+                    <span>
+                      Deleted {overlay.deleted_at ? new Date(overlay.deleted_at).toLocaleString() : 'recently'}
+                      {' '}
+                      -
+                      {' '}
+                      purges {overlay.pending_hard_delete_at ? new Date(overlay.pending_hard_delete_at).toLocaleString() : 'after retention'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => restoreRecentlyDeletedOverlay(overlay)}
+                  >
+                    Restore
+                  </button>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
     </>
   ), [
     activeProjectDataTab,
-    classes,
     countsLoading,
     dataCounts,
     id,
     projectImages,
     projectParts,
-    loading,
-    metadata,
-    navigate,
+    recentlyDeletedLoading,
+    recentlyDeletedOverlays,
     handleUploadComplete,
     ingestResult,
     project?.is_archived,
-    project?.name,
     project?.project_type,
     refreshProjectCounts,
+    refreshRecentlyDeletedOverlays,
     requestIngestValidation,
+    restoreRecentlyDeletedOverlay,
   ]);
 
   const renderMainPanel = () => {
@@ -368,6 +464,15 @@ function Project({ currentUserGroups = [] }) {
     }
     if (activeMainTab === 'project_data') {
       return projectDataContent;
+    }
+    if (activeMainTab === 'analyze') {
+      return (
+        <AnalyzeWorkbenchTab
+          projectId={id}
+          projectType={project?.project_type}
+          setError={setError}
+        />
+      );
     }
     if (activeMainTab === 'project_configuration') {
       return (

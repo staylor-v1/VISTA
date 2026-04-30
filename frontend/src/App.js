@@ -10,6 +10,38 @@ const ApiKeys = lazy(() => import('./ApiKeys'));
 const ProjectReport = lazy(() => import('./components/ProjectReport'));
 const GroupGalleryView = lazy(() => import('./components/GroupGalleryView'));
 
+const DEFAULT_DASHBOARD_FETCH_TIMEOUT_MS = 10000;
+
+function getDashboardFetchTimeoutMs() {
+  if (typeof window !== 'undefined' && Number.isFinite(Number(window.__VISTA_DASHBOARD_FETCH_TIMEOUT_MS))) {
+    return Number(window.__VISTA_DASHBOARD_FETCH_TIMEOUT_MS);
+  }
+  return DEFAULT_DASHBOARD_FETCH_TIMEOUT_MS;
+}
+
+export function fetchWithTimeout(resource, options = {}, timeoutMs = getDashboardFetchTimeoutMs()) {
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const fetchOptions = controller
+    ? { ...options, signal: options.signal || controller.signal }
+    : options;
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = window.setTimeout(() => {
+      if (controller && !options.signal) {
+        controller.abort();
+      }
+      reject(new Error(`Request timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  return Promise.race([
+    fetch(resource, fetchOptions),
+    timeoutPromise,
+  ]).finally(() => {
+    window.clearTimeout(timeoutId);
+  });
+}
+
 // Debug counter to track renders
 let renderCount = 0;
 
@@ -486,7 +518,7 @@ function App() {
 
   const loadProjects = useCallback((includeArchived = showArchived) => {
     const url = includeArchived ? '/api/projects/?include_archived=true' : '/api/projects/';
-    return fetch(url)
+    return fetchWithTimeout(url)
       .then(response => {
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
