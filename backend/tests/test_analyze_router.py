@@ -220,6 +220,82 @@ def test_analyze_workflow_uses_server_source_counts_and_rejects_cross_project_so
     assert "does not match" in mismatch_resp.json()["detail"]
 
 
+def test_delete_and_restore_analyze_overlay_accept_non_uuid_overlay_image_ids(client):
+    headers, project_id, image = _create_project_with_part_image(client)
+    part_resp = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={
+            "serial_number": "AN-OVERLAY-STRING",
+            "display_name": "Analyze Overlay Part",
+            "metadata": {
+                "source_images": [
+                    {
+                        "filename": image["filename"],
+                        "image_id": image["id"],
+                        "side": "front",
+                        "modality": "visual",
+                        "overlay": False,
+                    },
+                    {
+                        "filename": "source_analyze_overlay.png",
+                        "image_id": "overlay-image-1",
+                        "side": "front",
+                        "modality": "analyze-overlay",
+                        "overlay": True,
+                        "analysis_output": True,
+                        "overlay_base_image_id": image["id"],
+                        "overlay_base_filename": image["filename"],
+                    },
+                ],
+                "analysis_outputs": [
+                    {
+                        "filename": "source_analyze_overlay.png",
+                        "image_id": "overlay-image-1",
+                        "overlay": True,
+                        "overlay_base_image_id": image["id"],
+                        "overlay_base_filename": image["filename"],
+                    }
+                ],
+            },
+        },
+        headers=headers,
+    )
+    assert part_resp.status_code == 201, part_resp.text
+
+    delete_resp = client.delete(
+        f"/api/projects/{project_id}/analyze/overlays/overlay-image-1",
+        headers=headers,
+    )
+    assert delete_resp.status_code == 200, delete_resp.text
+    deleted_source_overlay = next(
+        record for record in delete_resp.json()["metadata"]["source_images"] if record.get("image_id") == "overlay-image-1"
+    )
+    assert deleted_source_overlay["overlay_delete_candidate"] is True
+
+    restore_resp = client.post(
+        f"/api/projects/{project_id}/analyze/overlays/overlay-image-1/restore",
+        headers=headers,
+    )
+    assert restore_resp.status_code == 200, restore_resp.text
+    restored_source_overlay = next(
+        record for record in restore_resp.json()["metadata"]["source_images"] if record.get("image_id") == "overlay-image-1"
+    )
+    assert "overlay_delete_candidate" not in restored_source_overlay
+
+
+def test_delete_analyze_overlay_rejects_original_project_images(client):
+    headers, project_id, image = _create_project_with_part_image(client)
+    resp = client.delete(
+        f"/api/projects/{project_id}/analyze/overlays/{image['id']}",
+        headers=headers,
+    )
+    assert resp.status_code == 400, resp.text
+    detail = resp.json().get("detail")
+    if isinstance(detail, dict):
+        detail = detail.get("message", "")
+    assert "Move the image out of the part" in str(detail)
+
+
 def test_analyze_workflow_allows_multiple_input_rooted_processing_chains(client):
     headers, project_id, _image = _create_project_with_part_image(client)
     source_resp = client.get(f"/api/projects/{project_id}/analyze/input-source", headers=headers)
