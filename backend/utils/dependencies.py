@@ -3,6 +3,7 @@ from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import ProgrammingError
 import uuid
 import hashlib
 import secrets
@@ -49,10 +50,26 @@ def get_user_from_header(header_value: str) -> Optional[str]:
 
 async def _ensure_user_in_db(email: str, db: AsyncSession) -> User:
     """Look up or auto-create a user row, returning a Pydantic User."""
-    db_user = await crud.get_user_by_email(db=db, email=email)
-    if not db_user:
-        user_create = UserCreate(email=email)
-        db_user = await crud.create_user(db=db, user=user_create)
+    try:
+        db_user = await crud.get_user_by_email(db=db, email=email)
+        if not db_user:
+            user_create = UserCreate(email=email)
+            db_user = await crud.create_user(db=db, user=user_create)
+    except ProgrammingError as exc:
+        err_text = str(exc).lower()
+        if "relation \"users\" does not exist" in err_text:
+            logger.error(
+                "Database schema missing users table; migrations have not been applied.",
+                exc_info=exc,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Database schema is not initialized (missing 'users' table). "
+                    "Run 'alembic upgrade head' before starting the API."
+                ),
+            ) from exc
+        raise
     return User(
         id=db_user.id,
         email=db_user.email,
