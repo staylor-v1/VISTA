@@ -2200,7 +2200,14 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                       {!imageEnabled ? (
                         <span className="view-cell-empty">Image hidden</span>
                       ) : entry.overlay && imageId && baseImageId ? (
-                        <div className="inspection-overlay-composite" data-testid="inspection-overlay-composite">
+                        <div
+                          className="inspection-overlay-composite"
+                          data-testid="inspection-overlay-composite"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setFullscreenImageModal({ imageId: String(imageId), label: entry.label || viewName.toUpperCase() });
+                          }}
+                        >
                           <img
                             className="inspection-view-image"
                             src={`/api/images/${encodeURIComponent(String(baseImageId))}/content`}
