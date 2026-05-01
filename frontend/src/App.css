@@ -5958,3 +5958,48 @@ ul li:hover {
   align-items: center;
   font-size: 0.75rem;
 }
+
+.project-configuration-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.project-configuration-panel .workbench-header {
+  margin-bottom: 0;
+}
+
+.project-configuration-panel .part-detail-panel {
+  padding: 14px;
+}
+
+.project-configuration-panel .part-detail-panel > p {
+  margin-top: 4px;
+  margin-bottom: 12px;
+  color: #475569;
+}
+
+.project-configuration-panel .config-entry-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px 12px;
+  align-items: end;
+}
+
+.project-configuration-panel .config-entry-grid > label {
+  min-width: 0;
+}
+
+.project-configuration-panel .config-entry-grid > .btn {
+  justify-self: start;
+}
+
+@media (max-width: 900px) {
+  .project-configuration-panel .config-entry-grid {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .project-configuration-panel .config-entry-grid > .btn {
+    justify-self: stretch;
+  }
+}
