@@ -285,6 +285,10 @@ def _default_project_configuration(project_type: Optional[str] = "PT1") -> dict:
             "manual_phase_selection_enabled": False,
             "manual_phase": "data_ingestion",
         },
+        "project_owner": {
+            "name": "",
+            "email": "",
+        },
         "interface_layout": {
             "default_model": None,
         },
@@ -1102,11 +1106,21 @@ async def create_part_annotation(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
 
     now = datetime.now(timezone.utc)
+    attribution_owner = ""
+    if part.batch_id:
+        batch = await crud.get_inspection_batch(db=db, batch_id=part.batch_id)
+        attribution_owner = str(batch.owner or "").strip() if batch else ""
+    if not attribution_owner:
+        config_metadata = await crud.get_project_metadata_by_key(db=db, project_id=project_id, key=PROJECT_CONFIGURATION_KEY)
+        config_value = config_metadata.value if config_metadata and isinstance(config_metadata.value, dict) else {}
+        project_owner = config_value.get("project_owner") if isinstance(config_value.get("project_owner"), dict) else {}
+        attribution_owner = str(project_owner.get("email") or project_owner.get("name") or "").strip()
+
     annotation_entry = {
         "id": str(uuid.uuid4()),
         **payload.model_dump(),
         "created_at": now.isoformat(),
-        "created_by": current_user.email,
+        "created_by": attribution_owner or current_user.email,
         "updated_at": now.isoformat(),
         "updated_by": current_user.email,
     }

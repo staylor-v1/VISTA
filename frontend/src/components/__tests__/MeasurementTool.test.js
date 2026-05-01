@@ -348,5 +348,22 @@ describe('MeasurementTool', () => {
 
       expect(screen.getByText('Save Measurement')).toBeInTheDocument();
     });
+
+    it('keeps rendering line and completes measurement when mouseup occurs outside the overlay', () => {
+      const { container } = render(<MeasurementTool {...defaultProps} leftClickEnabled={true} />);
+      const overlay = getOverlay(container);
+
+      fireEvent.mouseDown(overlay, { clientX: 120, clientY: 160, button: 0 });
+      fireEvent.mouseMove(window, { clientX: 360, clientY: 160, button: 0 });
+
+      const drawnLine = container.querySelector('line');
+      expect(drawnLine).toHaveAttribute('x1', '120');
+      expect(drawnLine).toHaveAttribute('x2', '360');
+      expect(drawnLine).toHaveAttribute('y1', '160');
+      expect(drawnLine).toHaveAttribute('y2', '160');
+
+      fireEvent.mouseUp(window, { clientX: 360, clientY: 160, button: 0 });
+      expect(screen.getByText('Save Measurement')).toBeInTheDocument();
+    });
   });
 });
