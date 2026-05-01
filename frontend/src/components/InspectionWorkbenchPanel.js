@@ -809,7 +809,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [selectedImageRef, setSelectedImageRef] = useState('');
   const [projectImageLookup, setProjectImageLookup] = useState({});
   const [deletingOverlayId, setDeletingOverlayId] = useState('');
-  const [overlayDeletePromptId, setOverlayDeletePromptId] = useState('');
   const [fullscreenImageModal, setFullscreenImageModal] = useState(null);
   const [fullscreenMeasureActive, setFullscreenMeasureActive] = useState(false);
   const [fullscreenMeasureDraft, setFullscreenMeasureDraft] = useState(null);
@@ -1600,7 +1599,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       const updatedPart = await resp.json();
       setParts((prev) => prev.map((part) => (part.id === updatedPart.id ? updatedPart : part)));
       setSelectedImageRef((current) => (String(current) === String(entry.imageRef) ? '' : current));
-      setOverlayDeletePromptId('');
     } catch (err) {
       setError(err.message || 'Failed to delete Analyze overlay');
     } finally {
@@ -2272,43 +2270,18 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     <div className="view-cell-title">
                       <span>{entry.label || viewName.toUpperCase()}</span>
                       {entry.overlay && entry.imageId && (
-                        overlayDeletePromptId === String(entry.imageId) ? (
-                          <div
-                            className="inspection-overlay-delete-confirm"
-                            role="alertdialog"
-                            aria-label={`Confirm delete overlay ${entry.label || viewName}`}
-                            onClick={(event) => event.stopPropagation()}
-                          >
-                            <button
-                              type="button"
-                              className="inspection-overlay-delete-cancel"
-                              onClick={() => setOverlayDeletePromptId('')}
-                            >
-                              Cancel
-                            </button>
-                            <button
-                              type="button"
-                              className="inspection-overlay-delete-commit"
-                              disabled={deletingOverlayId === String(entry.imageId)}
-                              onClick={() => deleteAnalyzeOverlay(entry)}
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            type="button"
-                            className="inspection-overlay-delete"
-                            aria-label={`Delete overlay ${entry.label || viewName}`}
-                            disabled={deletingOverlayId === String(entry.imageId)}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setOverlayDeletePromptId(String(entry.imageId));
-                            }}
-                          >
-                            ×
-                          </button>
-                        )
+                        <button
+                          type="button"
+                          className="inspection-overlay-delete"
+                          aria-label={`Delete overlay ${entry.label || viewName}`}
+                          disabled={deletingOverlayId === String(entry.imageId)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            deleteAnalyzeOverlay(entry);
+                          }}
+                        >
+                          ×
+                        </button>
                       )}
                     </div>
                     <div className="view-cell-body">

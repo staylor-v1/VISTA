@@ -921,18 +921,6 @@ describe('InspectionWorkbenchPanel', () => {
     expect(within(composite).getByAltText('front overlay')).toHaveAttribute('src', '/api/images/overlay-image-1/content');
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete overlay Segmentation Overlay :: Watershed From Seeds' }));
-    const cancelFirstDialog = screen.getByRole('alertdialog', { name: 'Confirm delete overlay Segmentation Overlay :: Watershed From Seeds' });
-    expect(within(cancelFirstDialog).getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
-    expect(global.fetch.mock.calls.filter(([url, options = {}]) => (
-      String(url).includes('/analyze/overlays/') && options.method === 'DELETE'
-    ))).toHaveLength(0);
-
-    fireEvent.click(within(cancelFirstDialog).getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByRole('alertdialog', { name: 'Confirm delete overlay Segmentation Overlay :: Watershed From Seeds' })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Delete overlay Segmentation Overlay :: Watershed From Seeds' }));
-    const confirmDialog = screen.getByRole('alertdialog', { name: 'Confirm delete overlay Segmentation Overlay :: Watershed From Seeds' });
-    fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Delete' }));
     await waitFor(() => {
       expect(screen.queryByText('Segmentation Overlay :: Watershed From Seeds')).not.toBeInTheDocument();
     });
