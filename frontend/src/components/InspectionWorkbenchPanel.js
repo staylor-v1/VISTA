@@ -112,6 +112,34 @@ function getDefectCount(part) {
   return Number.isFinite(explicitCount) ? explicitCount : 0;
 }
 
+function getMeasurementLinesByImageId(annotations) {
+  if (!Array.isArray(annotations)) return {};
+  return annotations.reduce((acc, annotation) => {
+    const imageId = annotation?.image_id;
+    const line = annotation?.geometry?.line;
+    if (!imageId || !line) return acc;
+    const x1 = Number(line.x1);
+    const y1 = Number(line.y1);
+    const x2 = Number(line.x2);
+    const y2 = Number(line.y2);
+    const imageWidth = Number(line.imageWidth);
+    const imageHeight = Number(line.imageHeight);
+    if (![x1, y1, x2, y2, imageWidth, imageHeight].every(Number.isFinite)) return acc;
+    const lengthMm = Number(annotation?.measurements?.length_mm);
+    const color = annotation?.metadata?.measurement_color || MEASUREMENT_COLORS[Object.keys(acc).length % MEASUREMENT_COLORS.length];
+    const entry = { id: String(annotation.id || `${imageId}-${x1}-${y1}`), x1, y1, x2, y2, imageWidth, imageHeight, color, distanceMm: Number.isFinite(lengthMm) ? lengthMm : null };
+    const key = String(imageId);
+    acc[key] = [...(acc[key] || []), entry];
+    return acc;
+  }, {});
+}
+
+function isFiniteMeasurementLine(line) {
+  if (!line || typeof line !== 'object') return false;
+  const values = [line.x1, line.y1, line.x2, line.y2, line.imageWidth, line.imageHeight];
+  return values.every((value) => Number.isFinite(Number(value)));
+}
+
 function getPartViews(part) {
   const configuredViews = part?.metadata?.configured_views;
   if (Array.isArray(configuredViews) && configuredViews.length > 0) {
@@ -814,6 +842,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [fullscreenMeasureActive, setFullscreenMeasureActive] = useState(false);
   const [fullscreenMeasureDraft, setFullscreenMeasureDraft] = useState(null);
   const [fullscreenMeasurements, setFullscreenMeasurements] = useState([]);
+  const measurementLinesByImageId = useMemo(() => getMeasurementLinesByImageId(annotations), [annotations]);
   const [pendingMeasurePoint, setPendingMeasurePoint] = useState(null);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState(null);
   const [viewportWidth, setViewportWidth] = useState(() => (
@@ -1741,6 +1770,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       comment: name || 'Captured from measurement tool.',
       disposition: 'open',
       measurements: { length_px: Number(distancePixels.toFixed(2)), ...(Number.isFinite(distanceMm) ? { length_mm: Number(distanceMm.toFixed(2)) } : {}) },
+      geometry: { line },
       bbox: {
         x: Number(Math.min(line.x1, line.x2).toFixed(2)),
         y: Number(Math.min(line.y1, line.y2).toFixed(2)),
@@ -2308,16 +2338,28 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                           />
                         </div>
                       ) : imageId ? (
-                        <img
-                          className="inspection-view-image"
-                          src={`/api/images/${encodeURIComponent(String(imageId))}/content`}
-                          alt={`${viewName} view`}
-                          loading="lazy"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setFullscreenImageModal({ imageId: String(imageId), label: entry.label || viewName.toUpperCase() });
-                          }}
-                        />
+                        <>
+                          <img
+                            className="inspection-view-image"
+                            src={`/api/images/${encodeURIComponent(String(imageId))}/content`}
+                            alt={`${viewName} view`}
+                            loading="lazy"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setFullscreenImageModal({ imageId: String(imageId), label: entry.label || viewName.toUpperCase() });
+                            }}
+                          />
+                          <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 1000 1000`} preserveAspectRatio="none" aria-label="tile measurement overlay">
+                            {(measurementLinesByImageId[String(imageId)] || []).filter(isFiniteMeasurementLine).map((line) => (
+                              <g key={line.id}>
+                                <line x1={(line.x1 / line.imageWidth) * 1000} y1={(line.y1 / line.imageHeight) * 1000} x2={(line.x2 / line.imageWidth) * 1000} y2={(line.y2 / line.imageHeight) * 1000} stroke={line.color} strokeWidth="3" />
+                                <text x={((line.x1 + line.x2) / (2 * line.imageWidth)) * 1000} y={((line.y1 + line.y2) / (2 * line.imageHeight)) * 1000 - 6} fill={line.color} fontSize="30">
+                                  {Number.isFinite(line.distanceMm) ? `${line.distanceMm.toFixed(2)} mm` : ''}
+                                </text>
+                              </g>
+                            ))}
+                          </svg>
+                        </>
                       ) : imageRef ? (
                         <span className="view-cell-empty">Image not found: {safeDecodeFilename(imageRef)}</span>
                       ) : (
@@ -2651,13 +2693,16 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const handleFullscreenMeasurePointerDown = (event) => {
     if (!fullscreenMeasureActive) return;
     const rect = event.currentTarget.getBoundingClientRect();
+    if (!rect.width || !rect.height || !event.currentTarget.naturalWidth || !event.currentTarget.naturalHeight) return;
     const x = ((event.clientX - rect.left) / rect.width) * event.currentTarget.naturalWidth;
     const y = ((event.clientY - rect.top) / rect.height) * event.currentTarget.naturalHeight;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     if (!pendingMeasurePoint) {
       setPendingMeasurePoint({ x, y, imageWidth: event.currentTarget.naturalWidth, imageHeight: event.currentTarget.naturalHeight });
       return;
     }
     const line = { x1: pendingMeasurePoint.x, y1: pendingMeasurePoint.y, x2: x, y2: y, imageWidth: event.currentTarget.naturalWidth, imageHeight: event.currentTarget.naturalHeight };
+    if (!isFiniteMeasurementLine(line)) return;
     setFullscreenMeasureDraft(line);
   };
 
@@ -2692,7 +2737,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
             </div>
           </div>
           <div className="inspection-fullscreen-stage">
-            {fullscreenMeasureActive && <div className="workbench-notice">Click to set first point, click again set set second point. Click and drag to adjust points.</div>}
+            {fullscreenMeasureActive && <div className="workbench-notice">Click to set first point, click again to set second point. Click and drag to adjust points.</div>}
             <img
               src={`/api/images/${encodeURIComponent(fullscreenImageModal.imageId)}/content`}
               alt={`${fullscreenImageModal.label} fullscreen`}
@@ -2701,11 +2746,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
               onPointerMove={handleFullscreenMeasurePointerMove}
               onPointerUp={handleFullscreenMeasurePointerUp}
             />
-            <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 ${fullscreenImageModal.width || 1000} ${fullscreenImageModal.height || 1000}`} preserveAspectRatio="none">
-              {fullscreenMeasurements.map((line) => (
+            <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 1000 1000`} preserveAspectRatio="none">
+              {[...(measurementLinesByImageId[String(fullscreenImageModal.imageId)] || []), ...fullscreenMeasurements].filter(isFiniteMeasurementLine).map((line) => (
                 <g key={line.id}>
-                  <line x1={line.x1} y1={line.y1} x2={line.x2} y2={line.y2} stroke={line.color} strokeWidth="3" />
-                  <text x={(line.x1+line.x2)/2} y={(line.y1+line.y2)/2 - 6} fill={line.color} fontSize="20">{Number.isFinite(line.distanceMm) ? `${line.distanceMm.toFixed(2)} mm` : ''}</text>
+                  <line x1={(line.x1 / line.imageWidth) * 1000} y1={(line.y1 / line.imageHeight) * 1000} x2={(line.x2 / line.imageWidth) * 1000} y2={(line.y2 / line.imageHeight) * 1000} stroke={line.color} strokeWidth="3" />
+                  <text x={((line.x1 + line.x2) / (2 * line.imageWidth)) * 1000} y={((line.y1 + line.y2) / (2 * line.imageHeight)) * 1000 - 6} fill={line.color} fontSize="20">{Number.isFinite(line.distanceMm) ? `${line.distanceMm.toFixed(2)} mm` : ''}</text>
                 </g>
               ))}
             </svg>
