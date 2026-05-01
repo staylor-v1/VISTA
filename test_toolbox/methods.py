@@ -136,7 +136,7 @@ TOOLBOX_METHODS = [
         name="Asphalt Defects Heatmap",
         category="Anomaly Detection",
         description="Detects likely cracks and potholes in asphalt-like images and emits a red heatmap mask for overlay visualization.",
-        output_types=["mask", "overlay"],
+        output_types=["mask", "metadata"],
         parameters=[
             MethodParameter(name="sensitivity", label="Sensitivity", type="float", default=0.5, min_value=0.0, max_value=1.0),
             MethodParameter(name="blur_radius", label="Blur Radius", type="integer", default=2, min_value=0),
