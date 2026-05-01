@@ -921,6 +921,9 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByText('Segmentation Overlay :: Watershed From Seeds')).toBeInTheDocument();
     expect(within(composite).getByAltText('front source')).toHaveAttribute('src', '/api/images/source-image-1/content');
     expect(within(composite).getByAltText('front overlay')).toHaveAttribute('src', '/api/images/overlay-image-1/content');
+    fireEvent.click(composite);
+    expect(screen.getByAltText('Segmentation Overlay :: Watershed From Seeds fullscreen')).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Close fullscreen image'));
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete overlay Segmentation Overlay :: Watershed From Seeds' }));
     await waitFor(() => {
