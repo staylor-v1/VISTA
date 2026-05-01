@@ -663,16 +663,34 @@ def test_part_annotations_support_progressive_users_with_audit_trail(client, pro
         )
         assert part_resp.status_code == 201, part_resp.text
         part_id = part_resp.json()["id"]
+        annotation_payload = {
+            **scenario["annotation"],
+            "image_id": f"{project_type.lower()}-measurement-image-{scenario['part_suffix']}",
+            "geometry": {
+                "line": {
+                    "x1": 10.0,
+                    "y1": 12.0,
+                    "x2": 42.0,
+                    "y2": 48.0,
+                    "imageWidth": 100.0,
+                    "imageHeight": 80.0,
+                }
+            },
+            "metadata": {"measurement_color": "#3b82f6"},
+        }
 
         create_resp = client.post(
             f"/api/projects/{project_id}/parts/{part_id}/annotations",
-            json=scenario["annotation"],
+            json=annotation_payload,
             headers=headers,
         )
         assert create_resp.status_code == 201, create_resp.text
         created_annotation = create_resp.json()
         assert created_annotation["defect_class"] == scenario["annotation"]["defect_class"]
         assert created_annotation["modality"] == scenario["annotation"]["modality"]
+        assert created_annotation["image_id"] == annotation_payload["image_id"]
+        assert created_annotation["geometry"] == annotation_payload["geometry"]
+        assert created_annotation["metadata"]["measurement_color"] == "#3b82f6"
         assert created_annotation["hidden"] is False
         assert isinstance(created_annotation["created_by"], str)
         assert "@" in created_annotation["created_by"]

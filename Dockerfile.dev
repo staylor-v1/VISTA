@@ -83,18 +83,17 @@ FROM base AS frontend-dev
 WORKDIR /app/frontend
 
 # Copy package files first (for caching)
-COPY frontend/package*.json ./
+RUN chown appuser:appuser /app/frontend
+COPY --chown=appuser:appuser frontend/package*.json ./
 
-# Install dependencies and set ownership
-RUN npm install && chown -R appuser:appuser /app
+# Install dependencies as the runtime user so node_modules is writable without
+# a slow recursive ownership pass over the dependency tree.
+USER appuser
+RUN npm install
 
 # Copy frontend source (will be overridden by volume mount in development)
-COPY frontend/ ./
-
-RUN chown -R appuser:appuser /app
+COPY --chown=appuser:appuser frontend/ ./
 
 EXPOSE 3000
-
-USER appuser
 
 CMD ["npm", "run", "dev"]

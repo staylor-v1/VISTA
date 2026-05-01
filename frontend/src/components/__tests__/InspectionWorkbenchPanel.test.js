@@ -256,7 +256,9 @@ const scenarioByUser = [
   },
 ];
 
-function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys }) {
+const defaultCalibration = { pixels_per_mm: 20, pixels_per_inch: 508, unit: 'mm' };
+
+function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys, metadataDict = { calibration_default: defaultCalibration } }) {
   let mutableParts = [...parts];
   const savedWorkspaceStates = [];
   const savedConfigurations = [];
@@ -354,6 +356,17 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
     }
     if (url.includes('/workspace-state') && (!options.method || options.method === 'GET')) {
       return Promise.resolve({ ok: true, json: async () => ({ state: workspaceState }) });
+    }
+    if (url.includes('/metadata-dict') && (!options.method || options.method === 'GET')) {
+      return Promise.resolve({ ok: true, json: async () => metadataDict });
+    }
+    if (url.includes('/metadata') && options.method === 'POST') {
+      const payload = JSON.parse(options.body || '{}');
+      metadataDict[payload.key] = payload.value;
+      return Promise.resolve({ ok: true, json: async () => metadataDict });
+    }
+    if (url.includes('/images/') && url.includes('/metadata') && options.method === 'PUT') {
+      return Promise.resolve({ ok: true, json: async () => ({ metadata: { calibration_override: JSON.parse(options.body || '{}').value } }) });
     }
     if (url.includes('/configuration') && (!options.method || options.method === 'GET')) {
       return Promise.resolve({
@@ -944,18 +957,38 @@ describe('InspectionWorkbenchPanel', () => {
     Object.defineProperty(fullscreenImage, 'naturalWidth', { configurable: true, value: 1000 });
     Object.defineProperty(fullscreenImage, 'naturalHeight', { configurable: true, value: 500 });
     fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500 });
-    fireEvent.pointerDown(fullscreenImage, { clientX: 100, clientY: 100 });
-    fireEvent.pointerDown(fullscreenImage, { clientX: 300, clientY: 200 });
-    fireEvent.pointerUp(fullscreenImage);
+    fireEvent.click(fullscreenImage, { clientX: 100, clientY: 100 });
+    fireEvent.click(fullscreenImage, { clientX: 300, clientY: 200 });
 
-    const postCall = global.fetch.mock.calls.find((call) => call[0].includes('/annotations') && call[1]?.method === 'POST');
-    if (postCall) {
+    await waitFor(() => {
+      const postCall = global.fetch.mock.calls.find((call) => call[0].includes('/annotations') && call[1]?.method === 'POST');
+      expect(postCall).toBeDefined();
       const body = JSON.parse(postCall[1].body);
+      expect(body.image_id).toBe('part-basic-1-image-1');
       expect(body.geometry.line).toEqual(expect.objectContaining({ imageWidth: 1000, imageHeight: 500 }));
       expect(body.measurements.length_px).toBeDefined();
-    } else {
-      expect(screen.queryByText(/Failed to create measurement annotation/i)).not.toBeInTheDocument();
-    }
+      expect(body.measurements.length_mm).toBeCloseTo(11.18, 2);
+    });
+    await waitFor(() => expect(screen.getByLabelText('fullscreen measurement overlay')).toHaveTextContent('11.18 mm'));
+  });
+
+  test('asks for calibration before allowing fullscreen measurement when calibration is missing', async () => {
+    mockWorkbenchFetch({ ...scenarioByUser[0], metadataDict: {} });
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+    await waitFor(() => expect(screen.getByAltText('front view')).toBeInTheDocument());
+    fireEvent.click(screen.getByAltText('front view'));
+    fireEvent.click(screen.getByRole('button', { name: 'Measure' }));
+
+    expect(screen.getByRole('dialog', { name: 'Measurement calibration required' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Set Calibration' })).toBeInTheDocument();
+    expect(screen.queryByText(/Click to set first point/i)).not.toBeInTheDocument();
+
+    const fullscreenImage = screen.getByAltText(/fullscreen$/i);
+    Object.defineProperty(fullscreenImage, 'naturalWidth', { configurable: true, value: 1000 });
+    Object.defineProperty(fullscreenImage, 'naturalHeight', { configurable: true, value: 500 });
+    fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500 });
+    fireEvent.click(fullscreenImage, { clientX: 100, clientY: 100 });
+    expect(global.fetch.mock.calls.some((call) => call[0].includes('/annotations') && call[1]?.method === 'POST')).toBe(false);
   });
 
   test('renders measurement line and length text in both tile and fullscreen overlays', async () => {
