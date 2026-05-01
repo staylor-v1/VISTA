@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from importlib.util import find_spec
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from PIL import Image, ImageFilter, ImageOps
+from PIL import Image, ImageChops, ImageFilter, ImageOps
 
 from .contracts import ToolboxExecutionResult, WorkflowGraph, WorkflowImageInput, WorkflowNodeResult
 from .registry import _method_map, validate_workflow
@@ -223,6 +223,35 @@ def _asphalt_anomaly_heatmap(image: Image.Image, sensitivity: float, blur_radius
     return binary.filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.MaxFilter(3))
 
 
+def _frangi_ridge_heatmap(image: Image.Image, sensitivity: float, blur_radius: int) -> Image.Image:
+    gray = _grayscale(image).filter(ImageFilter.GaussianBlur(radius=max(0, int(blur_radius))))
+    inverted = ImageOps.invert(gray)
+    fine = inverted.filter(ImageFilter.FIND_EDGES)
+    coarse = inverted.filter(ImageFilter.GaussianBlur(radius=2)).filter(ImageFilter.FIND_EDGES)
+    enhanced = Image.blend(coarse, fine, alpha=0.65)
+    cutoff = int(255 * (0.75 - (max(0.0, min(1.0, sensitivity)) * 0.45)))
+    return enhanced.point(lambda value: 255 if value >= cutoff else 0).filter(ImageFilter.MaxFilter(3))
+
+
+def _blackhat_crack_heatmap(image: Image.Image, kernel_radius: int, sensitivity: float) -> Image.Image:
+    gray = _grayscale(image)
+    size = max(3, (int(kernel_radius) * 2) + 1)
+    closed = gray.filter(ImageFilter.MaxFilter(size)).filter(ImageFilter.MinFilter(size))
+    blackhat = ImageChops.subtract(closed, gray)
+    hist = blackhat.histogram()
+    total = sum(hist)
+    target_ratio = 0.025 + ((1.0 - max(0.0, min(1.0, sensitivity))) * 0.12)
+    target_pixels = max(1, int(total * target_ratio))
+    running = 0
+    threshold = 255
+    for level in range(255, -1, -1):
+        running += hist[level]
+        if running >= target_pixels:
+            threshold = level
+            break
+    return blackhat.point(lambda value: 255 if value >= threshold else 0).filter(ImageFilter.MaxFilter(3))
+
+
 def _morphology(mask: Image.Image, radius: int, operation: str) -> Image.Image:
     size = max(3, (int(radius) * 2) + 1)
     source = _grayscale(mask)
@@ -308,12 +337,24 @@ def _apply_node(state: ImageState, node, method) -> Tuple[ImageState, str, Dict[
         state.overlay_method_id = method.id
         state.overlay_method_name = method.name
         return state, "Computed edge mask.", _summarize_image(state.mask), artifacts
-    if node.method_id == "anomaly.asphalt_defects_heatmap":
+    if node.method_id == "anomaly.edge_density_heatmap":
         state.mask = _asphalt_anomaly_heatmap(state.image, float(params["sensitivity"]), int(params["blur_radius"]))
         state.overlay_label = _overlay_label("Anomaly Detection", method)
         state.overlay_method_id = method.id
         state.overlay_method_name = method.name
         return state, "Detected crack/pothole anomaly regions.", _summarize_image(state.mask), artifacts
+    if node.method_id == "anomaly.frangi_ridge":
+        state.mask = _frangi_ridge_heatmap(state.image, float(params["sensitivity"]), int(params["blur_radius"]))
+        state.overlay_label = _overlay_label("Anomaly Detection", method)
+        state.overlay_method_id = method.id
+        state.overlay_method_name = method.name
+        return state, "Computed Frangi-style ridge anomaly response.", _summarize_image(state.mask), artifacts
+    if node.method_id == "anomaly.blackhat_morphology":
+        state.mask = _blackhat_crack_heatmap(state.image, int(params["kernel_radius"]), float(params["sensitivity"]))
+        state.overlay_label = _overlay_label("Anomaly Detection", method)
+        state.overlay_method_id = method.id
+        state.overlay_method_name = method.name
+        return state, "Computed black-hat morphological crack response.", _summarize_image(state.mask), artifacts
     if node.method_id == "measure.region_properties":
         if not state.measurements:
             _, state.measurements = _connected_components(state.labels or state.mask or _otsu_threshold(state.image)[0], 0)
