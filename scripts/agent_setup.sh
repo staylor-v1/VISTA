@@ -66,6 +66,15 @@ claude mcp add --transport http context7 https://mcp.context7.com/mcp
 echo "--- Installation Complete ---"
 echo "Remember to configure API keys and restart your shell for changes to take effect."
 
+# --- Project frontend dependencies ---
+echo "--- Ensuring frontend dependencies are installed (react-scripts) ---"
+if [ -f "/workspace/VISTA/frontend/package.json" ]; then
+  (cd /workspace/VISTA/frontend && npm install)
+  echo "Frontend dependencies installed."
+else
+  echo "Skipped frontend install: /workspace/VISTA/frontend/package.json not found."
+fi
+
 # --- Setting up CLI aliases ---
 echo "--- Setting up CLI aliases ---"
 ALIAS_COMMAND="alias dclaude='claude --dangerously-skip-permissions'"
@@ -85,5 +94,4 @@ for shell_config in ~/.bashrc ~/.zshrc ~/.profile; do
 done
 
 echo "Alias 'dclaude' has been added. Restart your terminal or run 'source ~/.bashrc' (or appropriate shell config) to use it."
-
 
