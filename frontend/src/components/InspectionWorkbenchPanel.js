@@ -496,7 +496,7 @@ function useMprVolumeCache(imageStack, dimensions) {
     return () => {
       cancelled = true;
     };
-  }, [cacheKey, dimensions.coronal, dimensions.sagittal, imageStack]);
+  }, [cacheKey, dimensions, imageStack]);
 
   return cacheState;
 }
@@ -528,7 +528,7 @@ function MprSliceCanvas({ axis, volumeCache, volumeCacheStatus, slicePosition, d
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(sliceCanvas, 0, 0, canvas.width, canvas.height);
     return undefined;
-  }, [axis, dimensions.axial, dimensions.coronal, dimensions.sagittal, relevantSlicePosition, slicePosition, volumeCache]);
+  }, [axis, dimensions, relevantSlicePosition, slicePosition, volumeCache]);
 
   return (
     <canvas
@@ -584,23 +584,6 @@ function normalizeInspectorHotkeys(candidate) {
     normalized[binding] = /^[a-z0-9]$/.test(raw) ? raw : fallback;
   });
   return normalized;
-}
-
-function validateInspectorHotkeysDraft(candidate) {
-  const normalized = {};
-  const usedKeys = new Set();
-  for (const binding of Object.keys(DEFAULT_INSPECTOR_HOTKEYS)) {
-    const raw = String(candidate?.[binding] || '').trim().toLowerCase();
-    if (!/^[a-z0-9]$/.test(raw)) {
-      return { valid: false, message: 'Hotkeys must be single alphanumeric characters.', normalized: null };
-    }
-    if (usedKeys.has(raw)) {
-      return { valid: false, message: 'Hotkeys must use unique key bindings.', normalized: null };
-    }
-    usedKeys.add(raw);
-    normalized[binding] = raw;
-  }
-  return { valid: true, message: '', normalized };
 }
 
 function normalizePanelDimension(value, min, max, fallback) {
@@ -807,7 +790,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [selectedViewName, setSelectedViewName] = useState('');
   const [imageEnabled, setImageEnabled] = useState(true);
   const [measurementEntries, setMeasurementEntries] = useState([]);
-  const [measurementDraft, setMeasurementDraft] = useState({ label: '', value: '' });
   const [inspectorViewport, setInspectorViewport] = useState({ zoom: 1, panX: 0, panY: 0 });
   const [annotations, setAnnotations] = useState([]);
   const [annotationsLoading, setAnnotationsLoading] = useState(false);
@@ -828,8 +810,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     bbox: { x: '', y: '', width: '', height: '' },
   });
   const [inspectorHotkeys, setInspectorHotkeys] = useState(DEFAULT_INSPECTOR_HOTKEYS);
-  const [inspectorHotkeyDraft, setInspectorHotkeyDraft] = useState(DEFAULT_INSPECTOR_HOTKEYS);
-  const [hotkeySaveState, setHotkeySaveState] = useState({ loading: false, message: null, severity: null });
   const [projectConfiguration, setProjectConfiguration] = useState(null);
   const [inspectionColumnWidths, setInspectionColumnWidths] = useState(DEFAULT_INSPECTION_COLUMN_WIDTHS);
   const [shortcutHelpVisible, setShortcutHelpVisible] = useState(false);
@@ -963,7 +943,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
           resolvedConfig?.process_settings?.configurable_hotkeys,
         );
         setInspectorHotkeys(savedHotkeys);
-        setInspectorHotkeyDraft(savedHotkeys);
         setWorkspaceHydration(savedState);
         setBatches(safeBatches);
         setParts(safeParts);
@@ -1047,48 +1026,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     }
   }, []);
 
-  const saveInspectorHotkeys = async () => {
-    const validation = validateInspectorHotkeysDraft(inspectorHotkeyDraft);
-    if (!validation.valid) {
-      setHotkeySaveState({ loading: false, message: validation.message, severity: 'error' });
-      return;
-    }
-
-    const nextConfig = {
-      ...(projectConfiguration && typeof projectConfiguration === 'object' ? projectConfiguration : {}),
-      process_settings: {
-        ...((projectConfiguration && projectConfiguration.process_settings) || {}),
-        configurable_hotkeys: validation.normalized,
-      },
-    };
-
-    try {
-      setHotkeySaveState({ loading: true, message: null, severity: null });
-      const resp = await fetch(`/api/projects/${projectId}/configuration`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config: nextConfig }),
-      });
-      if (!resp.ok) {
-        throw new Error(`Failed to save hotkeys (${resp.status})`);
-      }
-      const payload = await resp.json();
-      const persistedConfig = payload?.config && typeof payload.config === 'object' ? payload.config : nextConfig;
-      const persistedHotkeys = normalizeInspectorHotkeys(
-        persistedConfig?.process_settings?.configurable_hotkeys,
-      );
-      setProjectConfiguration(persistedConfig);
-      setInspectorHotkeys(persistedHotkeys);
-      setInspectorHotkeyDraft(persistedHotkeys);
-      setHotkeySaveState({ loading: false, message: 'Hotkeys saved for this project.', severity: 'success' });
-    } catch (err) {
-      setHotkeySaveState({
-        loading: false,
-        message: err?.message || 'Failed to save hotkeys.',
-        severity: 'error',
-      });
-    }
-  };
 
   async function saveInspectionColumnWidths(columnWidths) {
     const nextConfig = {
@@ -1117,18 +1054,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     }
   }
 
-  const updatePanelLayout = (panelKey, updates) => {
-    setPanelLayout((prev) => {
-      const next = normalizePanelLayout({
-        ...prev,
-        [panelKey]: {
-          ...(prev[panelKey] || DEFAULT_PANEL_LAYOUT[panelKey]),
-          ...updates,
-        },
-      });
-      return next;
-    });
-  };
 
   const filteredParts = useMemo(() => {
     let output = [...parts];
@@ -1325,7 +1250,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       panX: clampRange(savedInspectorViewport.panX, -200, 200, 0),
       panY: clampRange(savedInspectorViewport.panY, -200, 200, 0),
     });
-    setMeasurementDraft({ label: '', value: '' });
     setAnnotationDraft({
       defect_class: '',
       modality: getModalities(selectedPart)[0] || 'visual',
@@ -1589,35 +1513,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     }));
   };
 
-  const toggleModality = (modality) => {
-    setEnabledModalities((prev) => {
-      if (prev.includes(modality)) {
-        if (prev.length === 1) return prev;
-        return prev.filter((value) => value !== modality);
-      }
-      return [...prev, modality];
-    });
-  };
-
-  const saveMeasurement = () => {
-    const value = Number(measurementDraft.value);
-    const label = measurementDraft.label.trim();
-    if (!label || !Number.isFinite(value)) return;
-    const nextEntry = {
-      id: `${Date.now()}-${measurementEntries.length + 1}`,
-      label,
-      value: Number(value.toFixed(2)),
-      units: 'mm',
-      modality: enabledModalities[0] || modalityOptions[0] || 'visual',
-      view: activeViewName || 'axial',
-    };
-    setMeasurementEntries((prev) => [nextEntry, ...prev]);
-    setMeasurementDraft({ label: '', value: '' });
-  };
-
-  const deleteMeasurement = (measurementId) => {
-    setMeasurementEntries((prev) => prev.filter((entry) => entry.id !== measurementId));
-  };
 
   const deleteAnalyzeOverlay = useCallback(async (entry) => {
     const overlayId = entry?.imageId || entry?.imageRef;
@@ -1638,24 +1533,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     }
   }, [projectId]);
 
-  const adjustInspectorZoom = (delta) => {
-    setInspectorViewport((prev) => ({
-      ...prev,
-      zoom: Math.min(4, Math.max(0.5, Number((prev.zoom + delta).toFixed(2)))),
-    }));
-  };
-
-  const panInspectorViewport = (dx, dy) => {
-    setInspectorViewport((prev) => ({
-      ...prev,
-      panX: Math.min(200, Math.max(-200, prev.panX + dx)),
-      panY: Math.min(200, Math.max(-200, prev.panY + dy)),
-    }));
-  };
-
-  const resetInspectorViewport = () => {
-    setInspectorViewport({ zoom: 1, panX: 0, panY: 0 });
-  };
 
   const runSegmentation = async () => {
     if (!selectedPart) return;
@@ -2120,7 +1997,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                       <img
                         className="mpr-fallback-projection"
                         src={fallbackImage.url}
-                        alt={`${label} fallback projection from ${fallbackImage.viewName} image`}
+                        alt={`${label} fallback projection from ${fallbackImage.viewName} view`}
                         loading="lazy"
                       />
                     ) : (

@@ -1078,7 +1078,7 @@ describe('InspectionWorkbenchPanel', () => {
     });
 
     expect(screen.queryByAltText(/Volume reconstruction slice/)).not.toBeInTheDocument();
-    expect(screen.getAllByAltText(/fallback projection from front image/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByAltText(/fallback projection from front view/i).length).toBeGreaterThan(0);
     expect(screen.queryByAltText(/Fallback visual hull shell front view/i)).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'shell' } });
     expect(screen.getByAltText(/Fallback visual hull shell front view/i)).toBeInTheDocument();

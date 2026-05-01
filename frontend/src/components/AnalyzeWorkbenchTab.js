@@ -568,7 +568,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
     const maxY = nodes.reduce((value, node) => Math.max(value, node.y + 140), 540);
     return { width: maxX, height: maxY };
   }, [nodes]);
-  const loadedImages = inputSource?.images || [];
+  const loadedImages = useMemo(() => inputSource?.images || [], [inputSource]);
   const processImageSet = useMemo(() => new Set(processImageIds.map(String)), [processImageIds]);
   const stagedImages = useMemo(
     () => loadedImages.filter((image) => processImageSet.has(String(imageIdFor(image)))),
