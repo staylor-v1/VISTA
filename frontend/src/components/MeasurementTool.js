@@ -19,6 +19,35 @@ export default function MeasurementTool({
   const [validationError, setValidationError] = useState(null);
   const overlayRef = useRef(null);
 
+  const calculateDistance = (line) => {
+    if (!line) return 0;
+    return Math.sqrt(
+      Math.pow(line.x2 - line.x1, 2) + Math.pow(line.y2 - line.y1, 2)
+    );
+  };
+
+  const finishDrawing = useCallback((event) => {
+    if (!isDrawing || !drawingLine) return;
+
+    const coords = getAdjustedCoordinates(event);
+    const finalLine = {
+      ...drawingLine,
+      x2: coords.x,
+      y2: coords.y
+    };
+
+    const distance = calculateDistance(finalLine);
+    if (distance < 5) {
+      setDrawingLine(null);
+      setIsDrawing(false);
+      return;
+    }
+
+    setDrawingLine(finalLine);
+    setIsDrawing(false);
+    setShowSaveDialog(true);
+  }, [isDrawing, drawingLine]);
+
   useEffect(() => {
     if (showSaveDialog) {
       const defaultName = `Measurement ${(existingMeasurementCount || 0) + 1}`;
@@ -69,32 +98,7 @@ export default function MeasurementTool({
   };
 
   const handleMouseUp = (e) => {
-    if (!isDrawing || !drawingLine) return;
-
-    const coords = getAdjustedCoordinates(e);
-    const finalLine = {
-      ...drawingLine,
-      x2: coords.x,
-      y2: coords.y
-    };
-
-    const distance = calculateDistance(finalLine);
-    if (distance < 5) {
-      setDrawingLine(null);
-      setIsDrawing(false);
-      return;
-    }
-
-    setDrawingLine(finalLine);
-    setIsDrawing(false);
-    setShowSaveDialog(true);
-  };
-
-  const calculateDistance = (line) => {
-    if (!line) return 0;
-    return Math.sqrt(
-      Math.pow(line.x2 - line.x1, 2) + Math.pow(line.y2 - line.y1, 2)
-    );
+    finishDrawing(e);
   };
 
   const calculateRealWorldDistances = (line) => {
@@ -204,6 +208,30 @@ export default function MeasurementTool({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleKeyDown]);
+
+  useEffect(() => {
+    if (!isDrawing) return undefined;
+
+    const handleWindowMouseMove = (e) => {
+      const coords = getAdjustedCoordinates(e);
+      setDrawingLine(prev => (prev ? {
+        ...prev,
+        x2: coords.x,
+        y2: coords.y
+      } : prev));
+    };
+
+    const handleWindowMouseUp = (e) => {
+      finishDrawing(e);
+    };
+
+    window.addEventListener('mousemove', handleWindowMouseMove);
+    window.addEventListener('mouseup', handleWindowMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleWindowMouseMove);
+      window.removeEventListener('mouseup', handleWindowMouseUp);
+    };
+  }, [isDrawing, finishDrawing]);
 
   // Show calibration error immediately when measure mode is active without calibration
   if (!calibration && leftClickEnabled) {
