@@ -113,20 +113,6 @@ function BatchesTab({ projectId, parts = [], onAssignmentsChanged, setError, onI
     return payload;
   };
 
-  const setManualFlag = async (partId, manualFlagged) => {
-    try {
-      const resp = await fetch(`/api/projects/${projectId}/parts/${partId}/manual-flag`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ manual_flagged: manualFlagged }),
-      });
-      if (!resp.ok) throw new Error(`Failed to update manual flag (${resp.status})`);
-      if (onAssignmentsChanged) await onAssignmentsChanged();
-    } catch (err) {
-      if (setError) setError(err.message || 'Failed to update manual flag');
-    }
-  };
-
   const renderPartChip = (part) => (
     <div
       key={part.id}
