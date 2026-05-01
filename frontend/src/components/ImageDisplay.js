@@ -43,7 +43,6 @@ function ImageDisplay({
   const [reason, setReason] = useState("");
   const [force, setForce] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [showForceDeleteConfirm, setShowForceDeleteConfirm] = useState(false);
   const [deleteError, setDeleteError] = useState(null);
   const MIN_REASON = 5;
 
@@ -94,12 +93,6 @@ function ImageDisplay({
       return;
     }
     
-    // If force delete and not confirmed, show secondary confirmation
-    if (force && !showForceDeleteConfirm) {
-      setShowForceDeleteConfirm(true);
-      return;
-    }
-    
     setSubmitting(true);
     try {
       const resp = await fetch(`/api/projects/${projectId}/images/${image.id}`, {
@@ -118,7 +111,6 @@ function ImageDisplay({
       setReason("");
       setForce(false);
       setDeleteError(null);
-      setShowForceDeleteConfirm(false);
     } catch (e) {
       setDeleteError(e.message);
     } finally {
@@ -546,18 +538,11 @@ function ImageDisplay({
                 setReason("");
                 setForce(false);
                 setDeleteError(null);
-                setShowForceDeleteConfirm(false);
               }}>&times;</span>
             </div>
             
             <div className="modal-body">
               <p>{force ? 'This will remove the file from storage immediately. Database record stays for audit.' : 'The image will be hidden and can be restored until retention expires.'}</p>
-              
-              {force && showForceDeleteConfirm && (
-                <div className="alert alert-warning" style={{ margin: '16px 0', padding: '12px', backgroundColor: '#fff3cd', border: '1px solid #ffeaa7', borderRadius: '4px', color: '#856404' }}>
-                  <strong>⚠️ Final Warning:</strong> This action will permanently delete the image file from storage and cannot be undone. Are you absolutely sure you want to proceed?
-                </div>
-              )}
               
               <div className="form-group">
                 <label htmlFor="delete-reason">Reason (required)</label>
@@ -578,9 +563,6 @@ function ImageDisplay({
                     checked={force} 
                     onChange={e => {
                       setForce(e.target.checked);
-                      if (!e.target.checked) {
-                        setShowForceDeleteConfirm(false);
-                      }
                     }} 
                   />
                   Force delete (also remove object from storage)
@@ -596,10 +578,9 @@ function ImageDisplay({
                 setReason("");
                 setForce(false);
                 setDeleteError(null);
-                setShowForceDeleteConfirm(false);
               }} disabled={submitting}>Cancel</button>
               <button className="btn btn-danger" onClick={handleDelete} disabled={submitting}>
-                {submitting ? 'Deleting...' : (force && showForceDeleteConfirm ? 'Permanently Delete' : force ? 'Force Delete' : 'Delete')}
+                {submitting ? 'Deleting...' : (force ? 'Force Delete' : 'Delete')}
               </button>
             </div>
           </div>
