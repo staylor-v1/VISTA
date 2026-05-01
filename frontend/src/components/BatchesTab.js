@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 const BATCH_STATUS_OPTIONS = [
   { value: 'not_started', label: 'Not Started' },
@@ -28,6 +28,10 @@ function summaryForParts(parts = []) {
 function BatchesTab({ projectId, parts = [], onAssignmentsChanged, setError, onInspectBatch }) {
   const [batches, setBatches] = useState([]);
   const [movingPartId, setMovingPartId] = useState('');
+  const [selectedPartIds, setSelectedPartIds] = useState([]);
+  const [selectionStart, setSelectionStart] = useState(null);
+  const [selectionRect, setSelectionRect] = useState(null);
+  const partsPaneRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -76,14 +80,17 @@ function BatchesTab({ projectId, parts = [], onAssignmentsChanged, setError, onI
   };
 
   const assignPartToBatch = async (partId, toBatchId) => {
-    if (!partId) return;
+    const partIds = selectedPartIds.includes(partId) ? selectedPartIds : [partId];
+    if (!partIds.length || !partIds[0]) return;
     try {
-      const resp = await fetch(`/api/projects/${projectId}/parts/batch-assignments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ part_id: partId, to_batch_id: toBatchId || null }),
-      });
-      if (!resp.ok) throw new Error(`Failed to assign part (${resp.status})`);
+      for (const selectedPartId of partIds) {
+        const resp = await fetch(`/api/projects/${projectId}/parts/batch-assignments`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ part_id: selectedPartId, to_batch_id: toBatchId || null }),
+        });
+        if (!resp.ok) throw new Error(`Failed to assign part (${resp.status})`);
+      }
       if (onAssignmentsChanged) await onAssignmentsChanged();
       if (setError) setError(null);
     } catch (err) {
@@ -91,6 +98,19 @@ function BatchesTab({ projectId, parts = [], onAssignmentsChanged, setError, onI
     } finally {
       setMovingPartId('');
     }
+  };
+
+  const createBatch = async () => {
+    const nextNumber = batches.length + 1;
+    const resp = await fetch(`/api/projects/${projectId}/batches`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: `Batch ${nextNumber}` }),
+    });
+    if (!resp.ok) throw new Error(`Failed to create batch (${resp.status})`);
+    const payload = await resp.json();
+    setBatches((prev) => [...prev, normalizeBatches([payload])[0]]);
+    return payload;
   };
 
   const setManualFlag = async (partId, manualFlagged) => {
@@ -110,19 +130,20 @@ function BatchesTab({ projectId, parts = [], onAssignmentsChanged, setError, onI
   const renderPartChip = (part) => (
     <div
       key={part.id}
-      className="image-part-chip batch-part-chip"
+      className={`image-part-chip batch-part-chip ${selectedPartIds.includes(part.id) ? 'selected' : ''}`}
       draggable
-      onDragStart={() => setMovingPartId(part.id)}
+      data-part-id={part.id}
+      onClick={(event) => {
+        if (event.ctrlKey || event.metaKey) {
+          setSelectedPartIds((prev) => (prev.includes(part.id) ? prev.filter((id) => id !== part.id) : [...prev, part.id]));
+          return;
+        }
+        setSelectedPartIds([part.id]);
+      }}
+      onDragStart={() => { setMovingPartId(part.id); if (!selectedPartIds.includes(part.id)) setSelectedPartIds([part.id]); }}
     >
       <div className="batch-part-chip-header">{part.display_name || part.serial_number}</div>
-      <label className="batch-manual-toggle">
-        <input
-          type="checkbox"
-          checked={part?.metadata?.manual_flagged === true}
-          onChange={(event) => setManualFlag(part.id, event.target.checked)}
-        />
-        Manual
-      </label>
+
     </div>
   );
 
@@ -151,7 +172,29 @@ function BatchesTab({ projectId, parts = [], onAssignmentsChanged, setError, onI
             </div>
           </div>
 
-          <div className="images-to-parts-column parts-column">
+          <div className="images-to-parts-column parts-column" ref={partsPaneRef} onMouseDown={(event) => {
+            if (event.target.closest('.batch-part-chip')) return;
+            setSelectionStart({ x: event.clientX, y: event.clientY });
+            setSelectionRect({ x: event.clientX, y: event.clientY, width: 0, height: 0 });
+          }} onMouseMove={(event) => {
+            if (!selectionStart) return;
+            const x = Math.min(selectionStart.x, event.clientX);
+            const y = Math.min(selectionStart.y, event.clientY);
+            const width = Math.abs(event.clientX - selectionStart.x);
+            const height = Math.abs(event.clientY - selectionStart.y);
+            setSelectionRect({ x, y, width, height });
+          }} onMouseUp={() => {
+            if (!selectionRect || !partsPaneRef.current) { setSelectionStart(null); return; }
+            const chips = Array.from(partsPaneRef.current.querySelectorAll('.batch-part-chip[data-part-id]'));
+            const selected = chips.filter((chip) => {
+              const rect = chip.getBoundingClientRect();
+              return rect.left < selectionRect.x + selectionRect.width && rect.right > selectionRect.x && rect.top < selectionRect.y + selectionRect.height && rect.bottom > selectionRect.y;
+            }).map((chip) => chip.getAttribute('data-part-id'));
+            setSelectedPartIds(selected);
+            setSelectionStart(null);
+            setSelectionRect(null);
+          }}>
+            <article className="images-to-parts-part-card batch-card" onDragOver={(event) => event.preventDefault()} onDrop={async () => { try { const created = await createBatch(); await assignPartToBatch(movingPartId, created.id); } catch (err) { if (setError) setError(err.message); } }}><div className="batch-card-header"><h3>New Batch</h3></div><p className="muted">Drag part(s) here to create a new batch.</p></article>
             {batches.map((batch) => {
               const batchParts = partsByBatch.get(batch.id) || [];
               const summary = summaryForParts(batchParts);
