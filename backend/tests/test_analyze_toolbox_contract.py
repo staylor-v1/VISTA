@@ -19,6 +19,16 @@ def _png_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def _rgb_png_bytes() -> bytes:
+    image = Image.new("RGB", (2, 1))
+    pixels = image.load()
+    pixels[0, 0] = (0, 20, 100)
+    pixels[1, 0] = (100, 220, 200)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def test_output_toolbox_exposes_only_operator_level_parameters():
     manifest = get_manifest()
     output_method = next(method for method in manifest.methods if method.id == "output.versioned_image_artifact")
@@ -150,6 +160,29 @@ def test_yolov8_node_reports_dependency_or_runner_contract():
         assert "model runner is configured" in yolo_node.message
     else:
         assert "optional 'ultralytics' package" in yolo_node.message
+
+
+def test_minmax_normalization_operates_per_rgb_channel():
+    image_id = uuid.uuid4()
+    workflow = WorkflowGraph(
+        name="Minmax RGB per-channel",
+        source={"kind": "manual_selection", "selected_image_ids": [image_id], "image_count": 1},
+        nodes=[
+            {"id": "input", "method_id": "source.project_part_images", "parameters": {}},
+            {"id": "minmax", "method_id": "preprocess.minmax_normalization", "parameters": {"output_min": 0.0, "output_max": 1.0}},
+        ],
+        edges=[{"source_node": "input", "target_node": "minmax"}],
+    )
+
+    result = execute_image_workflow(
+        workflow,
+        [WorkflowImageInput(image_id=image_id, filename="rgb.png", content_type="image/png", data=_rgb_png_bytes())],
+    )
+
+    assert result.status == "completed"
+    minmax_result = next(node for node in result.node_results if node.node_id == "minmax")
+    assert minmax_result.summary["mode"] == "RGB"
+    assert minmax_result.summary["intensity_range"] == [0, 255]
 
 
 def test_asphalt_anomaly_detector_emits_red_overlay_artifact():
