@@ -1,5 +1,6 @@
 import io
 import uuid
+import base64
 from importlib.util import find_spec
 
 from PIL import Image
@@ -182,3 +183,37 @@ def test_minmax_normalization_operates_per_rgb_channel():
     minmax_result = next(node for node in result.node_results if node.node_id == "minmax")
     assert minmax_result.summary["mode"] == "RGB"
     assert minmax_result.summary["intensity_range"] == [0, 255]
+
+
+def test_asphalt_anomaly_detector_emits_red_overlay_artifact():
+    image_id = uuid.uuid4()
+    workflow = WorkflowGraph(
+        name="Asphalt anomaly heatmap",
+        source={"kind": "manual_selection", "selected_image_ids": [image_id], "image_count": 1},
+        nodes=[
+            {"id": "input", "method_id": "source.project_part_images", "parameters": {}},
+            {
+                "id": "anomaly",
+                "method_id": "anomaly.asphalt_defects_heatmap",
+                "parameters": {"sensitivity": 0.6, "blur_radius": 1},
+            },
+            {"id": "output", "method_id": "output.versioned_image_artifact", "parameters": {"mode": "overlay_artifact"}},
+        ],
+        edges=[
+            {"source_node": "input", "target_node": "anomaly"},
+            {"source_node": "anomaly", "target_node": "output"},
+        ],
+    )
+
+    result = execute_image_workflow(
+        workflow,
+        [WorkflowImageInput(image_id=image_id, filename="asphalt.png", content_type="image/png", data=_png_bytes())],
+    )
+
+    assert result.status == "completed"
+    output_result = next(node for node in result.node_results if node.node_id == "output")
+    overlay_artifact = next(artifact for artifact in output_result.artifacts if artifact["kind"] == "overlay_image")
+    assert overlay_artifact["method_id"] == "anomaly.asphalt_defects_heatmap"
+    overlay_image = Image.open(io.BytesIO(base64.b64decode(overlay_artifact["data_base64"]))).convert("RGBA")
+    red_pixel_count = sum(1 for r, g, b, a in overlay_image.getdata() if a > 0 and r > g and r > b)
+    assert red_pixel_count > 0
