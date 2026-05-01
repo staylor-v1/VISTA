@@ -54,6 +54,7 @@ const DEFAULT_INSPECTOR_HOTKEYS = {
   toggle_shortcut_help: 'h',
 };
 const DEFAULT_INSPECTION_COLUMN_WIDTHS = { leftPx: null, rightPx: null };
+const MEASUREMENT_COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#06b6d4'];
 const RESIZABLE_COLUMN_MIN_PX = 220;
 const RESIZE_HANDLE_WIDTH_PX = 10;
 const FLEX_LAYOUT_CENTER_WEIGHT_PX = 760;
@@ -812,6 +813,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [fullscreenImageModal, setFullscreenImageModal] = useState(null);
   const [fullscreenMeasureActive, setFullscreenMeasureActive] = useState(false);
   const [fullscreenMeasureDraft, setFullscreenMeasureDraft] = useState(null);
+  const [fullscreenMeasurements, setFullscreenMeasurements] = useState([]);
+  const [pendingMeasurePoint, setPendingMeasurePoint] = useState(null);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState(null);
   const [viewportWidth, setViewportWidth] = useState(() => (
     typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth
@@ -842,8 +845,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const availableLayoutWidth = workbenchWidth > 0 ? workbenchWidth : viewportWidth;
   const inspectionLayoutCollapsed = availableLayoutWidth <= inspectionHierarchy.layout.collapseBreakpointPx;
   const minSideColumnWidthPx = Math.max(120, Math.round(availableLayoutWidth * 0.05));
-  const defaultLeftColumnWidthPx = normalizeLayoutNumber(leftRegion?.widthPx ?? leftRegion?.minWidthPx, 220);
-  const defaultRightColumnWidthPx = normalizeLayoutNumber(rightRegion?.widthPx ?? rightRegion?.minWidthPx, 220);
+  const defaultLeftColumnWidthPx = Math.max(220, Math.round(normalizeLayoutNumber(leftRegion?.widthPx ?? leftRegion?.minWidthPx, 220) * 0.5));
+  const defaultRightColumnWidthPx = Math.max(220, Math.round(normalizeLayoutNumber(rightRegion?.widthPx ?? rightRegion?.minWidthPx, 220) * 0.5));
   const configuredLeftColumnWidthPx = inspectionColumnWidths.leftPx ?? defaultLeftColumnWidthPx;
   const configuredRightColumnWidthPx = inspectionColumnWidths.rightPx ?? defaultRightColumnWidthPx;
   const inspectionFlexLayoutModel = useMemo(() => createInspectionFlexLayoutModel({
@@ -1727,7 +1730,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     }
   };
 
-  const createMeasurementAnnotation = async ({ line }) => {
+  const createMeasurementAnnotation = async ({ line, name, color, distanceMm }) => {
     if (!selectedPart?.id || !line || !line.imageWidth || !line.imageHeight) return;
     const width = Math.abs(line.x2 - line.x1);
     const height = Math.abs(line.y2 - line.y1);
@@ -1735,9 +1738,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     const payload = {
       defect_class: 'Measurement',
       modality: activeViewName || enabledModalities[0] || modalityOptions[0] || 'visual',
-      comment: 'Captured from fullscreen measurement tool.',
+      comment: name || 'Captured from measurement tool.',
       disposition: 'open',
-      measurements: { length_px: Number(distancePixels.toFixed(2)) },
+      measurements: { length_px: Number(distancePixels.toFixed(2)), ...(Number.isFinite(distanceMm) ? { length_mm: Number(distanceMm.toFixed(2)) } : {}) },
       bbox: {
         x: Number(Math.min(line.x1, line.x2).toFixed(2)),
         y: Number(Math.min(line.y1, line.y2).toFixed(2)),
@@ -1756,8 +1759,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       const created = await resp.json();
       setAnnotations((prev) => [created, ...prev]);
       setSelectedAnnotationId(created.id);
+      return created;
     } catch (err) {
       setError(err.message || 'Failed to create measurement annotation');
+      return null;
     }
   };
 
@@ -2620,27 +2625,56 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     </div>
   );
 
+
+
+  const classifyMeasurementLine = (line) => {
+    const dx = Math.abs(line.x2 - line.x1);
+    const dy = Math.abs(line.y2 - line.y1);
+    const horizontal = dy <= Math.max(dx, 1) * 0.1;
+    const vertical = dx <= Math.max(dy, 1) * 0.1;
+    if (horizontal) return 'Horizontal';
+    if (vertical) return 'Vertical';
+    return 'Diagonal';
+  };
+
+  const nextMeasurementName = (kind) => {
+    const count = fullscreenMeasurements.filter((item) => item.kind === kind).length + 1;
+    return `${kind} line ${count}`;
+  };
+
+  const getLineDistanceMm = (line) => {
+    const pixelsPerMm = Number(projectConfiguration?.calibration?.pixels_per_mm || 0);
+    const distancePx = Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
+    return pixelsPerMm > 0 ? distancePx / pixelsPerMm : null;
+  };
+
   const handleFullscreenMeasurePointerDown = (event) => {
     if (!fullscreenMeasureActive) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const x = ((event.clientX - rect.left) / rect.width) * event.currentTarget.naturalWidth;
     const y = ((event.clientY - rect.top) / rect.height) * event.currentTarget.naturalHeight;
-    setFullscreenMeasureDraft({ x1: x, y1: y, x2: x, y2: y, imageWidth: event.currentTarget.naturalWidth, imageHeight: event.currentTarget.naturalHeight });
+    if (!pendingMeasurePoint) {
+      setPendingMeasurePoint({ x, y, imageWidth: event.currentTarget.naturalWidth, imageHeight: event.currentTarget.naturalHeight });
+      return;
+    }
+    const line = { x1: pendingMeasurePoint.x, y1: pendingMeasurePoint.y, x2: x, y2: y, imageWidth: event.currentTarget.naturalWidth, imageHeight: event.currentTarget.naturalHeight };
+    setFullscreenMeasureDraft(line);
   };
 
-  const handleFullscreenMeasurePointerMove = (event) => {
-    if (!fullscreenMeasureDraft) return;
-    const rect = event.currentTarget.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) / rect.width) * event.currentTarget.naturalWidth;
-    const y = ((event.clientY - rect.top) / rect.height) * event.currentTarget.naturalHeight;
-    setFullscreenMeasureDraft((prev) => (prev ? { ...prev, x2: x, y2: y } : null));
-  };
+  const handleFullscreenMeasurePointerMove = () => {};
 
   const handleFullscreenMeasurePointerUp = async () => {
     if (!fullscreenMeasureDraft) return;
-    await createMeasurementAnnotation({ line: fullscreenMeasureDraft });
+    const kind = classifyMeasurementLine(fullscreenMeasureDraft);
+    const name = nextMeasurementName(kind);
+    const color = MEASUREMENT_COLORS[fullscreenMeasurements.length % MEASUREMENT_COLORS.length];
+    const distanceMm = getLineDistanceMm(fullscreenMeasureDraft);
+    const created = await createMeasurementAnnotation({ line: fullscreenMeasureDraft, name, color, distanceMm });
+    if (created) {
+      setFullscreenMeasurements((prev) => [...prev, { ...fullscreenMeasureDraft, id: created.id, name, kind, color, distanceMm }]);
+    }
     setFullscreenMeasureDraft(null);
-    setFullscreenMeasureActive(false);
+    setPendingMeasurePoint(null);
   };
 
   const renderFullscreenImageModal = () => {
@@ -2658,6 +2692,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
             </div>
           </div>
           <div className="inspection-fullscreen-stage">
+            {fullscreenMeasureActive && <div className="workbench-notice">Click to set first point, click again set set second point. Click and drag to adjust points.</div>}
             <img
               src={`/api/images/${encodeURIComponent(fullscreenImageModal.imageId)}/content`}
               alt={`${fullscreenImageModal.label} fullscreen`}
@@ -2666,6 +2701,14 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
               onPointerMove={handleFullscreenMeasurePointerMove}
               onPointerUp={handleFullscreenMeasurePointerUp}
             />
+            <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 ${fullscreenImageModal.width || 1000} ${fullscreenImageModal.height || 1000}`} preserveAspectRatio="none">
+              {fullscreenMeasurements.map((line) => (
+                <g key={line.id}>
+                  <line x1={line.x1} y1={line.y1} x2={line.x2} y2={line.y2} stroke={line.color} strokeWidth="3" />
+                  <text x={(line.x1+line.x2)/2} y={(line.y1+line.y2)/2 - 6} fill={line.color} fontSize="20">{Number.isFinite(line.distanceMm) ? `${line.distanceMm.toFixed(2)} mm` : ''}</text>
+                </g>
+              ))}
+            </svg>
           </div>
         </div>
       </div>
