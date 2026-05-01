@@ -308,6 +308,11 @@ class InspectionProjectInterfaceLayoutConfig(BaseModel):
     default_model: Optional[Dict[str, Any]] = None
 
 
+
+class InspectionProjectOwnerConfig(BaseModel):
+    name: str = Field(default="", max_length=255)
+    email: str = Field(default="", max_length=255)
+
 class InspectionProjectConfiguration(BaseModel):
     image_modalities: List[InspectionProjectModalityConfig] = Field(default_factory=list)
     part_views: List[InspectionProjectPartViewConfig] = Field(default_factory=list)
@@ -316,6 +321,7 @@ class InspectionProjectConfiguration(BaseModel):
     display_settings: InspectionProjectDisplaySettingsConfig = Field(default_factory=InspectionProjectDisplaySettingsConfig)
     phase_settings: InspectionProjectPhaseSettingsConfig = Field(default_factory=InspectionProjectPhaseSettingsConfig)
     interface_layout: InspectionProjectInterfaceLayoutConfig = Field(default_factory=InspectionProjectInterfaceLayoutConfig)
+    project_owner: InspectionProjectOwnerConfig = Field(default_factory=InspectionProjectOwnerConfig)
 
 
 class InspectionProjectConfigurationPayload(BaseModel):

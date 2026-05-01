@@ -261,6 +261,10 @@ const EMPTY_CONFIG = {
     manual_phase_selection_enabled: false,
     manual_phase: 'data_ingestion',
   },
+  project_owner: {
+    name: '',
+    email: '',
+  },
 };
 
 const DEFAULT_DEFECT_TYPE_COLORS = ['#ef4444', '#f59e0b', '#3b82f6'];
@@ -666,6 +670,16 @@ function ProjectConfigurationPanel({
             </article>
           </div>
 
+
+          <section className="part-detail-panel" aria-label="Project owner">
+            <h3>Project Owner</h3>
+            <div className="workbench-controls-row">
+              <label htmlFor="project-owner-name">Owner Name</label>
+              <input id="project-owner-name" className="form-control" value={config.project_owner?.name || ''} onChange={(event) => setConfig((previous) => ({ ...previous, project_owner: { ...(previous.project_owner || {}), name: event.target.value } }))} />
+              <label htmlFor="project-owner-email">Owner Email</label>
+              <input id="project-owner-email" className="form-control" value={config.project_owner?.email || ''} onChange={(event) => setConfig((previous) => ({ ...previous, project_owner: { ...(previous.project_owner || {}), email: event.target.value } }))} />
+            </div>
+          </section>
           <section className="part-detail-panel" aria-label="Process settings">
             <h3>Process Settings</h3>
             <label>
