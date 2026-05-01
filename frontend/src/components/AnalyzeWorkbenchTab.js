@@ -539,11 +539,13 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
   const [graphDrag, setGraphDrag] = useState(null);
   const [workflowStateLoaded, setWorkflowStateLoaded] = useState(false);
   const [status, setStatus] = useState({ loading: true, message: 'Loading analyze workspace...', result: null });
+  const [collapsedCategories, setCollapsedCategories] = useState({});
   const graphDragRef = useRef(null);
   const suppressNodeClickRef = useRef(null);
 
   const methodById = useMemo(() => new Map(methods.map((method) => [method.id, method])), [methods]);
   const methodsByCategory = useMemo(() => groupMethods(methods), [methods]);
+  const orderedCategories = useMemo(() => Object.entries(methodsByCategory), [methodsByCategory]);
   const selectedNode = useMemo(
     () => nodes.find((node) => node.id === selectedNodeId) || nodes[0] || null,
     [nodes, selectedNodeId]
@@ -566,6 +568,23 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
     [loadedImages, processImageSet]
   );
   const outputConfig = useMemo(() => buildOutputConfig(nodes), [nodes]);
+
+  useEffect(() => {
+    setCollapsedCategories((previous) => {
+      const next = {};
+      orderedCategories.forEach(([category]) => {
+        next[category] = previous[category] ?? false;
+      });
+      return next;
+    });
+  }, [orderedCategories]);
+
+  const toggleCategoryCollapsed = useCallback((category) => {
+    setCollapsedCategories((previous) => ({
+      ...previous,
+      [category]: !previous[category],
+    }));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -835,10 +854,18 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
 
       <div className="analyze-grid">
         <aside className="analyze-toolbox" aria-label="Analyze toolbox">
-          {Object.entries(methodsByCategory).map(([category, categoryMethods]) => (
+          {orderedCategories.map(([category, categoryMethods]) => (
             <section key={category} className="analyze-toolbox-group">
-              <h3>{category}</h3>
-              <div className="analyze-method-list">
+              <button
+                type="button"
+                className="analyze-toolbox-group-toggle"
+                onClick={() => toggleCategoryCollapsed(category)}
+                aria-expanded={!collapsedCategories[category]}
+              >
+                <h3>{category}</h3>
+                <span aria-hidden="true">{collapsedCategories[category] ? '+' : '−'}</span>
+              </button>
+              <div className={`analyze-method-list ${collapsedCategories[category] ? 'collapsed' : ''}`}>
                 {categoryMethods.map((method) => (
                   <button
                     key={method.id}
