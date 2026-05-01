@@ -4889,6 +4889,52 @@ ul li:hover {
   opacity: 0.55;
 }
 
+.inspection-overlay-delete-confirm {
+  display: grid;
+  gap: 4px;
+  flex: 0 0 auto;
+  justify-items: stretch;
+  min-width: 72px;
+}
+
+.inspection-overlay-delete-cancel,
+.inspection-overlay-delete-commit {
+  height: 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 18px;
+  padding: 0 8px;
+}
+
+.inspection-overlay-delete-cancel {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #334155;
+}
+
+.inspection-overlay-delete-commit {
+  border: 1px solid #b91c1c;
+  background: #dc2626;
+  color: #fff;
+}
+
+.inspection-overlay-delete-cancel:hover,
+.inspection-overlay-delete-cancel:focus-visible {
+  background: #f1f5f9;
+}
+
+.inspection-overlay-delete-commit:hover,
+.inspection-overlay-delete-commit:focus-visible {
+  background: #991b1b;
+}
+
+.inspection-overlay-delete-commit:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .recently-deleted-overlays-panel {
   display: grid;
   gap: 14px;

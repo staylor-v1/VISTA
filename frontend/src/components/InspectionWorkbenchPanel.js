@@ -193,29 +193,49 @@ function getPartImageRefs(part) {
       });
     });
   }
+  const hasViewRefs = refs.length > 0;
+  const isAnalyzeOutputRecord = (record) => {
+    const modality = String(record?.modality || '').toLowerCase();
+    return Boolean(
+      record?.analysis_output
+      || record?.analysis_source_image_id
+      || record?.overlay_base_image_id
+      || modality === 'analyze-overlay'
+    );
+  };
+  const pushRecord = (record, index, forceOverlay = false) => {
+    if (!record || typeof record !== 'object') return;
+    if (record.overlay_delete_candidate || record.delete_candidate) return;
+    const overlay = forceOverlay || record.overlay === true || record.analysis_output === true;
+    if (!overlay && hasViewRefs) return;
+    const imageRef = String(record.image_id || record.filename || '');
+    if (!imageRef || seen.has(imageRef)) return;
+    seen.add(imageRef);
+    const label = overlay
+      ? String(record.label || record.analysis_label || 'Analyze Overlay')
+      : String(record.side || record.modality || `IMAGE ${index + 1}`).toUpperCase();
+    refs.push({
+      id: `${part.id}-${overlay ? 'analysis' : 'source'}-${index}`,
+      viewName: String(record.side || record.modality || (overlay ? 'overlay' : 'image')).toLowerCase(),
+      label,
+      imageRef,
+      filename: String(record.filename || ''),
+      imageId: record.image_id ? String(record.image_id) : '',
+      overlay,
+      overlayBaseImageId: record.overlay_base_image_id ? String(record.overlay_base_image_id) : '',
+      overlayBaseFilename: record.overlay_base_filename ? String(record.overlay_base_filename) : '',
+    });
+  };
   const sourceImages = part?.metadata?.source_images;
   if (Array.isArray(sourceImages)) {
     sourceImages.forEach((record, index) => {
-      if (!record || typeof record !== 'object') return;
-      if (record.overlay_delete_candidate || record.delete_candidate) return;
-      const imageRef = String(record.image_id || record.filename || '');
-      if (!imageRef || seen.has(imageRef)) return;
-      seen.add(imageRef);
-      const overlay = record.overlay === true || record.analysis_output === true;
-      const label = overlay
-        ? String(record.label || record.analysis_label || 'Analyze Overlay')
-        : String(record.side || record.modality || `IMAGE ${index + 1}`).toUpperCase();
-      refs.push({
-        id: `${part.id}-source-${index}`,
-        viewName: String(record.side || record.modality || (overlay ? 'overlay' : 'image')).toLowerCase(),
-        label,
-        imageRef,
-        filename: String(record.filename || ''),
-        imageId: record.image_id ? String(record.image_id) : '',
-        overlay,
-        overlayBaseImageId: record.overlay_base_image_id ? String(record.overlay_base_image_id) : '',
-        overlayBaseFilename: record.overlay_base_filename ? String(record.overlay_base_filename) : '',
-      });
+      pushRecord(record, index, isAnalyzeOutputRecord(record));
+    });
+  }
+  const analysisOutputs = part?.metadata?.analysis_outputs;
+  if (Array.isArray(analysisOutputs)) {
+    analysisOutputs.forEach((record, index) => {
+      pushRecord(record, index, true);
     });
   }
   return refs;
@@ -789,6 +809,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [selectedImageRef, setSelectedImageRef] = useState('');
   const [projectImageLookup, setProjectImageLookup] = useState({});
   const [deletingOverlayId, setDeletingOverlayId] = useState('');
+  const [overlayDeletePromptId, setOverlayDeletePromptId] = useState('');
   const [viewportWidth, setViewportWidth] = useState(() => (
     typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth
   ));
@@ -1559,6 +1580,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       const updatedPart = await resp.json();
       setParts((prev) => prev.map((part) => (part.id === updatedPart.id ? updatedPart : part)));
       setSelectedImageRef((current) => (String(current) === String(entry.imageRef) ? '' : current));
+      setOverlayDeletePromptId('');
     } catch (err) {
       setError(err.message || 'Failed to delete Analyze overlay');
     } finally {
@@ -2196,18 +2218,43 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     <div className="view-cell-title">
                       <span>{entry.label || viewName.toUpperCase()}</span>
                       {entry.overlay && entry.imageId && (
-                        <button
-                          type="button"
-                          className="inspection-overlay-delete"
-                          aria-label={`Delete overlay ${entry.label || viewName}`}
-                          disabled={deletingOverlayId === String(entry.imageId)}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            deleteAnalyzeOverlay(entry);
-                          }}
-                        >
-                          ×
-                        </button>
+                        overlayDeletePromptId === String(entry.imageId) ? (
+                          <div
+                            className="inspection-overlay-delete-confirm"
+                            role="alertdialog"
+                            aria-label={`Confirm delete overlay ${entry.label || viewName}`}
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              className="inspection-overlay-delete-cancel"
+                              onClick={() => setOverlayDeletePromptId('')}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              className="inspection-overlay-delete-commit"
+                              disabled={deletingOverlayId === String(entry.imageId)}
+                              onClick={() => deleteAnalyzeOverlay(entry)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="inspection-overlay-delete"
+                            aria-label={`Delete overlay ${entry.label || viewName}`}
+                            disabled={deletingOverlayId === String(entry.imageId)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setOverlayDeletePromptId(String(entry.imageId));
+                            }}
+                          >
+                            ×
+                          </button>
+                        )
                       )}
                     </div>
                     <div className="view-cell-body">
