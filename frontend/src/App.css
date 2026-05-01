@@ -4382,6 +4382,18 @@ ul li:hover {
   margin-bottom: 14px;
 }
 
+.analyze-toolbox-group-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid #e0d8c8;
+  border-radius: 6px;
+  background: #fffaf1;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
 .analyze-toolbox-group h3 {
   margin: 0 0 6px;
   color: #5c5042;
@@ -4391,9 +4403,18 @@ ul li:hover {
   text-transform: uppercase;
 }
 
+.analyze-toolbox-group-toggle h3 {
+  margin: 0;
+}
+
 .analyze-method-list {
   display: grid;
+  margin-top: 6px;
   gap: 6px;
+}
+
+.analyze-method-list.collapsed {
+  display: none;
 }
 
 .analyze-method-button {
