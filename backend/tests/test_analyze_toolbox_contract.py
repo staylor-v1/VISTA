@@ -185,16 +185,16 @@ def test_minmax_normalization_operates_per_rgb_channel():
     assert minmax_result.summary["intensity_range"] == [0, 255]
 
 
-def test_asphalt_anomaly_detector_emits_red_overlay_artifact():
+def test_edge_density_anomaly_detector_emits_red_overlay_artifact():
     image_id = uuid.uuid4()
     workflow = WorkflowGraph(
-        name="Asphalt anomaly heatmap",
+        name="Edge density anomaly heatmap",
         source={"kind": "manual_selection", "selected_image_ids": [image_id], "image_count": 1},
         nodes=[
             {"id": "input", "method_id": "source.project_part_images", "parameters": {}},
             {
                 "id": "anomaly",
-                "method_id": "anomaly.asphalt_defects_heatmap",
+                "method_id": "anomaly.edge_density_heatmap",
                 "parameters": {"sensitivity": 0.6, "blur_radius": 1},
             },
             {"id": "output", "method_id": "output.versioned_image_artifact", "parameters": {"mode": "overlay_artifact"}},
@@ -213,7 +213,40 @@ def test_asphalt_anomaly_detector_emits_red_overlay_artifact():
     assert result.status == "completed"
     output_result = next(node for node in result.node_results if node.node_id == "output")
     overlay_artifact = next(artifact for artifact in output_result.artifacts if artifact["kind"] == "overlay_image")
-    assert overlay_artifact["method_id"] == "anomaly.asphalt_defects_heatmap"
+    assert overlay_artifact["method_id"] == "anomaly.edge_density_heatmap"
     overlay_image = Image.open(io.BytesIO(base64.b64decode(overlay_artifact["data_base64"]))).convert("RGBA")
     red_pixel_count = sum(1 for r, g, b, a in overlay_image.getdata() if a > 0 and r > g and r > b)
     assert red_pixel_count > 0
+
+
+def test_frangi_and_blackhat_anomaly_methods_emit_overlay_artifacts():
+    image_id = uuid.uuid4()
+    methods = [
+        ("anomaly.frangi_ridge", {"sensitivity": 0.5, "blur_radius": 1}),
+        ("anomaly.blackhat_morphology", {"kernel_radius": 2, "sensitivity": 0.5}),
+    ]
+
+    for method_id, params in methods:
+        workflow = WorkflowGraph(
+            name=f"Anomaly method {method_id}",
+            source={"kind": "manual_selection", "selected_image_ids": [image_id], "image_count": 1},
+            nodes=[
+                {"id": "input", "method_id": "source.project_part_images", "parameters": {}},
+                {"id": "anomaly", "method_id": method_id, "parameters": params},
+                {"id": "output", "method_id": "output.versioned_image_artifact", "parameters": {"mode": "overlay_artifact"}},
+            ],
+            edges=[
+                {"source_node": "input", "target_node": "anomaly"},
+                {"source_node": "anomaly", "target_node": "output"},
+            ],
+        )
+
+        result = execute_image_workflow(
+            workflow,
+            [WorkflowImageInput(image_id=image_id, filename="asphalt.png", content_type="image/png", data=_png_bytes())],
+        )
+
+        assert result.status == "completed"
+        output_result = next(node for node in result.node_results if node.node_id == "output")
+        overlay_artifact = next(artifact for artifact in output_result.artifacts if artifact["kind"] == "overlay_image")
+        assert overlay_artifact["method_id"] == method_id
