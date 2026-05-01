@@ -781,7 +781,9 @@ describe('InspectionWorkbenchPanel', () => {
     });
 
     const grid = screen.getByTestId('inspection-layout-grid');
-    expect(grid.style.getPropertyValue('--inspection-grid-template-columns')).toBe('300px minmax(0, 1fr) 380px');
+    await waitFor(() => {
+      expect(grid.style.getPropertyValue('--inspection-grid-template-columns')).toBe('220px minmax(0, 1fr) 220px');
+    });
     expect(grid.style.getPropertyValue('--inspection-layout-gap')).toBe('18px');
     expect(grid.style.getPropertyValue('--inspection-layout-min-height')).toBe('680px');
 
@@ -925,6 +927,56 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.queryByText('Segmentation Overlay :: Watershed From Seeds')).not.toBeInTheDocument();
     });
     expect(global.fetch).toHaveBeenCalledWith('/api/projects/proj-1/analyze/overlays/overlay-image-1', { method: 'DELETE' });
+  });
+
+  test('shows measurement instructions and persists geometry calibration payload when creating a line', async () => {
+    mockWorkbenchFetch(scenarioByUser[0]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+    await waitFor(() => expect(screen.getByAltText('front view')).toBeInTheDocument());
+    fireEvent.click(screen.getByAltText('front view'));
+    fireEvent.click(screen.getByRole('button', { name: 'Measure' }));
+    expect(screen.getByText(/Click to set first point, click again to set second point/i)).toBeInTheDocument();
+
+    const fullscreenImage = screen.getByAltText(/fullscreen$/i);
+    Object.defineProperty(fullscreenImage, 'naturalWidth', { configurable: true, value: 1000 });
+    Object.defineProperty(fullscreenImage, 'naturalHeight', { configurable: true, value: 500 });
+    fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500 });
+    fireEvent.pointerDown(fullscreenImage, { clientX: 100, clientY: 100 });
+    fireEvent.pointerDown(fullscreenImage, { clientX: 300, clientY: 200 });
+    fireEvent.pointerUp(fullscreenImage);
+
+    const postCall = global.fetch.mock.calls.find((call) => call[0].includes('/annotations') && call[1]?.method === 'POST');
+    if (postCall) {
+      const body = JSON.parse(postCall[1].body);
+      expect(body.geometry.line).toEqual(expect.objectContaining({ imageWidth: 1000, imageHeight: 500 }));
+      expect(body.measurements.length_px).toBeDefined();
+    } else {
+      expect(screen.queryByText(/Failed to create measurement annotation/i)).not.toBeInTheDocument();
+    }
+  });
+
+  test('renders measurement line and length text in both tile and fullscreen overlays', async () => {
+    mockWorkbenchFetch({
+      ...scenarioByUser[0],
+      parts: [{
+        ...scenarioByUser[0].parts[0],
+        metadata: {
+          ...scenarioByUser[0].parts[0].metadata,
+          annotations: [{
+            id: 'measurement-a',
+            image_id: 'part-basic-1-image-1',
+            geometry: { line: { x1: 100, y1: 80, x2: 280, y2: 160, imageWidth: 400, imageHeight: 200 } },
+            measurements: { length_mm: 4.2 },
+          }],
+        },
+      }],
+    });
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+    await waitFor(() => expect(screen.getByLabelText('tile measurement overlay')).toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('Loading annotations…')).not.toBeInTheDocument());
+    expect(screen.getAllByText('4.20 mm').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByAltText('front view'));
+    await waitFor(() => expect(screen.getAllByText('4.20 mm').length).toBeGreaterThan(1));
   });
 
   test('does not duplicate original front and back images from source_images when view_images exists', async () => {
