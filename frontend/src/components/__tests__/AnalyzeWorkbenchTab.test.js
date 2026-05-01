@@ -138,6 +138,14 @@ function mockFetch() {
   });
 }
 
+function dragMethodToGraph(methodRoleName, methodId) {
+  const toolboxMethod = screen.getByRole('button', { name: methodRoleName });
+  const graph = screen.getByTestId('analyze-graph');
+  const dataTransfer = { setData: jest.fn(), getData: jest.fn(() => methodId), effectAllowed: 'copy' };
+  fireEvent.dragStart(toolboxMethod, { dataTransfer });
+  fireEvent.drop(graph, { dataTransfer });
+}
+
 describe('AnalyzeWorkbenchTab', () => {
   afterEach(() => {
     jest.resetAllMocks();
@@ -152,7 +160,7 @@ describe('AnalyzeWorkbenchTab', () => {
     expect(screen.getByTestId('analyze-source-summary')).toHaveTextContent('2 images');
     expect(screen.getByRole('button', { name: /Workflow block Window \/ Level Normalization/i })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /YOLOv8 Object Detection/i }));
+    dragMethodToGraph(/YOLOv8 Object Detection/i, 'ml.yolov8.detect');
     expect(screen.getByRole('button', { name: /Workflow block YOLOv8 Object Detection/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Workflow block Recipe \/ Artifact Output/i }));
@@ -241,15 +249,17 @@ describe('AnalyzeWorkbenchTab', () => {
     expect(workflow.source.selected_image_ids).toEqual(['img-2']);
   });
 
-  test('removes the selected workflow block from the configuration column', async () => {
+  test('removes multiple selected workflow blocks from the configuration column', async () => {
     mockFetch();
     render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
 
     await waitFor(() => expect(screen.getByRole('button', { name: /Workflow block Window \/ Level Normalization/i })).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /Workflow block Window \/ Level Normalization/i }));
-    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    fireEvent.click(screen.getByRole('button', { name: /Workflow block Watershed From Seeds/i }), { ctrlKey: true });
+    fireEvent.click(screen.getByRole('button', { name: /Remove/ }));
 
     expect(screen.queryByRole('button', { name: /Workflow block Window \/ Level Normalization/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Workflow block Watershed From Seeds/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Run' }));
 
     await waitFor(() => expect(screen.getByTestId('analyze-run-summary')).toHaveTextContent('completed'));
@@ -308,10 +318,11 @@ describe('AnalyzeWorkbenchTab', () => {
 
     await screen.findByRole('button', { name: /Workflow block Loaded Part Images/i });
 
-    fireEvent.click(screen.getByRole('button', { name: /^Project Part Image Source/i }));
+    dragMethodToGraph(/^Project Part Image Source/i, 'source.project_part_images');
     expect(screen.getByRole('button', { name: /Workflow block Loaded Part Images 2/i })).toHaveStyle({ left: '72px', top: '236px' });
 
-    fireEvent.click(screen.getByRole('button', { name: /^YOLOv8 Object Detection/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Workflow block Loaded Part Images 2/i }));
+    dragMethodToGraph(/^YOLOv8 Object Detection/i, 'ml.yolov8.detect');
     expect(screen.getByRole('button', { name: /Workflow block YOLOv8 Object Detection/i })).toHaveStyle({ left: '296px', top: '236px' });
 
     fireEvent.click(screen.getByRole('button', { name: 'Run' }));
@@ -334,7 +345,7 @@ describe('AnalyzeWorkbenchTab', () => {
     render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
 
     await screen.findByRole('button', { name: /Workflow block Loaded Part Images/i });
-    fireEvent.click(screen.getByRole('button', { name: /^Project Part Image Source/i }));
+    dragMethodToGraph(/^Project Part Image Source/i, 'source.project_part_images');
 
     await waitFor(() => {
       const saveCall = global.fetch.mock.calls.find(([url, options = {}]) => (
@@ -410,8 +421,9 @@ describe('AnalyzeWorkbenchTab', () => {
     render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
 
     await screen.findByRole('button', { name: /Workflow block Loaded Part Images/i });
-    fireEvent.click(screen.getByRole('button', { name: /^Project Part Image Source/i }));
-    fireEvent.click(screen.getByRole('button', { name: /^YOLOv8 Object Detection/i }));
+    dragMethodToGraph(/^Project Part Image Source/i, 'source.project_part_images');
+    fireEvent.click(screen.getByRole('button', { name: /Workflow block Loaded Part Images 2/i }));
+    dragMethodToGraph(/^YOLOv8 Object Detection/i, 'ml.yolov8.detect');
 
     const watershedNode = screen.getByRole('button', { name: /Workflow block Watershed From Seeds/i });
     fireEvent.mouseDown(watershedNode, { button: 0, clientX: 600, clientY: 100 });

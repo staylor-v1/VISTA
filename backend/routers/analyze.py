@@ -119,6 +119,61 @@ def _overlay_record_image_id(record: Dict[str, Any]) -> str:
     return str(record.get("image_id") or "").strip()
 
 
+def _record_identity(record: Dict[str, Any]) -> str:
+    return _overlay_record_image_id(record) or str(record.get("filename") or "").strip()
+
+
+def _is_analyze_output_record(record: Dict[str, Any]) -> bool:
+    modality = str(record.get("modality") or "").strip().lower()
+    return bool(
+        record.get("analysis_output")
+        or record.get("analysis_source_image_id")
+        or record.get("overlay_base_image_id")
+        or modality == "analyze-overlay"
+    )
+
+
+def _append_unique_records(existing: List[Dict[str, Any]], additions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    merged = list(existing)
+    index_by_identity = {
+        _record_identity(record): index
+        for index, record in enumerate(merged)
+        if isinstance(record, dict) and _record_identity(record)
+    }
+    for record in additions:
+        if not isinstance(record, dict):
+            continue
+        identity = _record_identity(record)
+        if identity and identity in index_by_identity:
+            existing_index = index_by_identity[identity]
+            merged[existing_index] = {**merged[existing_index], **record}
+            continue
+        if identity:
+            index_by_identity[identity] = len(merged)
+        merged.append(record)
+    return merged
+
+
+def _split_source_and_analysis_records(metadata: Dict[str, Any]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    source_records = metadata.get("source_images")
+    source_records = source_records if isinstance(source_records, list) else []
+    analysis_records = metadata.get("analysis_outputs")
+    analysis_records = analysis_records if isinstance(analysis_records, list) else []
+    clean_sources: List[Dict[str, Any]] = []
+    moved_analysis: List[Dict[str, Any]] = []
+    for record in source_records:
+        if not isinstance(record, dict):
+            continue
+        if _is_analyze_output_record(record):
+            moved_analysis.append(record)
+        else:
+            clean_sources.append(record)
+    return clean_sources, _append_unique_records(
+        [record for record in analysis_records if isinstance(record, dict)],
+        moved_analysis,
+    )
+
+
 def _is_overlay_delete_candidate(record: Dict[str, Any]) -> bool:
     return bool(record.get("overlay_delete_candidate") or record.get("delete_candidate"))
 
@@ -188,10 +243,11 @@ def _mark_overlay_deleted_in_metadata(
                 next_records.append(record)
         return next_records
 
+    source_images, analysis_outputs = _split_source_and_analysis_records(metadata)
     next_metadata = {
         **metadata,
-        "source_images": mark_records(metadata.get("source_images")),
-        "analysis_outputs": mark_records(metadata.get("analysis_outputs")),
+        "source_images": mark_records(source_images),
+        "analysis_outputs": mark_records(analysis_outputs),
         "overlay_layers": mark_records(metadata.get("overlay_layers")),
     }
     if found_record is None:
@@ -218,10 +274,11 @@ def _restore_overlay_in_metadata(metadata: Dict[str, Any], overlay_image_id: str
                 next_records.append(record)
         return next_records
 
+    source_images, analysis_outputs = _split_source_and_analysis_records(metadata)
     next_metadata = {
         **metadata,
-        "source_images": restore_records(metadata.get("source_images")),
-        "analysis_outputs": restore_records(metadata.get("analysis_outputs")),
+        "source_images": restore_records(source_images),
+        "analysis_outputs": restore_records(analysis_outputs),
         "overlay_layers": restore_records(metadata.get("overlay_layers")),
     }
     return _rebuild_deleted_overlay_safe_image_maps(next_metadata), restored
@@ -254,10 +311,10 @@ def _purge_expired_deleted_overlays_from_metadata(
     *,
     now: datetime,
 ) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    source_images, analysis_outputs = _split_source_and_analysis_records(metadata)
     expired_ids = set()
     purged_records: List[Dict[str, Any]] = []
-    for section_name in ("source_images", "analysis_outputs", "overlay_layers"):
-        records = metadata.get(section_name)
+    for records in (source_images, analysis_outputs, metadata.get("overlay_layers")):
         if not isinstance(records, list):
             continue
         for record in records:
@@ -283,17 +340,15 @@ def _purge_expired_deleted_overlays_from_metadata(
 
     next_metadata = {
         **metadata,
-        "source_images": keep_unexpired(metadata.get("source_images")),
-        "analysis_outputs": keep_unexpired(metadata.get("analysis_outputs")),
+        "source_images": keep_unexpired(source_images),
+        "analysis_outputs": keep_unexpired(analysis_outputs),
         "overlay_layers": keep_unexpired(metadata.get("overlay_layers")),
     }
     return _rebuild_deleted_overlay_safe_image_maps(next_metadata), purged_records
 
 
 def _source_images_for_part(part: models.InspectionPart) -> List[Dict[str, Any]]:
-    source_images = _metadata_dict(part.metadata_json).get("source_images")
-    if not isinstance(source_images, list):
-        return []
+    source_images, _analysis_outputs = _split_source_and_analysis_records(_metadata_dict(part.metadata_json))
     return [
         record for record in source_images
         if isinstance(record, dict) and not _is_overlay_delete_candidate(record)
@@ -620,18 +675,10 @@ async def _attach_analysis_outputs_to_parts(
         if not part:
             continue
         metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
-        source_images = list(metadata.get("source_images") or [])
-        analysis_outputs = list(metadata.get("analysis_outputs") or [])
+        source_images, analysis_outputs = _split_source_and_analysis_records(metadata)
         overlay_layers = list(metadata.get("overlay_layers") or [])
-        existing_filenames = {
-            str(record.get("filename"))
-            for record in source_images
-            if isinstance(record, dict)
-        }
+        analysis_outputs = _append_unique_records(analysis_outputs, output_records)
         for record in output_records:
-            if record["filename"] not in existing_filenames:
-                source_images.append(record)
-            analysis_outputs.append(record)
             layer_id = f"analyze-{record['image_id']}"
             overlay_layers.append({
                 "id": layer_id,
@@ -641,7 +688,11 @@ async def _attach_analysis_outputs_to_parts(
                 "source_image_id": record["analysis_source_image_id"],
             })
         normalized = {
-            **_rebuild_analyze_part_image_maps({**metadata, "source_images": source_images}),
+            **_rebuild_analyze_part_image_maps({
+                **metadata,
+                "source_images": source_images,
+                "analysis_outputs": analysis_outputs,
+            }),
             "analysis_outputs": analysis_outputs,
             "overlay_layers": overlay_layers,
         }
@@ -660,8 +711,7 @@ async def _attach_analysis_outputs_to_parts(
 
 
 def _rebuild_analyze_part_image_maps(metadata: dict) -> dict:
-    source_images = metadata.get("source_images")
-    source_images = source_images if isinstance(source_images, list) else []
+    source_images, analysis_outputs = _split_source_and_analysis_records(metadata)
     view_images: Dict[str, str] = {}
     overlay_images: Dict[str, Dict[str, str]] = {}
     for record in source_images:
@@ -678,9 +728,21 @@ def _rebuild_analyze_part_image_maps(metadata: dict) -> dict:
             overlay_images.setdefault(side or "analyze", {})[modality] = filename
         elif side and side not in view_images:
             view_images[side] = filename
+    for record in analysis_outputs:
+        if not isinstance(record, dict):
+            continue
+        if _is_overlay_delete_candidate(record):
+            continue
+        filename = str(record.get("filename") or "").strip()
+        if not filename:
+            continue
+        side = str(record.get("side") or "").strip().lower() or "analyze"
+        modality = str(record.get("modality") or "").strip().lower() or "analyze-overlay"
+        overlay_images.setdefault(side, {})[modality] = filename
     return {
         **metadata,
         "source_images": source_images,
+        "analysis_outputs": analysis_outputs,
         "view_images": view_images,
         "overlay_images": overlay_images,
     }
@@ -722,8 +784,7 @@ def _deleted_overlay_records_for_part(
     part: models.InspectionPart,
 ) -> List[AnalyzeDeletedOverlayRecord]:
     metadata = _metadata_dict(part.metadata_json)
-    records = metadata.get("source_images")
-    records = records if isinstance(records, list) else []
+    _source_images, records = _split_source_and_analysis_records(metadata)
     deleted: List[AnalyzeDeletedOverlayRecord] = []
     seen = set()
     for record in records:

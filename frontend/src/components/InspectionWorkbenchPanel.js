@@ -193,29 +193,49 @@ function getPartImageRefs(part) {
       });
     });
   }
+  const hasViewRefs = refs.length > 0;
+  const isAnalyzeOutputRecord = (record) => {
+    const modality = String(record?.modality || '').toLowerCase();
+    return Boolean(
+      record?.analysis_output
+      || record?.analysis_source_image_id
+      || record?.overlay_base_image_id
+      || modality === 'analyze-overlay'
+    );
+  };
+  const pushRecord = (record, index, forceOverlay = false) => {
+    if (!record || typeof record !== 'object') return;
+    if (record.overlay_delete_candidate || record.delete_candidate) return;
+    const overlay = forceOverlay || record.overlay === true || record.analysis_output === true;
+    if (!overlay && hasViewRefs) return;
+    const imageRef = String(record.image_id || record.filename || '');
+    if (!imageRef || seen.has(imageRef)) return;
+    seen.add(imageRef);
+    const label = overlay
+      ? String(record.label || record.analysis_label || 'Analyze Overlay')
+      : String(record.side || record.modality || `IMAGE ${index + 1}`).toUpperCase();
+    refs.push({
+      id: `${part.id}-${overlay ? 'analysis' : 'source'}-${index}`,
+      viewName: String(record.side || record.modality || (overlay ? 'overlay' : 'image')).toLowerCase(),
+      label,
+      imageRef,
+      filename: String(record.filename || ''),
+      imageId: record.image_id ? String(record.image_id) : '',
+      overlay,
+      overlayBaseImageId: record.overlay_base_image_id ? String(record.overlay_base_image_id) : '',
+      overlayBaseFilename: record.overlay_base_filename ? String(record.overlay_base_filename) : '',
+    });
+  };
   const sourceImages = part?.metadata?.source_images;
   if (Array.isArray(sourceImages)) {
     sourceImages.forEach((record, index) => {
-      if (!record || typeof record !== 'object') return;
-      if (record.overlay_delete_candidate || record.delete_candidate) return;
-      const imageRef = String(record.image_id || record.filename || '');
-      if (!imageRef || seen.has(imageRef)) return;
-      seen.add(imageRef);
-      const overlay = record.overlay === true || record.analysis_output === true;
-      const label = overlay
-        ? String(record.label || record.analysis_label || 'Analyze Overlay')
-        : String(record.side || record.modality || `IMAGE ${index + 1}`).toUpperCase();
-      refs.push({
-        id: `${part.id}-source-${index}`,
-        viewName: String(record.side || record.modality || (overlay ? 'overlay' : 'image')).toLowerCase(),
-        label,
-        imageRef,
-        filename: String(record.filename || ''),
-        imageId: record.image_id ? String(record.image_id) : '',
-        overlay,
-        overlayBaseImageId: record.overlay_base_image_id ? String(record.overlay_base_image_id) : '',
-        overlayBaseFilename: record.overlay_base_filename ? String(record.overlay_base_filename) : '',
-      });
+      pushRecord(record, index, isAnalyzeOutputRecord(record));
+    });
+  }
+  const analysisOutputs = part?.metadata?.analysis_outputs;
+  if (Array.isArray(analysisOutputs)) {
+    analysisOutputs.forEach((record, index) => {
+      pushRecord(record, index, true);
     });
   }
   return refs;
@@ -789,6 +809,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [selectedImageRef, setSelectedImageRef] = useState('');
   const [projectImageLookup, setProjectImageLookup] = useState({});
   const [deletingOverlayId, setDeletingOverlayId] = useState('');
+  const [overlayDeletePromptId, setOverlayDeletePromptId] = useState('');
+  const [fullscreenImageModal, setFullscreenImageModal] = useState(null);
+  const [fullscreenMeasureActive, setFullscreenMeasureActive] = useState(false);
+  const [fullscreenMeasureDraft, setFullscreenMeasureDraft] = useState(null);
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState(null);
   const [viewportWidth, setViewportWidth] = useState(() => (
     typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth
   ));
@@ -817,8 +842,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const inspectorRegion = inspectionHierarchy.regions.inspector;
   const availableLayoutWidth = workbenchWidth > 0 ? workbenchWidth : viewportWidth;
   const inspectionLayoutCollapsed = availableLayoutWidth <= inspectionHierarchy.layout.collapseBreakpointPx;
-  const defaultLeftColumnWidthPx = normalizeLayoutNumber(leftRegion?.widthPx ?? leftRegion?.minWidthPx, 240);
-  const defaultRightColumnWidthPx = normalizeLayoutNumber(rightRegion?.widthPx ?? rightRegion?.minWidthPx, 240);
+  const minSideColumnWidthPx = Math.max(120, Math.round(availableLayoutWidth * 0.05));
+  const defaultLeftColumnWidthPx = normalizeLayoutNumber(leftRegion?.widthPx ?? leftRegion?.minWidthPx, 220);
+  const defaultRightColumnWidthPx = normalizeLayoutNumber(rightRegion?.widthPx ?? rightRegion?.minWidthPx, 220);
   const configuredLeftColumnWidthPx = inspectionColumnWidths.leftPx ?? defaultLeftColumnWidthPx;
   const configuredRightColumnWidthPx = inspectionColumnWidths.rightPx ?? defaultRightColumnWidthPx;
   const inspectionFlexLayoutModel = useMemo(() => createInspectionFlexLayoutModel({
@@ -829,21 +855,25 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         [inspectionHierarchy.leftColumn]: {
           ...leftRegion,
           widthPx: configuredLeftColumnWidthPx,
+          minWidthPx: minSideColumnWidthPx,
         },
         [inspectionHierarchy.rightColumn]: {
           ...rightRegion,
           widthPx: configuredRightColumnWidthPx,
+          minWidthPx: minSideColumnWidthPx,
         },
       },
     },
     leftRegion: {
       ...leftRegion,
       widthPx: configuredLeftColumnWidthPx,
+      minWidthPx: minSideColumnWidthPx,
     },
     inspectorRegion,
     rightRegion: {
       ...rightRegion,
       widthPx: configuredRightColumnWidthPx,
+      minWidthPx: minSideColumnWidthPx,
     },
     inspectionLayoutCollapsed,
   }), [
@@ -853,6 +883,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     inspectionLayoutCollapsed,
     inspectorRegion,
     leftRegion,
+    minSideColumnWidthPx,
     rightRegion,
   ]);
   const workbenchFlexLayoutStyle = {
@@ -1301,6 +1332,16 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   }, [projectId, selectedPart?.id]);
 
   useEffect(() => {
+    if (!annotations.length) {
+      setSelectedAnnotationId(null);
+      return;
+    }
+    if (!annotations.some((annotation) => annotation.id === selectedAnnotationId)) {
+      setSelectedAnnotationId(annotations[0].id);
+    }
+  }, [annotations, selectedAnnotationId]);
+
+  useEffect(() => {
     if (loading || !workspaceStateLoaded) return;
     const saveHandle = setTimeout(async () => {
       try {
@@ -1559,6 +1600,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       const updatedPart = await resp.json();
       setParts((prev) => prev.map((part) => (part.id === updatedPart.id ? updatedPart : part)));
       setSelectedImageRef((current) => (String(current) === String(entry.imageRef) ? '' : current));
+      setOverlayDeletePromptId('');
     } catch (err) {
       setError(err.message || 'Failed to delete Analyze overlay');
     } finally {
@@ -1684,6 +1726,40 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       resetAnnotationDraft();
     } catch (err) {
       setError(err.message || 'Failed to create annotation');
+    }
+  };
+
+  const createMeasurementAnnotation = async ({ line }) => {
+    if (!selectedPart?.id || !line || !line.imageWidth || !line.imageHeight) return;
+    const width = Math.abs(line.x2 - line.x1);
+    const height = Math.abs(line.y2 - line.y1);
+    const distancePixels = Math.sqrt((width ** 2) + (height ** 2));
+    const payload = {
+      defect_class: 'Measurement',
+      modality: activeViewName || enabledModalities[0] || modalityOptions[0] || 'visual',
+      comment: 'Captured from fullscreen measurement tool.',
+      disposition: 'open',
+      measurements: { length_px: Number(distancePixels.toFixed(2)) },
+      bbox: {
+        x: Number(Math.min(line.x1, line.x2).toFixed(2)),
+        y: Number(Math.min(line.y1, line.y2).toFixed(2)),
+        width: Number(width.toFixed(2)),
+        height: Number(height.toFixed(2)),
+      },
+      hidden: false,
+    };
+    try {
+      const resp = await fetch(`/api/projects/${projectId}/parts/${selectedPart.id}/annotations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) throw new Error(`Failed to create measurement annotation (${resp.status})`);
+      const created = await resp.json();
+      setAnnotations((prev) => [created, ...prev]);
+      setSelectedAnnotationId(created.id);
+    } catch (err) {
+      setError(err.message || 'Failed to create measurement annotation');
     }
   };
 
@@ -2196,18 +2272,43 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     <div className="view-cell-title">
                       <span>{entry.label || viewName.toUpperCase()}</span>
                       {entry.overlay && entry.imageId && (
-                        <button
-                          type="button"
-                          className="inspection-overlay-delete"
-                          aria-label={`Delete overlay ${entry.label || viewName}`}
-                          disabled={deletingOverlayId === String(entry.imageId)}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            deleteAnalyzeOverlay(entry);
-                          }}
-                        >
-                          ×
-                        </button>
+                        overlayDeletePromptId === String(entry.imageId) ? (
+                          <div
+                            className="inspection-overlay-delete-confirm"
+                            role="alertdialog"
+                            aria-label={`Confirm delete overlay ${entry.label || viewName}`}
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              className="inspection-overlay-delete-cancel"
+                              onClick={() => setOverlayDeletePromptId('')}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              className="inspection-overlay-delete-commit"
+                              disabled={deletingOverlayId === String(entry.imageId)}
+                              onClick={() => deleteAnalyzeOverlay(entry)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="inspection-overlay-delete"
+                            aria-label={`Delete overlay ${entry.label || viewName}`}
+                            disabled={deletingOverlayId === String(entry.imageId)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setOverlayDeletePromptId(String(entry.imageId));
+                            }}
+                          >
+                            ×
+                          </button>
+                        )
                       )}
                     </div>
                     <div className="view-cell-body">
@@ -2234,6 +2335,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                           src={`/api/images/${encodeURIComponent(String(imageId))}/content`}
                           alt={`${viewName} view`}
                           loading="lazy"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setFullscreenImageModal({ imageId: String(imageId), label: entry.label || viewName.toUpperCase() });
+                          }}
                         />
                       ) : imageRef ? (
                         <span className="view-cell-empty">Image not found: {safeDecodeFilename(imageRef)}</span>
@@ -2336,7 +2441,19 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
             <li className="muted">No annotations captured.</li>
           ) : (
             annotations.map((annotation) => (
-              <li key={annotation.id}>
+              <li
+                key={annotation.id}
+                className={`annotation-entry ${selectedAnnotationId === annotation.id ? 'selected' : ''}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => setSelectedAnnotationId(annotation.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    setSelectedAnnotationId(annotation.id);
+                  }
+                }}
+              >
                 {editingAnnotationId === annotation.id ? (
                   <div className="measurement-fields">
                     <input
@@ -2374,7 +2491,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                       Cancel
                     </button>
                   </div>
-                ) : (
+                ) : selectedAnnotationId === annotation.id ? (
                   <>
                     <span>
                       {annotation.defect_class} • {annotation.modality} • {annotation.disposition}
@@ -2391,6 +2508,18 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                       {annotation.hidden ? 'Show' : 'Hide'}
                     </button>
                   </>
+                ) : (
+                  <span>
+                    {annotation.defect_class || 'Untitled annotation'}
+                    {(annotation.updated_at || annotation.created_at) ? (
+                      <>
+                        {' • '}
+                        {annotation.updated_by || annotation.created_by || 'unknown'}
+                        {' @ '}
+                        {(annotation.updated_at || annotation.created_at || '').slice(0, 19).replace('T', ' ')}
+                      </>
+                    ) : null}
+                  </span>
                 )}
               </li>
             ))
@@ -2518,6 +2647,58 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     </div>
   );
 
+  const handleFullscreenMeasurePointerDown = (event) => {
+    if (!fullscreenMeasureActive) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * event.currentTarget.naturalWidth;
+    const y = ((event.clientY - rect.top) / rect.height) * event.currentTarget.naturalHeight;
+    setFullscreenMeasureDraft({ x1: x, y1: y, x2: x, y2: y, imageWidth: event.currentTarget.naturalWidth, imageHeight: event.currentTarget.naturalHeight });
+  };
+
+  const handleFullscreenMeasurePointerMove = (event) => {
+    if (!fullscreenMeasureDraft) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * event.currentTarget.naturalWidth;
+    const y = ((event.clientY - rect.top) / rect.height) * event.currentTarget.naturalHeight;
+    setFullscreenMeasureDraft((prev) => (prev ? { ...prev, x2: x, y2: y } : null));
+  };
+
+  const handleFullscreenMeasurePointerUp = async () => {
+    if (!fullscreenMeasureDraft) return;
+    await createMeasurementAnnotation({ line: fullscreenMeasureDraft });
+    setFullscreenMeasureDraft(null);
+    setFullscreenMeasureActive(false);
+  };
+
+  const renderFullscreenImageModal = () => {
+    if (!fullscreenImageModal?.imageId) return null;
+    return (
+      <div className="modal inspection-fullscreen-modal" style={{ display: 'flex' }} onClick={() => setFullscreenImageModal(null)}>
+        <div className="modal-content inspection-fullscreen-modal-content" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-header">
+            <h3>{fullscreenImageModal.label}</h3>
+            <div className="workbench-detail-actions">
+              <button type="button" className={`btn btn-secondary ${fullscreenMeasureActive ? 'active' : ''}`} onClick={() => setFullscreenMeasureActive((prev) => !prev)}>
+                Measure
+              </button>
+              <button type="button" className="modal-close-btn" aria-label="Close fullscreen image" onClick={() => setFullscreenImageModal(null)}>&times;</button>
+            </div>
+          </div>
+          <div className="inspection-fullscreen-stage">
+            <img
+              src={`/api/images/${encodeURIComponent(fullscreenImageModal.imageId)}/content`}
+              alt={`${fullscreenImageModal.label} fullscreen`}
+              className={`inspection-fullscreen-image ${fullscreenMeasureActive ? 'measurement-active' : ''}`}
+              onPointerDown={handleFullscreenMeasurePointerDown}
+              onPointerMove={handleFullscreenMeasurePointerMove}
+              onPointerUp={handleFullscreenMeasurePointerUp}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <section className="workbench-panel" aria-label="Inspection Workbench">
       {loading && <div className="loading-text">Loading inspection workbench…</div>}
@@ -2618,6 +2799,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
           </div>
         </>
       )}
+      {renderFullscreenImageModal()}
     </section>
   );
 }

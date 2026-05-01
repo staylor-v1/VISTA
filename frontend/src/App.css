@@ -4382,6 +4382,18 @@ ul li:hover {
   margin-bottom: 14px;
 }
 
+.analyze-toolbox-group-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid #e0d8c8;
+  border-radius: 6px;
+  background: #fffaf1;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
 .analyze-toolbox-group h3 {
   margin: 0 0 6px;
   color: #5c5042;
@@ -4391,9 +4403,18 @@ ul li:hover {
   text-transform: uppercase;
 }
 
+.analyze-toolbox-group-toggle h3 {
+  margin: 0;
+}
+
 .analyze-method-list {
   display: grid;
+  margin-top: 6px;
   gap: 6px;
+}
+
+.analyze-method-list.collapsed {
+  display: none;
 }
 
 .analyze-method-button {
@@ -4407,8 +4428,16 @@ ul li:hover {
   padding: 8px 10px;
   color: #1f2933;
   text-align: left;
-  cursor: pointer;
+  cursor: grab;
   transition: transform var(--transition-fast), box-shadow var(--transition-fast), border-color var(--transition-fast);
+}
+
+.analyze-selection-box {
+  position: absolute;
+  border: 1px dashed var(--analyze-accent);
+  background: rgba(15, 118, 110, 0.12);
+  pointer-events: none;
+  z-index: 3;
 }
 
 .analyze-method-button:hover {
@@ -4811,6 +4840,21 @@ ul li:hover {
   padding-left: 18px;
 }
 
+.measurement-list .annotation-entry {
+  border: 1px solid #dbe2ea;
+  border-radius: 8px;
+  padding: 8px;
+  margin-bottom: 8px;
+  list-style: none;
+  cursor: pointer;
+  background: #fff;
+}
+
+.measurement-list .annotation-entry.selected {
+  border-color: #1a56db;
+  box-shadow: 0 0 0 1px #1a56db inset;
+}
+
 .view-board {
   display: grid;
   grid-template-columns: repeat(3, minmax(120px, 1fr));
@@ -4889,6 +4933,52 @@ ul li:hover {
   opacity: 0.55;
 }
 
+.inspection-overlay-delete-confirm {
+  display: grid;
+  gap: 4px;
+  flex: 0 0 auto;
+  justify-items: stretch;
+  min-width: 72px;
+}
+
+.inspection-overlay-delete-cancel,
+.inspection-overlay-delete-commit {
+  height: 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 18px;
+  padding: 0 8px;
+}
+
+.inspection-overlay-delete-cancel {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #334155;
+}
+
+.inspection-overlay-delete-commit {
+  border: 1px solid #b91c1c;
+  background: #dc2626;
+  color: #fff;
+}
+
+.inspection-overlay-delete-cancel:hover,
+.inspection-overlay-delete-cancel:focus-visible {
+  background: #f1f5f9;
+}
+
+.inspection-overlay-delete-commit:hover,
+.inspection-overlay-delete-commit:focus-visible {
+  background: #991b1b;
+}
+
+.inspection-overlay-delete-commit:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .recently-deleted-overlays-panel {
   display: grid;
   gap: 14px;
@@ -4948,6 +5038,36 @@ ul li:hover {
   object-fit: contain;
   border-radius: 4px;
   background: #fff;
+}
+
+.inspection-fullscreen-modal {
+  z-index: 1300;
+}
+
+.inspection-fullscreen-modal-content {
+  width: min(96vw, 1400px);
+  max-width: none;
+  height: 92vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.inspection-fullscreen-stage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  background: #0f172a;
+}
+
+.inspection-fullscreen-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.inspection-fullscreen-image.measurement-active {
+  cursor: crosshair;
 }
 
 .inspection-overlay-composite {
@@ -5957,4 +6077,49 @@ ul li:hover {
   gap: 6px;
   align-items: center;
   font-size: 0.75rem;
+}
+
+.project-configuration-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.project-configuration-panel .workbench-header {
+  margin-bottom: 0;
+}
+
+.project-configuration-panel .part-detail-panel {
+  padding: 14px;
+}
+
+.project-configuration-panel .part-detail-panel > p {
+  margin-top: 4px;
+  margin-bottom: 12px;
+  color: #475569;
+}
+
+.project-configuration-panel .config-entry-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px 12px;
+  align-items: end;
+}
+
+.project-configuration-panel .config-entry-grid > label {
+  min-width: 0;
+}
+
+.project-configuration-panel .config-entry-grid > .btn {
+  justify-self: start;
+}
+
+@media (max-width: 900px) {
+  .project-configuration-panel .config-entry-grid {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .project-configuration-panel .config-entry-grid > .btn {
+    justify-self: stretch;
+  }
 }

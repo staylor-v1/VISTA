@@ -10,6 +10,7 @@ const GRAPH_TOP_Y = 84;
 const GRAPH_CHAIN_GAP = 152;
 const GRAPH_ORDER_STEP = GRAPH_NODE_WIDTH + 56;
 const GRAPH_CHAIN_SNAP_PROGRESS = 0.8;
+const GRAPH_NODE_HEIGHT = 76;
 
 function groupMethods(methods) {
   return methods.reduce((groups, method) => {
@@ -169,6 +170,12 @@ function maybeSnapChainId(nodes, dragState, nextY) {
 
 function imageIdFor(image) {
   return image?.image_id || image?.id || '';
+}
+
+function methodAcademicDescription(method) {
+  if (!method) return '';
+  const base = method.description || method.name || 'This method';
+  return `${base}. In the workflow graph, this operator transforms typed image artifacts according to its parameterized contract, enabling reproducible and composable analysis pipelines. Its outputs are explicitly structured for downstream stages, supporting auditability, provenance tracking, and cross-method interoperability.`;
 }
 
 function imageLabel(image) {
@@ -532,6 +539,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
   const [inputSource, setInputSource] = useState(null);
   const [nodes, setNodes] = useState([]);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [selectedNodeIds, setSelectedNodeIds] = useState([]);
   const [processImageIds, setProcessImageIds] = useState([]);
   const [exampleImageId, setExampleImageId] = useState('');
   const [inputModalOpen, setInputModalOpen] = useState(false);
@@ -539,11 +547,16 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
   const [graphDrag, setGraphDrag] = useState(null);
   const [workflowStateLoaded, setWorkflowStateLoaded] = useState(false);
   const [status, setStatus] = useState({ loading: true, message: 'Loading analyze workspace...', result: null });
+  const [collapsedCategories, setCollapsedCategories] = useState({});
   const graphDragRef = useRef(null);
+  const graphRef = useRef(null);
+  const marqueeRef = useRef(null);
   const suppressNodeClickRef = useRef(null);
+  const [marquee, setMarquee] = useState(null);
 
   const methodById = useMemo(() => new Map(methods.map((method) => [method.id, method])), [methods]);
   const methodsByCategory = useMemo(() => groupMethods(methods), [methods]);
+  const orderedCategories = useMemo(() => Object.entries(methodsByCategory), [methodsByCategory]);
   const selectedNode = useMemo(
     () => nodes.find((node) => node.id === selectedNodeId) || nodes[0] || null,
     [nodes, selectedNodeId]
@@ -566,6 +579,23 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
     [loadedImages, processImageSet]
   );
   const outputConfig = useMemo(() => buildOutputConfig(nodes), [nodes]);
+
+  useEffect(() => {
+    setCollapsedCategories((previous) => {
+      const next = {};
+      orderedCategories.forEach(([category]) => {
+        next[category] = previous[category] ?? false;
+      });
+      return next;
+    });
+  }, [orderedCategories]);
+
+  const toggleCategoryCollapsed = useCallback((category) => {
+    setCollapsedCategories((previous) => ({
+      ...previous,
+      [category]: !previous[category],
+    }));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -635,7 +665,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
     return () => clearTimeout(saveHandle);
   }, [exampleImageId, nodes, processImageIds, projectId, status.loading, workflowStateLoaded]);
 
-  const addMethodNode = useCallback((method) => {
+  const addMethodNode = useCallback((method, overrides = {}) => {
     setNodes((prevNodes) => {
       const selectedChainId = selectedNode ? nodeChainId(selectedNode) : nodeChainId(prevNodes[prevNodes.length - 1] || {});
       const chainId = method.id === SOURCE_METHOD_ID ? nextChainId(prevNodes) : selectedChainId;
@@ -648,8 +678,10 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
         label: chainLabel,
         x: chainPosition.x,
         y: chainPosition.y,
+        ...overrides,
       });
       setSelectedNodeId(nextNode.id);
+      setSelectedNodeIds([nextNode.id]);
       return orderNodesByChains([...prevNodes, nextNode]);
     });
   }, [selectedNode]);
@@ -709,12 +741,15 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
     setDragPayload(null);
   }, [dragPayload, inputSource, moveImagesToProcess, removeImagesFromProcess]);
 
-  const handleNodeClick = useCallback((node) => {
+  const handleNodeClick = useCallback((node, event) => {
     if (suppressNodeClickRef.current === node.id) {
       suppressNodeClickRef.current = null;
       return;
     }
     setSelectedNodeId(node.id);
+    setSelectedNodeIds((prev) => (event.ctrlKey || event.metaKey
+      ? (prev.includes(node.id) ? prev.filter((id) => id !== node.id) : [...prev, node.id])
+      : [node.id]));
   }, []);
 
   const beginNodeDrag = useCallback((event, node) => {
@@ -772,18 +807,60 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
   }, []);
 
   const removeSelectedNode = useCallback(() => {
-    if (!selectedNode) return;
+    const removeIds = selectedNodeIds.length > 0 ? selectedNodeIds : (selectedNode ? [selectedNode.id] : []);
+    if (removeIds.length === 0) return;
+    const removeSet = new Set(removeIds);
     setNodes((prevNodes) => {
-      const selectedIndex = prevNodes.findIndex((node) => node.id === selectedNode.id);
-      const nextNodes = prevNodes.filter((node) => node.id !== selectedNode.id);
+      const selectedIndex = prevNodes.findIndex((node) => node.id === selectedNodeId);
+      const nextNodes = prevNodes.filter((node) => !removeSet.has(node.id));
       const nextSelectedNode = nextNodes[Math.min(selectedIndex, nextNodes.length - 1)] || nextNodes[0] || null;
       setSelectedNodeId(nextSelectedNode?.id || null);
+      setSelectedNodeIds(nextSelectedNode ? [nextSelectedNode.id] : []);
       return layoutNodesForChains(nextNodes);
     });
-    if (selectedNode.method_id === 'source.project_part_images') {
+    if (selectedNode && removeSet.has(selectedNode.id) && selectedNode.method_id === 'source.project_part_images') {
       setInputModalOpen(false);
     }
-  }, [selectedNode]);
+  }, [selectedNode, selectedNodeId, selectedNodeIds]);
+
+  const handleGraphDrop = useCallback((event) => {
+    event.preventDefault();
+    const methodId = event.dataTransfer.getData('text/x-vista-method-id');
+    if (!methodId) return;
+    const method = methodById.get(methodId);
+    if (!method) return;
+    addMethodNode(method);
+  }, [addMethodNode, methodById]);
+
+  const beginMarqueeSelect = useCallback((event) => {
+    if (event.target !== event.currentTarget || event.button !== 0) return;
+    const rect = graphRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    marqueeRef.current = { startX: event.clientX - rect.left, startY: event.clientY - rect.top };
+    setMarquee({ x: marqueeRef.current.startX, y: marqueeRef.current.startY, width: 0, height: 0 });
+  }, []);
+
+  const moveMarqueeSelect = useCallback((event) => {
+    if (!marqueeRef.current) return;
+    const rect = graphRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const sx = marqueeRef.current.startX;
+    const sy = marqueeRef.current.startY;
+    const bounds = { left: Math.min(sx, x), top: Math.min(sy, y), right: Math.max(sx, x), bottom: Math.max(sy, y) };
+    setMarquee({ x: bounds.left, y: bounds.top, width: bounds.right - bounds.left, height: bounds.bottom - bounds.top });
+    const selectedIds = nodes.filter((node) => (
+      node.x < bounds.right && node.x + GRAPH_NODE_WIDTH > bounds.left && node.y < bounds.bottom && node.y + GRAPH_NODE_HEIGHT > bounds.top
+    )).map((node) => node.id);
+    setSelectedNodeIds(selectedIds);
+    setSelectedNodeId(selectedIds[selectedIds.length - 1] || null);
+  }, [nodes]);
+
+  const endMarqueeSelect = useCallback(() => {
+    marqueeRef.current = null;
+    setMarquee(null);
+  }, []);
 
   const submitWorkflow = useCallback(async (mode, runScope = 'all') => {
     try {
@@ -835,16 +912,28 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
 
       <div className="analyze-grid">
         <aside className="analyze-toolbox" aria-label="Analyze toolbox">
-          {Object.entries(methodsByCategory).map(([category, categoryMethods]) => (
+          {orderedCategories.map(([category, categoryMethods]) => (
             <section key={category} className="analyze-toolbox-group">
-              <h3>{category}</h3>
-              <div className="analyze-method-list">
+              <button
+                type="button"
+                className="analyze-toolbox-group-toggle"
+                onClick={() => toggleCategoryCollapsed(category)}
+                aria-expanded={!collapsedCategories[category]}
+              >
+                <h3>{category}</h3>
+                <span aria-hidden="true">{collapsedCategories[category] ? '+' : '−'}</span>
+              </button>
+              <div className={`analyze-method-list ${collapsedCategories[category] ? 'collapsed' : ''}`}>
                 {categoryMethods.map((method) => (
                   <button
                     key={method.id}
                     type="button"
                     className="analyze-method-button"
-                    onClick={() => addMethodNode(method)}
+                    draggable
+                    onDragStart={(event) => {
+                      event.dataTransfer.setData('text/x-vista-method-id', method.id);
+                      event.dataTransfer.effectAllowed = 'copy';
+                    }}
                     title={method.description}
                   >
                     <span>{method.name}</span>
@@ -875,6 +964,12 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
           <div
             className="analyze-graph"
             data-testid="analyze-graph"
+            ref={graphRef}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={handleGraphDrop}
+            onPointerDown={beginMarqueeSelect}
+            onPointerMove={moveMarqueeSelect}
+            onPointerUp={endMarqueeSelect}
             style={{
               '--analyze-graph-width': `${graphBounds.width}px`,
               '--analyze-graph-height': `${graphBounds.height}px`,
@@ -911,7 +1006,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
                 <button
                   key={node.id}
                   type="button"
-                  className={`analyze-node ${selectedNodeId === node.id ? 'selected' : ''} ${graphDrag?.id === node.id ? 'dragging' : ''}`}
+                  className={`analyze-node ${(selectedNodeIds.includes(node.id) || selectedNodeId === node.id) ? 'selected' : ''} ${graphDrag?.id === node.id ? 'dragging' : ''}`}
                   style={{ left: node.x, top: node.y }}
                   onPointerDown={(event) => beginNodeDrag(event, node)}
                   onPointerMove={moveNodeDrag}
@@ -921,7 +1016,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
                   onMouseMove={moveNodeDrag}
                   onMouseUp={endNodeDrag}
                   onMouseLeave={endNodeDrag}
-                  onClick={() => handleNodeClick(node)}
+                  onClick={(event) => handleNodeClick(node, event)}
                   aria-label={`Workflow block ${node.label}`}
                   title="Drag to reposition this workflow block"
                 >
@@ -931,6 +1026,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
                 </button>
               );
             })}
+            {marquee && <div className="analyze-selection-box" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />}
             </div>
           </div>
         </main>
@@ -939,6 +1035,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
           <div className="analyze-inspector-header">
             <h3>{selectedNode?.label || 'No block selected'}</h3>
             <p>{selectedMethod?.id || 'Select a workflow block'}</p>
+            {selectedMethod && <p className="muted">{methodAcademicDescription(selectedMethod)}</p>}
           </div>
           {selectedMethod && (
             <div className="analyze-parameters">
@@ -1000,7 +1097,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
           {selectedNode && (
             <div className="analyze-block-actions">
               <button type="button" className="btn btn-danger" onClick={removeSelectedNode}>
-                Remove
+                Remove {selectedNodeIds.length > 1 ? `(${selectedNodeIds.length})` : ''}
               </button>
             </div>
           )}

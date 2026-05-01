@@ -921,10 +921,56 @@ describe('InspectionWorkbenchPanel', () => {
     expect(within(composite).getByAltText('front overlay')).toHaveAttribute('src', '/api/images/overlay-image-1/content');
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete overlay Segmentation Overlay :: Watershed From Seeds' }));
+    const cancelFirstDialog = screen.getByRole('alertdialog', { name: 'Confirm delete overlay Segmentation Overlay :: Watershed From Seeds' });
+    expect(within(cancelFirstDialog).getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+    expect(global.fetch.mock.calls.filter(([url, options = {}]) => (
+      String(url).includes('/analyze/overlays/') && options.method === 'DELETE'
+    ))).toHaveLength(0);
+
+    fireEvent.click(within(cancelFirstDialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('alertdialog', { name: 'Confirm delete overlay Segmentation Overlay :: Watershed From Seeds' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete overlay Segmentation Overlay :: Watershed From Seeds' }));
+    const confirmDialog = screen.getByRole('alertdialog', { name: 'Confirm delete overlay Segmentation Overlay :: Watershed From Seeds' });
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Delete' }));
     await waitFor(() => {
       expect(screen.queryByText('Segmentation Overlay :: Watershed From Seeds')).not.toBeInTheDocument();
     });
     expect(global.fetch).toHaveBeenCalledWith('/api/projects/proj-1/analyze/overlays/overlay-image-1', { method: 'DELETE' });
+  });
+
+  test('does not duplicate original front and back images from source_images when view_images exists', async () => {
+    mockWorkbenchFetch({
+      user: 'dedupe-originals',
+      batches: [{ id: 'batch-dedupe', name: 'Batch Dedupe' }],
+      parts: [
+        {
+          id: 'part-dedupe-1',
+          batch_id: 'batch-dedupe',
+          serial_number: 'SN-DEDUPE-1',
+          display_name: 'Dedupe Part',
+          review_state: 'in_review',
+          metadata: {
+            configured_views: ['front', 'back'],
+            view_images: { front: 'front.png', back: 'back.png' },
+            source_images: [
+              { filename: 'front.png', image_id: 'front-image-1', side: 'front', modality: 'visual', overlay: false },
+              { filename: 'back.png', image_id: 'back-image-1', side: 'back', modality: 'visual', overlay: false },
+            ],
+          },
+        },
+      ],
+      workspaceState: {},
+      hotkeys: { accept_classification: 'a', reject_classification: 'r', toggle_shortcut_help: 'h' },
+    });
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    await waitFor(() => expect(screen.getAllByText('Dedupe Part').length).toBeGreaterThan(0));
+    expect(screen.getAllByAltText('front view')).toHaveLength(1);
+    expect(screen.getAllByAltText('back view')).toHaveLength(1);
+    expect(screen.queryByText('IMAGE 1')).not.toBeInTheDocument();
+    expect(screen.queryByText('IMAGE 2')).not.toBeInTheDocument();
   });
 
   test('defaults PT3 to focused four-quadrant MPR with modal access and wheel controls', async () => {

@@ -630,7 +630,7 @@ function ProjectConfigurationPanel({
   };
 
   return (
-    <section className="workbench-panel" aria-label="Project Configuration">
+    <section className="workbench-panel project-configuration-panel" aria-label="Project Configuration">
       <header className="workbench-header">
         <div>
           <h2>Project Configuration</h2>
@@ -885,7 +885,7 @@ function ProjectConfigurationPanel({
               <p>No image modalities configured yet.</p>
             ) : (
               (config.image_modalities || []).map((modality, index) => (
-                <div className="workbench-controls-row" key={`image-modality-${index}`}>
+                <div className="workbench-controls-row config-entry-grid" key={`image-modality-${index}`}>
                   <label htmlFor={`image-modality-label-${index}`}>Label</label>
                   <input
                     id={`image-modality-label-${index}`}
@@ -950,7 +950,7 @@ function ProjectConfigurationPanel({
               <p>No defect types configured yet.</p>
             ) : (
               config.defect_types.map((defectType, index) => (
-                <div className="workbench-controls-row" key={`defect-type-${index}`}>
+                <div className="workbench-controls-row config-entry-grid" key={`defect-type-${index}`}>
                   <label htmlFor={`defect-type-name-${index}`}>Name</label>
                   <input
                     id={`defect-type-name-${index}`}
@@ -1001,7 +1001,7 @@ function ProjectConfigurationPanel({
               <p>No part views configured yet.</p>
             ) : (
               (config.part_views || []).map((partView, index) => (
-                <div className="workbench-controls-row" key={`part-view-${index}`}>
+                <div className="workbench-controls-row config-entry-grid" key={`part-view-${index}`}>
                   <label htmlFor={`part-view-label-${index}`}>Label</label>
                   <input
                     id={`part-view-label-${index}`}
