@@ -4819,6 +4819,21 @@ ul li:hover {
   padding-left: 18px;
 }
 
+.measurement-list .annotation-entry {
+  border: 1px solid #dbe2ea;
+  border-radius: 8px;
+  padding: 8px;
+  margin-bottom: 8px;
+  list-style: none;
+  cursor: pointer;
+  background: #fff;
+}
+
+.measurement-list .annotation-entry.selected {
+  border-color: #1a56db;
+  box-shadow: 0 0 0 1px #1a56db inset;
+}
+
 .view-board {
   display: grid;
   grid-template-columns: repeat(3, minmax(120px, 1fr));
@@ -5002,6 +5017,36 @@ ul li:hover {
   object-fit: contain;
   border-radius: 4px;
   background: #fff;
+}
+
+.inspection-fullscreen-modal {
+  z-index: 1300;
+}
+
+.inspection-fullscreen-modal-content {
+  width: min(96vw, 1400px);
+  max-width: none;
+  height: 92vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.inspection-fullscreen-stage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  background: #0f172a;
+}
+
+.inspection-fullscreen-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.inspection-fullscreen-image.measurement-active {
+  cursor: crosshair;
 }
 
 .inspection-overlay-composite {
