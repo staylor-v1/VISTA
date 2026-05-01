@@ -4407,8 +4407,16 @@ ul li:hover {
   padding: 8px 10px;
   color: #1f2933;
   text-align: left;
-  cursor: pointer;
+  cursor: grab;
   transition: transform var(--transition-fast), box-shadow var(--transition-fast), border-color var(--transition-fast);
+}
+
+.analyze-selection-box {
+  position: absolute;
+  border: 1px dashed var(--analyze-accent);
+  background: rgba(15, 118, 110, 0.12);
+  pointer-events: none;
+  z-index: 3;
 }
 
 .analyze-method-button:hover {
