@@ -1067,7 +1067,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [fullscreenEditingEndpoint, setFullscreenEditingEndpoint] = useState(null);
   const [fullscreenZoomLens, setFullscreenZoomLens] = useState(null);
   const [fullscreenZoomScale, setFullscreenZoomScale] = useState(MEASUREMENT_LOCAL_ZOOM_SCALE);
-  const [fullscreenImageZoom, setFullscreenImageZoom] = useState({ scale: 1, originX: 50, originY: 50 });
+  const [fullscreenImageZoom, setFullscreenImageZoom] = useState({ scale: 1, originX: 50, originY: 50, panX: 0, panY: 0 });
+  const [fullscreenImagePanning, setFullscreenImagePanning] = useState(false);
   const [sessionCalibrationByImageId, setSessionCalibrationByImageId] = useState({});
   const measurementLinesByImageId = useMemo(() => getMeasurementLinesByImageId(annotations), [annotations]);
   const boxAnnotationsByImageId = useMemo(() => getBoxAnnotationsByImageId(annotations), [annotations]);
@@ -1087,6 +1088,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const pendingMeasurePointRef = useRef(null);
   const pendingBoxPointRef = useRef(null);
   const fullscreenImageRef = useRef(null);
+  const fullscreenPanDragRef = useRef(null);
   const suppressNextTileClickRef = useRef(false);
 
   const inspectionHierarchy = useMemo(() => {
@@ -2781,11 +2783,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     setSelectedAnnotationId(annotation.id);
                   }
                 }}
-              >
-                {editingAnnotationId === annotation.id ? (
-                  <div className="measurement-fields">
-                    <input
-                      type="text"
+	              >
+	                <div className="annotation-entry-content">
+	                  {editingAnnotationId === annotation.id ? (
+	                    <div className="measurement-fields">
+	                    <input
+	                      type="text"
                       aria-label="Edit annotation defect class"
                       value={annotationEditDraft.defect_class}
                       onChange={(event) => setAnnotationEditDraft((prev) => ({ ...prev, defect_class: event.target.value }))}
@@ -2815,31 +2818,31 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     <button type="button" className="btn btn-secondary btn-sm" onClick={() => updateAnnotationDetails(annotation.id)}>
                       Save
                     </button>
-                    <button type="button" className="btn btn-secondary btn-sm" onClick={cancelAnnotationEdit}>
-                      Cancel
-                    </button>
-                  </div>
-                ) : selectedAnnotationId === annotation.id ? (
-                  <>
-                    <span>
-                      {annotation.defect_class} • {annotation.modality} • {annotation.disposition}
-                      {annotation.hidden ? ' • Hidden' : ' • Visible'}
+	                    <button type="button" className="btn btn-secondary btn-sm" onClick={cancelAnnotationEdit}>
+	                      Cancel
+	                    </button>
+	                  </div>
+	                  ) : selectedAnnotationId === annotation.id ? (
+	                    <>
+	                      <span>
+	                      {annotation.defect_class} • {annotation.modality} • {annotation.disposition}
+	                      {annotation.hidden ? ' • Hidden' : ' • Visible'}
                       {' • '}
                       {annotation.updated_by || annotation.created_by || 'unknown'}
                       {' @ '}
                       {(annotation.updated_at || annotation.created_at || '').slice(0, 19).replace('T', ' ')}
-                    </span>
-                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => startAnnotationEdit(annotation)}>
-                      Edit
-                    </button>
-                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => updateAnnotationVisibility(annotation.id, !annotation.hidden)}>
-                      {annotation.hidden ? 'Show' : 'Hide'}
-                    </button>
-                  </>
-                ) : (
-                  <span>
-                    {annotation.defect_class || 'Untitled annotation'}
-                    {(annotation.updated_at || annotation.created_at) ? (
+	                      </span>
+	                      <button type="button" className="btn btn-secondary btn-sm" onClick={() => startAnnotationEdit(annotation)}>
+	                        Edit
+	                      </button>
+	                      <button type="button" className="btn btn-secondary btn-sm" onClick={() => updateAnnotationVisibility(annotation.id, !annotation.hidden)}>
+	                        {annotation.hidden ? 'Show' : 'Hide'}
+	                      </button>
+	                    </>
+	                  ) : (
+	                    <span>
+	                    {annotation.defect_class || 'Untitled annotation'}
+	                    {(annotation.updated_at || annotation.created_at) ? (
                       <>
                         {' • '}
                         {annotation.updated_by || annotation.created_by || 'unknown'}
@@ -2847,9 +2850,22 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                         {(annotation.updated_at || annotation.created_at || '').slice(0, 19).replace('T', ' ')}
                       </>
                     ) : null}
-                  </span>
-                )}
-              </li>
+	                    </span>
+	                  )}
+	                </div>
+	                <button
+	                  type="button"
+	                  className="annotation-entry-delete"
+	                  aria-label={`Delete annotation ${annotation.comment || annotation.defect_class || annotation.id}`}
+	                  onClick={(event) => {
+	                    event.preventDefault();
+	                    event.stopPropagation();
+	                    deleteMeasurementAnnotation(annotation.id);
+	                  }}
+	                >
+	                  ×
+	                </button>
+	              </li>
             ))
           )}
         </ul>
@@ -3322,12 +3338,14 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       FULLSCREEN_IMAGE_ZOOM_MAX,
       Math.max(FULLSCREEN_IMAGE_ZOOM_MIN, fullscreenImageZoom.scale * (direction > 0 ? 1.15 : 1 / 1.15)),
     );
-    setFullscreenImageZoom({
-      scale: nextScale,
-      originX: (position.displayX / position.rect.width) * 100,
-      originY: (position.displayY / position.rect.height) * 100,
-    });
-  };
+	    setFullscreenImageZoom({
+	      scale: nextScale,
+	      originX: (position.displayX / position.rect.width) * 100,
+	      originY: (position.displayY / position.rect.height) * 100,
+	      panX: fullscreenImageZoom.panX || 0,
+	      panY: fullscreenImageZoom.panY || 0,
+	    });
+	  };
 
   const toggleFullscreenMeasure = () => {
     if (fullscreenMeasureActive) {
@@ -3344,7 +3362,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       setFullscreenCalibrationPromptVisible(true);
       return;
     }
-	    setFullscreenImageZoom({ scale: 1, originX: 50, originY: 50 });
+	    setFullscreenImageZoom({ scale: 1, originX: 50, originY: 50, panX: 0, panY: 0 });
 	    setFullscreenCalibrationPromptVisible(false);
 	    setFullscreenBoxActive(false);
 	    setPendingBoxPoint(null);
@@ -3361,7 +3379,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	      setFullscreenAnnotationPreview(null);
 	      return;
 	    }
-	    setFullscreenImageZoom({ scale: 1, originX: 50, originY: 50 });
+	    setFullscreenImageZoom({ scale: 1, originX: 50, originY: 50, panX: 0, panY: 0 });
 	    setFullscreenMeasureActive(false);
 	    setPendingMeasurePoint(null);
 	    pendingMeasurePointRef.current = null;
@@ -3514,8 +3532,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	    if (event.pointerId !== undefined) event.currentTarget.releasePointerCapture?.(event.pointerId);
 	  };
 
-  const handleFullscreenImageWheel = (event) => {
-    if (fullscreenEditingEndpoint?.lineId) {
+	  const handleFullscreenImageWheel = (event) => {
+	    if (fullscreenEditingEndpoint?.lineId) {
       event.preventDefault();
       const direction = event.deltaY < 0 ? 1 : -1;
       const nextScale = Math.min(
@@ -3526,10 +3544,48 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       updateFullscreenZoomLens(getFullscreenImagePointerPosition(event), nextScale);
       return;
     }
-    updateFullscreenImageZoomFromWheel(event);
-  };
+	    updateFullscreenImageZoomFromWheel(event);
+	  };
+
+	  const canPanFullscreenImage = () => (
+	    !fullscreenMeasureActive
+	    && !fullscreenBoxActive
+	    && !fullscreenEditingEndpoint?.lineId
+	    && !fullscreenCalibrationPromptVisible
+	  );
+
+	  const handleFullscreenPanMouseDown = (event) => {
+	    if (!canPanFullscreenImage()) return;
+	    if (event.button !== undefined && event.button !== 0) return;
+	    if (event.target?.classList?.contains('inspection-measurement-endpoint-dot')) return;
+	    event.preventDefault();
+	    fullscreenPanDragRef.current = {
+	      startClientX: event.clientX,
+	      startClientY: event.clientY,
+	      startPanX: Number(fullscreenImageZoom.panX || 0),
+	      startPanY: Number(fullscreenImageZoom.panY || 0),
+	    };
+	    setFullscreenImagePanning(true);
+	  };
+
+	  const handleFullscreenPanMouseUp = () => {
+	    fullscreenPanDragRef.current = null;
+	    setFullscreenImagePanning(false);
+	  };
 
 	  const handleFullscreenImagePointerMove = (event, lines) => {
+	    const panDrag = fullscreenPanDragRef.current;
+	    if (panDrag) {
+	      event.preventDefault();
+	      const nextPanX = panDrag.startPanX + (event.clientX - panDrag.startClientX);
+	      const nextPanY = panDrag.startPanY + (event.clientY - panDrag.startClientY);
+	      setFullscreenImageZoom((prev) => ({
+	        ...prev,
+	        panX: nextPanX,
+	        panY: nextPanY,
+	      }));
+	      return;
+	    }
 	    const position = getFullscreenImagePointerPosition(event);
 	    if (fullscreenEditingEndpoint?.lineId) {
 	      updateFullscreenZoomLens(position);
@@ -3585,7 +3641,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	    event.stopPropagation();
 	    setFullscreenMeasureActive(false);
 	    setFullscreenBoxActive(false);
-	    setFullscreenImageZoom({ scale: 1, originX: 50, originY: 50 });
+	    setFullscreenImageZoom({ scale: 1, originX: 50, originY: 50, panX: 0, panY: 0 });
 	    setPendingMeasurePoint(null);
 	    pendingMeasurePointRef.current = null;
 	    setPendingBoxPoint(null);
@@ -3607,6 +3663,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 
   const closeFullscreenImageModal = () => {
 	    setFullscreenImageModal(null);
+	    fullscreenPanDragRef.current = null;
+	    setFullscreenImagePanning(false);
 	    setFullscreenMeasureActive(false);
 	    setFullscreenBoxActive(false);
 	    setPendingMeasurePoint(null);
@@ -3618,7 +3676,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	    setFullscreenEditingEndpoint(null);
 	    setFullscreenZoomLens(null);
 	    setFullscreenZoomScale(MEASUREMENT_LOCAL_ZOOM_SCALE);
-	    setFullscreenImageZoom({ scale: 1, originX: 50, originY: 50 });
+	    setFullscreenImageZoom({ scale: 1, originX: 50, originY: 50, panX: 0, panY: 0 });
 	    setFullscreenAnnotationPreview(null);
 	  };
 
@@ -3694,19 +3752,22 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	            {fullscreenEditingEndpoint && <div className="workbench-notice">Move the zoom lens to the precise endpoint and click to place it.</div>}
             <div className="inspection-fullscreen-workspace">
               <div
-                className={`inspection-fullscreen-image-frame ${fullscreenImageZoom.scale > 1 ? 'zoomed' : ''}`}
-                onMouseMove={(event) => handleFullscreenImagePointerMove(event, fullscreenMeasurementLines)}
-                onMouseLeave={() => {
-                  if (!fullscreenEditingEndpoint) setFullscreenHoveredEndpoint(null);
-                }}
+	                className={`inspection-fullscreen-image-frame ${fullscreenImageZoom.scale > 1 ? 'zoomed' : ''} ${fullscreenImagePanning ? 'panning' : ''}`}
+	                onMouseDown={handleFullscreenPanMouseDown}
+	                onMouseMove={(event) => handleFullscreenImagePointerMove(event, fullscreenMeasurementLines)}
+	                onMouseUp={handleFullscreenPanMouseUp}
+	                onMouseLeave={() => {
+	                  handleFullscreenPanMouseUp();
+	                  if (!fullscreenEditingEndpoint) setFullscreenHoveredEndpoint(null);
+	                }}
                 onWheel={handleFullscreenImageWheel}
               >
                 <div
                   className="inspection-fullscreen-image-zoom-layer"
-                  style={{
-                    transform: `scale(${fullscreenImageZoom.scale})`,
-                    transformOrigin: `${fullscreenImageZoom.originX}% ${fullscreenImageZoom.originY}%`,
-                  }}
+	                  style={{
+	                    transform: `translate(${fullscreenImageZoom.panX || 0}px, ${fullscreenImageZoom.panY || 0}px) scale(${fullscreenImageZoom.scale})`,
+	                    transformOrigin: `${fullscreenImageZoom.originX}% ${fullscreenImageZoom.originY}%`,
+	                  }}
                 >
                   {fullscreenBaseImageId && (
                     <img

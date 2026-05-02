@@ -4876,6 +4876,10 @@ ul li:hover {
 }
 
 .measurement-list .annotation-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 6px;
   border: 1px solid #dbe2ea;
   border-radius: 8px;
   padding: 8px;
@@ -4883,6 +4887,28 @@ ul li:hover {
   list-style: none;
   cursor: pointer;
   background: #fff;
+}
+
+.annotation-entry-content {
+  min-width: 0;
+}
+
+.annotation-entry-delete {
+  align-self: stretch;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #dc2626;
+  cursor: pointer;
+  font-size: 1.25rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.annotation-entry-delete:hover,
+.annotation-entry-delete:focus-visible {
+  background: #fee2e2;
+  outline: none;
 }
 
 .measurement-list .annotation-entry.selected {
@@ -5124,6 +5150,10 @@ ul li:hover {
 
 .inspection-fullscreen-image-frame.zoomed {
   cursor: zoom-out;
+}
+
+.inspection-fullscreen-image-frame.panning {
+  cursor: grabbing;
 }
 
 .inspection-fullscreen-image-zoom-layer {

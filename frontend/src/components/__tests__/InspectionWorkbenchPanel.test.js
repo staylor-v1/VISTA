@@ -896,6 +896,22 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('selected-image-metadata-panel')).toHaveTextContent('"view_name": "front"');
   });
 
+  test('deletes annotations from the main annotations list', async () => {
+    mockWorkbenchFetch(scenarioByUser[0]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    await waitFor(() => expect(screen.getByTestId('annotation-list')).toHaveTextContent('seed-basic'));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete annotation seed-basic' }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/projects/proj-1/parts/part-basic-1/annotations/seed-annotation-basic',
+        { method: 'DELETE' },
+      );
+      expect(screen.getByTestId('annotation-list')).not.toHaveTextContent('seed-basic');
+    });
+  });
+
   test('renders Analyze overlay outputs over their source image in the inspection window', async () => {
     mockWorkbenchFetch({
       user: 'analyze-output',
@@ -1247,12 +1263,17 @@ describe('InspectionWorkbenchPanel', () => {
     });
     await waitFor(() => expect(screen.queryByTestId('fullscreen-measurement-zoom-lens')).not.toBeInTheDocument());
 
-    fireEvent.wheel(fullscreenImage, { deltaY: -80, clientX: 200, clientY: 100 });
-    const zoomLayer = document.querySelector('.inspection-fullscreen-image-zoom-layer');
-    expect(zoomLayer.style.transform).toBe('scale(1.15)');
-    expect(zoomLayer.style.transformOrigin).toBe('50% 50%');
+	    fireEvent.wheel(fullscreenImage, { deltaY: -80, clientX: 200, clientY: 100 });
+	    const zoomLayer = document.querySelector('.inspection-fullscreen-image-zoom-layer');
+	    expect(zoomLayer.style.transform).toBe('translate(0px, 0px) scale(1.15)');
+	    expect(zoomLayer.style.transformOrigin).toBe('50% 50%');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete Endpoint check' }));
+	    fireEvent.mouseDown(fullscreenImage, { clientX: 200, clientY: 100, button: 0 });
+	    fireEvent.mouseMove(fullscreenImage, { clientX: 240, clientY: 130 });
+	    fireEvent.mouseUp(fullscreenImage, { clientX: 240, clientY: 130, button: 0 });
+	    expect(zoomLayer.style.transform).toBe('translate(40px, 30px) scale(1.15)');
+
+	    fireEvent.click(screen.getByRole('button', { name: 'Delete Endpoint check' }));
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(
         '/api/projects/proj-1/parts/part-basic-1/annotations/measurement-endpoint-a',
