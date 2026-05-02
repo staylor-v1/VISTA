@@ -222,12 +222,15 @@ class InspectionAnnotationCreate(InspectionAnnotationBase):
 
 
 class InspectionAnnotationUpdate(BaseModel):
+    image_id: Optional[str] = Field(default=None, max_length=128)
     defect_class: Optional[str] = Field(default=None, min_length=1, max_length=128)
     modality: Optional[str] = Field(default=None, min_length=1, max_length=64)
     comment: Optional[str] = Field(default=None, max_length=2000)
     disposition: Optional[str] = Field(default=None, pattern=r"^(open|accepted|rejected|needs_info)$")
     measurements: Optional[Dict[str, float]] = None
+    geometry: Optional[Dict[str, Any]] = None
     bbox: Optional[Dict[str, float]] = None
+    metadata: Optional[Dict[str, Any]] = None
     hidden: Optional[bool] = None
 
 
@@ -790,4 +793,3 @@ class ProjectReviewStatus(BaseModel):
     passed: int
     reject_pending: int
     reject_confirmed: int
-

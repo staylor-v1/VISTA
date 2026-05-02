@@ -441,7 +441,10 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
         comment: payload.comment || null,
         disposition: payload.disposition || 'open',
         hidden: false,
+        image_id: payload.image_id || null,
         measurements: payload.measurements || {},
+        geometry: payload.geometry || null,
+        metadata: payload.metadata || {},
         bbox: payload.bbox || null,
         created_by: 'e2e@example.com',
         created_at: '2026-03-28T12:30:00Z',
@@ -451,6 +454,38 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
         [partId]: [annotation, ...(mutableAnnotations[partId] || [])],
       };
       await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(annotation) });
+      return;
+    }
+    if (url.includes(`/api/projects/${projectId}/parts/`) && url.includes('/annotations/') && method === 'PATCH') {
+      const partId = url.split('/parts/').at(-1).split('/annotations/')[0];
+      const annotationId = url.split('/annotations/').at(-1);
+      const payload = route.request().postDataJSON() || {};
+      const updatedAnnotations = (mutableAnnotations[partId] || []).map((annotation) => (
+        annotation.id === annotationId
+          ? {
+            ...annotation,
+            ...payload,
+            updated_by: 'e2e@example.com',
+            updated_at: '2026-03-28T12:35:00Z',
+          }
+          : annotation
+      ));
+      mutableAnnotations = { ...mutableAnnotations, [partId]: updatedAnnotations };
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(updatedAnnotations.find((annotation) => annotation.id === annotationId)),
+      });
+      return;
+    }
+    if (url.includes(`/api/projects/${projectId}/parts/`) && url.includes('/annotations/') && method === 'DELETE') {
+      const partId = url.split('/parts/').at(-1).split('/annotations/')[0];
+      const annotationId = url.split('/annotations/').at(-1);
+      mutableAnnotations = {
+        ...mutableAnnotations,
+        [partId]: (mutableAnnotations[partId] || []).filter((annotation) => annotation.id !== annotationId),
+      };
+      await route.fulfill({ status: 204, contentType: 'application/json', body: '' });
       return;
     }
     if (url.includes(`/api/projects/${projectId}/parts/`) && method === 'PATCH') {

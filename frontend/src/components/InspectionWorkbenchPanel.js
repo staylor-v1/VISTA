@@ -56,6 +56,13 @@ const DEFAULT_INSPECTOR_HOTKEYS = {
 };
 const DEFAULT_INSPECTION_COLUMN_WIDTHS = { leftPx: null, rightPx: null };
 const MEASUREMENT_COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#06b6d4'];
+const MEASUREMENT_ENDPOINT_HOVER_RATIO = 0.01;
+const MEASUREMENT_LOCAL_ZOOM_DIAMETER_RATIO = 0.5;
+const MEASUREMENT_LOCAL_ZOOM_SCALE = 10;
+const MEASUREMENT_LOCAL_ZOOM_MIN_SCALE = 2;
+const MEASUREMENT_LOCAL_ZOOM_MAX_SCALE = 25;
+const FULLSCREEN_IMAGE_ZOOM_MIN = 1;
+const FULLSCREEN_IMAGE_ZOOM_MAX = 8;
 const RESIZABLE_COLUMN_MIN_PX = 220;
 const RESIZE_HANDLE_WIDTH_PX = 10;
 const FLEX_LAYOUT_CENTER_WEIGHT_PX = 760;
@@ -131,9 +138,58 @@ function getMeasurementLinesByImageId(annotations) {
     const distancePx = Number.isFinite(providedLengthPx)
       ? providedLengthPx
       : Math.hypot(x2 - x1, y2 - y1);
-    const color = annotation?.metadata?.measurement_color || MEASUREMENT_COLORS[Object.keys(acc).length % MEASUREMENT_COLORS.length];
-    const entry = { id: String(annotation.id || `${imageId}-${x1}-${y1}`), x1, y1, x2, y2, imageWidth, imageHeight, color, distanceMm: Number.isFinite(lengthMm) ? lengthMm : null, distancePx };
     const key = String(imageId);
+    const lineIndex = (acc[key] || []).length;
+    const color = annotation?.metadata?.measurement_color || MEASUREMENT_COLORS[lineIndex % MEASUREMENT_COLORS.length];
+    const entry = {
+      id: String(annotation.id || `${imageId}-${x1}-${y1}`),
+      imageId: key,
+      name: annotation?.comment || `Measurement ${lineIndex + 1}`,
+      kind: annotation?.defect_class || 'Measurement',
+      x1,
+      y1,
+      x2,
+      y2,
+      imageWidth,
+      imageHeight,
+      color,
+      distanceMm: Number.isFinite(lengthMm) ? lengthMm : null,
+      distancePx,
+    };
+    acc[key] = [...(acc[key] || []), entry];
+    return acc;
+  }, {});
+}
+
+function getBoxAnnotationsByImageId(annotations) {
+  if (!Array.isArray(annotations)) return {};
+  return annotations.reduce((acc, annotation) => {
+    const imageId = annotation?.image_id;
+    const bbox = annotation?.bbox;
+    if (!imageId || !bbox) return acc;
+    const x = Number(bbox.x);
+    const y = Number(bbox.y);
+    const width = Number(bbox.width);
+    const height = Number(bbox.height);
+    if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return acc;
+    const imageWidth = Number(annotation?.geometry?.imageWidth || annotation?.geometry?.box?.imageWidth || bbox.imageWidth);
+    const imageHeight = Number(annotation?.geometry?.imageHeight || annotation?.geometry?.box?.imageHeight || bbox.imageHeight);
+    if (![imageWidth, imageHeight].every(Number.isFinite) || imageWidth <= 0 || imageHeight <= 0) return acc;
+    const key = String(imageId);
+    const boxIndex = (acc[key] || []).length;
+    const color = annotation?.metadata?.annotation_color || annotation?.metadata?.measurement_color || MEASUREMENT_COLORS[boxIndex % MEASUREMENT_COLORS.length];
+    const entry = {
+      id: String(annotation.id || `${imageId}-${x}-${y}`),
+      imageId: key,
+      name: annotation?.comment || annotation?.defect_class || `Box ${boxIndex + 1}`,
+      x,
+      y,
+      width,
+      height,
+      imageWidth,
+      imageHeight,
+      color,
+    };
     acc[key] = [...(acc[key] || []), entry];
     return acc;
   }, {});
@@ -143,6 +199,12 @@ function isFiniteMeasurementLine(line) {
   if (!line || typeof line !== 'object') return false;
   const values = [line.x1, line.y1, line.x2, line.y2, line.imageWidth, line.imageHeight];
   return values.every((value) => Number.isFinite(Number(value)));
+}
+
+function isFiniteAnnotationBox(box) {
+  if (!box || typeof box !== 'object') return false;
+  const values = [box.x, box.y, box.width, box.height, box.imageWidth, box.imageHeight];
+  return values.every((value) => Number.isFinite(Number(value))) && Number(box.width) > 0 && Number(box.height) > 0;
 }
 
 function isValidCalibration(calibration) {
@@ -187,6 +249,14 @@ function getMeasurementLineLabel(line) {
   return Number.isFinite(distancePx) ? `${distancePx.toFixed(1)} px` : '';
 }
 
+function getAnnotationBoxWidthLabel(box) {
+  return `Width ${Number(box.width).toFixed(1)} px`;
+}
+
+function getAnnotationBoxHeightLabel(box) {
+  return `Height ${Number(box.height).toFixed(1)} px`;
+}
+
 function getMeasurementLabelViewBoxPosition(line, fontSize = 20) {
   const x = ((Number(line.x1) + Number(line.x2)) / (2 * Number(line.imageWidth))) * 1000;
   const y = ((Number(line.y1) + Number(line.y2)) / (2 * Number(line.imageHeight))) * 1000 - 6;
@@ -194,6 +264,31 @@ function getMeasurementLabelViewBoxPosition(line, fontSize = 20) {
   return {
     x: Math.min(980, Math.max(20, x)),
     y: Math.min(980, Math.max(inset, y)),
+  };
+}
+
+function getMeasurementEndpointViewBoxPosition(line) {
+  return {
+    start: {
+      x: (Number(line.x1) / Number(line.imageWidth)) * 1000,
+      y: (Number(line.y1) / Number(line.imageHeight)) * 1000,
+    },
+    end: {
+      x: (Number(line.x2) / Number(line.imageWidth)) * 1000,
+      y: (Number(line.y2) / Number(line.imageHeight)) * 1000,
+    },
+  };
+}
+
+function getMeasurementLineWithDerivedLength(line, imageId, calibration) {
+  if (!isFiniteMeasurementLine(line)) return null;
+  const distancePx = Math.hypot(Number(line.x2) - Number(line.x1), Number(line.y2) - Number(line.y1));
+  const pixelsPerMm = Number(calibration?.pixels_per_mm || 0);
+  return {
+    ...line,
+    imageId: String(imageId || line.imageId || ''),
+    distancePx,
+    distanceMm: pixelsPerMm > 0 ? distancePx / pixelsPerMm : null,
   };
 }
 
@@ -325,6 +420,79 @@ function getPartImageRefs(part) {
     });
   }
   return refs;
+}
+
+function resolveProjectImageId(projectImageLookup, ...candidates) {
+  for (const candidate of candidates) {
+    const key = String(candidate || '');
+    if (!key) continue;
+    const record = projectImageLookup[key];
+    if (record?.id) return String(record.id);
+    if (key) return key;
+  }
+  return '';
+}
+
+function getAnnotationSourceImageId(entry, projectImageLookup) {
+  const imageId = resolveProjectImageId(projectImageLookup, entry?.imageId, entry?.imageRef);
+  if (!imageId) return '';
+  if (!entry?.overlay) return imageId;
+  const imageRecord = projectImageLookup[entry.imageId] || projectImageLookup[entry.imageRef] || {};
+  return resolveProjectImageId(
+    projectImageLookup,
+    entry.overlayBaseImageId,
+    entry.overlayBaseFilename,
+    imageRecord?.metadata?.overlay_base_image_id,
+    imageRecord?.metadata?.analysis_source_image_id,
+    imageRecord?.metadata?.overlay_base_filename,
+    imageId,
+  );
+}
+
+function getAnnotationSourceImageIdLookup(imageEntries, projectImageLookup) {
+  return imageEntries.reduce((acc, entry) => {
+    const imageId = resolveProjectImageId(projectImageLookup, entry?.imageId, entry?.imageRef);
+    const sourceImageId = getAnnotationSourceImageId(entry, projectImageLookup);
+    if (imageId && sourceImageId) acc[imageId] = sourceImageId;
+    if (sourceImageId) acc[sourceImageId] = sourceImageId;
+    return acc;
+  }, {});
+}
+
+function renderAnnotationOverlay({ measurementLines = [], boxes = [], fontSize = 24 }) {
+  return (
+    <>
+      {measurementLines.filter(isFiniteMeasurementLine).map((line) => {
+        const labelPosition = getMeasurementLabelViewBoxPosition(line, fontSize);
+        return (
+          <g key={`line-${line.id}`}>
+            <line x1={(line.x1 / line.imageWidth) * 1000} y1={(line.y1 / line.imageHeight) * 1000} x2={(line.x2 / line.imageWidth) * 1000} y2={(line.y2 / line.imageHeight) * 1000} stroke={line.color} strokeWidth="3" />
+            <text x={labelPosition.x} y={labelPosition.y} fill={line.color} fontSize={fontSize}>
+              {getMeasurementLineLabel(line)}
+            </text>
+          </g>
+        );
+      })}
+      {boxes.filter(isFiniteAnnotationBox).map((box) => {
+        const x = (box.x / box.imageWidth) * 1000;
+        const y = (box.y / box.imageHeight) * 1000;
+        const width = (box.width / box.imageWidth) * 1000;
+        const height = (box.height / box.imageHeight) * 1000;
+        const labelSize = Math.max(18, fontSize * 0.82);
+        return (
+          <g key={`box-${box.id}`}>
+            <rect x={x} y={y} width={width} height={height} fill="transparent" stroke={box.color} strokeWidth="3" />
+            <text x={Math.min(980, Math.max(20, x + (width / 2)))} y={Math.max(24, y - 8)} fill={box.color} fontSize={labelSize} textAnchor="middle">
+              {getAnnotationBoxWidthLabel(box)}
+            </text>
+            <text x={Math.min(980, x + width + 12)} y={Math.min(980, y + (height / 2))} fill={box.color} fontSize={labelSize} transform={`rotate(90 ${Math.min(980, x + width + 12)} ${Math.min(980, y + (height / 2))})`} textAnchor="middle">
+              {getAnnotationBoxHeightLabel(box)}
+            </text>
+          </g>
+        );
+      })}
+    </>
+  );
 }
 
 function getFallbackProjectionImage(axis, shellImageLayers) {
@@ -866,6 +1034,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     measurement_value: '',
     bbox: { x: '', y: '', width: '', height: '' },
   });
+  const [annotationToolMode, setAnnotationToolMode] = useState('');
+  const [otherAnnotationModalVisible, setOtherAnnotationModalVisible] = useState(false);
+  const [tileAnnotationDraft, setTileAnnotationDraft] = useState(null);
   const [inspectorHotkeys, setInspectorHotkeys] = useState(DEFAULT_INSPECTOR_HOTKEYS);
   const [projectConfiguration, setProjectConfiguration] = useState(null);
   const [projectMetadata, setProjectMetadata] = useState({});
@@ -878,11 +1049,19 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [deletingOverlayId, setDeletingOverlayId] = useState('');
   const [fullscreenImageModal, setFullscreenImageModal] = useState(null);
   const [fullscreenMeasureActive, setFullscreenMeasureActive] = useState(false);
+  const [fullscreenBoxActive, setFullscreenBoxActive] = useState(false);
   const [fullscreenMeasurements, setFullscreenMeasurements] = useState([]);
   const [fullscreenCalibrationPromptVisible, setFullscreenCalibrationPromptVisible] = useState(false);
+  const [fullscreenHoveredEndpoint, setFullscreenHoveredEndpoint] = useState(null);
+  const [fullscreenEditingEndpoint, setFullscreenEditingEndpoint] = useState(null);
+  const [fullscreenZoomLens, setFullscreenZoomLens] = useState(null);
+  const [fullscreenZoomScale, setFullscreenZoomScale] = useState(MEASUREMENT_LOCAL_ZOOM_SCALE);
+  const [fullscreenImageZoom, setFullscreenImageZoom] = useState({ scale: 1, originX: 50, originY: 50 });
   const [sessionCalibrationByImageId, setSessionCalibrationByImageId] = useState({});
   const measurementLinesByImageId = useMemo(() => getMeasurementLinesByImageId(annotations), [annotations]);
+  const boxAnnotationsByImageId = useMemo(() => getBoxAnnotationsByImageId(annotations), [annotations]);
   const [pendingMeasurePoint, setPendingMeasurePoint] = useState(null);
+  const [pendingBoxPoint, setPendingBoxPoint] = useState(null);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState(null);
   const [viewportWidth, setViewportWidth] = useState(() => (
     typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth
@@ -892,7 +1071,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const workbenchDetailsRef = useRef(null);
   const inspectionResizeSaveTimerRef = useRef(null);
   const mprDragRef = useRef(null);
+  const tileAnnotationDraftRef = useRef(null);
   const pendingMeasurePointRef = useRef(null);
+  const pendingBoxPointRef = useRef(null);
+  const fullscreenImageRef = useRef(null);
+  const suppressNextTileClickRef = useRef(false);
 
   const inspectionHierarchy = useMemo(() => {
     const normalized = normalizeInspectionHierarchy(hierarchy || {});
@@ -1202,6 +1385,14 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     if (!selectedPart?.metadata || typeof selectedPart.metadata !== 'object') return [];
     return getPartImageRefs(selectedPart);
   }, [selectedPart]);
+  const annotationSourceImageIdLookup = useMemo(
+    () => getAnnotationSourceImageIdLookup(selectedPartImageRefs, projectImageLookup),
+    [projectImageLookup, selectedPartImageRefs],
+  );
+  const getAnnotationSourceImageIdForImage = useCallback((imageId) => {
+    const key = String(imageId || '');
+    return annotationSourceImageIdLookup[key] || key;
+  }, [annotationSourceImageIdLookup]);
   const selectedImageRecord = useMemo(() => {
     if (!selectedImageRef) return null;
     return projectImageLookup[selectedImageRef] || null;
@@ -1679,6 +1870,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     });
   };
 
+  const setTileAnnotationMode = (mode) => {
+    setAnnotationToolMode((prev) => (prev === mode ? '' : mode));
+    setTileAnnotationDraft(null);
+    tileAnnotationDraftRef.current = null;
+  };
+
   const createAnnotation = async () => {
     if (!selectedPart?.id || !annotationDraft.defect_class.trim()) return;
     const measurementName = annotationDraft.measurement_name.trim();
@@ -1716,6 +1913,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       const created = await resp.json();
       setAnnotations((prev) => [created, ...prev]);
       resetAnnotationDraft();
+      setOtherAnnotationModalVisible(false);
     } catch (err) {
       setError(err.message || 'Failed to create annotation');
     }
@@ -1723,11 +1921,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 
   const createMeasurementAnnotation = async ({ imageId, line, name, color, distanceMm }) => {
     if (!selectedPart?.id || !line || !line.imageWidth || !line.imageHeight) return;
+    const annotationImageId = getAnnotationSourceImageIdForImage(imageId);
     const width = Math.abs(line.x2 - line.x1);
     const height = Math.abs(line.y2 - line.y1);
     const distancePixels = Math.sqrt((width ** 2) + (height ** 2));
     const payload = {
-      image_id: imageId ? String(imageId) : null,
+      image_id: annotationImageId ? String(annotationImageId) : null,
       defect_class: 'Measurement',
       modality: activeViewName || enabledModalities[0] || modalityOptions[0] || 'visual',
       comment: name || 'Captured from measurement tool.',
@@ -1757,6 +1956,125 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     } catch (err) {
       setError(err.message || 'Failed to create measurement annotation');
       return null;
+    }
+  };
+
+  const createBoxAnnotation = async ({ imageId, box, name, color }) => {
+    if (!selectedPart?.id || !isFiniteAnnotationBox(box)) return null;
+    const annotationImageId = getAnnotationSourceImageIdForImage(imageId);
+    const payload = {
+      image_id: annotationImageId ? String(annotationImageId) : null,
+      defect_class: 'Bounding Box',
+      modality: activeViewName || enabledModalities[0] || modalityOptions[0] || 'visual',
+      comment: name || 'Captured from draw box tool.',
+      disposition: 'open',
+      measurements: {
+        width_px: Number(box.width.toFixed(2)),
+        height_px: Number(box.height.toFixed(2)),
+      },
+      geometry: {
+        imageWidth: box.imageWidth,
+        imageHeight: box.imageHeight,
+        box: {
+          x: box.x,
+          y: box.y,
+          width: box.width,
+          height: box.height,
+          imageWidth: box.imageWidth,
+          imageHeight: box.imageHeight,
+        },
+      },
+      metadata: { annotation_color: color },
+      bbox: {
+        x: Number(box.x.toFixed(2)),
+        y: Number(box.y.toFixed(2)),
+        width: Number(box.width.toFixed(2)),
+        height: Number(box.height.toFixed(2)),
+      },
+      hidden: false,
+    };
+    try {
+      const resp = await fetch(`/api/projects/${projectId}/parts/${selectedPart.id}/annotations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) throw new Error(`Failed to create box annotation (${resp.status})`);
+      const created = await resp.json();
+      setAnnotations((prev) => [created, ...prev]);
+      setSelectedAnnotationId(created.id);
+      return created;
+    } catch (err) {
+      setError(err.message || 'Failed to create box annotation');
+      return null;
+    }
+  };
+
+  const updateMeasurementAnnotationLine = async (lineId, nextLine) => {
+    if (!selectedPart?.id || !lineId || !isFiniteMeasurementLine(nextLine)) return null;
+    const calibratedLine = getMeasurementLineWithDerivedLength(
+      nextLine,
+      getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId),
+      getCalibrationForImage(getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId)),
+    );
+    const width = Math.abs(calibratedLine.x2 - calibratedLine.x1);
+    const height = Math.abs(calibratedLine.y2 - calibratedLine.y1);
+    const measurements = {
+      length_px: Number(calibratedLine.distancePx.toFixed(2)),
+      ...(Number.isFinite(calibratedLine.distanceMm) ? { length_mm: Number(calibratedLine.distanceMm.toFixed(2)) } : {}),
+    };
+    const payload = {
+      image_id: calibratedLine.imageId,
+      geometry: { line: calibratedLine },
+      measurements,
+      metadata: { measurement_color: nextLine.color },
+      bbox: {
+        x: Number(Math.min(calibratedLine.x1, calibratedLine.x2).toFixed(2)),
+        y: Number(Math.min(calibratedLine.y1, calibratedLine.y2).toFixed(2)),
+        width: Number(width.toFixed(2)),
+        height: Number(height.toFixed(2)),
+      },
+    };
+    try {
+      const resp = await fetch(`/api/projects/${projectId}/parts/${selectedPart.id}/annotations/${lineId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) throw new Error(`Failed to update measurement annotation (${resp.status})`);
+      const updated = await resp.json();
+      setAnnotations((prev) => prev.map((item) => (String(item.id) === String(updated.id) ? updated : item)));
+      setFullscreenMeasurements((prev) => prev.map((item) => (String(item.id) === String(lineId)
+        ? {
+          ...item,
+          ...calibratedLine,
+          color: nextLine.color,
+          distancePx: calibratedLine.distancePx,
+          distanceMm: calibratedLine.distanceMm,
+        }
+        : item)));
+      setSelectedAnnotationId(updated.id);
+      return updated;
+    } catch (err) {
+      setError(err.message || 'Failed to update measurement annotation');
+      return null;
+    }
+  };
+
+  const deleteMeasurementAnnotation = async (lineId) => {
+    if (!selectedPart?.id || !lineId) return;
+    try {
+      const resp = await fetch(`/api/projects/${projectId}/parts/${selectedPart.id}/annotations/${lineId}`, {
+        method: 'DELETE',
+      });
+      if (!resp.ok) throw new Error(`Failed to delete measurement annotation (${resp.status})`);
+      setAnnotations((prev) => prev.filter((item) => String(item.id) !== String(lineId)));
+      setFullscreenMeasurements((prev) => prev.filter((item) => String(item.id) !== String(lineId)));
+      setSelectedAnnotationId((prev) => (String(prev) === String(lineId) ? null : prev));
+      setFullscreenHoveredEndpoint((prev) => (String(prev?.lineId) === String(lineId) ? null : prev));
+      setFullscreenEditingEndpoint((prev) => (String(prev?.lineId) === String(lineId) ? null : prev));
+    } catch (err) {
+      setError(err.message || 'Failed to delete measurement annotation');
     }
   };
 
@@ -2248,6 +2566,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   ? (projectImageLookup[entry.overlayBaseImageId] || projectImageLookup[entry.overlayBaseFilename])
                   : null;
                 const baseImageId = baseRecord?.id || entry.overlayBaseImageId || '';
+                const annotationSourceImageId = getAnnotationSourceImageId(entry, projectImageLookup);
+                const tileAnnotationSourceImageId = String(annotationSourceImageId || imageId);
+                const tileMeasurementLines = (measurementLinesByImageId[tileAnnotationSourceImageId] || [])
+                  .filter(isFiniteMeasurementLine);
+                const tileBoxes = (boxAnnotationsByImageId[tileAnnotationSourceImageId] || [])
+                  .filter(isFiniteAnnotationBox);
                 return (
                   <div
                     key={entry.id}
@@ -2289,10 +2613,22 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                       ) : entry.overlay && imageId && baseImageId ? (
                         <div
                           className="inspection-overlay-composite"
-                          data-testid="inspection-overlay-composite"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setFullscreenImageModal({ imageId: String(imageId), label: entry.label || viewName.toUpperCase() });
+	                          data-testid="inspection-overlay-composite"
+	                          onMouseDown={(event) => handleTileBoxPointerDown(event, imageId)}
+	                          onMouseUp={(event) => handleTileBoxPointerUp(event, imageId)}
+	                          onMouseLeave={handleTileBoxPointerCancel}
+	                          onClick={(event) => {
+	                            event.stopPropagation();
+	                            if (suppressNextTileClickRef.current) {
+	                              suppressNextTileClickRef.current = false;
+	                              return;
+	                            }
+	                            if (handleTileAnnotationPointerDown(event, imageId)) return;
+	                            setFullscreenImageModal({
+	                              imageId: String(imageId),
+	                              baseImageId: String(baseImageId),
+                              label: entry.label || viewName.toUpperCase(),
+                            });
                           }}
                         >
                           <img
@@ -2307,33 +2643,34 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                             alt={`${viewName} overlay`}
                             loading="lazy"
                           />
-                        </div>
-                      ) : imageId ? (
+	                          <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 1000 1000`} preserveAspectRatio="none" aria-label="tile measurement overlay">
+	                            {renderAnnotationOverlay({ measurementLines: tileMeasurementLines, boxes: tileBoxes, fontSize: 30 })}
+	                          </svg>
+	                        </div>
+	                      ) : imageId ? (
                         <>
                           <img
                             className="inspection-view-image"
                             src={`/api/images/${encodeURIComponent(String(imageId))}/content`}
                             alt={`${viewName} view`}
-                            loading="lazy"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setFullscreenImageModal({ imageId: String(imageId), label: entry.label || viewName.toUpperCase() });
-                            }}
-                          />
-                          <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 1000 1000`} preserveAspectRatio="none" aria-label="tile measurement overlay">
-                            {(measurementLinesByImageId[String(imageId)] || []).filter(isFiniteMeasurementLine).map((line) => {
-                              const labelPosition = getMeasurementLabelViewBoxPosition(line, 30);
-                              return (
-                                <g key={line.id}>
-                                  <line x1={(line.x1 / line.imageWidth) * 1000} y1={(line.y1 / line.imageHeight) * 1000} x2={(line.x2 / line.imageWidth) * 1000} y2={(line.y2 / line.imageHeight) * 1000} stroke={line.color} strokeWidth="3" />
-                                  <text x={labelPosition.x} y={labelPosition.y} fill={line.color} fontSize="30">
-                                    {getMeasurementLineLabel(line)}
-                                  </text>
-                                </g>
-                              );
-                            })}
-                          </svg>
-                        </>
+		                            loading="lazy"
+	                            onMouseDown={(event) => handleTileBoxPointerDown(event, imageId)}
+	                            onMouseUp={(event) => handleTileBoxPointerUp(event, imageId)}
+	                            onMouseLeave={handleTileBoxPointerCancel}
+	                            onClick={(event) => {
+	                              event.stopPropagation();
+	                              if (suppressNextTileClickRef.current) {
+	                                suppressNextTileClickRef.current = false;
+	                                return;
+	                              }
+	                              if (handleTileAnnotationPointerDown(event, imageId)) return;
+	                              setFullscreenImageModal({ imageId: String(imageId), label: entry.label || viewName.toUpperCase() });
+	                            }}
+	                          />
+	                          <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 1000 1000`} preserveAspectRatio="none" aria-label="tile measurement overlay">
+	                            {renderAnnotationOverlay({ measurementLines: tileMeasurementLines, boxes: tileBoxes, fontSize: 30 })}
+	                          </svg>
+	                        </>
                       ) : imageRef ? (
                         <span className="view-cell-empty">Image not found: {safeDecodeFilename(imageRef)}</span>
                       ) : (
@@ -2350,85 +2687,55 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     </section>
   );
 
-  const renderAnnotationsPane = () => (
-    <section
-      className="workbench-tabbed-panel"
-      data-layout-region={inspectionHierarchy.rightColumn}
-    >
-      <div className="annotation-controls" data-testid="annotation-controls">
-        <p className="muted">For selected part: {selectedPart?.serial_number || 'No part selected'}</p>
-        <div className="measurement-fields">
-          <select
-            aria-label="Annotation defect type"
-            value={annotationDraft.defect_class}
-            onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, defect_class: event.target.value }))}
-          >
-            <option value="">Defect type</option>
-            <option value="Crack">Crack</option>
-            <option value="Dent">Dent</option>
-            <option value="Scratch">Scratch</option>
-            <option value="Other">Other</option>
-          </select>
-          <input
-            type="text"
-            placeholder="annotation modality"
-            value={annotationDraft.modality}
-            onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, modality: event.target.value }))}
-          />
-          <select
-            aria-label="Annotation disposition"
-            value={annotationDraft.disposition}
-            onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, disposition: event.target.value }))}
-          >
-            <option value="open">Open</option>
-            <option value="accepted">Accepted</option>
-            <option value="rejected">Rejected</option>
-            <option value="needs_info">Needs Info</option>
-          </select>
-        </div>
-        <div className="measurement-fields">
-          <input
-            type="text"
-            placeholder="measurement name"
-            value={annotationDraft.measurement_name}
-            onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, measurement_name: event.target.value }))}
-          />
-          <input
-            type="number"
-            placeholder="measurement value"
-            value={annotationDraft.measurement_value}
-            onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, measurement_value: event.target.value }))}
-          />
-          <input
-            type="text"
-            placeholder="annotation comment"
-            value={annotationDraft.comment}
-            onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, comment: event.target.value }))}
-          />
-        </div>
-        <div className="measurement-fields">
-          {['x', 'y', 'width', 'height'].map((key) => (
-            <input
-              key={key}
-              type="number"
-              placeholder={`bbox ${key}`}
-              value={annotationDraft.bbox[key]}
-              onChange={(event) => setAnnotationDraft((prev) => ({
-                ...prev,
-                bbox: { ...prev.bbox, [key]: event.target.value },
-              }))}
-            />
-          ))}
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            onClick={createAnnotation}
-            disabled={!selectedPart}
-          >
-            Add annotation
-          </button>
-        </div>
-        <ul className="measurement-list" data-testid="annotation-list">
+	  const renderAnnotationsPane = () => (
+	    <section
+	      className="workbench-tabbed-panel"
+	      data-layout-region={inspectionHierarchy.rightColumn}
+	    >
+	      <div className="annotation-controls" data-testid="annotation-controls">
+	        <p className="muted">For selected part: {selectedPart?.serial_number || 'No part selected'}</p>
+	        <div className="annotation-tool-buttons" aria-label="Annotation tools">
+	          <button
+	            type="button"
+	            className={`btn btn-secondary ${annotationToolMode === 'measure' ? 'active' : ''}`}
+	            aria-label="Measure on tiles"
+	            onClick={() => setTileAnnotationMode('measure')}
+	            disabled={!selectedPart}
+	          >
+	            Measure
+	          </button>
+	          <button
+	            type="button"
+	            className={`btn btn-secondary ${annotationToolMode === 'box' ? 'active' : ''}`}
+	            aria-label="Draw box on tiles"
+	            onClick={() => setTileAnnotationMode('box')}
+	            disabled={!selectedPart}
+	          >
+	            Draw box
+	          </button>
+	          <button
+	            type="button"
+	            className="btn btn-secondary"
+	            onClick={() => {
+	              resetAnnotationDraft();
+	              setOtherAnnotationModalVisible(true);
+	            }}
+	            disabled={!selectedPart}
+	          >
+	            Other
+	          </button>
+	        </div>
+	        {annotationToolMode === 'measure' && (
+	          <p className="muted annotation-tool-hint">
+	            Click two points on a tile to place a measurement line.
+	          </p>
+	        )}
+	        {annotationToolMode === 'box' && (
+	          <p className="muted annotation-tool-hint">
+	            Click two corners on a tile to draw a bounding box.
+	          </p>
+	        )}
+	        <ul className="measurement-list" data-testid="annotation-list">
           {annotationsLoading ? (
             <li className="muted">Loading annotations…</li>
           ) : annotations.length === 0 ? (
@@ -2531,8 +2838,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     return null;
   };
 
-  const handleInspectionFlexLayoutChange = (model, action) => {
-    if (action?.type !== Actions.ADJUST_WEIGHTS || availableLayoutWidth <= 0) return;
+	  const handleInspectionFlexLayoutChange = (model, action) => {
+	    if (action?.type !== Actions.ADJUST_WEIGHTS || availableLayoutWidth <= 0) return;
     const json = model.toJson();
     const children = json?.layout?.children || [];
     const left = children.find((child) => child.id === INSPECTION_FLEX_TABSET_IDS.left);
@@ -2544,15 +2851,114 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       leftPx: Math.round((Number(left.weight || 0) / totalWeight) * availableWidth),
       rightPx: Math.round((Number(right.weight || 0) / totalWeight) * availableWidth),
     };
-    if (inspectionResizeSaveTimerRef.current) {
-      window.clearTimeout(inspectionResizeSaveTimerRef.current);
-    }
-    inspectionResizeSaveTimerRef.current = window.setTimeout(() => {
-      saveInspectionColumnWidths(nextWidths);
-    }, 250);
-  };
+	    if (inspectionResizeSaveTimerRef.current) {
+	      window.clearTimeout(inspectionResizeSaveTimerRef.current);
+	    }
+	    inspectionResizeSaveTimerRef.current = window.setTimeout(() => {
+	      saveInspectionColumnWidths(nextWidths);
+	    }, 250);
+	  };
 
-  const renderWorkbenchModal = () => {
+	  const renderOtherAnnotationModal = () => {
+	    if (!otherAnnotationModalVisible) return null;
+	    return (
+	      <div className="modal" style={{ display: 'flex' }} onClick={() => setOtherAnnotationModalVisible(false)}>
+	        <div className="modal-content workbench-utility-modal other-annotation-modal" role="dialog" aria-label="Other annotation" onClick={(event) => event.stopPropagation()}>
+	          <div className="modal-header">
+	            <h3>Other Annotation</h3>
+	            <button
+	              type="button"
+	              className="modal-close-btn"
+	              aria-label="Close other annotation"
+	              onClick={() => setOtherAnnotationModalVisible(false)}
+	            >
+	              &times;
+	            </button>
+	          </div>
+	          <div className="modal-body">
+	            <div className="measurement-fields">
+	              <select
+	                aria-label="Annotation defect type"
+	                value={annotationDraft.defect_class}
+	                onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, defect_class: event.target.value }))}
+	              >
+	                <option value="">Defect type</option>
+	                <option value="Crack">Crack</option>
+	                <option value="Dent">Dent</option>
+	                <option value="Scratch">Scratch</option>
+	                <option value="Other">Other</option>
+	              </select>
+	              <input
+	                type="text"
+	                placeholder="annotation modality"
+	                value={annotationDraft.modality}
+	                onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, modality: event.target.value }))}
+	              />
+	              <select
+	                aria-label="Annotation disposition"
+	                value={annotationDraft.disposition}
+	                onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, disposition: event.target.value }))}
+	              >
+	                <option value="open">Open</option>
+	                <option value="accepted">Accepted</option>
+	                <option value="rejected">Rejected</option>
+	                <option value="needs_info">Needs Info</option>
+	              </select>
+	            </div>
+	            <div className="measurement-fields">
+	              <input
+	                type="text"
+	                placeholder="measurement name"
+	                value={annotationDraft.measurement_name}
+	                onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, measurement_name: event.target.value }))}
+	              />
+	              <input
+	                type="number"
+	                placeholder="measurement value"
+	                value={annotationDraft.measurement_value}
+	                onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, measurement_value: event.target.value }))}
+	              />
+	              <input
+	                type="text"
+	                placeholder="annotation comment"
+	                value={annotationDraft.comment}
+	                onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, comment: event.target.value }))}
+	              />
+	            </div>
+	            <div className="measurement-fields">
+	              {['x', 'y', 'width', 'height'].map((key) => (
+	                <input
+	                  key={key}
+	                  type="number"
+	                  placeholder={`bbox ${key}`}
+	                  value={annotationDraft.bbox[key]}
+	                  onChange={(event) => setAnnotationDraft((prev) => ({
+	                    ...prev,
+	                    bbox: { ...prev.bbox, [key]: event.target.value },
+	                  }))}
+	                />
+	              ))}
+	            </div>
+	            <div className="modal-actions">
+	              <button type="button" className="btn btn-secondary" onClick={() => setOtherAnnotationModalVisible(false)}>
+	                Cancel
+	              </button>
+	              <button
+	                type="button"
+	                className="btn btn-primary"
+	                onClick={createAnnotation}
+	                disabled={!selectedPart || !annotationDraft.defect_class.trim()}
+	              >
+	                Save annotation
+	              </button>
+	            </div>
+	          </div>
+	        </div>
+	      </div>
+	    );
+	  };
+
+	  const renderWorkbenchModal = () => {
     if (!activeWorkbenchModal) return null;
     const modalTitle = activeWorkbenchModal === 'parts' ? 'Part Selection' : 'Annotations';
     return (
@@ -2659,9 +3065,192 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   };
 
   const getLineDistanceMm = (line, imageId) => {
-    const pixelsPerMm = Number(getCalibrationForImage(imageId)?.pixels_per_mm || 0);
+    const pixelsPerMm = Number(getCalibrationForImage(getAnnotationSourceImageIdForImage(imageId))?.pixels_per_mm || 0);
     const distancePx = Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
     return pixelsPerMm > 0 ? distancePx / pixelsPerMm : null;
+  };
+
+  const getAnnotationSurfacePointerPosition = (event) => {
+    const surface = event.currentTarget;
+    const rect = surface.getBoundingClientRect();
+    const image = surface.tagName === 'IMG' ? surface : surface.querySelector('img');
+    const naturalWidth = Number(image?.naturalWidth || rect.width);
+    const naturalHeight = Number(image?.naturalHeight || rect.height);
+    if (!rect.width || !rect.height || !naturalWidth || !naturalHeight) return null;
+    const displayX = Math.min(rect.width, Math.max(0, event.clientX - rect.left));
+    const displayY = Math.min(rect.height, Math.max(0, event.clientY - rect.top));
+    const x = (displayX / rect.width) * naturalWidth;
+    const y = (displayY / rect.height) * naturalHeight;
+    if (![x, y, naturalWidth, naturalHeight].every(Number.isFinite)) return null;
+    return { x, y, imageWidth: naturalWidth, imageHeight: naturalHeight };
+  };
+
+  const makeBoxFromPoints = (firstPoint, secondPoint) => {
+    if (!firstPoint || !secondPoint) return null;
+    const x = Math.min(firstPoint.x, secondPoint.x);
+    const y = Math.min(firstPoint.y, secondPoint.y);
+    const width = Math.abs(secondPoint.x - firstPoint.x);
+    const height = Math.abs(secondPoint.y - firstPoint.y);
+    return {
+      x,
+      y,
+      width,
+      height,
+      imageWidth: secondPoint.imageWidth || firstPoint.imageWidth,
+      imageHeight: secondPoint.imageHeight || firstPoint.imageHeight,
+    };
+  };
+
+	  const handleTileAnnotationPointerDown = (event, imageId) => {
+	    if (!annotationToolMode) return false;
+	    event.preventDefault();
+	    event.stopPropagation();
+    const position = getAnnotationSurfacePointerPosition(event);
+    if (!position) return true;
+    const annotationImageId = getAnnotationSourceImageIdForImage(imageId);
+    if (annotationToolMode === 'measure') {
+      const firstPoint = tileAnnotationDraft?.mode === 'measure' ? tileAnnotationDraft : null;
+      if (!firstPoint) {
+        setTileAnnotationDraft({ ...position, mode: 'measure', imageId: annotationImageId });
+        return true;
+      }
+      const line = { x1: firstPoint.x, y1: firstPoint.y, x2: position.x, y2: position.y, imageWidth: position.imageWidth, imageHeight: position.imageHeight };
+      const existingLineCount = (measurementLinesByImageId[String(annotationImageId || '')] || []).length;
+      const color = MEASUREMENT_COLORS[existingLineCount % MEASUREMENT_COLORS.length];
+	      createMeasurementAnnotation({
+	        imageId: annotationImageId,
+	        line,
+	        name: nextMeasurementName(classifyMeasurementLine(line)),
+	        color,
+	        distanceMm: getLineDistanceMm(line, annotationImageId),
+	      });
+	      setTileAnnotationDraft(null);
+	      setAnnotationToolMode('');
+	      return true;
+	    }
+	    if (annotationToolMode === 'box') return true;
+	    return true;
+	  };
+
+	  const handleTileBoxPointerDown = (event, imageId) => {
+	    if (annotationToolMode !== 'box') return false;
+	    if (event.button !== undefined && event.button !== 0) return false;
+	    event.preventDefault();
+	    event.stopPropagation();
+	    const position = getAnnotationSurfacePointerPosition(event);
+	    if (!position) return true;
+	    const annotationImageId = getAnnotationSourceImageIdForImage(imageId);
+	    const nextPoint = { ...position, mode: 'box', imageId: annotationImageId };
+	    tileAnnotationDraftRef.current = nextPoint;
+	    setTileAnnotationDraft(nextPoint);
+	    suppressNextTileClickRef.current = true;
+	    if (event.pointerId !== undefined) event.currentTarget.setPointerCapture?.(event.pointerId);
+	    return true;
+	  };
+
+	  const handleTileBoxPointerUp = (event, imageId) => {
+	    if (annotationToolMode !== 'box') return false;
+	    event.preventDefault();
+	    event.stopPropagation();
+	    suppressNextTileClickRef.current = true;
+	    const firstPoint = tileAnnotationDraftRef.current || (tileAnnotationDraft?.mode === 'box' ? tileAnnotationDraft : null);
+	    const position = getAnnotationSurfacePointerPosition(event);
+	    if (firstPoint && position) {
+	      const annotationImageId = getAnnotationSourceImageIdForImage(imageId);
+	      const box = makeBoxFromPoints(firstPoint, position);
+	      if (isFiniteAnnotationBox(box)) {
+	        const existingBoxCount = (boxAnnotationsByImageId[String(annotationImageId || '')] || []).length;
+	        createBoxAnnotation({
+	          imageId: annotationImageId,
+	          box,
+	          name: 'Drawn bounding box',
+	          color: MEASUREMENT_COLORS[existingBoxCount % MEASUREMENT_COLORS.length],
+	        });
+	      }
+	    }
+	    tileAnnotationDraftRef.current = null;
+	    setTileAnnotationDraft(null);
+	    setAnnotationToolMode('');
+	    if (event.pointerId !== undefined) event.currentTarget.releasePointerCapture?.(event.pointerId);
+	    return true;
+	  };
+
+	  const handleTileBoxPointerCancel = (event) => {
+	    if (!tileAnnotationDraftRef.current && tileAnnotationDraft?.mode !== 'box') return;
+	    event.preventDefault();
+	    event.stopPropagation();
+	    tileAnnotationDraftRef.current = null;
+	    setTileAnnotationDraft(null);
+	    setAnnotationToolMode('');
+	    suppressNextTileClickRef.current = true;
+	    if (event.pointerId !== undefined) event.currentTarget.releasePointerCapture?.(event.pointerId);
+	  };
+
+  const getFullscreenImagePointerPosition = (event) => {
+    const image = fullscreenImageRef.current;
+    if (!image) return null;
+    const rect = image.getBoundingClientRect();
+    if (!rect.width || !rect.height || !image.naturalWidth || !image.naturalHeight) return null;
+    const rawDisplayX = event.clientX - rect.left;
+    const rawDisplayY = event.clientY - rect.top;
+    const displayX = Math.min(rect.width, Math.max(0, rawDisplayX));
+    const displayY = Math.min(rect.height, Math.max(0, rawDisplayY));
+    const x = (displayX / rect.width) * image.naturalWidth;
+    const y = (displayY / rect.height) * image.naturalHeight;
+    if (![x, y, displayX, displayY].every(Number.isFinite)) return null;
+    return { x, y, displayX, displayY, rawDisplayX, rawDisplayY, rect, naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight };
+  };
+
+  const findHoveredMeasurementEndpoint = (position, lines) => {
+    if (!position || !Array.isArray(lines) || lines.length === 0) return null;
+    let closest = null;
+    lines.forEach((line) => {
+      if (!isFiniteMeasurementLine(line)) return;
+      const threshold = Math.max(6, Number(line.imageWidth) * MEASUREMENT_ENDPOINT_HOVER_RATIO);
+      [
+        { endpoint: 'start', x: Number(line.x1), y: Number(line.y1) },
+        { endpoint: 'end', x: Number(line.x2), y: Number(line.y2) },
+      ].forEach((candidate) => {
+        const distance = Math.hypot(position.x - candidate.x, position.y - candidate.y);
+        if (distance <= threshold && (!closest || distance < closest.distance)) {
+          closest = { lineId: String(line.id), endpoint: candidate.endpoint, distance };
+        }
+      });
+    });
+    return closest;
+  };
+
+  const updateFullscreenZoomLens = (position, nextScale = fullscreenZoomScale) => {
+    if (!position) {
+      setFullscreenZoomLens(null);
+      return;
+    }
+    const diameter = Math.max(1, position.rect.width * MEASUREMENT_LOCAL_ZOOM_DIAMETER_RATIO);
+    setFullscreenZoomLens({
+      displayX: position.displayX,
+      displayY: position.displayY,
+      diameter,
+      scale: nextScale,
+      backgroundSize: `${position.rect.width * nextScale}px ${position.rect.height * nextScale}px`,
+      backgroundPosition: `${(diameter / 2) - (position.displayX * nextScale)}px ${(diameter / 2) - (position.displayY * nextScale)}px`,
+    });
+  };
+
+	  const updateFullscreenImageZoomFromWheel = (event) => {
+	    if (fullscreenMeasureActive || fullscreenBoxActive || fullscreenEditingEndpoint) return;
+	    const position = getFullscreenImagePointerPosition(event);
+	    if (!position) return;
+    event.preventDefault();
+    const direction = event.deltaY < 0 ? 1 : -1;
+    const nextScale = Math.min(
+      FULLSCREEN_IMAGE_ZOOM_MAX,
+      Math.max(FULLSCREEN_IMAGE_ZOOM_MIN, fullscreenImageZoom.scale * (direction > 0 ? 1.15 : 1 / 1.15)),
+    );
+    setFullscreenImageZoom({
+      scale: nextScale,
+      originX: (position.displayX / position.rect.width) * 100,
+      originY: (position.displayY / position.rect.height) * 100,
+    });
   };
 
   const toggleFullscreenMeasure = () => {
@@ -2669,19 +3258,60 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       setFullscreenMeasureActive(false);
       setPendingMeasurePoint(null);
       pendingMeasurePointRef.current = null;
+      setFullscreenHoveredEndpoint(null);
+      setFullscreenEditingEndpoint(null);
+      setFullscreenZoomLens(null);
       return;
     }
-    if (!getCalibrationForImage(fullscreenImageModal?.imageId)) {
+    if (!getCalibrationForImage(getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId))) {
       setFullscreenCalibrationPromptVisible(true);
       return;
     }
-    setFullscreenCalibrationPromptVisible(false);
-    setFullscreenMeasureActive(true);
-  };
+	    setFullscreenImageZoom({ scale: 1, originX: 50, originY: 50 });
+	    setFullscreenCalibrationPromptVisible(false);
+	    setFullscreenBoxActive(false);
+	    setPendingBoxPoint(null);
+	    pendingBoxPointRef.current = null;
+	    setFullscreenMeasureActive(true);
+	  };
+
+	  const toggleFullscreenBox = () => {
+	    if (fullscreenBoxActive) {
+	      setFullscreenBoxActive(false);
+	      setPendingBoxPoint(null);
+	      pendingBoxPointRef.current = null;
+	      return;
+	    }
+	    setFullscreenImageZoom({ scale: 1, originX: 50, originY: 50 });
+	    setFullscreenMeasureActive(false);
+	    setPendingMeasurePoint(null);
+	    pendingMeasurePointRef.current = null;
+	    setFullscreenCalibrationPromptVisible(false);
+	    setFullscreenEditingEndpoint(null);
+	    setFullscreenHoveredEndpoint(null);
+	    setFullscreenZoomLens(null);
+	    setFullscreenBoxActive(true);
+	  };
+
+	  const commitFullscreenBox = async (box) => {
+	    if (isFiniteAnnotationBox(box)) {
+	      const annotationSourceImageId = getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId);
+	      const existingBoxCount = (boxAnnotationsByImageId[String(annotationSourceImageId || '')] || []).length;
+	      await createBoxAnnotation({
+	        imageId: fullscreenImageModal?.imageId,
+	        box,
+	        name: 'Drawn bounding box',
+	        color: MEASUREMENT_COLORS[existingBoxCount % MEASUREMENT_COLORS.length],
+	      });
+	    }
+	    setPendingBoxPoint(null);
+	    pendingBoxPointRef.current = null;
+	    setFullscreenBoxActive(false);
+	  };
 
   const commitFullscreenMeasureLine = async (line) => {
     if (!line) return;
-    if (!getCalibrationForImage(fullscreenImageModal?.imageId)) {
+    if (!getCalibrationForImage(getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId))) {
       setPendingMeasurePoint(null);
       pendingMeasurePointRef.current = null;
       setFullscreenMeasureActive(false);
@@ -2690,70 +3320,230 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     }
     const kind = classifyMeasurementLine(line);
     const name = nextMeasurementName(kind);
-    const color = MEASUREMENT_COLORS[fullscreenMeasurements.length % MEASUREMENT_COLORS.length];
+    const annotationSourceImageId = getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId);
+    const existingLineCount = (measurementLinesByImageId[String(annotationSourceImageId || '')] || []).length
+      + fullscreenMeasurements.filter((item) => String(item.imageId || '') === String(annotationSourceImageId || '')).length;
+    const color = MEASUREMENT_COLORS[existingLineCount % MEASUREMENT_COLORS.length];
     const distancePx = Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
-    const distanceMm = getLineDistanceMm(line, fullscreenImageModal?.imageId);
+    const distanceMm = getLineDistanceMm(line, annotationSourceImageId);
     const created = await createMeasurementAnnotation({ imageId: fullscreenImageModal?.imageId, line, name, color, distanceMm });
     if (created && (!created.image_id || !created.geometry?.line)) {
-      setFullscreenMeasurements((prev) => [...prev, { ...line, id: created.id, imageId: String(fullscreenImageModal?.imageId || ''), name, kind, color, distanceMm, distancePx }]);
+      setFullscreenMeasurements((prev) => [...prev, { ...line, id: created.id, imageId: String(annotationSourceImageId || ''), name, kind, color, distanceMm, distancePx }]);
     }
-    setPendingMeasurePoint(null);
-    pendingMeasurePointRef.current = null;
-  };
+	    setPendingMeasurePoint(null);
+	    pendingMeasurePointRef.current = null;
+	    setFullscreenMeasureActive(false);
+	  };
 
-  const handleFullscreenMeasurePointerDown = async (event) => {
-    if (!fullscreenMeasureActive) return;
-    if (!getCalibrationForImage(fullscreenImageModal?.imageId)) {
+	  const handleFullscreenMeasurePointerDown = async (event) => {
+    const position = getFullscreenImagePointerPosition(event);
+    if (!position) return;
+    if (fullscreenEditingEndpoint?.lineId) {
+      const sourceLine = fullscreenEditingEndpoint.line;
+      const coordinatePatch = fullscreenEditingEndpoint.endpoint === 'start'
+        ? { x1: Math.min(position.naturalWidth, Math.max(0, position.x)), y1: Math.min(position.naturalHeight, Math.max(0, position.y)) }
+        : { x2: Math.min(position.naturalWidth, Math.max(0, position.x)), y2: Math.min(position.naturalHeight, Math.max(0, position.y)) };
+      const nextLine = {
+        ...sourceLine,
+        ...coordinatePatch,
+        imageWidth: position.naturalWidth,
+        imageHeight: position.naturalHeight,
+      };
+      await updateMeasurementAnnotationLine(fullscreenEditingEndpoint.lineId, nextLine);
+      setFullscreenEditingEndpoint(null);
+      setFullscreenHoveredEndpoint(null);
+      setFullscreenZoomLens(null);
+      return;
+    }
+	    if (fullscreenBoxActive) return;
+	    if (!fullscreenMeasureActive) return;
+    if (!getCalibrationForImage(getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId))) {
       setFullscreenMeasureActive(false);
       setFullscreenCalibrationPromptVisible(true);
       setPendingMeasurePoint(null);
       pendingMeasurePointRef.current = null;
       return;
     }
-    const rect = event.currentTarget.getBoundingClientRect();
-    if (!rect.width || !rect.height || !event.currentTarget.naturalWidth || !event.currentTarget.naturalHeight) return;
-    const x = ((event.clientX - rect.left) / rect.width) * event.currentTarget.naturalWidth;
-    const y = ((event.clientY - rect.top) / rect.height) * event.currentTarget.naturalHeight;
+    const { x, y, naturalWidth, naturalHeight } = position;
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     const firstPoint = pendingMeasurePointRef.current || pendingMeasurePoint;
     if (!firstPoint) {
-      const nextPoint = { x, y, imageWidth: event.currentTarget.naturalWidth, imageHeight: event.currentTarget.naturalHeight };
+      const nextPoint = { x, y, imageWidth: naturalWidth, imageHeight: naturalHeight };
       pendingMeasurePointRef.current = nextPoint;
       setPendingMeasurePoint(nextPoint);
       return;
     }
-    const line = { x1: firstPoint.x, y1: firstPoint.y, x2: x, y2: y, imageWidth: event.currentTarget.naturalWidth, imageHeight: event.currentTarget.naturalHeight };
-    if (!isFiniteMeasurementLine(line)) return;
-    await commitFullscreenMeasureLine(line);
+    const line = { x1: firstPoint.x, y1: firstPoint.y, x2: x, y2: y, imageWidth: naturalWidth, imageHeight: naturalHeight };
+	    if (!isFiniteMeasurementLine(line)) return;
+	    await commitFullscreenMeasureLine(line);
+	  };
+
+	  const handleFullscreenBoxPointerDown = (event) => {
+	    if (!fullscreenBoxActive) return;
+	    if (event.button !== undefined && event.button !== 0) return;
+	    const position = getFullscreenImagePointerPosition(event);
+	    if (!position) return;
+	    event.preventDefault();
+	    event.stopPropagation();
+	    const nextPoint = {
+	      x: position.x,
+	      y: position.y,
+	      imageWidth: position.naturalWidth,
+	      imageHeight: position.naturalHeight,
+	    };
+	    pendingBoxPointRef.current = nextPoint;
+	    setPendingBoxPoint(nextPoint);
+	    if (event.pointerId !== undefined) event.currentTarget.setPointerCapture?.(event.pointerId);
+	  };
+
+	  const handleFullscreenBoxPointerUp = async (event) => {
+	    if (!fullscreenBoxActive) return;
+	    const position = getFullscreenImagePointerPosition(event);
+	    event.preventDefault();
+	    event.stopPropagation();
+	    const firstPoint = pendingBoxPointRef.current || pendingBoxPoint;
+	    if (firstPoint && position) {
+	      const box = makeBoxFromPoints(firstPoint, {
+	        x: position.x,
+	        y: position.y,
+	        imageWidth: position.naturalWidth,
+	        imageHeight: position.naturalHeight,
+	      });
+	      await commitFullscreenBox(box);
+	    } else {
+	      setPendingBoxPoint(null);
+	      pendingBoxPointRef.current = null;
+	      setFullscreenBoxActive(false);
+	    }
+	    if (event.pointerId !== undefined) event.currentTarget.releasePointerCapture?.(event.pointerId);
+	  };
+
+	  const handleFullscreenBoxPointerCancel = (event) => {
+	    if (!fullscreenBoxActive && !pendingBoxPointRef.current) return;
+	    event.preventDefault();
+	    event.stopPropagation();
+	    setPendingBoxPoint(null);
+	    pendingBoxPointRef.current = null;
+	    setFullscreenBoxActive(false);
+	    if (event.pointerId !== undefined) event.currentTarget.releasePointerCapture?.(event.pointerId);
+	  };
+
+  const handleFullscreenImageWheel = (event) => {
+    if (fullscreenEditingEndpoint?.lineId) {
+      event.preventDefault();
+      const direction = event.deltaY < 0 ? 1 : -1;
+      const nextScale = Math.min(
+        MEASUREMENT_LOCAL_ZOOM_MAX_SCALE,
+        Math.max(MEASUREMENT_LOCAL_ZOOM_MIN_SCALE, fullscreenZoomScale + (direction * 1)),
+      );
+      setFullscreenZoomScale(nextScale);
+      updateFullscreenZoomLens(getFullscreenImagePointerPosition(event), nextScale);
+      return;
+    }
+    updateFullscreenImageZoomFromWheel(event);
+  };
+
+	  const handleFullscreenImagePointerMove = (event, lines) => {
+	    const position = getFullscreenImagePointerPosition(event);
+	    if (fullscreenEditingEndpoint?.lineId) {
+	      updateFullscreenZoomLens(position);
+	      return;
+	    }
+	    if (fullscreenBoxActive) {
+	      setFullscreenHoveredEndpoint(null);
+	      return;
+	    }
+	    const hovered = findHoveredMeasurementEndpoint(position, lines);
+    setFullscreenHoveredEndpoint((prev) => (
+      prev?.lineId === hovered?.lineId && prev?.endpoint === hovered?.endpoint ? prev : hovered
+    ));
+  };
+
+	  const startFullscreenEndpointEdit = (event, line, endpoint) => {
+	    event.preventDefault();
+	    event.stopPropagation();
+	    setFullscreenMeasureActive(false);
+	    setFullscreenBoxActive(false);
+	    setFullscreenImageZoom({ scale: 1, originX: 50, originY: 50 });
+	    setPendingMeasurePoint(null);
+	    pendingMeasurePointRef.current = null;
+	    setPendingBoxPoint(null);
+	    pendingBoxPointRef.current = null;
+    setFullscreenEditingEndpoint({ lineId: String(line.id), endpoint, line });
+    setFullscreenHoveredEndpoint({ lineId: String(line.id), endpoint });
+    updateFullscreenZoomLens(getFullscreenImagePointerPosition(event));
+  };
+
+  const handleFullscreenEndpointDotClick = (event, line, endpoint) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (fullscreenEditingEndpoint?.lineId) {
+      handleFullscreenMeasurePointerDown(event);
+      return;
+    }
+    startFullscreenEndpointEdit(event, line, endpoint);
   };
 
   const closeFullscreenImageModal = () => {
-    setFullscreenImageModal(null);
-    setFullscreenMeasureActive(false);
-    setPendingMeasurePoint(null);
-    pendingMeasurePointRef.current = null;
+	    setFullscreenImageModal(null);
+	    setFullscreenMeasureActive(false);
+	    setFullscreenBoxActive(false);
+	    setPendingMeasurePoint(null);
+	    pendingMeasurePointRef.current = null;
+	    setPendingBoxPoint(null);
+	    pendingBoxPointRef.current = null;
     setFullscreenCalibrationPromptVisible(false);
+    setFullscreenHoveredEndpoint(null);
+    setFullscreenEditingEndpoint(null);
+    setFullscreenZoomLens(null);
+    setFullscreenZoomScale(MEASUREMENT_LOCAL_ZOOM_SCALE);
+    setFullscreenImageZoom({ scale: 1, originX: 50, originY: 50 });
   };
 
   const renderFullscreenImageModal = () => {
     if (!fullscreenImageModal?.imageId) return null;
     const fullscreenImageId = String(fullscreenImageModal.imageId);
+    const fullscreenAnnotationSourceImageId = getAnnotationSourceImageIdForImage(fullscreenImageId);
+    const fullscreenBaseImageId = String(fullscreenImageModal.baseImageId || (
+      fullscreenAnnotationSourceImageId && fullscreenAnnotationSourceImageId !== fullscreenImageId
+        ? fullscreenAnnotationSourceImageId
+        : ''
+    ));
     const fullscreenImageRecord = projectImageLookup[fullscreenImageId] || {};
-    const fullscreenMeasurementLines = [
-      ...(measurementLinesByImageId[fullscreenImageId] || []),
-      ...fullscreenMeasurements.filter((line) => String(line.imageId || '') === fullscreenImageId),
-    ].filter(isFiniteMeasurementLine);
-    return (
+	    const fullscreenMeasurementLines = [
+	      ...(measurementLinesByImageId[fullscreenAnnotationSourceImageId] || []),
+	      ...fullscreenMeasurements.filter((line) => String(line.imageId || '') === fullscreenAnnotationSourceImageId),
+	    ].filter(isFiniteMeasurementLine);
+	    const fullscreenBoxAnnotations = (boxAnnotationsByImageId[fullscreenAnnotationSourceImageId] || [])
+	      .filter(isFiniteAnnotationBox);
+	    const fullscreenAnnotationItems = [
+	      ...fullscreenMeasurementLines.map((line, index) => ({
+	        ...line,
+	        annotationType: 'measurement',
+	        title: line.name || `Measurement ${index + 1}`,
+	        summary: getMeasurementLineLabel(line),
+	      })),
+	      ...fullscreenBoxAnnotations.map((box, index) => ({
+	        ...box,
+	        annotationType: 'box',
+	        title: box.name || `Box ${index + 1}`,
+	        summary: `${getAnnotationBoxWidthLabel(box)} • ${getAnnotationBoxHeightLabel(box)}`,
+	      })),
+	    ];
+	    return (
       <div className="modal inspection-fullscreen-modal" style={{ display: 'flex' }} onClick={closeFullscreenImageModal}>
         <div className="modal-content inspection-fullscreen-modal-content" onClick={(event) => event.stopPropagation()}>
           <div className="modal-header">
             <h3>{fullscreenImageModal.label}</h3>
             <div className="workbench-detail-actions">
-              <button type="button" className={`btn btn-secondary ${fullscreenMeasureActive ? 'active' : ''}`} onClick={toggleFullscreenMeasure}>
-                Measure
-              </button>
-              <button type="button" className="modal-close-btn" aria-label="Close fullscreen image" onClick={closeFullscreenImageModal}>&times;</button>
-            </div>
+	              <button type="button" className={`btn btn-secondary ${fullscreenMeasureActive ? 'active' : ''}`} onClick={toggleFullscreenMeasure}>
+	                Measure
+	              </button>
+	              <button type="button" className={`btn btn-secondary ${fullscreenBoxActive ? 'active' : ''}`} onClick={toggleFullscreenBox}>
+	                Draw box
+	              </button>
+	              <button type="button" className="modal-close-btn" aria-label="Close fullscreen image" onClick={closeFullscreenImageModal}>&times;</button>
+	            </div>
           </div>
           {fullscreenCalibrationPromptVisible && (
             <div className="inspection-fullscreen-calibration-panel" role="dialog" aria-label="Measurement calibration required">
@@ -2769,26 +3559,132 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
               />
             </div>
           )}
-          <div className="inspection-fullscreen-stage">
-            {fullscreenMeasureActive && <div className="workbench-notice">Click to set first point, click again to set second point.</div>}
-            <div className="inspection-fullscreen-image-frame">
-              <img
-                src={`/api/images/${encodeURIComponent(fullscreenImageModal.imageId)}/content`}
-                alt={`${fullscreenImageModal.label} fullscreen`}
-                className={`inspection-fullscreen-image ${fullscreenMeasureActive ? 'measurement-active' : ''}`}
-                onClick={handleFullscreenMeasurePointerDown}
-              />
-              <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 1000 1000`} preserveAspectRatio="none" aria-label="fullscreen measurement overlay">
-                {fullscreenMeasurementLines.map((line) => {
-                  const labelPosition = getMeasurementLabelViewBoxPosition(line, 20);
-                  return (
-                    <g key={line.id}>
-                      <line x1={(line.x1 / line.imageWidth) * 1000} y1={(line.y1 / line.imageHeight) * 1000} x2={(line.x2 / line.imageWidth) * 1000} y2={(line.y2 / line.imageHeight) * 1000} stroke={line.color} strokeWidth="3" />
-                      <text x={labelPosition.x} y={labelPosition.y} fill={line.color} fontSize="20">{getMeasurementLineLabel(line)}</text>
-                    </g>
-                  );
-                })}
-              </svg>
+	          <div className="inspection-fullscreen-stage">
+	            {fullscreenMeasureActive && <div className="workbench-notice">Click to set first point, click again to set second point.</div>}
+	            {fullscreenBoxActive && <div className="workbench-notice">Press and drag to draw a bounding box.</div>}
+	            {fullscreenEditingEndpoint && <div className="workbench-notice">Move the zoom lens to the precise endpoint and click to place it.</div>}
+            <div className="inspection-fullscreen-workspace">
+              <div
+                className={`inspection-fullscreen-image-frame ${fullscreenImageZoom.scale > 1 ? 'zoomed' : ''}`}
+                onMouseMove={(event) => handleFullscreenImagePointerMove(event, fullscreenMeasurementLines)}
+                onMouseLeave={() => {
+                  if (!fullscreenEditingEndpoint) setFullscreenHoveredEndpoint(null);
+                }}
+                onWheel={handleFullscreenImageWheel}
+              >
+                <div
+                  className="inspection-fullscreen-image-zoom-layer"
+                  style={{
+                    transform: `scale(${fullscreenImageZoom.scale})`,
+                    transformOrigin: `${fullscreenImageZoom.originX}% ${fullscreenImageZoom.originY}%`,
+                  }}
+                >
+                  {fullscreenBaseImageId && (
+                    <img
+                      src={`/api/images/${encodeURIComponent(fullscreenBaseImageId)}/content`}
+                      alt={`${fullscreenImageModal.label} source fullscreen`}
+                      className="inspection-fullscreen-image"
+                    />
+                  )}
+                  <img
+                    ref={fullscreenImageRef}
+                    src={`/api/images/${encodeURIComponent(fullscreenImageModal.imageId)}/content`}
+	                    alt={`${fullscreenImageModal.label} fullscreen`}
+		                    className={`inspection-fullscreen-image ${fullscreenBaseImageId ? 'analysis-overlay-image' : ''} ${fullscreenMeasureActive || fullscreenBoxActive || fullscreenEditingEndpoint ? 'measurement-active' : ''}`}
+		                    onMouseDown={handleFullscreenBoxPointerDown}
+		                    onMouseUp={handleFullscreenBoxPointerUp}
+		                    onMouseLeave={handleFullscreenBoxPointerCancel}
+		                    onClick={handleFullscreenMeasurePointerDown}
+		                  />
+                  <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 1000 1000`} preserveAspectRatio="none" aria-label="fullscreen measurement overlay">
+                    {fullscreenMeasurementLines.map((line) => {
+                      const labelPosition = getMeasurementLabelViewBoxPosition(line, 20);
+                      const endpointPositions = getMeasurementEndpointViewBoxPosition(line);
+                      const endpointActive = fullscreenHoveredEndpoint?.lineId === String(line.id)
+                        || fullscreenEditingEndpoint?.lineId === String(line.id)
+                        || String(selectedAnnotationId || '') === String(line.id);
+                      return (
+                        <g key={line.id}>
+                          <line x1={(line.x1 / line.imageWidth) * 1000} y1={(line.y1 / line.imageHeight) * 1000} x2={(line.x2 / line.imageWidth) * 1000} y2={(line.y2 / line.imageHeight) * 1000} stroke={line.color} strokeWidth="3" />
+                          <text x={labelPosition.x} y={labelPosition.y} fill={line.color} fontSize="20">{getMeasurementLineLabel(line)}</text>
+                          {endpointActive && ['start', 'end'].map((endpoint) => (
+                            <circle
+                              key={endpoint}
+                              className="inspection-measurement-endpoint-dot"
+                              cx={endpointPositions[endpoint].x}
+                              cy={endpointPositions[endpoint].y}
+                              r="11"
+                              fill="#ffffff"
+                              stroke={line.color}
+                              strokeWidth="5"
+                              role="button"
+                              tabIndex={0}
+                              aria-label={`Reposition ${endpoint} endpoint for ${line.name || 'measurement'}`}
+                              onClick={(event) => handleFullscreenEndpointDotClick(event, line, endpoint)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  handleFullscreenEndpointDotClick(event, line, endpoint);
+                                }
+                              }}
+                            />
+                          ))}
+                        </g>
+	                      );
+	                    })}
+	                    {renderAnnotationOverlay({ measurementLines: [], boxes: fullscreenBoxAnnotations, fontSize: 20 })}
+	                  </svg>
+	                </div>
+                {fullscreenZoomLens && (
+                  <div
+                    className="inspection-fullscreen-zoom-lens"
+                    data-testid="fullscreen-measurement-zoom-lens"
+                    style={{
+                      width: fullscreenZoomLens.diameter,
+                      height: fullscreenZoomLens.diameter,
+                      left: fullscreenZoomLens.displayX - (fullscreenZoomLens.diameter / 2),
+                      top: fullscreenZoomLens.displayY - (fullscreenZoomLens.diameter / 2),
+                      backgroundImage: fullscreenBaseImageId
+                        ? `url(/api/images/${encodeURIComponent(fullscreenImageModal.imageId)}/content), url(/api/images/${encodeURIComponent(fullscreenBaseImageId)}/content)`
+                        : `url(/api/images/${encodeURIComponent(fullscreenImageModal.imageId)}/content)`,
+                      backgroundSize: fullscreenZoomLens.backgroundSize,
+                      backgroundPosition: fullscreenZoomLens.backgroundPosition,
+                    }}
+                  />
+                )}
+              </div>
+	              <aside className="inspection-fullscreen-annotations" aria-label="Measurement annotations" data-testid="fullscreen-annotation-list">
+	                <h4>Annotations</h4>
+	                {fullscreenAnnotationItems.length === 0 ? (
+	                  <p className="muted">No annotations.</p>
+	                ) : (
+	                  <ul className="inspection-fullscreen-annotation-list">
+	                    {fullscreenAnnotationItems.map((annotation, index) => (
+	                      <li
+	                        key={`${annotation.annotationType}-${annotation.id}`}
+	                        className={`inspection-fullscreen-annotation ${selectedAnnotationId === annotation.id ? 'selected' : ''}`}
+	                        style={{ borderColor: annotation.color }}
+	                      >
+	                        <button
+	                          type="button"
+	                          className="inspection-fullscreen-annotation-body"
+	                          onClick={() => setSelectedAnnotationId(annotation.id)}
+	                        >
+	                          <span className="inspection-fullscreen-annotation-title">{annotation.title || `Annotation ${index + 1}`}</span>
+	                          <span className="inspection-fullscreen-annotation-length">{annotation.summary}</span>
+	                        </button>
+	                        <button
+	                          type="button"
+	                          className="inspection-fullscreen-annotation-delete"
+	                          aria-label={`Delete ${annotation.title || `annotation ${index + 1}`}`}
+	                          onClick={() => deleteMeasurementAnnotation(annotation.id)}
+	                        >
+                          ×
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </aside>
             </div>
           </div>
         </div>
@@ -2895,10 +3791,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
             )}
           </div>
         </>
-      )}
-      {renderFullscreenImageModal()}
-    </section>
-  );
+	      )}
+	      {renderOtherAnnotationModal()}
+	      {renderFullscreenImageModal()}
+	    </section>
+	  );
 }
 
 export default InspectionWorkbenchPanel;
