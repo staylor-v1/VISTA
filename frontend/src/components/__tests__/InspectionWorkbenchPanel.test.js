@@ -967,9 +967,11 @@ describe('InspectionWorkbenchPanel', () => {
     const fullscreenImage = screen.getByAltText(/fullscreen$/i);
     Object.defineProperty(fullscreenImage, 'naturalWidth', { configurable: true, value: 1000 });
     Object.defineProperty(fullscreenImage, 'naturalHeight', { configurable: true, value: 500 });
-    fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500 });
-    fireEvent.click(fullscreenImage, { clientX: 100, clientY: 100 });
-    fireEvent.click(fullscreenImage, { clientX: 300, clientY: 200 });
+	    fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500 });
+	    fireEvent.click(fullscreenImage, { clientX: 100, clientY: 100 });
+	    fireEvent.mouseMove(fullscreenImage, { clientX: 200, clientY: 100 });
+	    await waitFor(() => expect(screen.getByLabelText('fullscreen measurement overlay')).toHaveTextContent('5.00 mm'));
+	    fireEvent.click(fullscreenImage, { clientX: 300, clientY: 200 });
 
     await waitFor(() => {
       const postCall = global.fetch.mock.calls.find((call) => call[0].includes('/annotations') && call[1]?.method === 'POST');
@@ -993,9 +995,11 @@ describe('InspectionWorkbenchPanel', () => {
     Object.defineProperty(tileImage, 'naturalHeight', { configurable: true, value: 200 });
     tileImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Measure on tiles' }));
-    fireEvent.click(tileImage, { clientX: 40, clientY: 20 });
-    fireEvent.click(tileImage, { clientX: 140, clientY: 70 });
+	    fireEvent.click(screen.getByRole('button', { name: 'Measure on tiles' }));
+	    fireEvent.click(tileImage, { clientX: 40, clientY: 20 });
+	    fireEvent.mouseMove(tileImage, { clientX: 100, clientY: 60 });
+	    await waitFor(() => expect(screen.getByLabelText('tile measurement overlay')).toHaveTextContent('3.61 mm'));
+	    fireEvent.click(tileImage, { clientX: 140, clientY: 70 });
 
     await waitFor(() => {
       const postCall = global.fetch.mock.calls.find((call) => {
@@ -1020,6 +1024,8 @@ describe('InspectionWorkbenchPanel', () => {
 
 	    fireEvent.click(screen.getByRole('button', { name: 'Draw box on tiles' }));
 	    fireEvent.mouseDown(tileImage, { clientX: 50, clientY: 30, button: 0 });
+	    fireEvent.mouseMove(tileImage, { clientX: 170, clientY: 90 });
+	    await waitFor(() => expect(screen.getByLabelText('tile measurement overlay')).toHaveTextContent('Width 6.00 mm'));
 	    fireEvent.mouseUp(tileImage, { clientX: 210, clientY: 130, button: 0 });
 
 	    await waitFor(() => {
@@ -1032,10 +1038,15 @@ describe('InspectionWorkbenchPanel', () => {
       const body = JSON.parse(postCall[1].body);
       expect(body.image_id).toBe('part-basic-1-image-1');
       expect(body.bbox).toEqual(expect.objectContaining({ x: 50, y: 30, width: 160, height: 100 }));
-      expect(body.measurements).toEqual(expect.objectContaining({ width_px: 160, height_px: 100 }));
+      expect(body.measurements).toEqual(expect.objectContaining({
+        width_px: 160,
+        height_px: 100,
+        width_mm: 8,
+        height_mm: 5,
+      }));
 	    });
-	    await waitFor(() => expect(screen.getByLabelText('tile measurement overlay')).toHaveTextContent('Width 160.0 px'));
-	    expect(screen.getByLabelText('tile measurement overlay')).toHaveTextContent('Height 100.0 px');
+	    await waitFor(() => expect(screen.getByLabelText('tile measurement overlay')).toHaveTextContent('Width 8.00 mm'));
+	    expect(screen.getByLabelText('tile measurement overlay')).toHaveTextContent('Height 5.00 mm');
 	    expect(screen.getByRole('button', { name: 'Draw box on tiles' })).not.toHaveClass('active');
 	  });
 
@@ -1096,6 +1107,8 @@ describe('InspectionWorkbenchPanel', () => {
 	    Object.defineProperty(fullscreenImage, 'naturalHeight', { configurable: true, value: 250 });
 	    fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 500, height: 250, right: 500, bottom: 250 });
 	    fireEvent.mouseDown(fullscreenImage, { clientX: 80, clientY: 40, button: 0 });
+	    fireEvent.mouseMove(fullscreenImage, { clientX: 180, clientY: 100 });
+	    await waitFor(() => expect(screen.getByLabelText('fullscreen measurement overlay')).toHaveTextContent('Width 5.00 mm'));
 	    fireEvent.mouseUp(fullscreenImage, { clientX: 230, clientY: 120, button: 0 });
 
     await waitFor(() => {
@@ -1109,9 +1122,9 @@ describe('InspectionWorkbenchPanel', () => {
       expect(body.image_id).toBe('part-basic-1-image-1');
       expect(body.bbox).toEqual(expect.objectContaining({ x: 80, y: 40, width: 150, height: 80 }));
     });
-	    await waitFor(() => expect(screen.getByLabelText('fullscreen measurement overlay')).toHaveTextContent('Width 150.0 px'));
-	    expect(screen.getByLabelText('fullscreen measurement overlay')).toHaveTextContent('Height 80.0 px');
-	    expect(screen.getByTestId('fullscreen-annotation-list')).toHaveTextContent('Width 150.0 px');
+	    await waitFor(() => expect(screen.getByLabelText('fullscreen measurement overlay')).toHaveTextContent('Width 7.50 mm'));
+	    expect(screen.getByLabelText('fullscreen measurement overlay')).toHaveTextContent('Height 4.00 mm');
+	    expect(screen.getByTestId('fullscreen-annotation-list')).toHaveTextContent('Width 7.50 mm');
 	    expect(screen.getByRole('button', { name: 'Draw box' })).not.toHaveClass('active');
 	  });
 

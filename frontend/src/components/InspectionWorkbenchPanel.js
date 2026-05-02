@@ -175,21 +175,25 @@ function getBoxAnnotationsByImageId(annotations) {
     const imageWidth = Number(annotation?.geometry?.imageWidth || annotation?.geometry?.box?.imageWidth || bbox.imageWidth);
     const imageHeight = Number(annotation?.geometry?.imageHeight || annotation?.geometry?.box?.imageHeight || bbox.imageHeight);
     if (![imageWidth, imageHeight].every(Number.isFinite) || imageWidth <= 0 || imageHeight <= 0) return acc;
-    const key = String(imageId);
-    const boxIndex = (acc[key] || []).length;
-    const color = annotation?.metadata?.annotation_color || annotation?.metadata?.measurement_color || MEASUREMENT_COLORS[boxIndex % MEASUREMENT_COLORS.length];
-    const entry = {
-      id: String(annotation.id || `${imageId}-${x}-${y}`),
-      imageId: key,
+	    const key = String(imageId);
+	    const boxIndex = (acc[key] || []).length;
+	    const color = annotation?.metadata?.annotation_color || annotation?.metadata?.measurement_color || MEASUREMENT_COLORS[boxIndex % MEASUREMENT_COLORS.length];
+	    const widthMm = Number(annotation?.measurements?.width_mm);
+	    const heightMm = Number(annotation?.measurements?.height_mm);
+	    const entry = {
+	      id: String(annotation.id || `${imageId}-${x}-${y}`),
+	      imageId: key,
       name: annotation?.comment || annotation?.defect_class || `Box ${boxIndex + 1}`,
       x,
       y,
       width,
       height,
-      imageWidth,
-      imageHeight,
-      color,
-    };
+	      imageWidth,
+	      imageHeight,
+	      color,
+	      widthMm: Number.isFinite(widthMm) ? widthMm : null,
+	      heightMm: Number.isFinite(heightMm) ? heightMm : null,
+	    };
     acc[key] = [...(acc[key] || []), entry];
     return acc;
   }, {});
@@ -249,13 +253,19 @@ function getMeasurementLineLabel(line) {
   return Number.isFinite(distancePx) ? `${distancePx.toFixed(1)} px` : '';
 }
 
-function getAnnotationBoxWidthLabel(box) {
-  return `Width ${Number(box.width).toFixed(1)} px`;
-}
+	function getAnnotationBoxWidthLabel(box) {
+	  if (Number.isFinite(Number(box?.widthMm))) {
+	    return `Width ${Number(box.widthMm).toFixed(2)} mm`;
+	  }
+	  return `Width ${Number(box.width).toFixed(1)} px`;
+	}
 
-function getAnnotationBoxHeightLabel(box) {
-  return `Height ${Number(box.height).toFixed(1)} px`;
-}
+	function getAnnotationBoxHeightLabel(box) {
+	  if (Number.isFinite(Number(box?.heightMm))) {
+	    return `Height ${Number(box.heightMm).toFixed(2)} mm`;
+	  }
+	  return `Height ${Number(box.height).toFixed(1)} px`;
+	}
 
 function getMeasurementLabelViewBoxPosition(line, fontSize = 20) {
   const x = ((Number(line.x1) + Number(line.x2)) / (2 * Number(line.imageWidth))) * 1000;
@@ -1037,6 +1047,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [annotationToolMode, setAnnotationToolMode] = useState('');
   const [otherAnnotationModalVisible, setOtherAnnotationModalVisible] = useState(false);
   const [tileAnnotationDraft, setTileAnnotationDraft] = useState(null);
+  const [tileAnnotationPreview, setTileAnnotationPreview] = useState(null);
   const [inspectorHotkeys, setInspectorHotkeys] = useState(DEFAULT_INSPECTOR_HOTKEYS);
   const [projectConfiguration, setProjectConfiguration] = useState(null);
   const [projectMetadata, setProjectMetadata] = useState({});
@@ -1062,6 +1073,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const boxAnnotationsByImageId = useMemo(() => getBoxAnnotationsByImageId(annotations), [annotations]);
   const [pendingMeasurePoint, setPendingMeasurePoint] = useState(null);
   const [pendingBoxPoint, setPendingBoxPoint] = useState(null);
+  const [fullscreenAnnotationPreview, setFullscreenAnnotationPreview] = useState(null);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState(null);
   const [viewportWidth, setViewportWidth] = useState(() => (
     typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth
@@ -1873,6 +1885,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const setTileAnnotationMode = (mode) => {
     setAnnotationToolMode((prev) => (prev === mode ? '' : mode));
     setTileAnnotationDraft(null);
+    setTileAnnotationPreview(null);
     tileAnnotationDraftRef.current = null;
   };
 
@@ -1959,19 +1972,24 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     }
   };
 
-  const createBoxAnnotation = async ({ imageId, box, name, color }) => {
-    if (!selectedPart?.id || !isFiniteAnnotationBox(box)) return null;
-    const annotationImageId = getAnnotationSourceImageIdForImage(imageId);
-    const payload = {
+	  const createBoxAnnotation = async ({ imageId, box, name, color }) => {
+	    if (!selectedPart?.id || !isFiniteAnnotationBox(box)) return null;
+	    const annotationImageId = getAnnotationSourceImageIdForImage(imageId);
+	    const pixelsPerMm = Number(getCalibrationForImage(annotationImageId)?.pixels_per_mm || 0);
+	    const widthMm = pixelsPerMm > 0 ? box.width / pixelsPerMm : null;
+	    const heightMm = pixelsPerMm > 0 ? box.height / pixelsPerMm : null;
+	    const payload = {
       image_id: annotationImageId ? String(annotationImageId) : null,
       defect_class: 'Bounding Box',
       modality: activeViewName || enabledModalities[0] || modalityOptions[0] || 'visual',
       comment: name || 'Captured from draw box tool.',
       disposition: 'open',
-      measurements: {
-        width_px: Number(box.width.toFixed(2)),
-        height_px: Number(box.height.toFixed(2)),
-      },
+	      measurements: {
+	        width_px: Number(box.width.toFixed(2)),
+	        height_px: Number(box.height.toFixed(2)),
+	        ...(Number.isFinite(widthMm) ? { width_mm: Number(widthMm.toFixed(2)) } : {}),
+	        ...(Number.isFinite(heightMm) ? { height_mm: Number(heightMm.toFixed(2)) } : {}),
+	      },
       geometry: {
         imageWidth: box.imageWidth,
         imageHeight: box.imageHeight,
@@ -2568,10 +2586,17 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 const baseImageId = baseRecord?.id || entry.overlayBaseImageId || '';
                 const annotationSourceImageId = getAnnotationSourceImageId(entry, projectImageLookup);
                 const tileAnnotationSourceImageId = String(annotationSourceImageId || imageId);
-                const tileMeasurementLines = (measurementLinesByImageId[tileAnnotationSourceImageId] || [])
-                  .filter(isFiniteMeasurementLine);
-                const tileBoxes = (boxAnnotationsByImageId[tileAnnotationSourceImageId] || [])
-                  .filter(isFiniteAnnotationBox);
+	                const tileMeasurementLines = (measurementLinesByImageId[tileAnnotationSourceImageId] || [])
+	                  .filter(isFiniteMeasurementLine);
+		                const tileBoxes = (boxAnnotationsByImageId[tileAnnotationSourceImageId] || [])
+		                  .filter(isFiniteAnnotationBox)
+		                  .map((box) => getBoxWithDerivedDimensions(box, tileAnnotationSourceImageId));
+	                const tilePreviewLines = tileAnnotationPreview?.mode === 'measure' && tileAnnotationPreview.imageId === tileAnnotationSourceImageId
+	                  ? [tileAnnotationPreview.line].filter(isFiniteMeasurementLine)
+	                  : [];
+	                const tilePreviewBoxes = tileAnnotationPreview?.mode === 'box' && tileAnnotationPreview.imageId === tileAnnotationSourceImageId
+		                  ? [tileAnnotationPreview.box].filter(isFiniteAnnotationBox).map((box) => getBoxWithDerivedDimensions(box, tileAnnotationSourceImageId))
+		                  : [];
                 return (
                   <div
                     key={entry.id}
@@ -2615,6 +2640,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                           className="inspection-overlay-composite"
 	                          data-testid="inspection-overlay-composite"
 	                          onMouseDown={(event) => handleTileBoxPointerDown(event, imageId)}
+	                          onMouseMove={(event) => handleTileAnnotationPointerMove(event, imageId)}
 	                          onMouseUp={(event) => handleTileBoxPointerUp(event, imageId)}
 	                          onMouseLeave={handleTileBoxPointerCancel}
 	                          onClick={(event) => {
@@ -2644,7 +2670,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                             loading="lazy"
                           />
 	                          <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 1000 1000`} preserveAspectRatio="none" aria-label="tile measurement overlay">
-	                            {renderAnnotationOverlay({ measurementLines: tileMeasurementLines, boxes: tileBoxes, fontSize: 30 })}
+	                            {renderAnnotationOverlay({ measurementLines: [...tileMeasurementLines, ...tilePreviewLines], boxes: [...tileBoxes, ...tilePreviewBoxes], fontSize: 30 })}
 	                          </svg>
 	                        </div>
 	                      ) : imageId ? (
@@ -2655,6 +2681,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                             alt={`${viewName} view`}
 		                            loading="lazy"
 	                            onMouseDown={(event) => handleTileBoxPointerDown(event, imageId)}
+	                            onMouseMove={(event) => handleTileAnnotationPointerMove(event, imageId)}
 	                            onMouseUp={(event) => handleTileBoxPointerUp(event, imageId)}
 	                            onMouseLeave={handleTileBoxPointerCancel}
 	                            onClick={(event) => {
@@ -2668,7 +2695,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	                            }}
 	                          />
 	                          <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 1000 1000`} preserveAspectRatio="none" aria-label="tile measurement overlay">
-	                            {renderAnnotationOverlay({ measurementLines: tileMeasurementLines, boxes: tileBoxes, fontSize: 30 })}
+	                            {renderAnnotationOverlay({ measurementLines: [...tileMeasurementLines, ...tilePreviewLines], boxes: [...tileBoxes, ...tilePreviewBoxes], fontSize: 30 })}
 	                          </svg>
 	                        </>
                       ) : imageRef ? (
@@ -3064,11 +3091,20 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     return `${kind} line ${count}`;
   };
 
-  const getLineDistanceMm = (line, imageId) => {
-    const pixelsPerMm = Number(getCalibrationForImage(getAnnotationSourceImageIdForImage(imageId))?.pixels_per_mm || 0);
-    const distancePx = Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
-    return pixelsPerMm > 0 ? distancePx / pixelsPerMm : null;
-  };
+	  const getLineDistanceMm = (line, imageId) => {
+	    const pixelsPerMm = Number(getCalibrationForImage(getAnnotationSourceImageIdForImage(imageId))?.pixels_per_mm || 0);
+	    const distancePx = Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
+	    return pixelsPerMm > 0 ? distancePx / pixelsPerMm : null;
+	  };
+
+	  const getBoxWithDerivedDimensions = (box, imageId) => {
+	    if (!isFiniteAnnotationBox(box)) return box;
+	    const pixelsPerMm = Number(getCalibrationForImage(getAnnotationSourceImageIdForImage(imageId))?.pixels_per_mm || 0);
+	    if (pixelsPerMm <= 0) return box;
+	    const widthMm = Number.isFinite(Number(box.widthMm)) ? Number(box.widthMm) : Number(box.width) / pixelsPerMm;
+	    const heightMm = Number.isFinite(Number(box.heightMm)) ? Number(box.heightMm) : Number(box.height) / pixelsPerMm;
+	    return { ...box, widthMm, heightMm };
+	  };
 
   const getAnnotationSurfacePointerPosition = (event) => {
     const surface = event.currentTarget;
@@ -3125,6 +3161,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	        distanceMm: getLineDistanceMm(line, annotationImageId),
 	      });
 	      setTileAnnotationDraft(null);
+	      setTileAnnotationPreview(null);
 	      setAnnotationToolMode('');
 	      return true;
 	    }
@@ -3143,6 +3180,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	    const nextPoint = { ...position, mode: 'box', imageId: annotationImageId };
 	    tileAnnotationDraftRef.current = nextPoint;
 	    setTileAnnotationDraft(nextPoint);
+	    setTileAnnotationPreview(null);
 	    suppressNextTileClickRef.current = true;
 	    if (event.pointerId !== undefined) event.currentTarget.setPointerCapture?.(event.pointerId);
 	    return true;
@@ -3170,6 +3208,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	    }
 	    tileAnnotationDraftRef.current = null;
 	    setTileAnnotationDraft(null);
+	    setTileAnnotationPreview(null);
 	    setAnnotationToolMode('');
 	    if (event.pointerId !== undefined) event.currentTarget.releasePointerCapture?.(event.pointerId);
 	    return true;
@@ -3181,9 +3220,46 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	    event.stopPropagation();
 	    tileAnnotationDraftRef.current = null;
 	    setTileAnnotationDraft(null);
+	    setTileAnnotationPreview(null);
 	    setAnnotationToolMode('');
 	    suppressNextTileClickRef.current = true;
 	    if (event.pointerId !== undefined) event.currentTarget.releasePointerCapture?.(event.pointerId);
+	  };
+
+	  const handleTileAnnotationPointerMove = (event, imageId) => {
+	    const annotationImageId = getAnnotationSourceImageIdForImage(imageId);
+	    const position = getAnnotationSurfacePointerPosition(event);
+	    if (!position) return;
+	    if (annotationToolMode === 'measure' && tileAnnotationDraft?.mode === 'measure' && String(tileAnnotationDraft.imageId || '') === String(annotationImageId || '')) {
+	      const line = {
+	        id: 'tile-measure-preview',
+	        imageId: String(annotationImageId || ''),
+	        x1: tileAnnotationDraft.x,
+	        y1: tileAnnotationDraft.y,
+	        x2: position.x,
+	        y2: position.y,
+	        imageWidth: position.imageWidth,
+	        imageHeight: position.imageHeight,
+	        color: '#f97316',
+	        distancePx: Math.hypot(position.x - tileAnnotationDraft.x, position.y - tileAnnotationDraft.y),
+	        distanceMm: getLineDistanceMm(
+	          { x1: tileAnnotationDraft.x, y1: tileAnnotationDraft.y, x2: position.x, y2: position.y },
+	          annotationImageId,
+	        ),
+	      };
+	      setTileAnnotationPreview({ mode: 'measure', imageId: String(annotationImageId || ''), line });
+	      return;
+	    }
+	    const firstPoint = tileAnnotationDraftRef.current || (tileAnnotationDraft?.mode === 'box' ? tileAnnotationDraft : null);
+	    if (annotationToolMode === 'box' && firstPoint && String(firstPoint.imageId || '') === String(annotationImageId || '')) {
+	      const box = {
+	        ...makeBoxFromPoints(firstPoint, position),
+	        id: 'tile-box-preview',
+	        imageId: String(annotationImageId || ''),
+	        color: '#f97316',
+	      };
+	      setTileAnnotationPreview({ mode: 'box', imageId: String(annotationImageId || ''), box });
+	    }
 	  };
 
   const getFullscreenImagePointerPosition = (event) => {
@@ -3258,11 +3334,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       setFullscreenMeasureActive(false);
       setPendingMeasurePoint(null);
       pendingMeasurePointRef.current = null;
-      setFullscreenHoveredEndpoint(null);
-      setFullscreenEditingEndpoint(null);
-      setFullscreenZoomLens(null);
-      return;
-    }
+	      setFullscreenHoveredEndpoint(null);
+	      setFullscreenEditingEndpoint(null);
+	      setFullscreenZoomLens(null);
+	      setFullscreenAnnotationPreview(null);
+	      return;
+	    }
     if (!getCalibrationForImage(getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId))) {
       setFullscreenCalibrationPromptVisible(true);
       return;
@@ -3272,6 +3349,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	    setFullscreenBoxActive(false);
 	    setPendingBoxPoint(null);
 	    pendingBoxPointRef.current = null;
+	    setFullscreenAnnotationPreview(null);
 	    setFullscreenMeasureActive(true);
 	  };
 
@@ -3280,6 +3358,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	      setFullscreenBoxActive(false);
 	      setPendingBoxPoint(null);
 	      pendingBoxPointRef.current = null;
+	      setFullscreenAnnotationPreview(null);
 	      return;
 	    }
 	    setFullscreenImageZoom({ scale: 1, originX: 50, originY: 50 });
@@ -3290,6 +3369,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	    setFullscreenEditingEndpoint(null);
 	    setFullscreenHoveredEndpoint(null);
 	    setFullscreenZoomLens(null);
+	    setFullscreenAnnotationPreview(null);
 	    setFullscreenBoxActive(true);
 	  };
 
@@ -3306,6 +3386,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	    }
 	    setPendingBoxPoint(null);
 	    pendingBoxPointRef.current = null;
+	    setFullscreenAnnotationPreview(null);
 	    setFullscreenBoxActive(false);
 	  };
 
@@ -3332,6 +3413,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     }
 	    setPendingMeasurePoint(null);
 	    pendingMeasurePointRef.current = null;
+	    setFullscreenAnnotationPreview(null);
 	    setFullscreenMeasureActive(false);
 	  };
 
@@ -3368,10 +3450,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     const firstPoint = pendingMeasurePointRef.current || pendingMeasurePoint;
     if (!firstPoint) {
-      const nextPoint = { x, y, imageWidth: naturalWidth, imageHeight: naturalHeight };
-      pendingMeasurePointRef.current = nextPoint;
-      setPendingMeasurePoint(nextPoint);
-      return;
+	      const nextPoint = { x, y, imageWidth: naturalWidth, imageHeight: naturalHeight };
+	      pendingMeasurePointRef.current = nextPoint;
+	      setPendingMeasurePoint(nextPoint);
+	      setFullscreenAnnotationPreview(null);
+	      return;
     }
     const line = { x1: firstPoint.x, y1: firstPoint.y, x2: x, y2: y, imageWidth: naturalWidth, imageHeight: naturalHeight };
 	    if (!isFiniteMeasurementLine(line)) return;
@@ -3393,6 +3476,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	    };
 	    pendingBoxPointRef.current = nextPoint;
 	    setPendingBoxPoint(nextPoint);
+	    setFullscreenAnnotationPreview(null);
 	    if (event.pointerId !== undefined) event.currentTarget.setPointerCapture?.(event.pointerId);
 	  };
 
@@ -3413,6 +3497,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	    } else {
 	      setPendingBoxPoint(null);
 	      pendingBoxPointRef.current = null;
+	      setFullscreenAnnotationPreview(null);
 	      setFullscreenBoxActive(false);
 	    }
 	    if (event.pointerId !== undefined) event.currentTarget.releasePointerCapture?.(event.pointerId);
@@ -3424,6 +3509,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	    event.stopPropagation();
 	    setPendingBoxPoint(null);
 	    pendingBoxPointRef.current = null;
+	    setFullscreenAnnotationPreview(null);
 	    setFullscreenBoxActive(false);
 	    if (event.pointerId !== undefined) event.currentTarget.releasePointerCapture?.(event.pointerId);
 	  };
@@ -3450,6 +3536,41 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	      return;
 	    }
 	    if (fullscreenBoxActive) {
+	      const firstPoint = pendingBoxPointRef.current || pendingBoxPoint;
+	      if (firstPoint && position) {
+	        const box = {
+	          ...makeBoxFromPoints(firstPoint, {
+	            x: position.x,
+	            y: position.y,
+	            imageWidth: position.naturalWidth,
+	            imageHeight: position.naturalHeight,
+	          }),
+	          id: 'fullscreen-box-preview',
+	          color: '#f97316',
+	        };
+	        setFullscreenAnnotationPreview({ mode: 'box', box });
+	      }
+	      setFullscreenHoveredEndpoint(null);
+	      return;
+	    }
+	    const firstMeasurePoint = pendingMeasurePointRef.current || pendingMeasurePoint;
+	    if (fullscreenMeasureActive && firstMeasurePoint && position) {
+	      const line = {
+	        id: 'fullscreen-measure-preview',
+	        x1: firstMeasurePoint.x,
+	        y1: firstMeasurePoint.y,
+	        x2: position.x,
+	        y2: position.y,
+	        imageWidth: position.naturalWidth,
+	        imageHeight: position.naturalHeight,
+	        color: '#f97316',
+	        distancePx: Math.hypot(position.x - firstMeasurePoint.x, position.y - firstMeasurePoint.y),
+	        distanceMm: getLineDistanceMm(
+	          { x1: firstMeasurePoint.x, y1: firstMeasurePoint.y, x2: position.x, y2: position.y },
+	          fullscreenImageModal?.imageId,
+	        ),
+	      };
+	      setFullscreenAnnotationPreview({ mode: 'measure', line });
 	      setFullscreenHoveredEndpoint(null);
 	      return;
 	    }
@@ -3494,11 +3615,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	    pendingBoxPointRef.current = null;
     setFullscreenCalibrationPromptVisible(false);
     setFullscreenHoveredEndpoint(null);
-    setFullscreenEditingEndpoint(null);
-    setFullscreenZoomLens(null);
-    setFullscreenZoomScale(MEASUREMENT_LOCAL_ZOOM_SCALE);
-    setFullscreenImageZoom({ scale: 1, originX: 50, originY: 50 });
-  };
+	    setFullscreenEditingEndpoint(null);
+	    setFullscreenZoomLens(null);
+	    setFullscreenZoomScale(MEASUREMENT_LOCAL_ZOOM_SCALE);
+	    setFullscreenImageZoom({ scale: 1, originX: 50, originY: 50 });
+	    setFullscreenAnnotationPreview(null);
+	  };
 
   const renderFullscreenImageModal = () => {
     if (!fullscreenImageModal?.imageId) return null;
@@ -3515,7 +3637,14 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	      ...fullscreenMeasurements.filter((line) => String(line.imageId || '') === fullscreenAnnotationSourceImageId),
 	    ].filter(isFiniteMeasurementLine);
 	    const fullscreenBoxAnnotations = (boxAnnotationsByImageId[fullscreenAnnotationSourceImageId] || [])
-	      .filter(isFiniteAnnotationBox);
+	      .filter(isFiniteAnnotationBox)
+	      .map((box) => getBoxWithDerivedDimensions(box, fullscreenAnnotationSourceImageId));
+	    const fullscreenPreviewLines = fullscreenAnnotationPreview?.mode === 'measure'
+	      ? [fullscreenAnnotationPreview.line].filter(isFiniteMeasurementLine)
+	      : [];
+	    const fullscreenPreviewBoxes = fullscreenAnnotationPreview?.mode === 'box'
+	      ? [fullscreenAnnotationPreview.box].filter(isFiniteAnnotationBox).map((box) => getBoxWithDerivedDimensions(box, fullscreenAnnotationSourceImageId))
+	      : [];
 	    const fullscreenAnnotationItems = [
 	      ...fullscreenMeasurementLines.map((line, index) => ({
 	        ...line,
@@ -3597,7 +3726,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 		                    onClick={handleFullscreenMeasurePointerDown}
 		                  />
                   <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 1000 1000`} preserveAspectRatio="none" aria-label="fullscreen measurement overlay">
-                    {fullscreenMeasurementLines.map((line) => {
+	                    {[...fullscreenMeasurementLines, ...fullscreenPreviewLines].map((line) => {
                       const labelPosition = getMeasurementLabelViewBoxPosition(line, 20);
                       const endpointPositions = getMeasurementEndpointViewBoxPosition(line);
                       const endpointActive = fullscreenHoveredEndpoint?.lineId === String(line.id)
@@ -3631,7 +3760,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                         </g>
 	                      );
 	                    })}
-	                    {renderAnnotationOverlay({ measurementLines: [], boxes: fullscreenBoxAnnotations, fontSize: 20 })}
+	                    {renderAnnotationOverlay({ measurementLines: [], boxes: [...fullscreenBoxAnnotations, ...fullscreenPreviewBoxes], fontSize: 20 })}
 	                  </svg>
 	                </div>
                 {fullscreenZoomLens && (
