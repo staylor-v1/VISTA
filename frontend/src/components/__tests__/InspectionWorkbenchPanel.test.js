@@ -613,21 +613,10 @@ describe('InspectionWorkbenchPanel', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Close Part Selection' }));
         fireEvent.click(screen.getByRole('button', { name: 'Annotations' }));
       }
+      const seedAnnotationType = scenario.parts[0].metadata.annotations[0].defect_class;
       await waitFor(() => {
-        expect(screen.getByTestId('annotation-list')).toHaveTextContent(/@ 2026-03-28/);
-      });
-      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
-      fireEvent.change(screen.getByLabelText('Edit annotation defect class'), { target: { value: `${scenario.user}-edited-defect` } });
-      fireEvent.change(screen.getByLabelText('Edit annotation disposition'), { target: { value: 'accepted' } });
-      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-      await waitFor(() => {
-        expect(screen.getByTestId('annotation-list')).toHaveTextContent(`${scenario.user}-edited-defect •`);
-        expect(screen.getByTestId('annotation-list')).toHaveTextContent('• accepted');
-      });
-      fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
-      await waitFor(() => {
-        expect(screen.getByTestId('annotation-list')).toHaveTextContent('Hidden');
-        expect(screen.getByTestId('annotation-list')).toHaveTextContent('qa-reviewer@example.com @ 2026-03-28 12:30:00');
+        expect(screen.getByTestId('annotation-list')).toHaveTextContent(seedAnnotationType);
+        expect(screen.getByTestId('annotation-list')).not.toHaveTextContent('@ 2026-03-28');
       });
       fireEvent.click(screen.getByRole('button', { name: 'Other' }));
       fireEvent.change(screen.getByLabelText('Annotation defect type'), { target: { value: 'Other' } });
@@ -639,6 +628,8 @@ describe('InspectionWorkbenchPanel', () => {
           expect.stringContaining('/annotations'),
           expect.objectContaining({ method: 'POST' }),
         );
+        expect(screen.getByTestId('annotation-list')).toHaveTextContent('Other');
+        expect(screen.getByTestId('annotation-list')).toHaveTextContent(`${scenario.user}-crack`);
       });
       if (projectType === 'PT3') {
         fireEvent.click(screen.getByRole('button', { name: 'Close Annotations' }));
@@ -1066,6 +1057,43 @@ describe('InspectionWorkbenchPanel', () => {
 	    expect(screen.getByRole('button', { name: 'Draw box on tiles' })).not.toHaveClass('active');
 	  });
 
+  test('anchors source tile annotations to the rendered image bounds', async () => {
+    mockWorkbenchFetch(scenarioByUser[0]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+    await waitFor(() => expect(screen.getByAltText('front view')).toBeInTheDocument());
+
+    const tileImage = screen.getByAltText('front view');
+    const tileSurface = tileImage.closest('.inspection-image-annotation-surface');
+    expect(tileSurface).toBeInTheDocument();
+    expect(tileSurface).toContainElement(screen.getByLabelText('tile measurement overlay'));
+    Object.defineProperty(tileImage, 'naturalWidth', { configurable: true, value: 400 });
+    Object.defineProperty(tileImage, 'naturalHeight', { configurable: true, value: 200 });
+    tileImage.getBoundingClientRect = () => ({ left: 50, top: 25, width: 400, height: 200, right: 450, bottom: 225 });
+    tileSurface.getBoundingClientRect = () => ({ left: 0, top: 0, width: 500, height: 300, right: 500, bottom: 300 });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Measure on tiles' }));
+    fireEvent.click(tileSurface, { clientX: 90, clientY: 45 });
+    fireEvent.click(tileSurface, { clientX: 190, clientY: 95 });
+
+    await waitFor(() => {
+      const postCall = global.fetch.mock.calls.find((call) => {
+        if (!call[0].includes('/annotations') || call[1]?.method !== 'POST') return false;
+        const body = JSON.parse(call[1].body);
+        return body.geometry?.line;
+      });
+      expect(postCall).toBeDefined();
+      const body = JSON.parse(postCall[1].body);
+      expect(body.geometry.line).toEqual(expect.objectContaining({
+        x1: 40,
+        y1: 20,
+        x2: 140,
+        y2: 70,
+        imageWidth: 400,
+        imageHeight: 200,
+      }));
+    });
+  });
+
   test('asks for calibration before allowing fullscreen measurement when calibration is missing', async () => {
     mockWorkbenchFetch({ ...scenarioByUser[0], metadataDict: {} });
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
@@ -1142,6 +1170,23 @@ describe('InspectionWorkbenchPanel', () => {
 	    expect(screen.getByLabelText('fullscreen measurement overlay')).toHaveTextContent('Height 4.00 mm');
 	    expect(screen.getByTestId('fullscreen-annotation-list')).toHaveTextContent('Width 7.50 mm');
 	    expect(screen.getByRole('button', { name: 'Draw box' })).not.toHaveClass('active');
+
+    const topLeftCorner = await screen.findByLabelText('Reposition topLeft corner for Drawn bounding box');
+    fireEvent.click(topLeftCorner, { clientX: 80, clientY: 40 });
+    expect(screen.getByTestId('fullscreen-measurement-zoom-lens')).toBeInTheDocument();
+    fireEvent.click(fullscreenImage, { clientX: 100, clientY: 60 });
+
+    await waitFor(() => {
+      const patchCall = global.fetch.mock.calls.find((call) => {
+        if (!call[0].includes('/annotations/annotation-1') || call[1]?.method !== 'PATCH') return false;
+        const body = JSON.parse(call[1].body);
+        return body.geometry?.box;
+      });
+      expect(patchCall).toBeDefined();
+      const body = JSON.parse(patchCall[1].body);
+      expect(body.bbox).toEqual(expect.objectContaining({ x: 90, y: 50, width: 140, height: 70 }));
+      expect(body.measurements).toEqual(expect.objectContaining({ width_mm: 7, height_mm: 3.5 }));
+    });
 	  });
 
   test('shares source-image annotations across Analyze overlays and saves overlay measurements to the source image', async () => {
@@ -1259,7 +1304,7 @@ describe('InspectionWorkbenchPanel', () => {
       const patchCalls = global.fetch.mock.calls.filter((call) => call[0].includes('/annotations/measurement-endpoint-a') && call[1]?.method === 'PATCH');
       expect(patchCalls.length).toBeGreaterThan(1);
       const body = JSON.parse(patchCalls.at(-1)[1].body);
-      expect(body.geometry.line).toEqual(expect.objectContaining({ x1: 120, y1: 90 }));
+      expect(body.geometry.line).toEqual(expect.objectContaining({ x1: 110, y1: 85 }));
     });
     await waitFor(() => expect(screen.queryByTestId('fullscreen-measurement-zoom-lens')).not.toBeInTheDocument());
 

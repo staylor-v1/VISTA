@@ -4872,7 +4872,7 @@ ul li:hover {
 
 .measurement-list {
   margin: 8px 0 0;
-  padding-left: 18px;
+  padding-left: 0;
 }
 
 .measurement-list .annotation-entry {
@@ -4881,9 +4881,9 @@ ul li:hover {
   align-items: center;
   gap: 6px;
   border: 1px solid #dbe2ea;
-  border-radius: 8px;
-  padding: 8px;
-  margin-bottom: 8px;
+  border-radius: 6px;
+  padding: 5px 6px;
+  margin-bottom: 5px;
   list-style: none;
   cursor: pointer;
   background: #fff;
@@ -4891,6 +4891,29 @@ ul li:hover {
 
 .annotation-entry-content {
   min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(72px, max-content) minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+
+.annotation-entry-type {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 0.8rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annotation-entry-value {
+  min-width: 0;
+  color: #475569;
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .annotation-entry-delete {
@@ -5193,7 +5216,8 @@ ul li:hover {
   pointer-events: none;
 }
 
-.inspection-measurement-endpoint-dot {
+.inspection-measurement-endpoint-dot,
+.inspection-box-corner-dot {
   pointer-events: auto;
   cursor: pointer;
   paint-order: stroke;
@@ -5330,17 +5354,25 @@ ul li:hover {
   margin: 4px 0 0;
 }
 
+.inspection-image-annotation-surface,
 .inspection-overlay-composite {
   position: relative;
-  width: 100%;
-  display: grid;
+  display: inline-grid;
   place-items: center;
+  max-width: 100%;
+  max-height: 320px;
+  line-height: 0;
 }
 
+.inspection-image-annotation-surface .inspection-view-image,
 .inspection-overlay-composite .inspection-view-image {
   grid-area: 1 / 1;
+  width: auto;
+  max-width: 100%;
+  max-height: 320px;
 }
 
+.inspection-image-annotation-surface .analysis-overlay-image,
 .inspection-overlay-composite .analysis-overlay-image {
   position: absolute;
   inset: 0;
