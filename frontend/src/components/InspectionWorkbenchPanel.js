@@ -453,6 +453,15 @@ function getShellImageLayers(part, projectImageLookup = {}) {
     .filter(Boolean);
 }
 
+function getAnalyzeOverlayDisplayLabel(label) {
+  const parts = String(label || 'Analyze Overlay')
+    .split('::')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length <= 1) return parts[0] || 'Analyze Overlay';
+  return [...parts].reverse().join(' :: ');
+}
+
 function getPartImageRefs(part) {
   const refs = [];
   const seen = new Set();
@@ -490,7 +499,7 @@ function getPartImageRefs(part) {
     if (!imageRef || seen.has(imageRef)) return;
     seen.add(imageRef);
     const label = overlay
-      ? String(record.label || record.analysis_label || 'Analyze Overlay')
+      ? getAnalyzeOverlayDisplayLabel(record.label || record.analysis_label || 'Analyze Overlay')
       : String(record.side || record.modality || `IMAGE ${index + 1}`).toUpperCase();
     refs.push({
       id: `${part.id}-${overlay ? 'analysis' : 'source'}-${index}`,

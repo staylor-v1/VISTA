@@ -51,6 +51,7 @@ const toolboxPayload = {
       parameters: [
         { name: 'window', label: 'Window', type: 'float', default: 400 },
         { name: 'level', label: 'Level', type: 'float', default: 40 },
+        { name: 'sensitivity', label: 'Sensitivity', type: 'float', default: 0.5, min_value: 0, max_value: 1 },
         { name: 'clip', label: 'Clip Outliers', type: 'boolean', default: true },
       ],
     },
@@ -199,6 +200,36 @@ describe('AnalyzeWorkbenchTab', () => {
     }));
     expect(workflow.source.kind).toBe('project_parts');
     expect(executeCall[1].body).toContain('"window":250');
+  });
+
+  test('steps float parameters by arrows and adaptive wheel increments', async () => {
+    mockFetch();
+    render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
+
+    await screen.findByRole('button', { name: /Workflow block Window \/ Level Normalization/i });
+    fireEvent.click(screen.getByRole('button', { name: /Workflow block Window \/ Level Normalization/i }));
+
+    const sensitivityInput = screen.getByLabelText('Sensitivity');
+    expect(sensitivityInput).toHaveAttribute('step', '0.05');
+
+    fireEvent.change(sensitivityInput, { target: { value: '0.55' } });
+    expect(sensitivityInput).toHaveValue(0.55);
+
+    fireEvent.wheel(sensitivityInput, { deltaY: -6 });
+    await waitFor(() => expect(sensitivityInput).toHaveValue(0.56));
+
+    fireEvent.wheel(sensitivityInput, { deltaY: 120 });
+    await waitFor(() => expect(sensitivityInput).toHaveValue(0.51));
+
+    fireEvent.change(sensitivityInput, { target: { value: '0.99' } });
+    fireEvent.wheel(sensitivityInput, { deltaY: -120 });
+    await waitFor(() => expect(sensitivityInput).toHaveValue(1));
+
+    const windowInput = screen.getByLabelText('Window');
+    expect(windowInput).toHaveAttribute('step', '0.05');
+    const seedNode = screen.getByRole('button', { name: /Workflow block Watershed From Seeds/i });
+    fireEvent.click(seedNode);
+    expect(screen.getByLabelText('Seed Spacing (px)')).toHaveAttribute('step', '1');
   });
 
   test('chooses an example image and runs only the example through the pipeline', async () => {

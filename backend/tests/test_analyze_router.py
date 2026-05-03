@@ -159,7 +159,9 @@ def test_analyze_workflow_validation_and_execution_use_pydantic_contract(client)
     workflow["nodes"][1]["method_id"] = "missing.method"
     reject_resp = client.post(f"/api/projects/{project_id}/analyze/workflows/validate", json=workflow, headers=headers)
     assert reject_resp.status_code == 400
-    assert "Unknown toolbox method" in reject_resp.json()["detail"]
+    detail = reject_resp.json()["detail"]
+    message = detail.get("message") if isinstance(detail, dict) else detail
+    assert "Unknown toolbox method" in message
 
 
 def test_analyze_workflow_manual_selection_counts_selected_images(client):
@@ -199,6 +201,53 @@ def test_analyze_workflow_manual_selection_counts_selected_images(client):
     assert resp.json()["image_count"] == 1
 
 
+def test_analyze_workflow_yolov8_instance_segmentation_completes_and_attaches_overlay(client):
+    headers, project_id, image = _create_project_with_part_image(client)
+    workflow = {
+        "name": "YOLOv8 instance segmentation",
+        "source": {
+            "id": "example-selection",
+            "label": "Example image",
+            "kind": "manual_selection",
+            "project_id": project_id,
+            "selected_image_ids": [image["id"]],
+            "example_image_id": image["id"],
+            "image_count": 1,
+            "part_count": 1,
+        },
+        "nodes": [
+            {"id": "input", "method_id": "source.project_part_images", "label": "Input", "parameters": {}},
+            {
+                "id": "segment",
+                "method_id": "ml.yolov8.segment",
+                "label": "YOLOv8 Instance Segmentation",
+                "parameters": {"model": "yolov8n-seg.pt", "confidence": 0.35},
+            },
+            {
+                "id": "output",
+                "method_id": "output.versioned_image_artifact",
+                "label": "Versioned Output",
+                "parameters": {"mode": "overlay_artifact"},
+            },
+        ],
+        "edges": [
+            {"source_node": "input", "target_node": "segment"},
+            {"source_node": "segment", "target_node": "output"},
+        ],
+        "output": {"mode": "overlay_artifact", "version_strategy": "recipe_metadata"},
+    }
+
+    resp = client.post(f"/api/projects/{project_id}/analyze/workflows/execute", json=workflow, headers=headers)
+
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["status"] == "completed"
+    assert any("Attached 1 Analyze overlay output" in warning for warning in payload["warnings"])
+    output_node = next(node for node in payload["node_results"] if node["node_id"] == "output")
+    overlay_artifact = next(artifact for artifact in output_node["artifacts"] if artifact["kind"] == "overlay_image")
+    assert overlay_artifact["method_id"] == "ml.yolov8.segment"
+
+
 def test_analyze_workflow_uses_server_source_counts_and_rejects_cross_project_source(client):
     headers, project_id, _image = _create_project_with_part_image(client)
     workflow = {
@@ -221,7 +270,9 @@ def test_analyze_workflow_uses_server_source_counts_and_rejects_cross_project_so
     workflow["source"]["project_id"] = "00000000-0000-0000-0000-000000000000"
     mismatch_resp = client.post(f"/api/projects/{project_id}/analyze/workflows/validate", json=workflow, headers=headers)
     assert mismatch_resp.status_code == 400
-    assert "does not match" in mismatch_resp.json()["detail"]
+    detail = mismatch_resp.json()["detail"]
+    message = detail.get("message") if isinstance(detail, dict) else detail
+    assert "does not match" in message
 
 
 def test_delete_and_restore_analyze_overlay_accept_non_uuid_overlay_image_ids(client):
@@ -271,20 +322,20 @@ def test_delete_and_restore_analyze_overlay_accept_non_uuid_overlay_image_ids(cl
         headers=headers,
     )
     assert delete_resp.status_code == 200, delete_resp.text
-    deleted_source_overlay = next(
-        record for record in delete_resp.json()["metadata"]["source_images"] if record.get("image_id") == "overlay-image-1"
+    deleted_overlay = next(
+        record for record in delete_resp.json()["metadata"]["analysis_outputs"] if record.get("image_id") == "overlay-image-1"
     )
-    assert deleted_source_overlay["overlay_delete_candidate"] is True
+    assert deleted_overlay["overlay_delete_candidate"] is True
 
     restore_resp = client.post(
         f"/api/projects/{project_id}/analyze/overlays/overlay-image-1/restore",
         headers=headers,
     )
     assert restore_resp.status_code == 200, restore_resp.text
-    restored_source_overlay = next(
-        record for record in restore_resp.json()["metadata"]["source_images"] if record.get("image_id") == "overlay-image-1"
+    restored_overlay = next(
+        record for record in restore_resp.json()["metadata"]["analysis_outputs"] if record.get("image_id") == "overlay-image-1"
     )
-    assert "overlay_delete_candidate" not in restored_source_overlay
+    assert "overlay_delete_candidate" not in restored_overlay
 
 
 def test_delete_analyze_overlay_rejects_original_project_images(client):

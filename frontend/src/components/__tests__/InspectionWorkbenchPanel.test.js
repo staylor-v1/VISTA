@@ -948,17 +948,17 @@ describe('InspectionWorkbenchPanel', () => {
 
     await waitFor(() => expect(screen.getAllByText('Analyze Output Part').length).toBeGreaterThan(0));
     const composite = screen.getByTestId('inspection-overlay-composite');
-    expect(screen.getByText('Segmentation Overlay :: Watershed From Seeds')).toBeInTheDocument();
+    expect(screen.getByText('Watershed From Seeds :: Segmentation Overlay')).toBeInTheDocument();
     expect(within(composite).getByAltText('front source')).toHaveAttribute('src', '/api/images/source-image-1/content');
     expect(within(composite).getByAltText('front overlay')).toHaveAttribute('src', '/api/images/overlay-image-1/content');
     fireEvent.click(composite);
-    expect(screen.getByAltText('Segmentation Overlay :: Watershed From Seeds fullscreen')).toBeInTheDocument();
-    expect(screen.getByAltText('Segmentation Overlay :: Watershed From Seeds source fullscreen')).toHaveAttribute('src', '/api/images/source-image-1/content');
+    expect(screen.getByAltText('Watershed From Seeds :: Segmentation Overlay fullscreen')).toBeInTheDocument();
+    expect(screen.getByAltText('Watershed From Seeds :: Segmentation Overlay source fullscreen')).toHaveAttribute('src', '/api/images/source-image-1/content');
     fireEvent.click(screen.getByLabelText('Close fullscreen image'));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete overlay Segmentation Overlay :: Watershed From Seeds' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete overlay Watershed From Seeds :: Segmentation Overlay' }));
     await waitFor(() => {
-      expect(screen.queryByText('Segmentation Overlay :: Watershed From Seeds')).not.toBeInTheDocument();
+      expect(screen.queryByText('Watershed From Seeds :: Segmentation Overlay')).not.toBeInTheDocument();
     });
     expect(global.fetch).toHaveBeenCalledWith('/api/projects/proj-1/analyze/overlays/overlay-image-1', { method: 'DELETE' });
   });

@@ -252,6 +252,31 @@ def _blackhat_crack_heatmap(image: Image.Image, kernel_radius: int, sensitivity:
     return blackhat.point(lambda value: 255 if value >= threshold else 0).filter(ImageFilter.MaxFilter(3))
 
 
+def _yolov8_instance_segmentation_fallback(image: Image.Image, confidence: float) -> Tuple[Image.Image, List[Dict[str, Any]], List[Dict[str, Any]]]:
+    source_mask, _threshold = _otsu_threshold(image)
+    mask = source_mask.filter(ImageFilter.MaxFilter(3))
+    labels, measurements = _connected_components(mask, min_area_px=1)
+    detections: List[Dict[str, Any]] = []
+    score = max(0.0, min(1.0, float(confidence)))
+    for measurement in measurements:
+        x1, y1, x2, y2 = measurement["bbox"]
+        detections.append({
+            "class_id": 0,
+            "class_name": "instance",
+            "confidence": score,
+            "bbox": {
+                "x": x1,
+                "y": y1,
+                "width": max(0, x2 - x1),
+                "height": max(0, y2 - y1),
+                "image_width": image.width,
+                "image_height": image.height,
+            },
+            "mask_label": measurement["label"],
+        })
+    return labels, detections, measurements
+
+
 def _morphology(mask: Image.Image, radius: int, operation: str) -> Image.Image:
     size = max(3, (int(radius) * 2) + 1)
     source = _grayscale(mask)
@@ -359,7 +384,19 @@ def _apply_node(state: ImageState, node, method) -> Tuple[ImageState, str, Dict[
         if not state.measurements:
             _, state.measurements = _connected_components(state.labels or state.mask or _otsu_threshold(state.image)[0], 0)
         return state, "Measured region properties.", {"measurement_count": len(state.measurements)}, artifacts
-    if node.method_id in ("ml.yolov8.detect", "ml.yolov8.segment"):
+    if node.method_id == "ml.yolov8.segment":
+        state.labels, state.detections, state.measurements = _yolov8_instance_segmentation_fallback(
+            state.image,
+            float(params.get("confidence", 0.25)),
+        )
+        state.overlay_label = _overlay_label("Instance Segmentation", method)
+        state.overlay_method_id = method.id
+        state.overlay_method_name = method.name
+        return state, "Computed YOLOv8-compatible instance segmentation fallback.", {
+            "instance_count": len(state.measurements),
+            "detection_count": len(state.detections),
+        }, artifacts
+    if node.method_id == "ml.yolov8.detect":
         if not find_spec("ultralytics"):
             raise RuntimeError("YOLOv8 execution requires the optional 'ultralytics' package and model weights.")
         raise RuntimeError("YOLOv8 runtime binding is available only after a model runner is configured.")

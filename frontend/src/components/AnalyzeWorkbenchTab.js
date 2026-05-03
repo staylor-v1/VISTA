@@ -322,6 +322,30 @@ function workflowMetadataValue({ nodes, processImageIds, exampleImageId }) {
   };
 }
 
+function numericParameterStep(parameter) {
+  if (parameter?.type === 'integer') return 1;
+  if (parameter?.type === 'float' || parameter?.type === 'range') return 0.05;
+  return undefined;
+}
+
+function clampParameterValue(value, parameter) {
+  const min = Number(parameter?.min_value);
+  const max = Number(parameter?.max_value);
+  let nextValue = value;
+  if (Number.isFinite(min)) nextValue = Math.max(min, nextValue);
+  if (Number.isFinite(max)) nextValue = Math.min(max, nextValue);
+  return nextValue;
+}
+
+function roundParameterValue(value) {
+  return Number(value.toFixed(4));
+}
+
+function wheelIncrementForEvent(event) {
+  const magnitude = Math.abs(Number(event.deltaY) || 0);
+  return magnitude >= 40 ? 0.05 : 0.01;
+}
+
 function ParameterInput({ parameter, value, onChange }) {
   const id = `analyze-param-${parameter.name}`;
   if (parameter.type === 'boolean') {
@@ -352,13 +376,28 @@ function ParameterInput({ parameter, value, onChange }) {
   }
 
   const numeric = parameter.type === 'integer' || parameter.type === 'float' || parameter.type === 'range';
+  const step = numericParameterStep(parameter);
+  const handleWheel = numeric && parameter.type !== 'integer'
+    ? (event) => {
+      if (!event.deltaY) return;
+      event.preventDefault();
+      const currentValue = Number.isFinite(Number(value))
+        ? Number(value)
+        : Number.isFinite(Number(parameter.default))
+          ? Number(parameter.default)
+          : 0;
+      const direction = event.deltaY < 0 ? 1 : -1;
+      const increment = wheelIncrementForEvent(event);
+      onChange(roundParameterValue(clampParameterValue(currentValue + (direction * increment), parameter)));
+    }
+    : undefined;
   return (
-    <label className="analyze-field" htmlFor={id}>
+    <label className="analyze-field" htmlFor={id} onWheel={handleWheel}>
       <span>{parameter.label}</span>
       <input
         id={id}
         type={numeric ? 'number' : 'text'}
-        step={parameter.type === 'integer' ? 1 : 'any'}
+        step={step}
         min={parameter.min_value ?? undefined}
         max={parameter.max_value ?? undefined}
         value={value ?? ''}

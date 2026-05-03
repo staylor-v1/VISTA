@@ -162,6 +162,41 @@ def test_yolov8_node_reports_dependency_or_runner_contract():
         assert "optional 'ultralytics' package" in yolo_node.message
 
 
+def test_yolov8_instance_segmentation_executes_fallback_overlay():
+    image_id = uuid.uuid4()
+    workflow = WorkflowGraph(
+        name="YOLOv8 instance segmentation",
+        source={"kind": "manual_selection", "selected_image_ids": [image_id], "image_count": 1},
+        nodes=[
+            {"id": "input", "method_id": "source.project_part_images", "parameters": {}},
+            {
+                "id": "segment",
+                "method_id": "ml.yolov8.segment",
+                "parameters": {"model": "yolov8n-seg.pt", "confidence": 0.35},
+            },
+            {"id": "output", "method_id": "output.versioned_image_artifact", "parameters": {"mode": "overlay_artifact"}},
+        ],
+        edges=[
+            {"source_node": "input", "target_node": "segment"},
+            {"source_node": "segment", "target_node": "output"},
+        ],
+    )
+
+    result = execute_image_workflow(
+        workflow,
+        [WorkflowImageInput(image_id=image_id, filename="tiny.png", content_type="image/png", data=_png_bytes())],
+    )
+
+    assert result.status == "completed"
+    segment_node = next(node for node in result.node_results if node.node_id == "segment")
+    assert segment_node.summary["instance_count"] > 0
+    assert segment_node.summary["detection_count"] == segment_node.summary["instance_count"]
+    output_result = next(node for node in result.node_results if node.node_id == "output")
+    overlay_artifact = next(artifact for artifact in output_result.artifacts if artifact["kind"] == "overlay_image")
+    assert overlay_artifact["label"] == "Instance Segmentation Overlay :: YOLOv8 Instance Segmentation"
+    assert overlay_artifact["method_id"] == "ml.yolov8.segment"
+
+
 def test_minmax_normalization_operates_per_rgb_channel():
     image_id = uuid.uuid4()
     workflow = WorkflowGraph(
