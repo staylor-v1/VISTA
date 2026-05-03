@@ -3,13 +3,15 @@ import math
 import base64
 from collections import deque
 from dataclasses import dataclass, field
-from importlib.util import find_spec
+from importlib import import_module
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from PIL import Image, ImageChops, ImageFilter, ImageOps
 
 from .contracts import ToolboxExecutionResult, WorkflowGraph, WorkflowImageInput, WorkflowNodeResult
 from .registry import _method_map, validate_workflow
+
+_YOLO_MODEL_CACHE: Dict[str, Any] = {}
 
 
 @dataclass
@@ -252,17 +254,20 @@ def _blackhat_crack_heatmap(image: Image.Image, kernel_radius: int, sensitivity:
     return blackhat.point(lambda value: 255 if value >= threshold else 0).filter(ImageFilter.MaxFilter(3))
 
 
-def _yolov8_instance_segmentation_fallback(image: Image.Image, confidence: float) -> Tuple[Image.Image, List[Dict[str, Any]], List[Dict[str, Any]]]:
-    source_mask, _threshold = _otsu_threshold(image)
-    mask = source_mask.filter(ImageFilter.MaxFilter(3))
-    labels, measurements = _connected_components(mask, min_area_px=1)
+def _yolov8_detection_records(
+    image: Image.Image,
+    measurements: List[Dict[str, Any]],
+    confidence: float,
+    *,
+    include_mask_labels: bool = False,
+) -> List[Dict[str, Any]]:
     detections: List[Dict[str, Any]] = []
     score = max(0.0, min(1.0, float(confidence)))
     for measurement in measurements:
         x1, y1, x2, y2 = measurement["bbox"]
-        detections.append({
+        detection = {
             "class_id": 0,
-            "class_name": "instance",
+            "class_name": "object",
             "confidence": score,
             "bbox": {
                 "x": x1,
@@ -272,8 +277,110 @@ def _yolov8_instance_segmentation_fallback(image: Image.Image, confidence: float
                 "image_width": image.width,
                 "image_height": image.height,
             },
-            "mask_label": measurement["label"],
+        }
+        if include_mask_labels:
+            detection["class_name"] = "instance"
+            detection["mask_label"] = measurement["label"]
+        detections.append(detection)
+    return detections
+
+
+def _yolov8_detection_fallback(image: Image.Image, confidence: float) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    mask, _threshold = _otsu_threshold(image)
+    _labels, measurements = _connected_components(mask, min_area_px=1)
+    return _yolov8_detection_records(image, measurements, confidence), measurements
+
+
+def _yolov8_instance_segmentation_fallback(image: Image.Image, confidence: float) -> Tuple[Image.Image, List[Dict[str, Any]], List[Dict[str, Any]]]:
+    source_mask, _threshold = _otsu_threshold(image)
+    mask = source_mask.filter(ImageFilter.MaxFilter(3))
+    labels, measurements = _connected_components(mask, min_area_px=1)
+    detections = _yolov8_detection_records(image, measurements, confidence, include_mask_labels=True)
+    return labels, detections, measurements
+
+
+def _as_list(value) -> list:
+    if value is None:
+        return []
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "numpy"):
+        value = value.numpy()
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    return list(value)
+
+
+def _run_ultralytics_yolo(image: Image.Image, model_name: str, confidence: float, *, segment: bool = False) -> Tuple[Optional[Image.Image], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    ultralytics = import_module("ultralytics")
+    if model_name not in _YOLO_MODEL_CACHE:
+        _YOLO_MODEL_CACHE[model_name] = ultralytics.YOLO(model_name)
+    model = _YOLO_MODEL_CACHE[model_name]
+    results = model(image.convert("RGB"), conf=max(0.0, min(1.0, float(confidence))), verbose=False)
+    result = list(results)[0] if results else None
+    if result is None:
+        return None, [], []
+
+    names = getattr(result, "names", {}) or getattr(model, "names", {}) or {}
+    boxes = getattr(result, "boxes", None)
+    xyxy_values = _as_list(getattr(boxes, "xyxy", []))
+    confidence_values = _as_list(getattr(boxes, "conf", []))
+    class_values = _as_list(getattr(boxes, "cls", []))
+    detections: List[Dict[str, Any]] = []
+    measurements: List[Dict[str, Any]] = []
+    for index, coords in enumerate(xyxy_values):
+        if len(coords) < 4:
+            continue
+        x1, y1, x2, y2 = [float(value) for value in coords[:4]]
+        class_id = int(float(class_values[index])) if index < len(class_values) else 0
+        score = float(confidence_values[index]) if index < len(confidence_values) else float(confidence)
+        bbox = {
+            "x": max(0.0, x1),
+            "y": max(0.0, y1),
+            "width": max(0.0, x2 - x1),
+            "height": max(0.0, y2 - y1),
+            "image_width": image.width,
+            "image_height": image.height,
+        }
+        class_name = str(names.get(class_id, class_id)) if isinstance(names, dict) else str(class_id)
+        detections.append({
+            "class_id": class_id,
+            "class_name": class_name,
+            "confidence": score,
+            "bbox": bbox,
         })
+        measurements.append({
+            "label": index + 1,
+            "area_px": bbox["width"] * bbox["height"],
+            "bbox": [bbox["x"], bbox["y"], bbox["x"] + bbox["width"], bbox["y"] + bbox["height"]],
+            "centroid": [bbox["x"] + (bbox["width"] / 2), bbox["y"] + (bbox["height"] / 2)],
+            "confidence": score,
+            "class_name": class_name,
+        })
+
+    labels = None
+    masks = getattr(result, "masks", None)
+    mask_data = _as_list(getattr(masks, "data", [])) if segment and masks is not None else []
+    if mask_data:
+        labels = Image.new("L", image.size, 0)
+        label_pixels = labels.load()
+        for label_index, mask in enumerate(mask_data, start=1):
+            mask_height = len(mask)
+            mask_width = len(mask[0]) if mask_height else 0
+            if mask_width <= 0:
+                continue
+            for y in range(image.height):
+                source_y = min(mask_height - 1, int((y / max(1, image.height)) * mask_height))
+                row = mask[source_y]
+                for x in range(image.width):
+                    source_x = min(mask_width - 1, int((x / max(1, image.width)) * mask_width))
+                    if float(row[source_x]) > 0.5:
+                        label_pixels[x, y] = ((label_index - 1) % 254) + 1
+        if segment:
+            for index, detection in enumerate(detections):
+                detection["mask_label"] = index + 1
     return labels, detections, measurements
 
 
@@ -385,21 +492,53 @@ def _apply_node(state: ImageState, node, method) -> Tuple[ImageState, str, Dict[
             _, state.measurements = _connected_components(state.labels or state.mask or _otsu_threshold(state.image)[0], 0)
         return state, "Measured region properties.", {"measurement_count": len(state.measurements)}, artifacts
     if node.method_id == "ml.yolov8.segment":
-        state.labels, state.detections, state.measurements = _yolov8_instance_segmentation_fallback(
-            state.image,
-            float(params.get("confidence", 0.25)),
-        )
+        model_name = str(params.get("model") or "yolov8n-seg.pt")
+        confidence = float(params.get("confidence", 0.25))
+        runtime = "ultralytics"
+        runtime_warning = None
+        try:
+            labels, detections, measurements = _run_ultralytics_yolo(state.image, model_name, confidence, segment=True)
+            state.labels = labels
+            state.detections = detections
+            state.measurements = measurements
+        except Exception as exc:
+            runtime = "fallback"
+            runtime_warning = f"YOLOv8 model '{model_name}' was not used; deterministic fallback ran instead ({exc})."
+            state.labels, state.detections, state.measurements = _yolov8_instance_segmentation_fallback(
+                state.image,
+                confidence,
+            )
         state.overlay_label = _overlay_label("Instance Segmentation", method)
         state.overlay_method_id = method.id
         state.overlay_method_name = method.name
-        return state, "Computed YOLOv8-compatible instance segmentation fallback.", {
+        return state, "Computed YOLOv8-compatible instance segmentation.", {
+            "runtime": runtime,
+            "model": model_name,
             "instance_count": len(state.measurements),
             "detection_count": len(state.detections),
+            **({"runtime_warning": runtime_warning} if runtime_warning else {}),
         }, artifacts
     if node.method_id == "ml.yolov8.detect":
-        if not find_spec("ultralytics"):
-            raise RuntimeError("YOLOv8 execution requires the optional 'ultralytics' package and model weights.")
-        raise RuntimeError("YOLOv8 runtime binding is available only after a model runner is configured.")
+        model_name = str(params.get("model") or "yolov8n.pt")
+        confidence = float(params.get("confidence", 0.25))
+        runtime = "ultralytics"
+        runtime_warning = None
+        try:
+            _labels, state.detections, state.measurements = _run_ultralytics_yolo(state.image, model_name, confidence, segment=False)
+        except Exception as exc:
+            runtime = "fallback"
+            runtime_warning = f"YOLOv8 model '{model_name}' was not used; deterministic fallback ran instead ({exc})."
+            state.detections, state.measurements = _yolov8_detection_fallback(
+                state.image,
+                confidence,
+            )
+        return state, "Computed YOLOv8-compatible object detections.", {
+            "runtime": runtime,
+            "model": model_name,
+            "detection_count": len(state.detections),
+            "measurement_count": len(state.measurements),
+            **({"runtime_warning": runtime_warning} if runtime_warning else {}),
+        }, artifacts
     if node.method_id == "output.versioned_image_artifact":
         artifacts.extend(state.artifacts)
         overlay_artifact = _analysis_overlay_png(state)
@@ -439,6 +578,9 @@ def execute_image_workflow(workflow: WorkflowGraph, images: Iterable[WorkflowIma
                 method = methods[node.method_id]
                 try:
                     state, message, summary, artifacts = _apply_node(state, node, method)
+                    runtime_warning = summary.get("runtime_warning") if isinstance(summary, dict) else None
+                    if runtime_warning and runtime_warning not in warnings:
+                        warnings.append(str(runtime_warning))
                     state.artifacts.extend(artifacts)
                     node_results.append(WorkflowNodeResult(
                         node_id=node.id,

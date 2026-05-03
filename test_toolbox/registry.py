@@ -73,7 +73,7 @@ def validate_workflow(workflow: WorkflowGraph) -> ToolboxExecutionResult:
             if parameter.type == "select" and parameter.options and parameter_value not in parameter.options:
                 raise ValueError(f"Node '{node.id}' parameter '{parameter_name}' is not an allowed option")
         if node.method_id.startswith("ml.yolov8"):
-            warnings.append("YOLOv8 nodes are contract-backed in test_toolbox; model execution is not bound yet.")
+            warnings.append("YOLOv8 nodes will use the selected Ultralytics model when available; execution reports a warning if deterministic fallback is used.")
         node_results.append(
             WorkflowNodeResult(
                 node_id=node.id,

@@ -1,7 +1,8 @@
 import io
+import sys
+import types
 import uuid
 import base64
-from importlib.util import find_spec
 
 from PIL import Image
 
@@ -137,7 +138,7 @@ def test_execute_image_workflow_runs_actual_image_algorithms_on_image_bytes():
     assert overlay_artifact["method_id"] == "segmentation.connected_components"
 
 
-def test_yolov8_node_reports_dependency_or_runner_contract():
+def test_yolov8_object_detection_executes_fallback_detections():
     image_id = uuid.uuid4()
     workflow = WorkflowGraph(
         name="YOLO contract execution",
@@ -154,12 +155,60 @@ def test_yolov8_node_reports_dependency_or_runner_contract():
         [WorkflowImageInput(image_id=image_id, filename="tiny.png", content_type="image/png", data=_png_bytes())],
     )
 
-    assert result.status == "failed"
+    assert result.status == "completed"
+    assert any("YOLOv8 model 'yolov8n.pt' was not used" in warning for warning in result.warnings)
     yolo_node = next(node for node in result.node_results if node.node_id == "yolo")
-    if find_spec("ultralytics"):
-        assert "model runner is configured" in yolo_node.message
-    else:
-        assert "optional 'ultralytics' package" in yolo_node.message
+    assert yolo_node.summary["runtime"] == "fallback"
+    assert "runtime_warning" in yolo_node.summary
+    assert yolo_node.summary["detection_count"] > 0
+    assert yolo_node.summary["measurement_count"] == yolo_node.summary["detection_count"]
+
+
+def test_yolov8_object_detection_uses_ultralytics_runtime_when_available(monkeypatch):
+    class FakeBoxes:
+        xyxy = [[1, 1, 3, 3]]
+        conf = [0.92]
+        cls = [0]
+
+    class FakeResult:
+        boxes = FakeBoxes()
+        masks = None
+        names = {0: "fixture-object"}
+
+    class FakeYOLO:
+        def __init__(self, model_name):
+            self.model_name = model_name
+
+        def __call__(self, source, conf, verbose=False):
+            assert self.model_name == "custom-yolo.pt"
+            assert source.mode == "RGB"
+            assert conf == 0.4
+            assert verbose is False
+            return [FakeResult()]
+
+    monkeypatch.setitem(sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO))
+    image_id = uuid.uuid4()
+    workflow = WorkflowGraph(
+        name="YOLO runtime execution",
+        source={"kind": "manual_selection", "selected_image_ids": [image_id], "image_count": 1},
+        nodes=[
+            {"id": "input", "method_id": "source.project_part_images", "parameters": {}},
+            {"id": "yolo", "method_id": "ml.yolov8.detect", "parameters": {"model": "custom-yolo.pt", "confidence": 0.4}},
+        ],
+        edges=[{"source_node": "input", "target_node": "yolo"}],
+    )
+
+    result = execute_image_workflow(
+        workflow,
+        [WorkflowImageInput(image_id=image_id, filename="tiny.png", content_type="image/png", data=_png_bytes())],
+    )
+
+    assert result.status == "completed"
+    assert not any("was not used" in warning for warning in result.warnings)
+    yolo_node = next(node for node in result.node_results if node.node_id == "yolo")
+    assert yolo_node.summary["runtime"] == "ultralytics"
+    assert yolo_node.summary["detection_count"] == 1
+    assert yolo_node.summary["measurement_count"] == 1
 
 
 def test_yolov8_instance_segmentation_executes_fallback_overlay():
@@ -188,7 +237,9 @@ def test_yolov8_instance_segmentation_executes_fallback_overlay():
     )
 
     assert result.status == "completed"
+    assert any("YOLOv8 model 'yolov8n-seg.pt' was not used" in warning for warning in result.warnings)
     segment_node = next(node for node in result.node_results if node.node_id == "segment")
+    assert segment_node.summary["runtime"] == "fallback"
     assert segment_node.summary["instance_count"] > 0
     assert segment_node.summary["detection_count"] == segment_node.summary["instance_count"]
     output_result = next(node for node in result.node_results if node.node_id == "output")

@@ -152,9 +152,13 @@ def test_analyze_workflow_validation_and_execution_use_pydantic_contract(client)
 
     execute_resp = client.post(f"/api/projects/{project_id}/analyze/workflows/execute", json=workflow, headers=headers)
     assert execute_resp.status_code == 200, execute_resp.text
-    assert execute_resp.json()["status"] == "failed"
+    assert execute_resp.json()["status"] == "completed"
     assert execute_resp.json()["execution_mode"] == "execution"
     assert execute_resp.json()["image_count"] == 1
+    assert any("YOLOv8 model 'yolov8n.pt' was not used" in warning for warning in execute_resp.json()["warnings"])
+    yolo_node = next(node for node in execute_resp.json()["node_results"] if node["node_id"] == "yolo")
+    assert yolo_node["summary"]["runtime"] == "fallback"
+    assert yolo_node["summary"]["detection_count"] > 0
 
     workflow["nodes"][1]["method_id"] = "missing.method"
     reject_resp = client.post(f"/api/projects/{project_id}/analyze/workflows/validate", json=workflow, headers=headers)
@@ -242,6 +246,7 @@ def test_analyze_workflow_yolov8_instance_segmentation_completes_and_attaches_ov
     assert resp.status_code == 200, resp.text
     payload = resp.json()
     assert payload["status"] == "completed"
+    assert any("YOLOv8 model 'yolov8n-seg.pt' was not used" in warning for warning in payload["warnings"])
     assert any("Attached 1 Analyze overlay output" in warning for warning in payload["warnings"])
     output_node = next(node for node in payload["node_results"] if node["node_id"] == "output")
     overlay_artifact = next(artifact for artifact in output_node["artifacts"] if artifact["kind"] == "overlay_image")
