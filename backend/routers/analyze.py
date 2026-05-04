@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -38,6 +39,11 @@ import utils.crud as crud
 router = APIRouter(tags=["Analyze"])
 ANALYZE_WORKFLOW_METADATA_KEY = "vista.analyze.workflow"
 ANALYZE_OVERLAY_DELETE_RETENTION_HOURS = 48
+MODEL_SERVICE_METHOD_IDS = {
+    "ml.yolov8.detect",
+    "ml.yolov8.segment",
+    "ml.yolo.ultralytics",
+}
 
 
 class AnalyzeImageSourceRecord(BaseModel):
@@ -559,6 +565,41 @@ async def _load_execution_images(
     return execution_images
 
 
+def _workflow_needs_model_service(workflow: WorkflowGraph) -> bool:
+    return any(node.method_id in MODEL_SERVICE_METHOD_IDS for node in workflow.nodes)
+
+
+def _model_service_url() -> str:
+    return str(settings.TOOLBOX_MODEL_SERVICE_URL or "").strip().rstrip("/")
+
+
+def _model_service_image_payload(image: WorkflowImageInput) -> Dict[str, Any]:
+    return {
+        "image_id": str(image.image_id),
+        "filename": image.filename,
+        "content_type": image.content_type,
+        "data_base64": base64.b64encode(image.data).decode("ascii"),
+        "metadata": image.metadata,
+    }
+
+
+async def _execute_workflow_via_model_service(
+    workflow: WorkflowGraph,
+    images: List[WorkflowImageInput],
+) -> Optional[ToolboxExecutionResult]:
+    service_url = _model_service_url()
+    if not service_url or not _workflow_needs_model_service(workflow):
+        return None
+    payload = {
+        "workflow": workflow.model_dump(mode="json"),
+        "images": [_model_service_image_payload(image) for image in images],
+    }
+    async with httpx.AsyncClient(timeout=180.0) as client:
+        response = await client.post(f"{service_url}/workflows/execute", json=payload)
+        response.raise_for_status()
+        return ToolboxExecutionResult.model_validate(response.json())
+
+
 async def _store_analysis_artifact_image(
     *,
     project_id: uuid.UUID,
@@ -594,6 +635,7 @@ async def _store_analysis_artifact_image(
         "analysis_output": True,
         "analysis_output_kind": artifact.get("kind") or "overlay_image",
         "analysis_source_image_id": str(source_image_id),
+        "analysis_detections": artifact.get("detections") if isinstance(artifact.get("detections"), list) else [],
         "overlay": artifact.get("kind") == "overlay_image",
         "storage_status": "uploaded" if uploaded else "metadata_inline",
     }
@@ -656,6 +698,7 @@ async def _attach_analysis_outputs_to_parts(
                 "analysis_output": True,
                 "analysis_method_id": artifact.get("method_id"),
                 "analysis_method_name": artifact.get("method_name"),
+                "analysis_detections": artifact.get("detections") if isinstance(artifact.get("detections"), list) else [],
                 "analysis_workflow_name": workflow.name,
                 "analysis_source_image_id": str(source_record.image_id),
                 "analysis_source_filename": source_record.filename,
@@ -686,6 +729,7 @@ async def _attach_analysis_outputs_to_parts(
                 "color": "#22c55e",
                 "image_id": record["image_id"],
                 "source_image_id": record["analysis_source_image_id"],
+                "detections": record.get("analysis_detections") or [],
             })
         normalized = {
             **_rebuild_analyze_part_image_maps({
@@ -936,7 +980,16 @@ async def execute_analyze_workflow(
     workflow = await _workflow_with_server_source(project_id=project_id, workflow=workflow, db=db)
     try:
         images = await _load_execution_images(db=db, project_id=project_id, workflow=workflow)
-        result = execute_image_workflow(workflow, images)
+        model_service_warning = None
+        try:
+            result = await _execute_workflow_via_model_service(workflow, images)
+        except Exception as exc:
+            result = None
+            model_service_warning = f"Configured toolbox model service was unavailable; used local executor fallback ({exc})."
+        if result is None:
+            result = execute_image_workflow(workflow, images)
+            if model_service_warning:
+                result = result.model_copy(update={"warnings": [model_service_warning, *result.warnings]})
         return await _attach_analysis_outputs_to_parts(
             project_id=project_id,
             workflow=workflow,

@@ -256,7 +256,9 @@ const scenarioByUser = [
   },
 ];
 
-function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys }) {
+const defaultCalibration = { pixels_per_mm: 20, pixels_per_inch: 508, unit: 'mm' };
+
+function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys, metadataDict = { calibration_default: defaultCalibration } }) {
   let mutableParts = [...parts];
   const savedWorkspaceStates = [];
   const savedConfigurations = [];
@@ -355,6 +357,17 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
     if (url.includes('/workspace-state') && (!options.method || options.method === 'GET')) {
       return Promise.resolve({ ok: true, json: async () => ({ state: workspaceState }) });
     }
+    if (url.includes('/metadata-dict') && (!options.method || options.method === 'GET')) {
+      return Promise.resolve({ ok: true, json: async () => metadataDict });
+    }
+    if (url.includes('/metadata') && options.method === 'POST') {
+      const payload = JSON.parse(options.body || '{}');
+      metadataDict[payload.key] = payload.value;
+      return Promise.resolve({ ok: true, json: async () => metadataDict });
+    }
+    if (url.includes('/images/') && url.includes('/metadata') && options.method === 'PUT') {
+      return Promise.resolve({ ok: true, json: async () => ({ metadata: { calibration_override: JSON.parse(options.body || '{}').value } }) });
+    }
     if (url.includes('/configuration') && (!options.method || options.method === 'GET')) {
       return Promise.resolve({
         ok: true,
@@ -415,6 +428,13 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
       );
       const updated = mutableParts.find((part) => part.id === partId);
       return Promise.resolve({ ok: true, json: async () => updated });
+    }
+    if (url.includes('/parts/') && url.includes('/annotations/') && options.method === 'DELETE') {
+      const segments = url.split('/');
+      const partId = segments[segments.length - 3];
+      const annotationId = segments[segments.length - 1];
+      annotationsByPart[partId] = (annotationsByPart[partId] || []).filter((annotation) => annotation.id !== annotationId);
+      return Promise.resolve({ ok: true, status: 204 });
     }
     if (url.includes('/segmentation-runs') && options.method === 'POST') {
       const payload = JSON.parse(options.body || '{}');
@@ -593,31 +613,23 @@ describe('InspectionWorkbenchPanel', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Close Part Selection' }));
         fireEvent.click(screen.getByRole('button', { name: 'Annotations' }));
       }
+      const seedAnnotationType = scenario.parts[0].metadata.annotations[0].defect_class;
       await waitFor(() => {
-        expect(screen.getByTestId('annotation-list')).toHaveTextContent(/@ 2026-03-28/);
+        expect(screen.getByTestId('annotation-list')).toHaveTextContent(seedAnnotationType);
+        expect(screen.getByTestId('annotation-list')).not.toHaveTextContent('@ 2026-03-28');
       });
-      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
-      fireEvent.change(screen.getByLabelText('Edit annotation defect class'), { target: { value: `${scenario.user}-edited-defect` } });
-      fireEvent.change(screen.getByLabelText('Edit annotation disposition'), { target: { value: 'accepted' } });
-      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-      await waitFor(() => {
-        expect(screen.getByTestId('annotation-list')).toHaveTextContent(`${scenario.user}-edited-defect •`);
-        expect(screen.getByTestId('annotation-list')).toHaveTextContent('• accepted');
-      });
-      fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
-      await waitFor(() => {
-        expect(screen.getByTestId('annotation-list')).toHaveTextContent('Hidden');
-        expect(screen.getByTestId('annotation-list')).toHaveTextContent('qa-reviewer@example.com @ 2026-03-28 12:30:00');
-      });
+      fireEvent.click(screen.getByRole('button', { name: 'Other' }));
       fireEvent.change(screen.getByLabelText('Annotation defect type'), { target: { value: 'Other' } });
       fireEvent.change(screen.getByPlaceholderText('annotation modality'), { target: { value: 'visual' } });
       fireEvent.change(screen.getByPlaceholderText('annotation comment'), { target: { value: `${scenario.user}-crack` } });
-      fireEvent.click(screen.getByRole('button', { name: /add annotation/i }));
+      fireEvent.click(screen.getByRole('button', { name: /save annotation/i }));
       await waitFor(() => {
         expect(global.fetch).toHaveBeenCalledWith(
           expect.stringContaining('/annotations'),
           expect.objectContaining({ method: 'POST' }),
         );
+        expect(screen.getByTestId('annotation-list')).toHaveTextContent('Other');
+        expect(screen.getByTestId('annotation-list')).toHaveTextContent(`${scenario.user}-crack`);
       });
       if (projectType === 'PT3') {
         fireEvent.click(screen.getByRole('button', { name: 'Close Annotations' }));
@@ -781,6 +793,7 @@ describe('InspectionWorkbenchPanel', () => {
     });
 
     const grid = screen.getByTestId('inspection-layout-grid');
+    expect(grid).not.toBeEmptyDOMElement();
     await waitFor(() => {
       expect(grid.style.getPropertyValue('--inspection-grid-template-columns')).toBe('220px minmax(0, 1fr) 220px');
     });
@@ -850,7 +863,9 @@ describe('InspectionWorkbenchPanel', () => {
       'No part selected. Select a part to inspect mapped images.',
     );
     expect(screen.getByTestId('annotation-controls')).toHaveTextContent('For selected part: No part selected');
-    expect(screen.getByRole('button', { name: 'Add annotation' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Measure on tiles' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Draw box on tiles' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Other' })).toBeDisabled();
 
     unmount();
   });
@@ -871,6 +886,22 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getByTestId('selected-image-metadata-panel')).toHaveTextContent(/Selected image:\s*front-basic\.png/);
     });
     expect(screen.getByTestId('selected-image-metadata-panel')).toHaveTextContent('"view_name": "front"');
+  });
+
+  test('deletes annotations from the main annotations list', async () => {
+    mockWorkbenchFetch(scenarioByUser[0]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    await waitFor(() => expect(screen.getByTestId('annotation-list')).toHaveTextContent('seed-basic'));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete annotation seed-basic' }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/projects/proj-1/parts/part-basic-1/annotations/seed-annotation-basic',
+        { method: 'DELETE' },
+      );
+      expect(screen.getByTestId('annotation-list')).not.toHaveTextContent('seed-basic');
+    });
   });
 
   test('renders Analyze overlay outputs over their source image in the inspection window', async () => {
@@ -918,13 +949,17 @@ describe('InspectionWorkbenchPanel', () => {
 
     await waitFor(() => expect(screen.getAllByText('Analyze Output Part').length).toBeGreaterThan(0));
     const composite = screen.getByTestId('inspection-overlay-composite');
-    expect(screen.getByText('Segmentation Overlay :: Watershed From Seeds')).toBeInTheDocument();
+    expect(screen.getByText('Watershed From Seeds :: Segmentation Overlay')).toBeInTheDocument();
     expect(within(composite).getByAltText('front source')).toHaveAttribute('src', '/api/images/source-image-1/content');
     expect(within(composite).getByAltText('front overlay')).toHaveAttribute('src', '/api/images/overlay-image-1/content');
+    fireEvent.click(composite);
+    expect(screen.getByAltText('Watershed From Seeds :: Segmentation Overlay fullscreen')).toBeInTheDocument();
+    expect(screen.getByAltText('Watershed From Seeds :: Segmentation Overlay source fullscreen')).toHaveAttribute('src', '/api/images/source-image-1/content');
+    fireEvent.click(screen.getByLabelText('Close fullscreen image'));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete overlay Segmentation Overlay :: Watershed From Seeds' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete overlay Watershed From Seeds :: Segmentation Overlay' }));
     await waitFor(() => {
-      expect(screen.queryByText('Segmentation Overlay :: Watershed From Seeds')).not.toBeInTheDocument();
+      expect(screen.queryByText('Watershed From Seeds :: Segmentation Overlay')).not.toBeInTheDocument();
     });
     expect(global.fetch).toHaveBeenCalledWith('/api/projects/proj-1/analyze/overlays/overlay-image-1', { method: 'DELETE' });
   });
@@ -940,19 +975,143 @@ describe('InspectionWorkbenchPanel', () => {
     const fullscreenImage = screen.getByAltText(/fullscreen$/i);
     Object.defineProperty(fullscreenImage, 'naturalWidth', { configurable: true, value: 1000 });
     Object.defineProperty(fullscreenImage, 'naturalHeight', { configurable: true, value: 500 });
-    fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500 });
-    fireEvent.pointerDown(fullscreenImage, { clientX: 100, clientY: 100 });
-    fireEvent.pointerDown(fullscreenImage, { clientX: 300, clientY: 200 });
-    fireEvent.pointerUp(fullscreenImage);
+	    fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500 });
+	    fireEvent.click(fullscreenImage, { clientX: 100, clientY: 100 });
+	    fireEvent.mouseMove(fullscreenImage, { clientX: 200, clientY: 100 });
+	    await waitFor(() => expect(screen.getByLabelText('fullscreen measurement overlay')).toHaveTextContent('5.00 mm'));
+	    fireEvent.click(fullscreenImage, { clientX: 300, clientY: 200 });
 
-    const postCall = global.fetch.mock.calls.find((call) => call[0].includes('/annotations') && call[1]?.method === 'POST');
-    if (postCall) {
+    await waitFor(() => {
+      const postCall = global.fetch.mock.calls.find((call) => call[0].includes('/annotations') && call[1]?.method === 'POST');
+      expect(postCall).toBeDefined();
       const body = JSON.parse(postCall[1].body);
+      expect(body.image_id).toBe('part-basic-1-image-1');
       expect(body.geometry.line).toEqual(expect.objectContaining({ imageWidth: 1000, imageHeight: 500 }));
       expect(body.measurements.length_px).toBeDefined();
-    } else {
-      expect(screen.queryByText(/Failed to create measurement annotation/i)).not.toBeInTheDocument();
-    }
+      expect(body.measurements.length_mm).toBeCloseTo(11.18, 2);
+    });
+    await waitFor(() => expect(screen.getByLabelText('fullscreen measurement overlay')).toHaveTextContent('11.18 mm'));
+  });
+
+  test('draws measurement lines and bounding boxes directly on image tiles', async () => {
+    mockWorkbenchFetch(scenarioByUser[0]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+    await waitFor(() => expect(screen.getByAltText('front view')).toBeInTheDocument());
+
+    const tileImage = screen.getByAltText('front view');
+    Object.defineProperty(tileImage, 'naturalWidth', { configurable: true, value: 400 });
+    Object.defineProperty(tileImage, 'naturalHeight', { configurable: true, value: 200 });
+    tileImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
+
+	    fireEvent.click(screen.getByRole('button', { name: 'Measure on tiles' }));
+	    fireEvent.click(tileImage, { clientX: 40, clientY: 20 });
+	    fireEvent.mouseMove(tileImage, { clientX: 100, clientY: 60 });
+	    await waitFor(() => expect(screen.getByLabelText('tile measurement overlay')).toHaveTextContent('3.61 mm'));
+	    fireEvent.click(tileImage, { clientX: 140, clientY: 70 });
+
+    await waitFor(() => {
+      const postCall = global.fetch.mock.calls.find((call) => {
+        if (!call[0].includes('/annotations') || call[1]?.method !== 'POST') return false;
+        const body = JSON.parse(call[1].body);
+        return body.geometry?.line;
+      });
+      expect(postCall).toBeDefined();
+      const body = JSON.parse(postCall[1].body);
+      expect(body.image_id).toBe('part-basic-1-image-1');
+      expect(body.geometry.line).toEqual(expect.objectContaining({
+        x1: 40,
+        y1: 20,
+        x2: 140,
+        y2: 70,
+        imageWidth: 400,
+        imageHeight: 200,
+      }));
+    });
+	    await waitFor(() => expect(screen.getByLabelText('tile measurement overlay')).toHaveTextContent('5.59 mm'));
+	    expect(screen.getByRole('button', { name: 'Measure on tiles' })).not.toHaveClass('active');
+
+	    fireEvent.click(screen.getByRole('button', { name: 'Draw box on tiles' }));
+	    fireEvent.mouseDown(tileImage, { clientX: 50, clientY: 30, button: 0 });
+	    fireEvent.mouseMove(tileImage, { clientX: 170, clientY: 90 });
+	    await waitFor(() => expect(screen.getByLabelText('tile measurement overlay')).toHaveTextContent('Width 6.00 mm'));
+	    fireEvent.mouseUp(tileImage, { clientX: 210, clientY: 130, button: 0 });
+
+	    await waitFor(() => {
+      const postCall = global.fetch.mock.calls.find((call) => {
+        if (!call[0].includes('/annotations') || call[1]?.method !== 'POST') return false;
+        const body = JSON.parse(call[1].body);
+        return body.geometry?.box;
+      });
+      expect(postCall).toBeDefined();
+      const body = JSON.parse(postCall[1].body);
+      expect(body.image_id).toBe('part-basic-1-image-1');
+      expect(body.bbox).toEqual(expect.objectContaining({ x: 50, y: 30, width: 160, height: 100 }));
+      expect(body.measurements).toEqual(expect.objectContaining({
+        width_px: 160,
+        height_px: 100,
+        width_mm: 8,
+        height_mm: 5,
+      }));
+	    });
+	    await waitFor(() => expect(screen.getByLabelText('tile measurement overlay')).toHaveTextContent('Width 8.00 mm'));
+	    expect(screen.getByLabelText('tile measurement overlay')).toHaveTextContent('Height 5.00 mm');
+	    expect(screen.getByRole('button', { name: 'Draw box on tiles' })).not.toHaveClass('active');
+	  });
+
+  test('anchors source tile annotations to the rendered image bounds', async () => {
+    mockWorkbenchFetch(scenarioByUser[0]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+    await waitFor(() => expect(screen.getByAltText('front view')).toBeInTheDocument());
+
+    const tileImage = screen.getByAltText('front view');
+    const tileSurface = tileImage.closest('.inspection-image-annotation-surface');
+    expect(tileSurface).toBeInTheDocument();
+    expect(tileSurface).toContainElement(screen.getByLabelText('tile measurement overlay'));
+    Object.defineProperty(tileImage, 'naturalWidth', { configurable: true, value: 400 });
+    Object.defineProperty(tileImage, 'naturalHeight', { configurable: true, value: 200 });
+    tileImage.getBoundingClientRect = () => ({ left: 50, top: 25, width: 400, height: 200, right: 450, bottom: 225 });
+    tileSurface.getBoundingClientRect = () => ({ left: 0, top: 0, width: 500, height: 300, right: 500, bottom: 300 });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Measure on tiles' }));
+    fireEvent.click(tileSurface, { clientX: 90, clientY: 45 });
+    fireEvent.click(tileSurface, { clientX: 190, clientY: 95 });
+
+    await waitFor(() => {
+      const postCall = global.fetch.mock.calls.find((call) => {
+        if (!call[0].includes('/annotations') || call[1]?.method !== 'POST') return false;
+        const body = JSON.parse(call[1].body);
+        return body.geometry?.line;
+      });
+      expect(postCall).toBeDefined();
+      const body = JSON.parse(postCall[1].body);
+      expect(body.geometry.line).toEqual(expect.objectContaining({
+        x1: 40,
+        y1: 20,
+        x2: 140,
+        y2: 70,
+        imageWidth: 400,
+        imageHeight: 200,
+      }));
+    });
+  });
+
+  test('asks for calibration before allowing fullscreen measurement when calibration is missing', async () => {
+    mockWorkbenchFetch({ ...scenarioByUser[0], metadataDict: {} });
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+    await waitFor(() => expect(screen.getByAltText('front view')).toBeInTheDocument());
+    fireEvent.click(screen.getByAltText('front view'));
+    fireEvent.click(screen.getByRole('button', { name: 'Measure' }));
+
+    expect(screen.getByRole('dialog', { name: 'Measurement calibration required' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Set Calibration' })).toBeInTheDocument();
+    expect(screen.queryByText(/Click to set first point/i)).not.toBeInTheDocument();
+
+    const fullscreenImage = screen.getByAltText(/fullscreen$/i);
+    Object.defineProperty(fullscreenImage, 'naturalWidth', { configurable: true, value: 1000 });
+    Object.defineProperty(fullscreenImage, 'naturalHeight', { configurable: true, value: 500 });
+    fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500 });
+    fireEvent.click(fullscreenImage, { clientX: 100, clientY: 100 });
+    expect(global.fetch.mock.calls.some((call) => call[0].includes('/annotations') && call[1]?.method === 'POST')).toBe(false);
   });
 
   test('renders measurement line and length text in both tile and fullscreen overlays', async () => {
@@ -977,6 +1136,197 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getAllByText('4.20 mm').length).toBeGreaterThan(0);
     fireEvent.click(screen.getByAltText('front view'));
     await waitFor(() => expect(screen.getAllByText('4.20 mm').length).toBeGreaterThan(1));
+    expect(screen.getByTestId('fullscreen-annotation-list')).toHaveTextContent('4.20 mm');
+  });
+
+  test('draws and labels bounding boxes in the fullscreen view', async () => {
+    mockWorkbenchFetch(scenarioByUser[0]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+	    await waitFor(() => expect(screen.getByAltText('front view')).toBeInTheDocument());
+	    fireEvent.click(screen.getByAltText('front view'));
+	    fireEvent.click(screen.getByRole('button', { name: 'Draw box' }));
+	    expect(screen.getByText(/Press and drag to draw a bounding box/i)).toBeInTheDocument();
+
+	    const fullscreenImage = screen.getByAltText(/fullscreen$/i);
+	    Object.defineProperty(fullscreenImage, 'naturalWidth', { configurable: true, value: 500 });
+	    Object.defineProperty(fullscreenImage, 'naturalHeight', { configurable: true, value: 250 });
+	    fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 500, height: 250, right: 500, bottom: 250 });
+	    fireEvent.mouseDown(fullscreenImage, { clientX: 80, clientY: 40, button: 0 });
+	    fireEvent.mouseMove(fullscreenImage, { clientX: 180, clientY: 100 });
+	    await waitFor(() => expect(screen.getByLabelText('fullscreen measurement overlay')).toHaveTextContent('Width 5.00 mm'));
+	    fireEvent.mouseUp(fullscreenImage, { clientX: 230, clientY: 120, button: 0 });
+
+    await waitFor(() => {
+      const postCall = global.fetch.mock.calls.find((call) => {
+        if (!call[0].includes('/annotations') || call[1]?.method !== 'POST') return false;
+        const body = JSON.parse(call[1].body);
+        return body.geometry?.box;
+      });
+      expect(postCall).toBeDefined();
+      const body = JSON.parse(postCall[1].body);
+      expect(body.image_id).toBe('part-basic-1-image-1');
+      expect(body.bbox).toEqual(expect.objectContaining({ x: 80, y: 40, width: 150, height: 80 }));
+    });
+	    await waitFor(() => expect(screen.getByLabelText('fullscreen measurement overlay')).toHaveTextContent('Width 7.50 mm'));
+	    expect(screen.getByLabelText('fullscreen measurement overlay')).toHaveTextContent('Height 4.00 mm');
+	    expect(screen.getByTestId('fullscreen-annotation-list')).toHaveTextContent('Width 7.50 mm');
+	    expect(screen.getByRole('button', { name: 'Draw box' })).not.toHaveClass('active');
+
+    const topLeftCorner = await screen.findByLabelText('Reposition topLeft corner for Drawn bounding box');
+    fireEvent.click(topLeftCorner, { clientX: 80, clientY: 40 });
+    expect(screen.getByTestId('fullscreen-measurement-zoom-lens')).toBeInTheDocument();
+    fireEvent.click(fullscreenImage, { clientX: 100, clientY: 60 });
+
+    await waitFor(() => {
+      const patchCall = global.fetch.mock.calls.find((call) => {
+        if (!call[0].includes('/annotations/annotation-1') || call[1]?.method !== 'PATCH') return false;
+        const body = JSON.parse(call[1].body);
+        return body.geometry?.box;
+      });
+      expect(patchCall).toBeDefined();
+      const body = JSON.parse(patchCall[1].body);
+      expect(body.bbox).toEqual(expect.objectContaining({ x: 90, y: 50, width: 140, height: 70 }));
+      expect(body.measurements).toEqual(expect.objectContaining({ width_mm: 7, height_mm: 3.5 }));
+    });
+	  });
+
+  test('shares source-image annotations across Analyze overlays and saves overlay measurements to the source image', async () => {
+    mockWorkbenchFetch({
+      user: 'overlay-measurements',
+      batches: [{ id: 'batch-overlay', name: 'Batch Overlay' }],
+      parts: [{
+        id: 'part-overlay-1',
+        batch_id: 'batch-overlay',
+        serial_number: 'SN-OVERLAY-1',
+        display_name: 'Overlay Part',
+        review_state: 'in_review',
+        metadata: {
+          source_images: [
+            { filename: 'source.png', image_id: 'source-image-1', side: 'front', modality: 'visual', overlay: false },
+            {
+              filename: 'source_overlay.png',
+              image_id: 'overlay-image-1',
+              label: 'Segmentation Overlay',
+              side: 'front',
+              modality: 'analyze-overlay',
+              overlay: true,
+              analysis_output: true,
+              overlay_base_image_id: 'source-image-1',
+              overlay_base_filename: 'source.png',
+            },
+          ],
+          analysis_outputs: [],
+          annotations: [{
+            id: 'source-measurement-a',
+            image_id: 'source-image-1',
+            comment: 'Shared source length',
+            geometry: { line: { x1: 40, y1: 40, x2: 140, y2: 40, imageWidth: 200, imageHeight: 100 } },
+            measurements: { length_mm: 5 },
+            metadata: { measurement_color: '#10b981' },
+          }],
+        },
+      }],
+      workspaceState: {},
+      hotkeys: { accept_classification: 'a', reject_classification: 'r', toggle_shortcut_help: 'h' },
+    });
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+    await waitFor(() => expect(screen.getAllByText('5.00 mm').length).toBeGreaterThan(1));
+
+    fireEvent.click(screen.getByTestId('inspection-overlay-composite'));
+    await waitFor(() => expect(screen.getByTestId('fullscreen-annotation-list')).toHaveTextContent('Shared source length'));
+    expect(screen.getByAltText('Segmentation Overlay source fullscreen')).toHaveAttribute('src', '/api/images/source-image-1/content');
+    expect(screen.getByAltText('Segmentation Overlay fullscreen')).toHaveAttribute('src', '/api/images/overlay-image-1/content');
+    fireEvent.click(screen.getByRole('button', { name: 'Measure' }));
+
+    const fullscreenImage = screen.getByAltText('Segmentation Overlay fullscreen');
+    Object.defineProperty(fullscreenImage, 'naturalWidth', { configurable: true, value: 200 });
+    Object.defineProperty(fullscreenImage, 'naturalHeight', { configurable: true, value: 100 });
+    fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 200, height: 100, right: 200, bottom: 100 });
+    fireEvent.click(fullscreenImage, { clientX: 20, clientY: 20 });
+    fireEvent.click(fullscreenImage, { clientX: 80, clientY: 40 });
+
+    await waitFor(() => {
+      const postCall = global.fetch.mock.calls.find((call) => call[0].includes('/annotations') && call[1]?.method === 'POST');
+      expect(postCall).toBeDefined();
+      const body = JSON.parse(postCall[1].body);
+      expect(body.image_id).toBe('source-image-1');
+    });
+  });
+
+  test('highlights, repositions, and deletes fullscreen measurement endpoints', async () => {
+    mockWorkbenchFetch({
+      ...scenarioByUser[0],
+      parts: [{
+        ...scenarioByUser[0].parts[0],
+        metadata: {
+          ...scenarioByUser[0].parts[0].metadata,
+          annotations: [{
+            id: 'measurement-endpoint-a',
+            image_id: 'part-basic-1-image-1',
+            comment: 'Endpoint check',
+            geometry: { line: { x1: 100, y1: 80, x2: 280, y2: 160, imageWidth: 400, imageHeight: 200 } },
+            measurements: { length_mm: 4.2, length_px: 196.98 },
+            metadata: { measurement_color: '#3b82f6' },
+          }],
+        },
+      }],
+    });
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+    await waitFor(() => expect(screen.getByAltText('front view')).toBeInTheDocument());
+    fireEvent.click(screen.getByAltText('front view'));
+
+    const fullscreenImage = screen.getByAltText(/fullscreen$/i);
+    Object.defineProperty(fullscreenImage, 'naturalWidth', { configurable: true, value: 400 });
+    Object.defineProperty(fullscreenImage, 'naturalHeight', { configurable: true, value: 200 });
+    fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
+
+    fireEvent.mouseMove(fullscreenImage, { clientX: 282, clientY: 160 });
+    const endpointDot = await screen.findByLabelText('Reposition end endpoint for Endpoint check');
+    expect(screen.getByLabelText('Reposition start endpoint for Endpoint check')).toBeInTheDocument();
+    fireEvent.click(endpointDot, { clientX: 282, clientY: 160 });
+    expect(screen.getByTestId('fullscreen-measurement-zoom-lens')).toBeInTheDocument();
+    fireEvent.wheel(fullscreenImage, { deltaY: -80, clientX: 282, clientY: 160 });
+    expect(screen.getByTestId('fullscreen-measurement-zoom-lens').style.backgroundSize).toBe('4400px 2200px');
+    fireEvent.click(endpointDot, { clientX: 280, clientY: 160 });
+
+    await waitFor(() => {
+      const patchCall = global.fetch.mock.calls.find((call) => call[0].includes('/annotations/measurement-endpoint-a') && call[1]?.method === 'PATCH');
+      expect(patchCall).toBeDefined();
+      const body = JSON.parse(patchCall[1].body);
+      expect(body.geometry.line).toEqual(expect.objectContaining({ x2: 280, y2: 160 }));
+      expect(body.measurements.length_px).toBeCloseTo(196.98, 2);
+    });
+
+    fireEvent.mouseMove(fullscreenImage, { clientX: 100, clientY: 80 });
+    const startDot = await screen.findByLabelText('Reposition start endpoint for Endpoint check');
+    fireEvent.click(startDot, { clientX: 100, clientY: 80 });
+    fireEvent.click(fullscreenImage, { clientX: 120, clientY: 90 });
+    await waitFor(() => {
+      const patchCalls = global.fetch.mock.calls.filter((call) => call[0].includes('/annotations/measurement-endpoint-a') && call[1]?.method === 'PATCH');
+      expect(patchCalls.length).toBeGreaterThan(1);
+      const body = JSON.parse(patchCalls.at(-1)[1].body);
+      expect(body.geometry.line).toEqual(expect.objectContaining({ x1: 110, y1: 85 }));
+    });
+    await waitFor(() => expect(screen.queryByTestId('fullscreen-measurement-zoom-lens')).not.toBeInTheDocument());
+
+	    fireEvent.wheel(fullscreenImage, { deltaY: -80, clientX: 200, clientY: 100 });
+	    const zoomLayer = document.querySelector('.inspection-fullscreen-image-zoom-layer');
+	    expect(zoomLayer.style.transform).toBe('translate(0px, 0px) scale(1.15)');
+	    expect(zoomLayer.style.transformOrigin).toBe('50% 50%');
+
+	    fireEvent.mouseDown(fullscreenImage, { clientX: 200, clientY: 100, button: 0 });
+	    fireEvent.mouseMove(fullscreenImage, { clientX: 240, clientY: 130 });
+	    fireEvent.mouseUp(fullscreenImage, { clientX: 240, clientY: 130, button: 0 });
+	    expect(zoomLayer.style.transform).toBe('translate(40px, 30px) scale(1.15)');
+
+	    fireEvent.click(screen.getByRole('button', { name: 'Delete Endpoint check' }));
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/projects/proj-1/parts/part-basic-1/annotations/measurement-endpoint-a',
+        { method: 'DELETE' },
+      );
+      expect(screen.getByTestId('fullscreen-annotation-list')).not.toHaveTextContent('Endpoint check');
+    });
   });
 
   test('does not duplicate original front and back images from source_images when view_images exists', async () => {
@@ -1078,7 +1428,7 @@ describe('InspectionWorkbenchPanel', () => {
     });
 
     expect(screen.queryByAltText(/Volume reconstruction slice/)).not.toBeInTheDocument();
-    expect(screen.getAllByAltText(/fallback projection from front image/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByAltText(/fallback projection from front view/i).length).toBeGreaterThan(0);
     expect(screen.queryByAltText(/Fallback visual hull shell front view/i)).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'shell' } });
     expect(screen.getByAltText(/Fallback visual hull shell front view/i)).toBeInTheDocument();

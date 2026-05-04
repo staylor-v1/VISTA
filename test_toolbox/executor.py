@@ -3,13 +3,15 @@ import math
 import base64
 from collections import deque
 from dataclasses import dataclass, field
-from importlib.util import find_spec
+from importlib import import_module
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from PIL import Image, ImageChops, ImageFilter, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 
 from .contracts import ToolboxExecutionResult, WorkflowGraph, WorkflowImageInput, WorkflowNodeResult
 from .registry import _method_map, validate_workflow
+
+_YOLO_MODEL_CACHE: Dict[str, Any] = {}
 
 
 @dataclass
@@ -21,6 +23,7 @@ class ImageState:
     overlay_label: str = "Analyze Overlay"
     overlay_method_id: Optional[str] = None
     overlay_method_name: Optional[str] = None
+    artifact_block_reason: Optional[str] = None
     detections: List[Dict[str, Any]] = field(default_factory=list)
     measurements: List[Dict[str, Any]] = field(default_factory=list)
     artifacts: List[Dict[str, Any]] = field(default_factory=list)
@@ -128,7 +131,7 @@ def _otsu_threshold(image: Image.Image) -> Tuple[Image.Image, int]:
         if variance > best_variance:
             best_variance = variance
             threshold = level
-    return gray.point(lambda value: 255 if value >= threshold else 0), threshold
+    return gray.point(lambda value: 255 if value > threshold else 0), threshold
 
 
 def _manual_threshold(image: Image.Image, threshold: float, invert: bool) -> Image.Image:
@@ -219,7 +222,7 @@ def _asphalt_anomaly_heatmap(image: Image.Image, sensitivity: float, blur_radius
         if running >= target_pixels:
             threshold = level
             break
-    binary = edges.point(lambda value: 255 if value >= threshold else 0)
+    binary = edges.point(lambda value: 255 if (value > 0 if threshold <= 0 else value >= threshold) else 0)
     return binary.filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.MaxFilter(3))
 
 
@@ -249,7 +252,191 @@ def _blackhat_crack_heatmap(image: Image.Image, kernel_radius: int, sensitivity:
         if running >= target_pixels:
             threshold = level
             break
-    return blackhat.point(lambda value: 255 if value >= threshold else 0).filter(ImageFilter.MaxFilter(3))
+    return blackhat.point(lambda value: 255 if (value > 0 if threshold <= 0 else value >= threshold) else 0).filter(ImageFilter.MaxFilter(3))
+
+
+def _mask_area_ratio(measurements: List[Dict[str, Any]], image: Image.Image) -> float:
+    total_pixels = max(1, image.width * image.height)
+    return sum(int(measurement.get("area_px", 0) or 0) for measurement in measurements) / total_pixels
+
+
+def _largest_region_ratio(measurements: List[Dict[str, Any]], image: Image.Image) -> float:
+    total_pixels = max(1, image.width * image.height)
+    return max((int(measurement.get("area_px", 0) or 0) for measurement in measurements), default=0) / total_pixels
+
+
+def _sam_automatic_segmentation_fallback(
+    image: Image.Image,
+    min_mask_region_area: int,
+    max_foreground_fraction: float,
+) -> Tuple[Image.Image, List[Dict[str, Any]], Dict[str, Any]]:
+    gray = _grayscale(image)
+    _default_mask, threshold = _otsu_threshold(gray)
+    min_area_px = max(1, int(min_mask_region_area))
+    max_fraction = max(0.05, min(0.98, float(max_foreground_fraction)))
+    candidates = []
+    for polarity, mask in (
+        ("bright", gray.point(lambda value: 255 if value > threshold else 0)),
+        ("dark", gray.point(lambda value: 255 if value <= threshold else 0)),
+    ):
+        labels, measurements = _connected_components(mask, min_area_px=min_area_px)
+        if not measurements:
+            continue
+        area_ratio = _mask_area_ratio(measurements, image)
+        largest_ratio = _largest_region_ratio(measurements, image)
+        score = float(len(measurements))
+        if area_ratio <= max_fraction:
+            score += 4.0
+        else:
+            score -= 6.0
+        score -= largest_ratio * 3.0
+        candidates.append((score, polarity, labels, measurements, area_ratio, largest_ratio))
+
+    if not candidates:
+        labels, measurements = _connected_components(_default_mask, min_area_px=min_area_px)
+        return labels, measurements, {
+            "threshold": threshold,
+            "foreground_polarity": "bright",
+            "foreground_fraction": _mask_area_ratio(measurements, image),
+            "largest_region_fraction": _largest_region_ratio(measurements, image),
+        }
+
+    _score, polarity, labels, measurements, area_ratio, largest_ratio = max(candidates, key=lambda item: item[0])
+    return labels, measurements, {
+        "threshold": threshold,
+        "foreground_polarity": polarity,
+        "foreground_fraction": area_ratio,
+        "largest_region_fraction": largest_ratio,
+    }
+
+
+def _universal_segmentation_fallback(image: Image.Image, method_id: str, params: Dict[str, Any]) -> Tuple[Image.Image, List[Dict[str, Any]], Dict[str, Any]]:
+    if method_id == "ml.sam.segment_anything":
+        return _sam_automatic_segmentation_fallback(
+            image,
+            min_mask_region_area=int(params.get("min_mask_region_area", 8) or 8),
+            max_foreground_fraction=float(params.get("max_foreground_fraction", 0.85) or 0.85),
+        )
+    if method_id == "ml.mask2former.universal_segment":
+        mask = _asphalt_anomaly_heatmap(image, sensitivity=0.45, blur_radius=1)
+        labels, measurements = _connected_components(mask, min_area_px=1)
+        return labels, measurements, {
+            "foreground_fraction": _mask_area_ratio(measurements, image),
+            "largest_region_fraction": _largest_region_ratio(measurements, image),
+        }
+    mask = _frangi_ridge_heatmap(image, sensitivity=0.5, blur_radius=1)
+    labels, measurements = _connected_components(mask, min_area_px=1)
+    return labels, measurements, {
+        "foreground_fraction": _mask_area_ratio(measurements, image),
+        "largest_region_fraction": _largest_region_ratio(measurements, image),
+    }
+
+
+def _yolo_model_name(family: str, task: str, size: str, custom_model: str) -> str:
+    if family == "custom" and custom_model:
+        return custom_model
+    normalized_family = family if family in {"yolov8", "yolo11"} else "yolo11"
+    normalized_size = size if size in {"n", "s", "m", "l", "x"} else "n"
+    suffix = "-seg" if task == "segment" else ""
+    return f"{normalized_family}{normalized_size}{suffix}.pt"
+
+
+def _as_list(value) -> list:
+    if value is None:
+        return []
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "numpy"):
+        value = value.numpy()
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    return list(value)
+
+
+def _run_ultralytics_yolo(image: Image.Image, model_name: str, confidence: float, *, segment: bool = False) -> Tuple[Optional[Image.Image], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    ultralytics = import_module("ultralytics")
+    if model_name not in _YOLO_MODEL_CACHE:
+        _YOLO_MODEL_CACHE[model_name] = ultralytics.YOLO(model_name)
+    model = _YOLO_MODEL_CACHE[model_name]
+    results = model(image.convert("RGB"), conf=max(0.0, min(1.0, float(confidence))), verbose=False)
+    result = list(results)[0] if results else None
+    if result is None:
+        return None, [], []
+
+    names = getattr(result, "names", None) or getattr(model, "names", None) or {}
+    boxes = getattr(result, "boxes", None)
+    xyxy_values = _as_list(getattr(boxes, "xyxy", []))
+    confidence_values = _as_list(getattr(boxes, "conf", []))
+    class_values = _as_list(getattr(boxes, "cls", []))
+    detections: List[Dict[str, Any]] = []
+    measurements: List[Dict[str, Any]] = []
+    for index, coords in enumerate(xyxy_values):
+        if len(coords) < 4:
+            continue
+        x1, y1, x2, y2 = [float(value) for value in coords[:4]]
+        class_id = int(float(class_values[index])) if index < len(class_values) else 0
+        score = float(confidence_values[index]) if index < len(confidence_values) else float(confidence)
+        bbox = {
+            "x": max(0.0, x1),
+            "y": max(0.0, y1),
+            "width": max(0.0, x2 - x1),
+            "height": max(0.0, y2 - y1),
+            "image_width": image.width,
+            "image_height": image.height,
+        }
+        if isinstance(names, dict):
+            class_name = str(names.get(class_id, names.get(str(class_id), class_id)))
+        elif isinstance(names, (list, tuple)) and 0 <= class_id < len(names):
+            class_name = str(names[class_id])
+        else:
+            class_name = str(class_id)
+        detections.append({
+            "class_id": class_id,
+            "class_name": class_name,
+            "confidence": score,
+            "bbox": bbox,
+        })
+        measurements.append({
+            "label": index + 1,
+            "area_px": bbox["width"] * bbox["height"],
+            "bbox": [bbox["x"], bbox["y"], bbox["x"] + bbox["width"], bbox["y"] + bbox["height"]],
+            "centroid": [bbox["x"] + (bbox["width"] / 2), bbox["y"] + (bbox["height"] / 2)],
+            "confidence": score,
+            "class_name": class_name,
+        })
+
+    labels = None
+    masks = getattr(result, "masks", None)
+    mask_data = _as_list(getattr(masks, "data", [])) if segment and masks is not None else []
+    if mask_data:
+        labels = Image.new("L", image.size, 0)
+        label_pixels = labels.load()
+        for label_index, mask in enumerate(mask_data, start=1):
+            mask_height = len(mask)
+            mask_width = len(mask[0]) if mask_height else 0
+            if mask_width <= 0:
+                continue
+            for y in range(image.height):
+                source_y = min(mask_height - 1, int((y / max(1, image.height)) * mask_height))
+                row = mask[source_y]
+                for x in range(image.width):
+                    source_x = min(mask_width - 1, int((x / max(1, image.width)) * mask_width))
+                    if float(row[source_x]) > 0.5:
+                        label_pixels[x, y] = ((label_index - 1) % 254) + 1
+        if segment:
+            for index, detection in enumerate(detections):
+                detection["mask_label"] = index + 1
+    return labels, detections, measurements
+
+
+def _detection_class_summary(detections: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for detection in detections:
+        class_name = str(detection.get("class_name") or detection.get("class_id") or "unknown")
+        counts[class_name] = counts.get(class_name, 0) + 1
+    return counts
 
 
 def _morphology(mask: Image.Image, radius: int, operation: str) -> Image.Image:
@@ -282,6 +469,58 @@ def _analysis_overlay_png(state: ImageState) -> Optional[Dict[str, Any]]:
         "label": state.overlay_label,
         "method_id": state.overlay_method_id,
         "method_name": state.overlay_method_name,
+        "detections": state.detections,
+        "content_type": "image/png",
+        "filename_suffix": "analyze-overlay.png",
+        "data_base64": base64.b64encode(buffer.getvalue()).decode("ascii"),
+        "width": state.source_image.width,
+        "height": state.source_image.height,
+    }
+
+
+def _analysis_detection_overlay_png(state: ImageState) -> Optional[Dict[str, Any]]:
+    if not state.detections:
+        return None
+    overlay = Image.new("RGBA", state.source_image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    line_width = max(2, min(state.source_image.size) // 80)
+    label_height = max(12, line_width * 6)
+    for detection in state.detections:
+        bbox = detection.get("bbox") if isinstance(detection, dict) else None
+        if not isinstance(bbox, dict):
+            continue
+        x = float(bbox.get("x", 0) or 0)
+        y = float(bbox.get("y", 0) or 0)
+        width = float(bbox.get("width", 0) or 0)
+        height = float(bbox.get("height", 0) or 0)
+        if width <= 0 or height <= 0:
+            continue
+        x1 = max(0, min(state.source_image.width, x))
+        y1 = max(0, min(state.source_image.height, y))
+        x2 = max(0, min(state.source_image.width, x + width))
+        y2 = max(0, min(state.source_image.height, y + height))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        color = (250, 204, 21, 220)
+        draw.rectangle([x1, y1, x2, y2], outline=color, width=line_width)
+        label = str(detection.get("class_name") or "object")
+        confidence = detection.get("confidence")
+        if isinstance(confidence, (int, float)):
+            label = f"{label} {confidence:.2f}"
+        label_width = min(state.source_image.width - x1, max(42, (len(label) * 7) + 8))
+        label_top = max(0, y1 - label_height)
+        draw.rectangle([x1, label_top, x1 + label_width, label_top + label_height], fill=(250, 204, 21, 210))
+        draw.text((x1 + 4, label_top + 2), label, fill=(17, 24, 39, 255))
+    if overlay.getbbox() is None:
+        return None
+    buffer = io.BytesIO()
+    overlay.save(buffer, format="PNG")
+    return {
+        "kind": "overlay_image",
+        "label": state.overlay_label,
+        "method_id": state.overlay_method_id,
+        "method_name": state.overlay_method_name,
+        "detections": state.detections,
         "content_type": "image/png",
         "filename_suffix": "analyze-overlay.png",
         "data_base64": base64.b64encode(buffer.getvalue()).decode("ascii"),
@@ -292,6 +531,24 @@ def _analysis_overlay_png(state: ImageState) -> Optional[Dict[str, Any]]:
 
 def _overlay_label(prefix: str, method) -> str:
     return f"{prefix} Overlay :: {method.name}"
+
+
+def _yolo_runtime_unavailable_summary(model_name: str, exc: Exception, *, family: Optional[str] = None, task: Optional[str] = None) -> Dict[str, Any]:
+    runtime_warning = (
+        f"YOLO model '{model_name}' was not used; Ultralytics runtime is unavailable. "
+        f"No fallback detections, overlays, or artifacts were generated ({exc})."
+    )
+    return {
+        "_node_status": "skipped",
+        "runtime": "unavailable",
+        "model": model_name,
+        "detection_count": 0,
+        "measurement_count": 0,
+        **({"family": family} if family else {}),
+        **({"task": task} if task else {}),
+        **({"instance_count": 0} if task == "segment" else {}),
+        "runtime_warning": runtime_warning,
+    }
 
 
 def _apply_node(state: ImageState, node, method) -> Tuple[ImageState, str, Dict[str, Any], List[Dict[str, Any]]]:
@@ -359,19 +616,159 @@ def _apply_node(state: ImageState, node, method) -> Tuple[ImageState, str, Dict[
         if not state.measurements:
             _, state.measurements = _connected_components(state.labels or state.mask or _otsu_threshold(state.image)[0], 0)
         return state, "Measured region properties.", {"measurement_count": len(state.measurements)}, artifacts
-    if node.method_id in ("ml.yolov8.detect", "ml.yolov8.segment"):
-        if not find_spec("ultralytics"):
-            raise RuntimeError("YOLOv8 execution requires the optional 'ultralytics' package and model weights.")
-        raise RuntimeError("YOLOv8 runtime binding is available only after a model runner is configured.")
+    if node.method_id == "ml.yolov8.segment":
+        model_name = str(params.get("model") or "yolov8n-seg.pt")
+        confidence = float(params.get("confidence", 0.25))
+        runtime = "ultralytics"
+        runtime_warning = None
+        try:
+            labels, detections, measurements = _run_ultralytics_yolo(state.image, model_name, confidence, segment=True)
+            state.labels = labels
+            state.detections = detections
+            state.measurements = measurements
+        except Exception as exc:
+            summary = _yolo_runtime_unavailable_summary(model_name, exc, task="segment")
+            state.labels = None
+            state.detections = []
+            state.measurements = []
+            state.overlay_label = "Analyze Overlay"
+            state.overlay_method_id = None
+            state.overlay_method_name = None
+            state.artifact_block_reason = summary["runtime_warning"]
+            return state, "Skipped YOLOv8 instance segmentation because the model runtime is unavailable.", summary, artifacts
+        state.overlay_label = _overlay_label("Instance Segmentation", method)
+        state.overlay_method_id = method.id
+        state.overlay_method_name = method.name
+        return state, "Computed YOLOv8-compatible instance segmentation.", {
+            "runtime": runtime,
+            "model": model_name,
+            "instance_count": len(state.measurements),
+            "detection_count": len(state.detections),
+            "detection_classes": _detection_class_summary(state.detections),
+            "detections": state.detections,
+            **({"runtime_warning": runtime_warning} if runtime_warning else {}),
+        }, artifacts
+    if node.method_id == "ml.yolo.ultralytics":
+        family = str(params.get("family") or "yolo11")
+        task = str(params.get("task") or "detect")
+        confidence = float(params.get("confidence", 0.25))
+        model_name = _yolo_model_name(
+            family=family,
+            task=task,
+            size=str(params.get("size") or "n"),
+            custom_model=str(params.get("model") or ""),
+        )
+        runtime = "ultralytics"
+        runtime_warning = None
+        if task == "segment":
+            try:
+                labels, detections, measurements = _run_ultralytics_yolo(state.image, model_name, confidence, segment=True)
+                state.labels = labels
+                state.detections = detections
+                state.measurements = measurements
+            except Exception as exc:
+                summary = _yolo_runtime_unavailable_summary(model_name, exc, family=family, task=task)
+                state.labels = None
+                state.detections = []
+                state.measurements = []
+                state.overlay_label = "Analyze Overlay"
+                state.overlay_method_id = None
+                state.overlay_method_name = None
+                state.artifact_block_reason = summary["runtime_warning"]
+                return state, "Skipped YOLO instance segmentation because the model runtime is unavailable.", summary, artifacts
+            state.overlay_label = _overlay_label("Instance Segmentation", method)
+        else:
+            try:
+                _labels, state.detections, state.measurements = _run_ultralytics_yolo(state.image, model_name, confidence, segment=False)
+            except Exception as exc:
+                summary = _yolo_runtime_unavailable_summary(model_name, exc, family=family, task=task)
+                state.labels = None
+                state.detections = []
+                state.measurements = []
+                state.overlay_label = "Analyze Overlay"
+                state.overlay_method_id = None
+                state.overlay_method_name = None
+                state.artifact_block_reason = summary["runtime_warning"]
+                return state, "Skipped YOLO detection because the model runtime is unavailable.", summary, artifacts
+            state.overlay_label = _overlay_label("Detection", method)
+        state.overlay_method_id = method.id
+        state.overlay_method_name = method.name
+        return state, "Computed configurable YOLO analysis.", {
+            "runtime": runtime,
+            "family": family,
+            "task": task,
+            "model": model_name,
+            "detection_count": len(state.detections),
+            "measurement_count": len(state.measurements),
+            "detection_classes": _detection_class_summary(state.detections),
+            "detections": state.detections,
+            **({"instance_count": len(state.measurements)} if task == "segment" else {}),
+            **({"runtime_warning": runtime_warning} if runtime_warning else {}),
+        }, artifacts
+    if node.method_id == "ml.yolov8.detect":
+        model_name = str(params.get("model") or "yolov8n.pt")
+        confidence = float(params.get("confidence", 0.25))
+        runtime = "ultralytics"
+        runtime_warning = None
+        try:
+            _labels, state.detections, state.measurements = _run_ultralytics_yolo(state.image, model_name, confidence, segment=False)
+        except Exception as exc:
+            summary = _yolo_runtime_unavailable_summary(model_name, exc, task="detect")
+            state.labels = None
+            state.detections = []
+            state.measurements = []
+            state.overlay_label = "Analyze Overlay"
+            state.overlay_method_id = None
+            state.overlay_method_name = None
+            state.artifact_block_reason = summary["runtime_warning"]
+            return state, "Skipped YOLOv8 object detection because the model runtime is unavailable.", summary, artifacts
+        state.overlay_label = _overlay_label("Detection", method)
+        state.overlay_method_id = method.id
+        state.overlay_method_name = method.name
+        return state, "Computed YOLOv8-compatible object detections.", {
+            "runtime": runtime,
+            "model": model_name,
+            "detection_count": len(state.detections),
+            "measurement_count": len(state.measurements),
+            "detection_classes": _detection_class_summary(state.detections),
+            "detections": state.detections,
+            **({"runtime_warning": runtime_warning} if runtime_warning else {}),
+        }, artifacts
+    if node.method_id in {
+        "ml.sam.segment_anything",
+        "ml.mask2former.universal_segment",
+        "ml.oneformer.universal_segment",
+    }:
+        state.labels, state.measurements, segmentation_summary = _universal_segmentation_fallback(state.image, node.method_id, params)
+        state.overlay_label = _overlay_label("Segmentation", method)
+        state.overlay_method_id = method.id
+        state.overlay_method_name = method.name
+        return state, "Computed model-service-compatible pixel segmentation fallback.", {
+            "runtime": "fallback",
+            "model": params.get("variant") or params.get("checkpoint"),
+            "segment_count": len(state.measurements),
+            "measurement_count": len(state.measurements),
+            **segmentation_summary,
+        }, artifacts
     if node.method_id == "output.versioned_image_artifact":
+        if state.artifact_block_reason:
+            return state, "Skipped output artifacts because an upstream model runtime is unavailable.", {
+                "_node_status": "skipped",
+                "artifact_count": 0,
+                "artifact_block_reason": state.artifact_block_reason,
+            }, artifacts
         artifacts.extend(state.artifacts)
         overlay_artifact = _analysis_overlay_png(state)
+        if overlay_artifact is None:
+            overlay_artifact = _analysis_detection_overlay_png(state)
         if overlay_artifact:
             artifacts.append(overlay_artifact)
         artifacts.append({
             "kind": "recipe",
             "mode": params.get("mode"),
             "detections": len(state.detections),
+            "detection_annotations": state.detections,
+            "detection_classes": _detection_class_summary(state.detections),
             "measurements": len(state.measurements),
             "has_overlay": state.labels is not None or state.mask is not None,
         })
@@ -402,11 +799,15 @@ def execute_image_workflow(workflow: WorkflowGraph, images: Iterable[WorkflowIma
                 method = methods[node.method_id]
                 try:
                     state, message, summary, artifacts = _apply_node(state, node, method)
+                    runtime_warning = summary.get("runtime_warning") if isinstance(summary, dict) else None
+                    if runtime_warning and runtime_warning not in warnings:
+                        warnings.append(str(runtime_warning))
+                    node_status = summary.pop("_node_status", "completed") if isinstance(summary, dict) else "completed"
                     state.artifacts.extend(artifacts)
                     node_results.append(WorkflowNodeResult(
                         node_id=node.id,
                         method_id=node.method_id,
-                        status="completed",
+                        status=node_status,
                         output_types=method.output_types,
                         message=f"{message} ({image_input.filename})",
                         summary={"image_id": str(image_input.image_id), **summary},

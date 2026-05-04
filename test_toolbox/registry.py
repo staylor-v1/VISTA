@@ -72,8 +72,14 @@ def validate_workflow(workflow: WorkflowGraph) -> ToolboxExecutionResult:
                 raise ValueError(f"Node '{node.id}' parameter '{parameter_name}' is above the maximum")
             if parameter.type == "select" and parameter.options and parameter_value not in parameter.options:
                 raise ValueError(f"Node '{node.id}' parameter '{parameter_name}' is not an allowed option")
-        if node.method_id.startswith("ml.yolov8"):
-            warnings.append("YOLOv8 nodes are contract-backed in test_toolbox; model execution is not bound yet.")
+        if node.method_id.startswith("ml.yolov8") or node.method_id == "ml.yolo.ultralytics":
+            warnings.append("YOLO nodes require a working Ultralytics runtime; execution emits a warning and no fallback artifacts when the model is unavailable.")
+        if node.method_id in {
+            "ml.sam.segment_anything",
+            "ml.mask2former.universal_segment",
+            "ml.oneformer.universal_segment",
+        }:
+            warnings.append("Foundation segmentation nodes are model-service ready; local execution uses deterministic fallback unless heavyweight model dependencies are installed.")
         node_results.append(
             WorkflowNodeResult(
                 node_id=node.id,

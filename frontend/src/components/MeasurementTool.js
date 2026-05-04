@@ -26,6 +26,23 @@ export default function MeasurementTool({
     );
   };
 
+  useEffect(() => {
+    if (showSaveDialog) {
+      const defaultName = `Measurement ${(existingMeasurementCount || 0) + 1}`;
+      setMeasurementName(defaultName);
+    }
+  }, [showSaveDialog, existingMeasurementCount]);
+
+  const getAdjustedCoordinates = useCallback((e) => {
+    if (!overlayRef.current) return { x: 0, y: 0 };
+
+    const rect = overlayRef.current.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / zoomLevel;
+    const y = (e.clientY - rect.top) / zoomLevel;
+
+    return { x, y };
+  }, [zoomLevel]);
+
   const finishDrawing = useCallback((event) => {
     if (!isDrawing || !drawingLine) return;
 
@@ -46,24 +63,7 @@ export default function MeasurementTool({
     setDrawingLine(finalLine);
     setIsDrawing(false);
     setShowSaveDialog(true);
-  }, [isDrawing, drawingLine]);
-
-  useEffect(() => {
-    if (showSaveDialog) {
-      const defaultName = `Measurement ${(existingMeasurementCount || 0) + 1}`;
-      setMeasurementName(defaultName);
-    }
-  }, [showSaveDialog, existingMeasurementCount]);
-
-  const getAdjustedCoordinates = (e) => {
-    if (!overlayRef.current) return { x: 0, y: 0 };
-
-    const rect = overlayRef.current.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / zoomLevel;
-    const y = (e.clientY - rect.top) / zoomLevel;
-
-    return { x, y };
-  };
+  }, [drawingLine, getAdjustedCoordinates, isDrawing]);
 
   const handleMouseDown = (e) => {
     const isRightOrCtrl = e.button === 2 || (e.button === 0 && e.ctrlKey);
@@ -231,7 +231,7 @@ export default function MeasurementTool({
       window.removeEventListener('mousemove', handleWindowMouseMove);
       window.removeEventListener('mouseup', handleWindowMouseUp);
     };
-  }, [isDrawing, finishDrawing]);
+  }, [finishDrawing, getAdjustedCoordinates, isDrawing]);
 
   // Show calibration error immediately when measure mode is active without calibration
   if (!calibration && leftClickEnabled) {

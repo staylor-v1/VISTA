@@ -1187,6 +1187,41 @@ async def update_part_annotation(
     return updated_annotation
 
 
+@router.delete(
+    "/projects/{project_id}/parts/{part_id}/annotations/{annotation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_part_annotation(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    annotation_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+
+    existing_annotations = _part_annotations(part)
+    updated_annotations = [
+        annotation for annotation in existing_annotations
+        if annotation.get("id") != str(annotation_id)
+    ]
+    if len(updated_annotations) == len(existing_annotations):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Annotation not found")
+
+    persisted = await crud.update_inspection_part_metadata(
+        db=db,
+        project_id=project_id,
+        part_id=part_id,
+        metadata_patch={ANNOTATIONS_METADATA_KEY: updated_annotations},
+        updated_by=current_user.email,
+    )
+    if not persisted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+
+
 @router.get(
     "/projects/{project_id}/workspace-state",
     response_model=schemas.InspectionWorkspaceStateResponse,

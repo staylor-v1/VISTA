@@ -663,16 +663,34 @@ def test_part_annotations_support_progressive_users_with_audit_trail(client, pro
         )
         assert part_resp.status_code == 201, part_resp.text
         part_id = part_resp.json()["id"]
+        annotation_payload = {
+            **scenario["annotation"],
+            "image_id": f"{project_type.lower()}-measurement-image-{scenario['part_suffix']}",
+            "geometry": {
+                "line": {
+                    "x1": 10.0,
+                    "y1": 12.0,
+                    "x2": 42.0,
+                    "y2": 48.0,
+                    "imageWidth": 100.0,
+                    "imageHeight": 80.0,
+                }
+            },
+            "metadata": {"measurement_color": "#3b82f6"},
+        }
 
         create_resp = client.post(
             f"/api/projects/{project_id}/parts/{part_id}/annotations",
-            json=scenario["annotation"],
+            json=annotation_payload,
             headers=headers,
         )
         assert create_resp.status_code == 201, create_resp.text
         created_annotation = create_resp.json()
         assert created_annotation["defect_class"] == scenario["annotation"]["defect_class"]
         assert created_annotation["modality"] == scenario["annotation"]["modality"]
+        assert created_annotation["image_id"] == annotation_payload["image_id"]
+        assert created_annotation["geometry"] == annotation_payload["geometry"]
+        assert created_annotation["metadata"]["measurement_color"] == "#3b82f6"
         assert created_annotation["hidden"] is False
         assert isinstance(created_annotation["created_by"], str)
         assert "@" in created_annotation["created_by"]
@@ -686,6 +704,17 @@ def test_part_annotations_support_progressive_users_with_audit_trail(client, pro
             json={
                 "disposition": "accepted",
                 "comment": f"{scenario['annotation']['comment']} [reviewed]",
+                "geometry": {
+                    "line": {
+                        "x1": 10.0,
+                        "y1": 12.0,
+                        "x2": 60.0,
+                        "y2": 52.0,
+                        "imageWidth": 100.0,
+                        "imageHeight": 80.0,
+                    }
+                },
+                "metadata": {"measurement_color": "#ef4444"},
                 "hidden": True,
             },
             headers=headers,
@@ -693,6 +722,8 @@ def test_part_annotations_support_progressive_users_with_audit_trail(client, pro
         assert update_resp.status_code == 200, update_resp.text
         updated_annotation = update_resp.json()
         assert updated_annotation["disposition"] == "accepted"
+        assert updated_annotation["geometry"]["line"]["x2"] == 60.0
+        assert updated_annotation["metadata"]["measurement_color"] == "#ef4444"
         assert updated_annotation["hidden"] is True
         assert updated_annotation["updated_by"] == created_annotation["created_by"]
         assert updated_annotation["updated_at"] >= updated_annotation["created_at"]
@@ -713,6 +744,19 @@ def test_part_annotations_support_progressive_users_with_audit_trail(client, pro
         assert len(returned_annotations) == 1
         assert returned_annotations[0]["id"] == annotation_id
         assert returned_annotations[0]["hidden"] is True
+
+        delete_resp = client.delete(
+            f"/api/projects/{project_id}/parts/{part_id}/annotations/{annotation_id}",
+            headers=headers,
+        )
+        assert delete_resp.status_code == 204, delete_resp.text
+
+        deleted_list_resp = client.get(
+            f"/api/projects/{project_id}/parts/{part_id}/annotations",
+            headers=headers,
+        )
+        assert deleted_list_resp.status_code == 200, deleted_list_resp.text
+        assert deleted_list_resp.json()["annotations"] == []
 
 
 @pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
