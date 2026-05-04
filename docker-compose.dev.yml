@@ -131,6 +131,7 @@ services:
       - DISABLE_FILE_LOGGING=true
       # Cache directory (writable volume)
       - CACHE_DIR=/app/.cache
+      - TOOLBOX_MODEL_SERVICE_URL=http://toolbox-models:8010
     depends_on:
       postgres:
         condition: service_healthy
@@ -148,6 +149,43 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 10s
       timeout: 5s
+      retries: 5
+    networks:
+      - vista-dev
+
+  # Optional heavyweight Analyze/test_toolbox model service.
+  # Start with: docker compose -f docker-compose.dev.yml --profile models up toolbox-models
+  toolbox-models:
+    profiles: ["models"]
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      target: toolbox-model-service
+    container_name: vista_toolbox_models_dev
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "8010:8010"
+    gpus: all
+    volumes:
+      - ./test_toolbox:/app/test_toolbox:ro
+      - toolbox_model_cache:/models
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - HF_HOME=/models/huggingface
+      - TORCH_HOME=/models/torch
+      - YOLO_CONFIG_DIR=/models/ultralytics
+      - VISTA_MODEL_SERVICE_DEVICE=auto
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8010/health', timeout=5).read()\""]
+      interval: 20s
+      timeout: 10s
       retries: 5
     networks:
       - vista-dev
@@ -198,6 +236,7 @@ volumes:
   pgadmin_data:
   backend_cache:
   frontend_node_modules:
+  toolbox_model_cache:
 
 # Network for all services
 networks:

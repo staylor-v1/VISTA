@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import AnalyzeWorkbenchTab from '../AnalyzeWorkbenchTab';
 
 const toolboxPayload = {
@@ -139,12 +139,23 @@ function mockFetch() {
   });
 }
 
-function dragMethodToGraph(methodRoleName, methodId) {
+function dragMethodToGraph(methodRoleName, methodId, point = {}) {
   const toolboxMethod = screen.getByRole('button', { name: methodRoleName });
   const graph = screen.getByTestId('analyze-graph');
   const dataTransfer = { setData: jest.fn(), getData: jest.fn(() => methodId), effectAllowed: 'copy' };
+  graph.getBoundingClientRect = jest.fn(() => ({
+    left: 0,
+    top: 0,
+    right: 980,
+    bottom: 540,
+    width: 980,
+    height: 540,
+  }));
   fireEvent.dragStart(toolboxMethod, { dataTransfer });
-  fireEvent.drop(graph, { dataTransfer });
+  const dropEvent = createEvent.drop(graph, { dataTransfer });
+  Object.defineProperty(dropEvent, 'clientX', { value: point.clientX ?? 0 });
+  Object.defineProperty(dropEvent, 'clientY', { value: point.clientY ?? 0 });
+  fireEvent(graph, dropEvent);
 }
 
 describe('AnalyzeWorkbenchTab', () => {
@@ -158,6 +169,10 @@ describe('AnalyzeWorkbenchTab', () => {
 
     expect(await screen.findByRole('heading', { name: 'Workflow Studio' })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId('analyze-source-summary')).toHaveTextContent('1 parts'));
+    expect(screen.getByLabelText('Analyze Workbench')).not.toBeEmptyDOMElement();
+    expect(screen.getByLabelText('Analyze toolbox')).toHaveTextContent('Input');
+    expect(screen.getByTestId('analyze-graph')).toHaveTextContent('Loaded Part Images');
+    expect(screen.getByLabelText('Workflow block settings')).toHaveTextContent('Status');
     expect(screen.getByTestId('analyze-source-summary')).toHaveTextContent('2 images');
     expect(screen.getByRole('button', { name: /Workflow block Window \/ Level Normalization/i })).toBeInTheDocument();
 
@@ -230,6 +245,75 @@ describe('AnalyzeWorkbenchTab', () => {
     const seedNode = screen.getByRole('button', { name: /Workflow block Watershed From Seeds/i });
     fireEvent.click(seedNode);
     expect(screen.getByLabelText('Seed Spacing (px)')).toHaveAttribute('step', '1');
+  });
+
+  test('clicking a toolbox method previews its configuration without adding a workflow block', async () => {
+    mockFetch();
+    render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
+
+    const toolboxMethod = await screen.findByRole('button', { name: /^YOLOv8 Object Detection/i });
+    fireEvent.click(toolboxMethod);
+
+    const inspector = screen.getByLabelText('Workflow block settings');
+    expect(within(inspector).getByRole('heading', { name: 'YOLOv8 Object Detection' })).toBeInTheDocument();
+    expect(within(inspector).getByText('ml.yolov8.detect')).toBeInTheDocument();
+    expect(within(inspector).getByLabelText('Model')).toHaveValue('yolov8n.pt');
+    expect(screen.queryByRole('button', { name: /Workflow block YOLOv8 Object Detection/i })).not.toBeInTheDocument();
+  });
+
+  test('drops a toolbox block into the middle of an existing chain from the drop position', async () => {
+    mockFetch();
+    render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
+
+    await screen.findByRole('button', { name: /Workflow block Loaded Part Images/i });
+    dragMethodToGraph(/^YOLOv8 Object Detection/i, 'ml.yolov8.detect', { clientX: 430, clientY: 120 });
+
+    expect(screen.getByRole('button', { name: /Workflow block YOLOv8 Object Detection/i })).toHaveStyle({ left: '520px', top: '84px' });
+    expect(screen.getByRole('button', { name: /Workflow block Watershed From Seeds/i })).toHaveStyle({ left: '744px', top: '84px' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run' }));
+    await waitFor(() => expect(screen.getByTestId('analyze-run-summary')).toHaveTextContent('completed'));
+    const executeCall = global.fetch.mock.calls.find(([url]) => url === '/api/projects/proj-1/analyze/workflows/execute');
+    const workflow = JSON.parse(executeCall[1].body);
+    expect(workflow.nodes.map((node) => node.method_id)).toEqual([
+      'source.project_part_images',
+      'preprocess.window_level_normalization',
+      'ml.yolov8.detect',
+      'segmentation.watershed_seeds',
+      'output.versioned_image_artifact',
+    ]);
+  });
+
+  test('only appends a toolbox block when it is dropped near the end of a chain', async () => {
+    mockFetch();
+    render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
+
+    await screen.findByRole('button', { name: /Workflow block Loaded Part Images/i });
+    dragMethodToGraph(/^YOLOv8 Object Detection/i, 'ml.yolov8.detect', { clientX: 1040, clientY: 120 });
+
+    expect(screen.getByRole('button', { name: /Workflow block YOLOv8 Object Detection/i })).toHaveStyle({ left: '968px', top: '84px' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run' }));
+    await waitFor(() => expect(screen.getByTestId('analyze-run-summary')).toHaveTextContent('completed'));
+    const executeCall = global.fetch.mock.calls.find(([url]) => url === '/api/projects/proj-1/analyze/workflows/execute');
+    const workflow = JSON.parse(executeCall[1].body);
+    expect(workflow.nodes.map((node) => node.method_id)).toEqual([
+      'source.project_part_images',
+      'preprocess.window_level_normalization',
+      'segmentation.watershed_seeds',
+      'output.versioned_image_artifact',
+      'ml.yolov8.detect',
+    ]);
+  });
+
+  test('snaps a toolbox block dropped below existing chains to the next empty row', async () => {
+    mockFetch();
+    render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
+
+    await screen.findByRole('button', { name: /Workflow block Loaded Part Images/i });
+    dragMethodToGraph(/^YOLOv8 Object Detection/i, 'ml.yolov8.detect', { clientX: 320, clientY: 500 });
+
+    expect(screen.getByRole('button', { name: /Workflow block YOLOv8 Object Detection/i })).toHaveStyle({ left: '72px', top: '236px' });
   });
 
   test('chooses an example image and runs only the example through the pipeline', async () => {
@@ -353,7 +437,7 @@ describe('AnalyzeWorkbenchTab', () => {
     expect(screen.getByRole('button', { name: /Workflow block Loaded Part Images 2/i })).toHaveStyle({ left: '72px', top: '236px' });
 
     fireEvent.click(screen.getByRole('button', { name: /Workflow block Loaded Part Images 2/i }));
-    dragMethodToGraph(/^YOLOv8 Object Detection/i, 'ml.yolov8.detect');
+    dragMethodToGraph(/^YOLOv8 Object Detection/i, 'ml.yolov8.detect', { clientX: 380, clientY: 260 });
     expect(screen.getByRole('button', { name: /Workflow block YOLOv8 Object Detection/i })).toHaveStyle({ left: '296px', top: '236px' });
 
     fireEvent.click(screen.getByRole('button', { name: 'Run' }));
@@ -454,7 +538,7 @@ describe('AnalyzeWorkbenchTab', () => {
     await screen.findByRole('button', { name: /Workflow block Loaded Part Images/i });
     dragMethodToGraph(/^Project Part Image Source/i, 'source.project_part_images');
     fireEvent.click(screen.getByRole('button', { name: /Workflow block Loaded Part Images 2/i }));
-    dragMethodToGraph(/^YOLOv8 Object Detection/i, 'ml.yolov8.detect');
+    dragMethodToGraph(/^YOLOv8 Object Detection/i, 'ml.yolov8.detect', { clientX: 380, clientY: 260 });
 
     const watershedNode = screen.getByRole('button', { name: /Workflow block Watershed From Seeds/i });
     fireEvent.mouseDown(watershedNode, { button: 0, clientX: 600, clientY: 100 });

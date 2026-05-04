@@ -147,6 +147,41 @@ function appendPositionForChain(nodes, chainId) {
   };
 }
 
+function graphDropPoint(event, graphElement) {
+  const rect = graphElement?.getBoundingClientRect?.();
+  const { clientX, clientY } = eventPoint(event);
+  if (!rect) return { x: GRAPH_START_X, y: GRAPH_TOP_Y };
+  return {
+    x: Math.max(0, Math.round(clientX - rect.left)),
+    y: Math.max(0, Math.round(clientY - rect.top)),
+  };
+}
+
+function dropPlacementForMethod(nodes, method, dropPoint) {
+  const chains = chainsFromNodes(nodes);
+  const lastLaneY = chains.length > 0 ? chainLaneY(chains.length - 1) : GRAPH_TOP_Y;
+  const belowExistingChains = chains.length === 0 || dropPoint.y > lastLaneY + (GRAPH_CHAIN_GAP / 2);
+  if (method.id === SOURCE_METHOD_ID || belowExistingChains) {
+    return {
+      chainId: nextChainId(nodes),
+      x: GRAPH_START_X,
+      y: chainLaneY(chains.length),
+    };
+  }
+
+  const closestChain = chains.reduce((best, chain, index) => {
+    const laneY = chainLaneY(index);
+    const distance = Math.abs(dropPoint.y - laneY);
+    return !best || distance < best.distance ? { chain, index, distance } : best;
+  }, null);
+
+  return {
+    chainId: closestChain?.chain.id || 'chain-1',
+    x: Math.max(12, Math.round(dropPoint.x - (GRAPH_NODE_WIDTH / 2))),
+    y: chainLaneY(closestChain?.index || 0),
+  };
+}
+
 function maybeSnapChainId(nodes, dragState, nextY) {
   const draggedNode = nodes.find((node) => node.id === dragState.id);
   if (!draggedNode || draggedNode.method_id === SOURCE_METHOD_ID) return nodeChainId(draggedNode || {});
@@ -587,6 +622,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
   const [workflowStateLoaded, setWorkflowStateLoaded] = useState(false);
   const [status, setStatus] = useState({ loading: true, message: 'Loading analyze workspace...', result: null });
   const [collapsedCategories, setCollapsedCategories] = useState({});
+  const [toolboxPreview, setToolboxPreview] = useState({ methodId: null, parameters: {} });
   const graphDragRef = useRef(null);
   const graphRef = useRef(null);
   const marqueeRef = useRef(null);
@@ -596,11 +632,14 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
   const methodById = useMemo(() => new Map(methods.map((method) => [method.id, method])), [methods]);
   const methodsByCategory = useMemo(() => groupMethods(methods), [methods]);
   const orderedCategories = useMemo(() => Object.entries(methodsByCategory), [methodsByCategory]);
-  const selectedNode = useMemo(
-    () => nodes.find((node) => node.id === selectedNodeId) || nodes[0] || null,
+  const selectedToolboxMethod = toolboxPreview.methodId ? methodById.get(toolboxPreview.methodId) : null;
+  const selectedGraphNode = useMemo(
+    () => nodes.find((node) => node.id === selectedNodeId) || null,
     [nodes, selectedNodeId]
   );
-  const selectedMethod = selectedNode ? methodById.get(selectedNode.method_id) : null;
+  const selectedNode = selectedToolboxMethod ? null : (selectedGraphNode || nodes[0] || null);
+  const selectedMethod = selectedToolboxMethod || (selectedNode ? methodById.get(selectedNode.method_id) : null);
+  const selectedParameterValues = selectedToolboxMethod ? toolboxPreview.parameters : (selectedNode?.parameters || {});
   const edges = useMemo(() => chainEdges(nodes), [nodes]);
   const graphBounds = useMemo(() => {
     const maxX = nodes.reduce((value, node) => Math.max(value, node.x + 220), 980);
@@ -704,28 +743,51 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
     return () => clearTimeout(saveHandle);
   }, [exampleImageId, nodes, processImageIds, projectId, status.loading, workflowStateLoaded]);
 
-  const addMethodNode = useCallback((method, overrides = {}) => {
+  const selectToolboxMethod = useCallback((method) => {
+    setToolboxPreview((previous) => ({
+      methodId: method.id,
+      parameters: previous.methodId === method.id ? previous.parameters : parameterDefaults(method),
+    }));
+    setSelectedNodeId(null);
+    setSelectedNodeIds([]);
+  }, []);
+
+  const clearToolboxPreview = useCallback(() => {
+    setToolboxPreview({ methodId: null, parameters: {} });
+  }, []);
+
+  const addMethodNode = useCallback((method, dropPoint) => {
     setNodes((prevNodes) => {
-      const selectedChainId = selectedNode ? nodeChainId(selectedNode) : nodeChainId(prevNodes[prevNodes.length - 1] || {});
-      const chainId = method.id === SOURCE_METHOD_ID ? nextChainId(prevNodes) : selectedChainId;
-      const chainPosition = appendPositionForChain(prevNodes, chainId);
+      const fallbackChainId = nextChainId(prevNodes);
+      const placement = dropPoint
+        ? dropPlacementForMethod(prevNodes, method, dropPoint)
+        : { chainId: fallbackChainId, ...appendPositionForChain(prevNodes, fallbackChainId) };
       const chainLabel = method.id === SOURCE_METHOD_ID
         ? `Loaded Part Images ${chainsFromNodes(prevNodes).length + 1}`
         : method.name;
+      const previewParameters = toolboxPreview.methodId === method.id ? toolboxPreview.parameters : {};
       const nextNode = makeNode(method, prevNodes.length, {
-        chain_id: chainId,
+        chain_id: placement.chainId,
         label: chainLabel,
-        x: chainPosition.x,
-        y: chainPosition.y,
-        ...overrides,
+        x: placement.x,
+        y: placement.y,
+        parameters: previewParameters,
       });
       setSelectedNodeId(nextNode.id);
       setSelectedNodeIds([nextNode.id]);
-      return orderNodesByChains([...prevNodes, nextNode]);
+      setToolboxPreview({ methodId: null, parameters: {} });
+      return layoutNodesForChains([...prevNodes, nextNode]);
     });
-  }, [selectedNode]);
+  }, [toolboxPreview]);
 
   const updateSelectedParameter = useCallback((name, value) => {
+    if (selectedToolboxMethod) {
+      setToolboxPreview((previous) => ({
+        ...previous,
+        parameters: { ...previous.parameters, [name]: value },
+      }));
+      return;
+    }
     if (!selectedNode) return;
     if (selectedNode.method_id === 'source.project_part_images' && name === 'example_image_id') {
       setExampleImageId(value);
@@ -735,7 +797,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
         ? { ...node, parameters: { ...node.parameters, [name]: value } }
         : node
     )));
-  }, [selectedNode]);
+  }, [selectedNode, selectedToolboxMethod]);
 
   const moveImagesToProcess = useCallback((imageIds) => {
     const ids = imageIds.filter(Boolean).map(String);
@@ -785,15 +847,17 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
       suppressNodeClickRef.current = null;
       return;
     }
+    clearToolboxPreview();
     setSelectedNodeId(node.id);
     setSelectedNodeIds((prev) => (event.ctrlKey || event.metaKey
       ? (prev.includes(node.id) ? prev.filter((id) => id !== node.id) : [...prev, node.id])
       : [node.id]));
-  }, []);
+  }, [clearToolboxPreview]);
 
   const beginNodeDrag = useCallback((event, node) => {
     if (shouldIgnoreMouseFallback(event)) return;
     if (event.button !== undefined && event.button !== 0) return;
+    clearToolboxPreview();
     const { clientX, clientY } = eventPoint(event);
     const dragState = {
       id: node.id,
@@ -808,7 +872,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
     setGraphDrag(dragState);
     setSelectedNodeId(node.id);
     event.currentTarget.setPointerCapture?.(event.pointerId);
-  }, []);
+  }, [clearToolboxPreview]);
 
   const moveNodeDrag = useCallback((event) => {
     if (shouldIgnoreMouseFallback(event)) return;
@@ -864,20 +928,21 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
 
   const handleGraphDrop = useCallback((event) => {
     event.preventDefault();
-    const methodId = event.dataTransfer.getData('text/x-vista-method-id');
+    const methodId = event.dataTransfer?.getData('text/x-vista-method-id');
     if (!methodId) return;
     const method = methodById.get(methodId);
     if (!method) return;
-    addMethodNode(method);
+    addMethodNode(method, graphDropPoint(event, graphRef.current));
   }, [addMethodNode, methodById]);
 
   const beginMarqueeSelect = useCallback((event) => {
     if (event.target !== event.currentTarget || event.button !== 0) return;
+    clearToolboxPreview();
     const rect = graphRef.current?.getBoundingClientRect();
     if (!rect) return;
     marqueeRef.current = { startX: event.clientX - rect.left, startY: event.clientY - rect.top };
     setMarquee({ x: marqueeRef.current.startX, y: marqueeRef.current.startY, width: 0, height: 0 });
-  }, []);
+  }, [clearToolboxPreview]);
 
   const moveMarqueeSelect = useCallback((event) => {
     if (!marqueeRef.current) return;
@@ -967,9 +1032,12 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
                   <button
                     key={method.id}
                     type="button"
-                    className="analyze-method-button"
+                    className={`analyze-method-button ${selectedToolboxMethod?.id === method.id ? 'selected' : ''}`}
+                    aria-pressed={selectedToolboxMethod?.id === method.id}
                     draggable
+                    onClick={() => selectToolboxMethod(method)}
                     onDragStart={(event) => {
+                      selectToolboxMethod(method);
                       event.dataTransfer.setData('text/x-vista-method-id', method.id);
                       event.dataTransfer.effectAllowed = 'copy';
                     }}
@@ -1072,13 +1140,13 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
 
         <aside className="analyze-inspector" aria-label="Workflow block settings">
           <div className="analyze-inspector-header">
-            <h3>{selectedNode?.label || 'No block selected'}</h3>
+            <h3>{selectedNode?.label || selectedToolboxMethod?.name || 'No block selected'}</h3>
             <p>{selectedMethod?.id || 'Select a workflow block'}</p>
             {selectedMethod && <p className="muted">{methodAcademicDescription(selectedMethod)}</p>}
           </div>
           {selectedMethod && (
             <div className="analyze-parameters">
-              {selectedMethod.id === 'source.project_part_images' && (
+              {selectedNode && selectedMethod.id === 'source.project_part_images' && (
                 <div className="analyze-input-actions">
                   <button type="button" className="btn btn-secondary" onClick={() => setInputModalOpen(true)}>
                     Select Images
@@ -1088,7 +1156,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
               )}
               {(selectedMethod.parameters || []).length === 0 && <p className="muted">No parameters</p>}
               {(selectedMethod.parameters || []).map((parameter) => {
-                if (selectedMethod.id === 'source.project_part_images' && parameter.name === 'example_image_id') {
+                if (selectedNode && selectedMethod.id === 'source.project_part_images' && parameter.name === 'example_image_id') {
                   return (
                     <ExampleImageParameter
                       key={parameter.name}
@@ -1103,7 +1171,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
                   <ParameterInput
                     key={parameter.name}
                     parameter={parameter}
-                    value={selectedNode.parameters?.[parameter.name]}
+                    value={selectedParameterValues?.[parameter.name]}
                     onChange={(value) => updateSelectedParameter(parameter.name, value)}
                   />
                 );

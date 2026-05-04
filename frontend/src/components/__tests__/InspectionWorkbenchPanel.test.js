@@ -793,6 +793,7 @@ describe('InspectionWorkbenchPanel', () => {
     });
 
     const grid = screen.getByTestId('inspection-layout-grid');
+    expect(grid).not.toBeEmptyDOMElement();
     await waitFor(() => {
       expect(grid.style.getPropertyValue('--inspection-grid-template-columns')).toBe('220px minmax(0, 1fr) 220px');
     });

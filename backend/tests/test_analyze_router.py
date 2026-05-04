@@ -1,7 +1,9 @@
 import base64
 import io
 
+import pytest
 from PIL import Image
+from core.config import settings
 
 
 def _png_bytes(color=(180, 20, 20)):
@@ -10,6 +12,14 @@ def _png_bytes(color=(180, 20, 20)):
     image.save(buf, format="PNG")
     buf.seek(0)
     return buf
+
+
+def _overlay_png_base64():
+    image = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
+    image.putpixel((1, 1), (250, 204, 21, 255))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 def _create_project_with_part_image(client):
@@ -67,6 +77,10 @@ def test_analyze_toolbox_manifest_contains_yolov8_and_core_image_methods(client)
     assert payload["contract_version"] == "vista-analyze.v1"
     assert "ml.yolov8.detect" in method_ids
     assert "ml.yolov8.segment" in method_ids
+    assert "ml.yolo.ultralytics" in method_ids
+    assert "ml.sam.segment_anything" in method_ids
+    assert "ml.mask2former.universal_segment" in method_ids
+    assert "ml.oneformer.universal_segment" in method_ids
     assert "output.versioned_image_artifact" in method_ids
     assert "preprocess.window_level_normalization" in method_ids
     assert "segmentation.watershed_seeds" in method_ids
@@ -155,10 +169,11 @@ def test_analyze_workflow_validation_and_execution_use_pydantic_contract(client)
     assert execute_resp.json()["status"] == "completed"
     assert execute_resp.json()["execution_mode"] == "execution"
     assert execute_resp.json()["image_count"] == 1
-    assert any("YOLOv8 model 'yolov8n.pt' was not used" in warning for warning in execute_resp.json()["warnings"])
+    assert any("YOLO model 'yolov8n.pt' was not used" in warning for warning in execute_resp.json()["warnings"])
     yolo_node = next(node for node in execute_resp.json()["node_results"] if node["node_id"] == "yolo")
-    assert yolo_node["summary"]["runtime"] == "fallback"
-    assert yolo_node["summary"]["detection_count"] > 0
+    assert yolo_node["status"] == "skipped"
+    assert yolo_node["summary"]["runtime"] == "unavailable"
+    assert yolo_node["summary"]["detection_count"] == 0
 
     workflow["nodes"][1]["method_id"] = "missing.method"
     reject_resp = client.post(f"/api/projects/{project_id}/analyze/workflows/validate", json=workflow, headers=headers)
@@ -166,6 +181,186 @@ def test_analyze_workflow_validation_and_execution_use_pydantic_contract(client)
     detail = reject_resp.json()["detail"]
     message = detail.get("message") if isinstance(detail, dict) else detail
     assert "Unknown toolbox method" in message
+
+
+def test_analyze_workflow_yolov8_detection_suppresses_overlay_when_runtime_unavailable(client):
+    headers, project_id, image = _create_project_with_part_image(client)
+    workflow = {
+        "name": "YOLO detection overlay regression",
+        "source": {
+            "id": "example-selection",
+            "label": "Example image",
+            "kind": "manual_selection",
+            "project_id": project_id,
+            "selected_image_ids": [image["id"]],
+            "example_image_id": image["id"],
+            "image_count": 1,
+            "part_count": 1,
+        },
+        "nodes": [
+            {"id": "input", "method_id": "source.project_part_images", "label": "Input", "parameters": {}},
+            {
+                "id": "yolo",
+                "method_id": "ml.yolov8.detect",
+                "label": "YOLOv8 Object Detection",
+                "parameters": {"model": "yolov8n.pt", "confidence": 0.25},
+            },
+            {
+                "id": "output",
+                "method_id": "output.versioned_image_artifact",
+                "label": "Versioned Output",
+                "parameters": {"mode": "overlay_artifact"},
+            },
+        ],
+        "edges": [
+            {"source_node": "input", "target_node": "yolo"},
+            {"source_node": "yolo", "target_node": "output"},
+        ],
+        "output": {"mode": "overlay_artifact", "version_strategy": "recipe_metadata"},
+    }
+
+    resp = client.post(f"/api/projects/{project_id}/analyze/workflows/execute", json=workflow, headers=headers)
+
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["status"] == "completed"
+    assert any("Ultralytics runtime is unavailable" in warning for warning in payload["warnings"])
+    assert not any("Attached 1 Analyze overlay output" in warning for warning in payload["warnings"])
+    yolo_node = next(node for node in payload["node_results"] if node["node_id"] == "yolo")
+    assert yolo_node["status"] == "skipped"
+    assert yolo_node["summary"]["runtime"] == "unavailable"
+    output_node = next(node for node in payload["node_results"] if node["node_id"] == "output")
+    assert output_node["status"] == "skipped"
+    assert output_node["summary"]["artifact_count"] == 0
+    assert output_node["artifacts"] == []
+
+    parts_resp = client.get(f"/api/projects/{project_id}/parts", headers=headers)
+    assert parts_resp.status_code == 200, parts_resp.text
+    part = parts_resp.json()[0]
+    assert "analysis_outputs" not in part["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_analyze_workflow_uses_configured_model_service_and_preserves_yolo_labels(monkeypatch):
+    from routers import analyze as analyze_router
+    from test_toolbox import WorkflowGraph, WorkflowImageInput
+
+    image_id = "11111111-1111-4111-8111-111111111111"
+    detection = {
+        "class_id": 0,
+        "class_name": "person",
+        "confidence": 0.93,
+        "bbox": {"x": 1, "y": 1, "width": 4, "height": 5, "image_width": 12, "image_height": 12},
+    }
+    captured_payload = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "workflow_name": "YOLO detection via model service",
+                "status": "completed",
+                "execution_mode": "execution",
+                "image_count": 1,
+                "warnings": [],
+                "node_results": [
+                    {
+                        "node_id": "input",
+                        "method_id": "source.project_part_images",
+                        "status": "completed",
+                        "output_types": ["image"],
+                        "message": "Loaded source image bytes.",
+                        "summary": {"image_id": image_id},
+                        "artifacts": [],
+                    },
+                    {
+                        "node_id": "yolo",
+                        "method_id": "ml.yolov8.detect",
+                        "status": "completed",
+                        "output_types": ["detections", "measurements"],
+                        "message": "Computed YOLOv8 object detections.",
+                        "summary": {
+                            "image_id": image_id,
+                            "runtime": "ultralytics",
+                            "model": "yolov8n.pt",
+                            "detection_count": 1,
+                            "measurement_count": 1,
+                            "detection_classes": {"person": 1},
+                            "detections": [detection],
+                        },
+                        "artifacts": [],
+                    },
+                    {
+                        "node_id": "output",
+                        "method_id": "output.versioned_image_artifact",
+                        "status": "completed",
+                        "output_types": ["metadata"],
+                        "message": "Prepared recipe/artifact output metadata.",
+                        "summary": {"image_id": image_id, "artifact_count": 1},
+                        "artifacts": [
+                            {
+                                "kind": "overlay_image",
+                                "label": "Detection Overlay :: YOLOv8 Object Detection",
+                                "method_id": "ml.yolov8.detect",
+                                "method_name": "YOLOv8 Object Detection",
+                                "detections": [detection],
+                                "content_type": "image/png",
+                                "filename_suffix": "analyze-overlay.png",
+                                "data_base64": _overlay_png_base64(),
+                                "width": 12,
+                                "height": 12,
+                            }
+                        ],
+                    },
+                ],
+            }
+
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json):
+            captured_payload["url"] = url
+            captured_payload["json"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr(analyze_router, "settings", settings.patch({"TOOLBOX_MODEL_SERVICE_URL": "http://toolbox-models:8010"}))
+    monkeypatch.setattr(analyze_router.httpx, "AsyncClient", FakeAsyncClient)
+
+    workflow = WorkflowGraph(
+        name="YOLO detection via model service",
+        source={"kind": "manual_selection", "selected_image_ids": [image_id], "image_count": 1, "part_count": 1},
+        nodes=[
+            {"id": "input", "method_id": "source.project_part_images", "label": "Input", "parameters": {}},
+            {
+                "id": "yolo",
+                "method_id": "ml.yolov8.detect",
+                "label": "YOLOv8 Object Detection",
+                "parameters": {"model": "yolov8n.pt", "confidence": 0.25},
+            },
+        ],
+        edges=[{"source_node": "input", "target_node": "yolo"}],
+    )
+    result = await analyze_router._execute_workflow_via_model_service(
+        workflow,
+        [WorkflowImageInput(image_id=image_id, filename="slice.png", content_type="image/png", data=_png_bytes().getvalue())],
+    )
+
+    assert result is not None
+    assert captured_payload["url"] == "http://toolbox-models:8010/workflows/execute"
+    assert captured_payload["json"]["images"][0]["data_base64"]
+    yolo_node = next(node for node in result.node_results if node.node_id == "yolo")
+    assert yolo_node.status == "completed"
+    assert yolo_node.summary["runtime"] == "ultralytics"
+    assert yolo_node.summary["detections"][0]["class_name"] == "person"
 
 
 def test_analyze_workflow_manual_selection_counts_selected_images(client):
@@ -205,7 +400,7 @@ def test_analyze_workflow_manual_selection_counts_selected_images(client):
     assert resp.json()["image_count"] == 1
 
 
-def test_analyze_workflow_yolov8_instance_segmentation_completes_and_attaches_overlay(client):
+def test_analyze_workflow_yolov8_instance_segmentation_suppresses_overlay_when_runtime_unavailable(client):
     headers, project_id, image = _create_project_with_part_image(client)
     workflow = {
         "name": "YOLOv8 instance segmentation",
@@ -246,11 +441,15 @@ def test_analyze_workflow_yolov8_instance_segmentation_completes_and_attaches_ov
     assert resp.status_code == 200, resp.text
     payload = resp.json()
     assert payload["status"] == "completed"
-    assert any("YOLOv8 model 'yolov8n-seg.pt' was not used" in warning for warning in payload["warnings"])
-    assert any("Attached 1 Analyze overlay output" in warning for warning in payload["warnings"])
+    assert any("YOLO model 'yolov8n-seg.pt' was not used" in warning for warning in payload["warnings"])
+    assert not any("Attached 1 Analyze overlay output" in warning for warning in payload["warnings"])
+    segment_node = next(node for node in payload["node_results"] if node["node_id"] == "segment")
+    assert segment_node["status"] == "skipped"
+    assert segment_node["summary"]["runtime"] == "unavailable"
     output_node = next(node for node in payload["node_results"] if node["node_id"] == "output")
-    overlay_artifact = next(artifact for artifact in output_node["artifacts"] if artifact["kind"] == "overlay_image")
-    assert overlay_artifact["method_id"] == "ml.yolov8.segment"
+    assert output_node["status"] == "skipped"
+    assert output_node["summary"]["artifact_count"] == 0
+    assert output_node["artifacts"] == []
 
 
 def test_analyze_workflow_uses_server_source_counts_and_rejects_cross_project_source(client):

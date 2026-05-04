@@ -598,8 +598,8 @@ function Project({ currentUserGroups = [] }) {
         )}
 
         {!loading && (
-          <div className="project-content project-main-tab-shell">
-            <section className="project-main-panel" aria-label="Selected project section">
+          <div className="project-content project-main-tab-shell" data-active-main-tab={activeMainTab}>
+            <section className="project-main-panel" data-active-main-tab={activeMainTab} aria-label="Selected project section">
               {renderMainPanel()}
             </section>
           </div>

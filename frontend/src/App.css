@@ -1082,10 +1082,13 @@ ul li:hover {
 
 .project-container {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   padding: var(--space-3) var(--space-6) var(--space-8);
   max-width: none;
   margin: 0 auto;
   width: 100%;
+  min-height: 0;
 }
 
 .project-content {
@@ -1096,6 +1099,12 @@ ul li:hover {
 
 .project-main-tab-shell {
   min-height: 72vh;
+}
+
+.project-main-tab-shell[data-active-main-tab="analyze"],
+.project-main-tab-shell[data-active-main-tab="inspection"] {
+  flex: 1;
+  min-height: calc(100vh - 180px);
 }
 
 .project-main-tabs {
@@ -1109,6 +1118,14 @@ ul li:hover {
 
 .project-main-panel {
   margin-top: 0;
+}
+
+.project-main-panel[data-active-main-tab="analyze"],
+.project-main-panel[data-active-main-tab="inspection"] {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 180px);
 }
 
 .gallery-section {
@@ -4028,6 +4045,13 @@ ul li:hover {
   padding: 16px;
 }
 
+.project-main-panel[data-active-main-tab="inspection"] > .workbench-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 180px);
+}
+
 .workbench-header p {
   color: #5c6670;
   margin-top: 4px;
@@ -4055,6 +4079,13 @@ ul li:hover {
 
 .workbench-layout {
   display: block;
+}
+
+.project-main-panel[data-active-main-tab="inspection"] .workbench-layout {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: calc(100vh - 240px);
 }
 
 @media (max-width: 1200px) {
@@ -4141,6 +4172,13 @@ ul li:hover {
   min-width: 0;
 }
 
+.project-main-panel[data-active-main-tab="inspection"] .workbench-details {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: calc(100vh - 260px);
+}
+
 .workbench-detail-header {
   display: flex;
   justify-content: space-between;
@@ -4187,6 +4225,13 @@ ul li:hover {
   background: #ffffff;
   overflow: hidden;
   isolation: isolate;
+}
+
+.project-main-panel[data-active-main-tab="inspection"] .workbench-flexlayout-shell {
+  flex: 1 1 auto;
+  height: max(var(--inspection-layout-min-height, 620px), calc(100vh - 330px));
+  margin-bottom: 0;
+  min-height: max(var(--inspection-layout-min-height, 620px), calc(100vh - 330px));
 }
 
 .workbench-flexlayout-shell .flexlayout__layout {
@@ -4294,6 +4339,11 @@ ul li:hover {
   overflow: auto;
 }
 
+.project-main-panel[data-active-main-tab="inspection"] .workspace-panel-layout {
+  height: 100%;
+  min-height: 0;
+}
+
 .workbench-tabbed-panel .project-tabs {
   margin-bottom: 8px;
 }
@@ -4308,6 +4358,12 @@ ul li:hover {
   display: grid;
   gap: 12px;
   color: var(--analyze-ink);
+}
+
+.project-main-panel[data-active-main-tab="analyze"] > .analyze-workbench {
+  flex: 1;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: calc(100vh - 180px);
 }
 
 .analyze-command-strip {
@@ -4363,6 +4419,10 @@ ul li:hover {
   align-items: stretch;
 }
 
+.project-main-panel[data-active-main-tab="analyze"] .analyze-grid {
+  min-height: max(540px, calc(100vh - 290px));
+}
+
 .analyze-toolbox,
 .analyze-canvas-panel,
 .analyze-inspector {
@@ -4379,6 +4439,12 @@ ul li:hover {
   padding: 12px;
   max-height: 680px;
   overflow: auto;
+}
+
+.project-main-panel[data-active-main-tab="analyze"] .analyze-toolbox,
+.project-main-panel[data-active-main-tab="analyze"] .analyze-inspector {
+  max-height: none;
+  min-height: max(540px, calc(100vh - 290px));
 }
 
 .analyze-toolbox {
@@ -4453,6 +4519,11 @@ ul li:hover {
   transform: translateY(-1px);
 }
 
+.analyze-method-button.selected {
+  border-color: var(--analyze-accent);
+  box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.16);
+}
+
 .analyze-method-button span {
   font-weight: 700;
 }
@@ -4464,6 +4535,12 @@ ul li:hover {
 
 .analyze-canvas-panel {
   overflow: hidden;
+}
+
+.project-main-panel[data-active-main-tab="analyze"] .analyze-canvas-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: max(540px, calc(100vh - 290px));
 }
 
 .analyze-canvas-toolbar {
@@ -4486,6 +4563,11 @@ ul li:hover {
     linear-gradient(rgba(23, 32, 42, 0.07) 1px, transparent 1px),
     linear-gradient(90deg, rgba(23, 32, 42, 0.07) 1px, transparent 1px);
   background-size: 28px 28px;
+}
+
+.project-main-panel[data-active-main-tab="analyze"] .analyze-graph {
+  flex: 1;
+  min-height: max(540px, calc(100vh - 340px));
 }
 
 .analyze-graph-surface {

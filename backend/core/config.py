@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     ML_DEFAULT_STATUS: str = "queued"
     ML_MAX_BULK_ANNOTATIONS: int = 1000  # Lowered from 5000 to prevent memory/timeout issues
     ML_PRESIGNED_URL_EXPIRY_SECONDS: int = 3600  # 1 hour to allow slow uploads of large artifacts
+    TOOLBOX_MODEL_SERVICE_URL: Optional[str] = None
 
     # Image deletion / retention settings
     IMAGE_DELETE_RETENTION_DAYS: int = 60  # Soft delete retention window (days)
