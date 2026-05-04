@@ -1,51 +1,133 @@
-# Development environment launcher for VISTA (PowerShell)
-# Usage: ./scripts/dev.ps1 [up|down|restart|logs|test|shell|migrate|build|ps] [service]
+# VISTA development environment launcher (PowerShell 5.1+ and PowerShell 7+)
+#
+# Architecture:
+# 1) Environment sensing (desktop app + runtime CLI + compose mode)
+# 2) Container orchestration (up/down/restart/logs/etc.)
+# 3) Verification (health + inter-service + host connectivity)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ComposeFile = "docker-compose.dev.yml"
+# =========================
+# Configurable settings
+# =========================
+$ComposeFile = if ($env:COMPOSE_FILE) { $env:COMPOSE_FILE } else { "docker-compose.dev.yml" }
+$LogDirRel = if ($env:LOG_DIR_REL) { $env:LOG_DIR_REL } else { "logs" }
+$HealthPollSeconds = if ($env:HEALTH_POLL_SECONDS) { [int]$env:HEALTH_POLL_SECONDS } else { 3 }
+
+$PostgresHealthTimeout = if ($env:POSTGRES_HEALTH_TIMEOUT) { [int]$env:POSTGRES_HEALTH_TIMEOUT } else { 180 }
+$MinioHealthTimeout = if ($env:MINIO_HEALTH_TIMEOUT) { [int]$env:MINIO_HEALTH_TIMEOUT } else { 180 }
+$BackendHealthTimeout = if ($env:BACKEND_HEALTH_TIMEOUT) { [int]$env:BACKEND_HEALTH_TIMEOUT } else { 300 }
+$FrontendHealthTimeout = if ($env:FRONTEND_HEALTH_TIMEOUT) { [int]$env:FRONTEND_HEALTH_TIMEOUT } else { 240 }
+
+$HostFrontendUrl = if ($env:HOST_FRONTEND_URL) { $env:HOST_FRONTEND_URL } else { "http://localhost:3000" }
+$HostBackendHealthUrl = if ($env:HOST_BACKEND_HEALTH_URL) { $env:HOST_BACKEND_HEALTH_URL } else { "http://localhost:8000/api/health" }
+$HostMinioLiveUrl = if ($env:HOST_MINIO_LIVE_URL) { $env:HOST_MINIO_LIVE_URL } else { "http://localhost:9000/minio/health/live" }
+
 $ScriptDir = $PSScriptRoot
 $ProjectRoot = Resolve-Path (Join-Path $ScriptDir "..")
-$LogDir = Join-Path $ProjectRoot "logs"
+$LogDir = Join-Path $ProjectRoot $LogDirRel
 $PidFile = Join-Path $LogDir ".log_pids"
-
 Set-Location $ProjectRoot
 
-$Command = if ($args.Count -ge 1 -and $args[0]) { $args[0].ToLowerInvariant() } else { "up" }
-$Arg2 = if ($args.Count -ge 2) { $args[1] } else { "" }
+$RuntimeCmd = $null
+$ComposeCmd = $null
 
-function Wait-ForServiceHealthy {
-    param(
-        [Parameter(Mandatory = $true)][string]$Service,
-        [int]$TimeoutSeconds = 180
-    )
+function Test-Command {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
+}
 
-    Write-Host "Waiting for '$Service' health status to be 'healthy' (timeout: ${TimeoutSeconds}s)..."
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while ((Get-Date) -lt $deadline) {
-        $health = docker compose -f $ComposeFile ps --format json $Service | python -c "import json,sys; data=json.load(sys.stdin); print((data[0].get('Health') if data else 'unknown'))" 2>$null
-        if ($health -eq "healthy") {
-            Write-Host "  ✓ $Service is healthy."
-            return
-        }
-        if ($health -eq "unhealthy") {
-            Write-Host "  ✗ $Service is unhealthy. Recent logs:"
-            docker compose -f $ComposeFile logs --tail=50 $Service
-            throw "Service '$Service' became unhealthy."
-        }
-        Start-Sleep -Seconds 3
+function Test-ProcessRunning {
+    param([Parameter(Mandatory = $true)][string]$Pattern)
+    try {
+        return [bool](Get-Process | Where-Object { $_.ProcessName -match $Pattern })
+    } catch {
+        return $false
+    }
+}
+
+function Detect-WindowsDesktopEngine {
+    if (Test-ProcessRunning -Pattern "Docker Desktop") { return "docker-desktop" }
+    if (Test-ProcessRunning -Pattern "Podman Desktop") { return "podman-desktop" }
+    return "none"
+}
+
+function Test-CommandWorks {
+    param([Parameter(Mandatory = $true)][string]$Command, [string[]]$Args)
+    if (-not (Test-Command $Command)) { return $false }
+    & $Command @Args *> $null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Sense-ContainerEngine {
+    $dockerOk = Test-CommandWorks -Command "docker" -Args @("info")
+    $podmanOk = Test-CommandWorks -Command "podman" -Args @("info")
+
+    if ($podmanOk) { $script:RuntimeCmd = "podman"; return }
+    if ($dockerOk) { $script:RuntimeCmd = "docker"; return }
+    throw "Neither podman nor docker CLI is installed and reachable."
+}
+
+function Sense-ComposeCommand {
+    if (Test-CommandWorks -Command $RuntimeCmd -Args @("compose", "version")) {
+        $script:ComposeCmd = @($RuntimeCmd, "compose")
+        return
     }
 
-    docker compose -f $ComposeFile ps $Service
-    docker compose -f $ComposeFile logs --tail=50 $Service
+    $legacy = @("$RuntimeCmd-compose", "docker-compose", "podman-compose")
+    foreach ($cmd in $legacy) {
+        if (Test-CommandWorks -Command $cmd -Args @("version")) {
+            $script:ComposeCmd = @($cmd)
+            return
+        }
+    }
+
+    throw "No working compose implementation detected."
+}
+
+function Invoke-Compose {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
+    if ($ComposeCmd.Count -eq 1) {
+        & $ComposeCmd[0] -f $ComposeFile @Args
+    } else {
+        & $ComposeCmd[0] $ComposeCmd[1] -f $ComposeFile @Args
+    }
+}
+
+function Print-EnvironmentSummary {
+    $desktop = "n/a"
+    if ($PSVersionTable.PSVersion.Major -ge 5 -and $env:OS -eq "Windows_NT") {
+        $desktop = Detect-WindowsDesktopEngine
+    }
+
+    Write-Host "Environment detection:"
+    Write-Host "  Runtime CLI:           $RuntimeCmd"
+    Write-Host "  Compose command:       $($ComposeCmd -join ' ')"
+    Write-Host "  Compose file:          $ComposeFile"
+    Write-Host "  Windows desktop app:   $desktop"
+}
+
+function Wait-ForServiceHealthy {
+    param([string]$Service, [int]$TimeoutSeconds = 180)
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $health = Invoke-Compose ps --format json $Service | python -c "import json,sys; data=json.load(sys.stdin); print((data[0].get('Health') if data else 'unknown'))" 2>$null
+        if ($health -eq "healthy") { Write-Host "✓ $Service healthy"; return }
+        if ($health -eq "unhealthy") {
+            Invoke-Compose logs --tail=50 $Service
+            throw "Service '$Service' became unhealthy."
+        }
+        Start-Sleep -Seconds $HealthPollSeconds
+    }
+    Invoke-Compose ps $Service
+    Invoke-Compose logs --tail=50 $Service
     throw "Timed out waiting for '$Service' to become healthy."
 }
 
 function Invoke-ConnectivityChecks {
-    Write-Host ""
     Write-Host "Running cross-service connectivity checks..."
-    docker compose -f $ComposeFile exec -T backend-dev bash -c @"
+    Invoke-Compose exec -T backend-dev bash -c @"
 set -e
 cd /app/backend
 python - <<'PY'
@@ -63,186 +145,83 @@ async def verify_postgres():
         await conn.close()
 
 asyncio.run(verify_postgres())
-
 urllib.request.urlopen('http://minio:9000/minio/health/live', timeout=5).read()
 print('✓ backend-dev -> minio connectivity OK (/minio/health/live)')
 PY
 "@
-    docker compose -f $ComposeFile exec -T frontend-dev sh -c "wget -qO- http://backend-dev:8000/api/health >/dev/null && echo '✓ frontend-dev -> backend-dev connectivity OK (/api/health)'"
+    Invoke-Compose exec -T frontend-dev sh -c "wget -qO- http://backend-dev:8000/api/health >/dev/null && echo '✓ frontend-dev -> backend-dev connectivity OK (/api/health)'"
+
+    Invoke-WebRequest -Uri $HostBackendHealthUrl -UseBasicParsing | Out-Null
+    Write-Host "✓ host -> backend-dev connectivity OK ($HostBackendHealthUrl)"
+    Invoke-WebRequest -Uri $HostMinioLiveUrl -UseBasicParsing | Out-Null
+    Write-Host "✓ host -> minio connectivity OK ($HostMinioLiveUrl)"
+    Invoke-WebRequest -Uri $HostFrontendUrl -UseBasicParsing | Out-Null
+    Write-Host "✓ host -> frontend-dev connectivity OK ($HostFrontendUrl)"
 }
 
 function Start-LogCollector {
-    param(
-        [Parameter(Mandatory = $true)][string]$Service,
-        [Parameter(Mandatory = $true)][string]$OutputFile
-    )
-
-    $dockerCmdArgs = @("compose", "-f", $ComposeFile, "logs", "-f", "--no-color", $Service)
+    param([string]$Service, [string]$OutputFile)
     $errorFile = "$OutputFile.err"
-    $startProcessArgs = @{
-        FilePath = "docker"
-        ArgumentList = $dockerCmdArgs
-        RedirectStandardOutput = $OutputFile
-        RedirectStandardError = $errorFile
-        PassThru = $true
+    $args = if ($ComposeCmd.Count -eq 1) {
+        @("-f", $ComposeFile, "logs", "-f", "--no-color", $Service)
+    } else {
+        @("compose", "-f", $ComposeFile, "logs", "-f", "--no-color", $Service)
     }
-
-    # -WindowStyle is only available in Windows PowerShell editions.
-    if ($IsWindows) {
-        $startProcessArgs["WindowStyle"] = "Hidden"
-    }
-
-    $proc = Start-Process @startProcessArgs
+    $proc = Start-Process -FilePath $ComposeCmd[0] -ArgumentList $args -RedirectStandardOutput $OutputFile -RedirectStandardError $errorFile -PassThru
     return $proc.Id
 }
 
+function Start-LogCollectors {
+    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+    $pids = @()
+    $pids += Start-LogCollector -Service "postgres" -OutputFile (Join-Path $LogDir "postgres.log")
+    $pids += Start-LogCollector -Service "minio" -OutputFile (Join-Path $LogDir "minio.log")
+    $pids += Start-LogCollector -Service "backend-dev" -OutputFile (Join-Path $LogDir "backend-dev.log")
+    $pids += Start-LogCollector -Service "frontend-dev" -OutputFile (Join-Path $LogDir "frontend-dev.log")
+    $pids | Set-Content -Path $PidFile
+}
+
+function Stop-LogCollectors {
+    if (Test-Path $PidFile) {
+        Get-Content $PidFile | ForEach-Object {
+            if ($_ -match '^\d+$') { Stop-Process -Id ([int]$_) -ErrorAction SilentlyContinue }
+        }
+        Remove-Item -Path $PidFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+Sense-ContainerEngine
+Sense-ComposeCommand
+
+$Command = if ($args.Count -ge 1) { $args[0].ToLowerInvariant() } else { "up" }
+$Arg2 = if ($args.Count -ge 2) { $args[1] } else { "" }
+
 switch ($Command) {
     "up" {
-        Write-Host "Starting VISTA development environment..."
-        docker compose -f $ComposeFile up -d
-        Wait-ForServiceHealthy -Service "postgres" -TimeoutSeconds 180
-        Wait-ForServiceHealthy -Service "minio" -TimeoutSeconds 180
-        Wait-ForServiceHealthy -Service "backend-dev" -TimeoutSeconds 300
-        Wait-ForServiceHealthy -Service "frontend-dev" -TimeoutSeconds 240
+        Print-EnvironmentSummary
+        Invoke-Compose up -d
+        Wait-ForServiceHealthy postgres $PostgresHealthTimeout
+        Wait-ForServiceHealthy minio $MinioHealthTimeout
+        Wait-ForServiceHealthy backend-dev $BackendHealthTimeout
+        Wait-ForServiceHealthy frontend-dev $FrontendHealthTimeout
         Invoke-ConnectivityChecks
-
-        # Create logs directory
-        New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-
-        # Start log collection in background
-        Write-Host "Starting log collection..."
-        $pids = @()
-        $pids += Start-LogCollector -Service "postgres" -OutputFile (Join-Path $LogDir "postgres.log")
-        $pids += Start-LogCollector -Service "minio" -OutputFile (Join-Path $LogDir "minio.log")
-        $pids += Start-LogCollector -Service "backend-dev" -OutputFile (Join-Path $LogDir "backend-dev.log")
-        $pids += Start-LogCollector -Service "frontend-dev" -OutputFile (Join-Path $LogDir "frontend-dev.log")
-        $pids | Set-Content -Path $PidFile
-
-        Write-Host ""
-        Write-Host "Development environment started."
-        Write-Host ""
-        Write-Host "Access points:"
-        Write-Host "  Frontend:      http://localhost:3000"
-        Write-Host "  Backend API:   http://localhost:8000"
-        Write-Host "  API Docs:      http://localhost:8000/docs"
-        Write-Host "  MinIO Console: http://localhost:9001"
-        Write-Host "  pgAdmin:       http://localhost:8080"
-        Write-Host ""
-        Write-Host "Logs are being written to:"
-        Write-Host "  logs/frontend-dev.log"
-        Write-Host "  logs/backend-dev.log"
-        Write-Host "  logs/postgres.log"
-        Write-Host "  logs/minio.log"
-        Write-Host ""
-        Write-Host "Useful commands:"
-        Write-Host "  View logs:     Get-Content logs/frontend-dev.log -Wait"
-        Write-Host "  Stop services: ./scripts/dev.ps1 down"
-        Write-Host "  Run tests:     ./scripts/test-docker.sh"
-        Write-Host "  Verify links:  ./scripts/dev.ps1 verify"
+        Start-LogCollectors
     }
-
     "verify" {
-        Wait-ForServiceHealthy -Service "postgres" -TimeoutSeconds 120
-        Wait-ForServiceHealthy -Service "minio" -TimeoutSeconds 120
-        Wait-ForServiceHealthy -Service "backend-dev" -TimeoutSeconds 180
-        Wait-ForServiceHealthy -Service "frontend-dev" -TimeoutSeconds 120
+        Print-EnvironmentSummary
+        Wait-ForServiceHealthy postgres 120
+        Wait-ForServiceHealthy minio 120
+        Wait-ForServiceHealthy backend-dev 180
+        Wait-ForServiceHealthy frontend-dev 120
         Invoke-ConnectivityChecks
-        Write-Host "All health and connectivity checks passed."
     }
-
-    "down" {
-        Write-Host "Stopping development environment..."
-
-        # Stop log collection processes
-        if (Test-Path $PidFile) {
-            Write-Host "Stopping log collection..."
-            Get-Content $PidFile | ForEach-Object {
-                if ($_ -match '^\d+$') {
-                    Stop-Process -Id ([int]$_) -ErrorAction SilentlyContinue
-                }
-            }
-            Remove-Item -Path $PidFile -Force -ErrorAction SilentlyContinue
-        }
-
-        docker compose -f $ComposeFile down
-        Write-Host "Development environment stopped."
-    }
-
-    "restart" {
-        Write-Host "Restarting development environment..."
-        if ($Arg2) {
-            docker compose -f $ComposeFile restart $Arg2
-        } else {
-            docker compose -f $ComposeFile restart
-        }
-        Write-Host "Development environment restarted."
-    }
-
-    "logs" {
-        if ($Arg2) {
-            docker compose -f $ComposeFile logs -f $Arg2
-        } else {
-            docker compose -f $ComposeFile logs -f
-        }
-    }
-
-    "test" {
-        # Check if containers are running
-        $psOutput = docker compose -f $ComposeFile ps
-        if (-not ($psOutput | Select-String -Pattern "Up" -SimpleMatch)) {
-            Write-Error "Error: Development containers are not running.`n`nPlease start the development environment first:`n  ./scripts/dev.ps1 up`n`nOr use the standalone test runner:`n  ./scripts/test-docker.sh"
-            exit 1
-        }
-
-        Write-Host "Running tests in containers..."
-        Write-Host ""
-        Write-Host "Backend tests:"
-        docker compose -f $ComposeFile exec backend-dev bash -c "cd /app/backend && pytest tests/"
-        Write-Host ""
-        Write-Host "Frontend tests:"
-        docker compose -f $ComposeFile exec frontend-dev npm test -- --watchAll=false
-    }
-
-    "shell" {
-        $service = if ($Arg2) { $Arg2 } else { "backend-dev" }
-        Write-Host "Opening shell in $service..."
-        docker compose -f $ComposeFile exec $service bash
-    }
-
-    "migrate" {
-        Write-Host "Running database migrations..."
-        docker compose -f $ComposeFile exec backend-dev bash -c "cd /app/backend && alembic upgrade head"
-        Write-Host "Migrations completed."
-    }
-
-    "build" {
-        Write-Host "Building containers..."
-        if ($Arg2) {
-            docker compose -f $ComposeFile build $Arg2
-        } else {
-            docker compose -f $ComposeFile build
-        }
-        Write-Host "Build completed."
-    }
-
-    "ps" {
-        docker compose -f $ComposeFile ps
-    }
-
-    default {
-        Write-Host "Usage: ./scripts/dev.ps1 {up|down|restart|logs|test|shell|migrate|build|ps|verify}"
-        Write-Host ""
-        Write-Host "Commands:"
-        Write-Host "  up       - Start all services"
-        Write-Host "  down     - Stop all services"
-        Write-Host "  restart  - Restart services"
-        Write-Host "  logs     - View logs (all or specific service)"
-        Write-Host "  test     - Run tests in containers"
-        Write-Host "  shell    - Open shell in container (default: backend-dev)"
-        Write-Host "  migrate  - Run database migrations"
-        Write-Host "  build    - Build or rebuild containers"
-        Write-Host "  ps       - Show container status"
-        Write-Host "  verify   - Run health and inter-service connectivity checks"
-        exit 1
-    }
+    "down" { Stop-LogCollectors; Invoke-Compose down }
+    "restart" { if ($Arg2) { Invoke-Compose restart $Arg2 } else { Invoke-Compose restart } }
+    "logs" { if ($Arg2) { Invoke-Compose logs -f $Arg2 } else { Invoke-Compose logs -f } }
+    "test" { Invoke-Compose exec backend-dev bash -c "cd /app/backend && pytest tests/"; Invoke-Compose exec frontend-dev npm test -- --watchAll=false }
+    "shell" { if ($Arg2) { Invoke-Compose exec $Arg2 bash } else { Invoke-Compose exec backend-dev bash } }
+    "migrate" { Invoke-Compose exec backend-dev bash -c "cd /app/backend && alembic upgrade head" }
+    "build" { if ($Arg2) { Invoke-Compose build $Arg2 } else { Invoke-Compose build } }
+    "ps" { Invoke-Compose ps }
+    default { throw "Usage: ./scripts/dev.ps1 {up|down|restart|logs|test|shell|migrate|build|ps|verify}" }
 }
