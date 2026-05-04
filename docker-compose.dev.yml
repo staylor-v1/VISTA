@@ -76,7 +76,8 @@ services:
       - pgadmin_data:/var/lib/pgadmin
       - ./pgadmin-servers.json:/pgadmin4/servers.json
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     networks:
       - vista-dev
 
@@ -223,7 +224,8 @@ services:
       - WATCHPACK_POLLING=true
       - CHOKIDAR_USEPOLLING=true
     depends_on:
-      - backend-dev
+      backend-dev:
+        condition: service_healthy
     stdin_open: true
     tty: true
     networks:

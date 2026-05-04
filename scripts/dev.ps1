@@ -15,6 +15,62 @@ Set-Location $ProjectRoot
 $Command = if ($args.Count -ge 1 -and $args[0]) { $args[0].ToLowerInvariant() } else { "up" }
 $Arg2 = if ($args.Count -ge 2) { $args[1] } else { "" }
 
+function Wait-ForServiceHealthy {
+    param(
+        [Parameter(Mandatory = $true)][string]$Service,
+        [int]$TimeoutSeconds = 180
+    )
+
+    Write-Host "Waiting for '$Service' health status to be 'healthy' (timeout: ${TimeoutSeconds}s)..."
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $health = docker compose -f $ComposeFile ps --format json $Service | python -c "import json,sys; data=json.load(sys.stdin); print((data[0].get('Health') if data else 'unknown'))" 2>$null
+        if ($health -eq "healthy") {
+            Write-Host "  ✓ $Service is healthy."
+            return
+        }
+        if ($health -eq "unhealthy") {
+            Write-Host "  ✗ $Service is unhealthy. Recent logs:"
+            docker compose -f $ComposeFile logs --tail=50 $Service
+            throw "Service '$Service' became unhealthy."
+        }
+        Start-Sleep -Seconds 3
+    }
+
+    docker compose -f $ComposeFile ps $Service
+    docker compose -f $ComposeFile logs --tail=50 $Service
+    throw "Timed out waiting for '$Service' to become healthy."
+}
+
+function Invoke-ConnectivityChecks {
+    Write-Host ""
+    Write-Host "Running cross-service connectivity checks..."
+    docker compose -f $ComposeFile exec -T backend-dev bash -c @"
+set -e
+cd /app/backend
+python - <<'PY'
+import asyncio
+import asyncpg
+import urllib.request
+
+async def verify_postgres():
+    conn = await asyncpg.connect('postgresql://postgres:postgres@postgres:5432/postgres')
+    try:
+        value = await conn.fetchval('SELECT 1')
+        assert value == 1
+        print('✓ backend-dev -> postgres connectivity OK (SELECT 1)')
+    finally:
+        await conn.close()
+
+asyncio.run(verify_postgres())
+
+urllib.request.urlopen('http://minio:9000/minio/health/live', timeout=5).read()
+print('✓ backend-dev -> minio connectivity OK (/minio/health/live)')
+PY
+"@
+    docker compose -f $ComposeFile exec -T frontend-dev sh -c "wget -qO- http://backend-dev:8000/api/health >/dev/null && echo '✓ frontend-dev -> backend-dev connectivity OK (/api/health)'"
+}
+
 function Start-LogCollector {
     param(
         [Parameter(Mandatory = $true)][string]$Service,
@@ -44,6 +100,11 @@ switch ($Command) {
     "up" {
         Write-Host "Starting VISTA development environment..."
         docker compose -f $ComposeFile up -d
+        Wait-ForServiceHealthy -Service "postgres" -TimeoutSeconds 180
+        Wait-ForServiceHealthy -Service "minio" -TimeoutSeconds 180
+        Wait-ForServiceHealthy -Service "backend-dev" -TimeoutSeconds 300
+        Wait-ForServiceHealthy -Service "frontend-dev" -TimeoutSeconds 240
+        Invoke-ConnectivityChecks
 
         # Create logs directory
         New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
@@ -77,6 +138,16 @@ switch ($Command) {
         Write-Host "  View logs:     Get-Content logs/frontend-dev.log -Wait"
         Write-Host "  Stop services: ./scripts/dev.ps1 down"
         Write-Host "  Run tests:     ./scripts/test-docker.sh"
+        Write-Host "  Verify links:  ./scripts/dev.ps1 verify"
+    }
+
+    "verify" {
+        Wait-ForServiceHealthy -Service "postgres" -TimeoutSeconds 120
+        Wait-ForServiceHealthy -Service "minio" -TimeoutSeconds 120
+        Wait-ForServiceHealthy -Service "backend-dev" -TimeoutSeconds 180
+        Wait-ForServiceHealthy -Service "frontend-dev" -TimeoutSeconds 120
+        Invoke-ConnectivityChecks
+        Write-Host "All health and connectivity checks passed."
     }
 
     "down" {
@@ -159,7 +230,7 @@ switch ($Command) {
     }
 
     default {
-        Write-Host "Usage: ./scripts/dev.ps1 {up|down|restart|logs|test|shell|migrate|build|ps}"
+        Write-Host "Usage: ./scripts/dev.ps1 {up|down|restart|logs|test|shell|migrate|build|ps|verify}"
         Write-Host ""
         Write-Host "Commands:"
         Write-Host "  up       - Start all services"
@@ -171,6 +242,7 @@ switch ($Command) {
         Write-Host "  migrate  - Run database migrations"
         Write-Host "  build    - Build or rebuild containers"
         Write-Host "  ps       - Show container status"
+        Write-Host "  verify   - Run health and inter-service connectivity checks"
         exit 1
     }
 }
