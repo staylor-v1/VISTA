@@ -10,10 +10,79 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
+wait_for_service_health() {
+  local service="$1"
+  local timeout_seconds="${2:-180}"
+  local elapsed=0
+
+  echo "Waiting for '$service' health status to be 'healthy' (timeout: ${timeout_seconds}s)..."
+  while [ "$elapsed" -lt "$timeout_seconds" ]; do
+    local status
+    status="$(docker compose -f "$COMPOSE_FILE" ps --format json "$service" 2>/dev/null | python -c "import json,sys; data=json.load(sys.stdin); print((data[0].get('Health') if data else 'unknown'))" 2>/dev/null || echo "unknown")"
+    case "$status" in
+      healthy)
+        echo "  ✓ $service is healthy."
+        return 0
+        ;;
+      unhealthy)
+        echo "  ✗ $service is unhealthy. Recent logs:"
+        docker compose -f "$COMPOSE_FILE" logs --tail=50 "$service" || true
+        return 1
+        ;;
+      *)
+        printf "."
+        sleep 3
+        elapsed=$((elapsed + 3))
+        ;;
+    esac
+  done
+
+  echo ""
+  echo "Timed out waiting for $service to become healthy."
+  docker compose -f "$COMPOSE_FILE" ps "$service" || true
+  docker compose -f "$COMPOSE_FILE" logs --tail=50 "$service" || true
+  return 1
+}
+
+run_connectivity_checks() {
+  echo ""
+  echo "Running cross-service connectivity checks..."
+  docker compose -f "$COMPOSE_FILE" exec -T backend-dev bash -c "
+    set -e
+    cd /app/backend
+    python - <<'PY'
+import asyncio
+import asyncpg
+import urllib.request
+
+async def verify_postgres():
+    conn = await asyncpg.connect('postgresql://postgres:postgres@postgres:5432/postgres')
+    try:
+        value = await conn.fetchval('SELECT 1')
+        assert value == 1
+        print('✓ backend-dev -> postgres connectivity OK (SELECT 1)')
+    finally:
+        await conn.close()
+
+asyncio.run(verify_postgres())
+
+urllib.request.urlopen('http://minio:9000/minio/health/live', timeout=5).read()
+print('✓ backend-dev -> minio connectivity OK (/minio/health/live)')
+PY
+  "
+  docker compose -f "$COMPOSE_FILE" exec -T frontend-dev sh -c "wget -qO- http://backend-dev:8000/api/health >/dev/null && echo '✓ frontend-dev -> backend-dev connectivity OK (/api/health)'"
+}
+
 case "${1:-up}" in
   up)
     echo "Starting VISTA development environment..."
     docker compose -f "$COMPOSE_FILE" up -d
+
+    wait_for_service_health postgres 180
+    wait_for_service_health minio 180
+    wait_for_service_health backend-dev 300
+    wait_for_service_health frontend-dev 240
+    run_connectivity_checks
 
     # Create logs directory
     mkdir -p "$PROJECT_ROOT/logs"
@@ -48,6 +117,16 @@ case "${1:-up}" in
     echo "  View logs:     tail -f logs/frontend-dev.log"
     echo "  Stop services: ./scripts/dev.sh down"
     echo "  Run tests:     ./scripts/test-docker.sh"
+    echo "  Verify links:  ./scripts/dev.sh verify"
+    ;;
+
+  verify)
+    wait_for_service_health postgres 120
+    wait_for_service_health minio 120
+    wait_for_service_health backend-dev 180
+    wait_for_service_health frontend-dev 120
+    run_connectivity_checks
+    echo "All health and connectivity checks passed."
     ;;
 
   down)
@@ -125,7 +204,7 @@ case "${1:-up}" in
     ;;
 
   *)
-    echo "Usage: $0 {up|down|restart|logs|test|shell|migrate|build|ps}"
+    echo "Usage: $0 {up|down|restart|logs|test|shell|migrate|build|ps|verify}"
     echo ""
     echo "Commands:"
     echo "  up       - Start all services"
@@ -137,6 +216,7 @@ case "${1:-up}" in
     echo "  migrate  - Run database migrations"
     echo "  build    - Build or rebuild containers"
     echo "  ps       - Show container status"
+    echo "  verify   - Run health and inter-service connectivity checks"
     exit 1
     ;;
 esac
