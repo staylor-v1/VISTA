@@ -122,10 +122,11 @@ function Print-EnvironmentSummary {
 
 function Wait-ForServiceHealthy {
     param([string]$Service, [int]$TimeoutSeconds = 180)
-    Write-Host (" [WAIT] Container {0,-20} Waiting                                0.0s" -f $Service)
+    Write-Host (" ✔ Container {0,-20} Waiting                                    0.0s" -f $Service)
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $elapsed = 0
-    $healthProbePy = @'
+    while ((Get-Date) -lt $deadline) {
+        $status = Invoke-Compose ps --format json $Service | python -c @"
 import json, sys
 raw = json.load(sys.stdin)
 rows = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
@@ -143,11 +144,9 @@ elif state:
     print(state)
 else:
     print('unknown')
-'@
-    while ((Get-Date) -lt $deadline) {
-        $status = Invoke-Compose ps --format json $Service | python -c $healthProbePy 2>$null
+"@ 2>$null
         if ($status -eq "healthy") {
-            Write-Host (" [OK]   Container {0,-20} Healthy                                {1}s" -f $Service, $elapsed)
+            Write-Host (" ✔ Container {0,-20} Healthy                                    {1}s" -f $Service, $elapsed)
             return
         }
         if ($status -eq "unhealthy") {
