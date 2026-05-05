@@ -164,13 +164,13 @@ function Print-EnvironmentSummary {
 
 function Wait-ForServiceHealthy {
     param([string]$Service, [int]$TimeoutSeconds = 180)
-    Write-Host (" ✔ Container {0,-20} Waiting                                    0.0s" -f $Service)
+    Write-Host (" [OK] Container {0,-20} Waiting                                 0.0s" -f $Service)
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $elapsed = 0
     while ((Get-Date) -lt $deadline) {
         $status = Get-ServiceHealthStatus -Service $Service
         if ($status -eq "healthy") {
-            Write-Host (" ✔ Container {0,-20} Healthy                                    {1}s" -f $Service, $elapsed)
+            Write-Host (" [OK] Container {0,-20} Healthy                                 {1}s" -f $Service, $elapsed)
             return
         }
         if ($status -eq "unhealthy") {
@@ -200,23 +200,23 @@ async def verify_postgres():
     try:
         value = await conn.fetchval("SELECT 1")
         assert value == 1
-        print("✓ backend-dev -> postgres connectivity OK (SELECT 1)")
+        print("[OK] backend-dev -> postgres connectivity OK (SELECT 1)")
     finally:
         await conn.close()
 
 asyncio.run(verify_postgres())
 urllib.request.urlopen('http://minio:9000/minio/health/live', timeout=5).read()
-print('✓ backend-dev -> minio connectivity OK (/minio/health/live)')
+print('[OK] backend-dev -> minio connectivity OK (/minio/health/live)')
 PY
 "@
-    Invoke-Compose exec -T frontend-dev sh -c "wget -qO- http://backend-dev:8000/api/health >/dev/null && echo '✓ frontend-dev -> backend-dev connectivity OK (/api/health)'"
+    Invoke-Compose exec -T frontend-dev sh -c "wget -qO- http://backend-dev:8000/api/health >/dev/null && echo '[OK] frontend-dev -> backend-dev connectivity OK (/api/health)'"
 
     Invoke-WebRequest -Uri $HostBackendHealthUrl -UseBasicParsing | Out-Null
-    Write-Host "✓ host -> backend-dev connectivity OK ($HostBackendHealthUrl)"
+    Write-Host "[OK] host -> backend-dev connectivity OK ($HostBackendHealthUrl)"
     Invoke-WebRequest -Uri $HostMinioLiveUrl -UseBasicParsing | Out-Null
-    Write-Host "✓ host -> minio connectivity OK ($HostMinioLiveUrl)"
+    Write-Host "[OK] host -> minio connectivity OK ($HostMinioLiveUrl)"
     Invoke-WebRequest -Uri $HostFrontendUrl -UseBasicParsing | Out-Null
-    Write-Host "✓ host -> frontend-dev connectivity OK ($HostFrontendUrl)"
+    Write-Host "[OK] host -> frontend-dev connectivity OK ($HostFrontendUrl)"
 }
 
 function Start-LogCollector {
