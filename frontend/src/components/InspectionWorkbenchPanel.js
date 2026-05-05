@@ -1546,7 +1546,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     if (!imageId) return;
     const sliceValue = slicePosition[axis];
     const axisLabel = (MPR_AXIS_CONFIG[axis]?.sliceLabel || axis).toUpperCase();
-    setFullscreenImageModal({ imageId: String(imageId), label: `${axis.toUpperCase()} slice ${sliceValue}` });
+    setFullscreenImageModal({ imageId: String(imageId), label: `${MPR_AXIS_CONFIG[axis]?.label || axis.toUpperCase()} slice ${sliceValue}` });
     setFullscreenMeasureActive(mode === 'measure');
     setFullscreenBoxActive(mode === 'box');
     setFullscreenCalibrationPromptVisible(false);
@@ -2563,6 +2563,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 {mlActionLoading.measurement ? 'Running Measurements...' : 'Run Measurements'}
               </button>
               <button type="button" className="btn btn-secondary btn-sm" onClick={resetViewport}>Reset 3D</button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => openMprAnnotationTool(activeMprPane === 'volume' ? 'axial' : activeMprPane, 'measure')}>Measure</button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => openMprAnnotationTool(activeMprPane === 'volume' ? 'axial' : activeMprPane, 'box')}>Draw Box</button>
             </div>
           </div>
           <div className={`mpr-grid ${mprExpandedPane ? 'mpr-grid-single' : 'mpr-grid-four'}`}>
@@ -2579,7 +2581,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   className={`mpr-pane mpr-pane-${axis} ${activeMprPane === axis ? 'active-pane' : ''} ${mprExpandedPane && mprExpandedPane !== axis ? 'mpr-pane-hidden' : ''}`}
                   style={{ '--mpr-axis-color': config?.color, ...crosshairStyle }}
                   data-testid={`mpr-pane-${axis}`}
-                  onClick={() => setActiveMprPane(axis)}
+                  onClick={() => { setActiveMprPane(axis); setMprExpandedPane(axis); openMprAnnotationTool(axis, 'measure'); setFullscreenMeasureActive(false); }}
                   onWheel={(event) => handleMprPaneWheel(axis, event)}
                 >
                   <header className="mpr-pane-header">
@@ -2588,8 +2590,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                       <button type="button" className="btn btn-secondary btn-sm" onClick={(event) => { event.stopPropagation(); setMprExpandedPane(mprExpandedPane === axis ? null : axis); }}>
                         {mprExpandedPane === axis ? 'Exit Full Window' : 'Full Window'}
                       </button>
-                      <button type="button" className="btn btn-secondary btn-sm" onClick={(event) => { event.stopPropagation(); openMprAnnotationTool(axis, 'measure'); }}>Measure</button>
-                      <button type="button" className="btn btn-secondary btn-sm" onClick={(event) => { event.stopPropagation(); openMprAnnotationTool(axis, 'box'); }}>Draw Box</button>
                       <span>{config?.sliceLabel || axis.toUpperCase()} {slicePosition[axis]} / {upper}</span>
                       <label className="mpr-mirror-toggle" htmlFor={`mpr-mirror-${axis}`} onClick={(event) => event.stopPropagation()}>
                         <input
@@ -2674,6 +2674,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     '--slice-axial-depth': `${(getFraction(slicePosition.axial, mprDimensions.axial - 1) - 0.5) * 108}px`,
                     '--slice-coronal-y': `${(getFraction(slicePosition.coronal, mprDimensions.coronal - 1) - 0.5) * 138}px`,
                     '--slice-sagittal-x': `${(getFraction(slicePosition.sagittal, mprDimensions.sagittal - 1) - 0.5) * 190}px`,
+                    '--reticle-active-color': MPR_AXIS_CONFIG[activeMprPane]?.color || '#f8fafc',
                   }}
                 >
                   {effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.stack ? (
@@ -2716,9 +2717,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   <span className="volume-box volume-face-right" />
                   <span className="volume-box volume-face-top" />
                   <span className="volume-box volume-face-bottom" />
-                  <span className="volume-plane plane-axial" />
-                  <span className="volume-plane plane-coronal" />
-                  <span className="volume-plane plane-sagittal" />
+                  <span className={`volume-plane plane-axial ${activeMprPane === 'axial' ? 'active' : ''}`} />
+                  <span className={`volume-plane plane-coronal ${activeMprPane === 'coronal' ? 'active' : ''}`} />
+                  <span className={`volume-plane plane-sagittal ${activeMprPane === 'sagittal' ? 'active' : ''}`} />
                   <span className="volume-reticle reticle-x" />
                   <span className="volume-reticle reticle-y" />
                   <span className="volume-reticle reticle-z" />

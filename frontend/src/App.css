@@ -5972,12 +5972,17 @@ ul li:hover {
 
 .plane-coronal {
   color: #f59e0b;
-  transform: translateY(var(--slice-coronal-y, 0)) translateZ(16px);
+  transform: translateY(var(--slice-coronal-y, 0));
 }
 
 .plane-sagittal {
   color: #10b981;
-  transform: translateX(var(--slice-sagittal-x, 0)) rotateY(90deg) translateZ(16px);
+  transform: translateX(var(--slice-sagittal-x, 0)) rotateY(90deg);
+}
+
+.volume-plane.active {
+  opacity: 1;
+  box-shadow: 0 0 16px color-mix(in srgb, currentColor 65%, #ffffff);
 }
 
 .volume-reticle {
@@ -5991,19 +5996,22 @@ ul li:hover {
   width: 170px;
   height: 1px;
   margin-left: -85px;
+  transform: translateY(var(--slice-coronal-y, 0));
 }
 
 .reticle-y {
   width: 1px;
   height: 118px;
   margin-top: -59px;
+  transform: translateX(var(--slice-sagittal-x, 0));
 }
 
 .reticle-z {
   width: 1px;
   height: 104px;
   margin-top: -52px;
-  transform: rotateY(90deg);
+  transform: translateZ(var(--slice-axial-depth, 0)) rotateY(90deg);
+  background: var(--reticle-active-color, rgba(248, 250, 252, 0.62));
 }
 
 .mpr-volume-legend {
