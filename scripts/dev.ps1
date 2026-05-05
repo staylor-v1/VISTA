@@ -49,9 +49,40 @@ function Test-ProcessRunning {
 }
 
 function Detect-WindowsDesktopEngine {
-    if (Test-ProcessRunning -Pattern "Docker Desktop") { return "docker-desktop" }
-    if (Test-ProcessRunning -Pattern "Podman Desktop") { return "podman-desktop" }
+    # Match friendly titles and actual process names across Docker/Podman Desktop variants.
+    if (Test-ProcessRunning -Pattern "(?i)docker(\s|-)?desktop") { return "docker-desktop" }
+    if (Test-ProcessRunning -Pattern "(?i)podman(\s|-)?desktop") { return "podman-desktop" }
     return "none"
+}
+
+function Test-RuntimeReachable {
+    param([Parameter(Mandatory = $true)][string]$Command, [string[]]$Args = @("info"))
+    if (-not (Test-Command $Command)) { return $false }
+    try {
+        return (Invoke-NativeQuiet -Command $Command -Args $Args)
+    } catch {
+        return $false
+    }
+}
+
+function Invoke-NativeQuiet {
+    param([Parameter(Mandatory = $true)][string]$Command, [string[]]$Args = @())
+
+    $oldPref = $ErrorActionPreference
+    $hadNativePref = Test-Path Variable:PSNativeCommandUseErrorActionPreference
+    if ($hadNativePref) { $oldNativePref = $PSNativeCommandUseErrorActionPreference }
+
+    try {
+        $ErrorActionPreference = "Continue"
+        if ($hadNativePref) { $PSNativeCommandUseErrorActionPreference = $false }
+        & $Command @Args *> $null 2>&1
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    } finally {
+        $ErrorActionPreference = $oldPref
+        if ($hadNativePref) { $PSNativeCommandUseErrorActionPreference = $oldNativePref }
+    }
 }
 
 function Get-PlatformName {
@@ -106,16 +137,41 @@ function Get-ServiceHealthStatus {
 function Test-CommandWorks {
     param([Parameter(Mandatory = $true)][string]$Command, [string[]]$Args)
     if (-not (Test-Command $Command)) { return $false }
-    & $Command @Args *> $null
-    return ($LASTEXITCODE -eq 0)
+    return (Invoke-NativeQuiet -Command $Command -Args $Args)
 }
 
 function Sense-ContainerEngine {
-    $dockerOk = Test-CommandWorks -Command "docker" -Args @("info")
-    $podmanOk = Test-CommandWorks -Command "podman" -Args @("info")
+    $platform = Get-PlatformName
+    $desktop = if ($platform -eq "windows-shell") { Detect-WindowsDesktopEngine } else { "none" }
 
-    if ($podmanOk) { $script:RuntimeCmd = "podman"; return }
-    if ($dockerOk) { $script:RuntimeCmd = "docker"; return }
+    # Windows + Podman Desktop can expose either podman.exe or only docker.exe wired to podman.
+    # Prefer podman when it is reachable, otherwise fall back to docker.
+    if ($desktop -eq "podman-desktop") {
+        if (Test-RuntimeReachable -Command "podman" -Args @("info")) { $script:RuntimeCmd = "podman"; return }
+
+        if (Test-RuntimeReachable -Command "docker" -Args @("info")) { $script:RuntimeCmd = "docker"; return }
+
+        # Best effort: Podman Desktop commonly exposes this named pipe for Docker-compatible clients.
+        $oldDockerHost = $env:DOCKER_HOST
+        $candidateHosts = @(
+            "npipe:////./pipe/podman-machine-default",
+            "npipe:////./pipe/podman-desktop-engine"
+        )
+        foreach ($host in $candidateHosts) {
+            $env:DOCKER_HOST = $host
+            if (Test-RuntimeReachable -Command "docker" -Args @("info")) {
+                $script:RuntimeCmd = "docker"
+                return
+            }
+        }
+
+        if ($null -eq $oldDockerHost) { Remove-Item Env:DOCKER_HOST -ErrorAction SilentlyContinue } else { $env:DOCKER_HOST = $oldDockerHost }
+        throw "Podman Desktop is running but no reachable podman/docker API was detected. Try launching a Podman machine and verify 'podman info' or 'docker info' works."
+    }
+
+    if (Test-RuntimeReachable -Command "podman" -Args @("info")) { $script:RuntimeCmd = "podman"; return }
+    if (Test-RuntimeReachable -Command "docker" -Args @("info")) { $script:RuntimeCmd = "docker"; return }
+
     throw "Neither podman nor docker CLI is installed and reachable."
 }
 
