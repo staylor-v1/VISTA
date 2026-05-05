@@ -133,13 +133,29 @@ print_environment_summary() {
 
 wait_for_service_health() {
   local service="$1" timeout_seconds="${2:-180}" elapsed=0
-  echo "Waiting for '$service' health status to be 'healthy' (timeout: ${timeout_seconds}s)..."
+  printf " ✔ Container %-20s Waiting                                    0.0s\n" "$service"
 
   while [[ "$elapsed" -lt "$timeout_seconds" ]]; do
     local status
-    status="$(compose ps --format json "$service" 2>/dev/null | python -c "import json,sys; data=json.load(sys.stdin); print((data[0].get('Health') if data else 'unknown'))" 2>/dev/null || echo unknown)"
+    status="$(compose ps --format json "$service" 2>/dev/null | python -c "import json,sys,re
+raw=json.load(sys.stdin)
+rows=raw if isinstance(raw,list) else ([raw] if isinstance(raw,dict) else [])
+row=rows[0] if rows else {}
+health=(str(row.get('Health') or '')).strip().lower()
+state=(str(row.get('State') or '')).strip().lower()
+status=(str(row.get('Status') or '')).strip().lower()
+if health:
+    print(health)
+elif 'healthy' in status or '(healthy)' in status:
+    print('healthy')
+elif 'unhealthy' in status or '(unhealthy)' in status:
+    print('unhealthy')
+elif state:
+    print(state)
+else:
+    print('unknown')" 2>/dev/null || echo unknown)"
     case "$status" in
-      healthy) echo "  ✓ $service is healthy."; return 0 ;;
+      healthy) printf " ✔ Container %-20s Healthy                                    %ss\n" "$service" "$elapsed"; return 0 ;;
       unhealthy)
         echo "  ✗ $service is unhealthy. Recent logs:"
         compose logs --tail=50 "$service" || true
