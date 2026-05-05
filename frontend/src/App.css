@@ -5652,6 +5652,16 @@ ul li:hover {
   gap: 4px;
 }
 
+
+.mpr-grid-single {
+  grid-template-columns: 1fr;
+  grid-template-rows: minmax(320px, 1fr);
+  height: min(76vh, 760px);
+}
+
+.mpr-pane-hidden {
+  display: none;
+}
 .mpr-pane {
   border: 1px solid #1f2937;
   border-radius: 4px;
@@ -5863,6 +5873,7 @@ ul li:hover {
 .volume-plane,
 .volume-reticle,
 .volume-slice-layer,
+.volume-slice-voxel,
 .volume-shell-image,
 .volume-cache-status,
 .volume-reconstruction-empty {
@@ -5871,7 +5882,8 @@ ul li:hover {
   transform-style: preserve-3d;
 }
 
-.volume-slice-layer {
+.volume-slice-layer,
+.volume-slice-voxel {
   inset: 0;
   width: 100%;
   height: 100%;
@@ -6496,4 +6508,10 @@ ul li:hover {
   .project-configuration-panel .config-entry-grid > .btn {
     justify-self: stretch;
   }
+}
+
+
+.volume-slice-voxel {
+  image-rendering: pixelated;
+  border: 1px solid rgba(148,163,184,0.14);
 }

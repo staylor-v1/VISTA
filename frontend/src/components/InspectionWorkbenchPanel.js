@@ -1108,6 +1108,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [mprRotation, setMprRotation] = useState({ x: -22, y: 32 });
   const [mprReconstructionMode, setMprReconstructionMode] = useState(MPR_RECONSTRUCTION_MODES.orientation);
   const [mprProjectionMirror, setMprProjectionMirror] = useState(DEFAULT_MPR_PROJECTION_MIRROR);
+  const [mprExpandedPane, setMprExpandedPane] = useState(null);
   const [activeWorkbenchModal, setActiveWorkbenchModal] = useState(null);
   const [contrastPercent, setContrastPercent] = useState(100);
   const [activeOverlayIds, setActiveOverlayIds] = useState([]);
@@ -1531,6 +1532,27 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         opacity: entries.length <= 1 ? 0.86 : 0.18 + (index / (entries.length - 1)) * 0.26,
       }));
   }, [volumeImageStack]);
+  const getMprAnnotationImage = useCallback((axis) => {
+    if (axis === 'axial' && volumeImageStack.length > 0) {
+      const target = slicePosition.axial;
+      const match = volumeImageStack.find((entry) => Number(entry.sliceIndex) === Number(target)) || volumeImageStack[Math.min(target, volumeImageStack.length - 1)] || volumeImageStack[0];
+      return match?.id || match?.imageId || selectedImageRef || null;
+    }
+    return selectedImageRef || (volumeImageStack[0]?.id || volumeImageStack[0]?.imageId || null);
+  }, [selectedImageRef, slicePosition.axial, volumeImageStack]);
+
+  const openMprAnnotationTool = useCallback((axis, mode) => {
+    const imageId = getMprAnnotationImage(axis);
+    if (!imageId) return;
+    const sliceValue = slicePosition[axis];
+    const axisLabel = (MPR_AXIS_CONFIG[axis]?.sliceLabel || axis).toUpperCase();
+    setFullscreenImageModal({ imageId: String(imageId), label: `${axis.toUpperCase()} slice ${sliceValue}` });
+    setFullscreenMeasureActive(mode === 'measure');
+    setFullscreenBoxActive(mode === 'box');
+    setFullscreenCalibrationPromptVisible(false);
+    setAnnotationDraft((prev) => ({ ...prev, comment: `${mode === 'measure' ? 'Measurement' : 'Box'} on ${axisLabel} ${sliceValue}` }));
+  }, [getMprAnnotationImage, slicePosition]);
+
   const canShowStackReconstruction = volumePreviewLayers.length > 0;
   const canShowShellReconstruction = shellImageLayers.length > 0;
   const effectiveMprReconstructionMode = (
@@ -2543,7 +2565,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
               <button type="button" className="btn btn-secondary btn-sm" onClick={resetViewport}>Reset 3D</button>
             </div>
           </div>
-          <div className="mpr-grid mpr-grid-four">
+          <div className={`mpr-grid ${mprExpandedPane ? 'mpr-grid-single' : 'mpr-grid-four'}`}>
             {MPR_AXES.map((axis) => {
               const upper = Math.max(0, (mprDimensions[axis] || 1) - 1);
               const config = MPR_AXIS_CONFIG[axis];
@@ -2554,7 +2576,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
               return (
                 <article
                   key={axis}
-                  className={`mpr-pane mpr-pane-${axis} ${activeMprPane === axis ? 'active-pane' : ''}`}
+                  className={`mpr-pane mpr-pane-${axis} ${activeMprPane === axis ? 'active-pane' : ''} ${mprExpandedPane && mprExpandedPane !== axis ? 'mpr-pane-hidden' : ''}`}
                   style={{ '--mpr-axis-color': config?.color, ...crosshairStyle }}
                   data-testid={`mpr-pane-${axis}`}
                   onClick={() => setActiveMprPane(axis)}
@@ -2563,6 +2585,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   <header className="mpr-pane-header">
                     <strong>{label}</strong>
                     <div className="mpr-pane-header-controls">
+                      <button type="button" className="btn btn-secondary btn-sm" onClick={(event) => { event.stopPropagation(); setMprExpandedPane(mprExpandedPane === axis ? null : axis); }}>
+                        {mprExpandedPane === axis ? 'Exit Full Window' : 'Full Window'}
+                      </button>
+                      <button type="button" className="btn btn-secondary btn-sm" onClick={(event) => { event.stopPropagation(); openMprAnnotationTool(axis, 'measure'); }}>Measure</button>
+                      <button type="button" className="btn btn-secondary btn-sm" onClick={(event) => { event.stopPropagation(); openMprAnnotationTool(axis, 'box'); }}>Draw Box</button>
                       <span>{config?.sliceLabel || axis.toUpperCase()} {slicePosition[axis]} / {upper}</span>
                       <label className="mpr-mirror-toggle" htmlFor={`mpr-mirror-${axis}`} onClick={(event) => event.stopPropagation()}>
                         <input
@@ -2618,7 +2645,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
               );
             })}
             <article
-              className={`mpr-pane mpr-pane-volume ${activeMprPane === 'volume' ? 'active-pane' : ''}`}
+              className={`mpr-pane mpr-pane-volume ${activeMprPane === 'volume' ? 'active-pane' : ''} ${mprExpandedPane && mprExpandedPane !== 'volume' ? 'mpr-pane-hidden' : ''}`}
               data-testid="mpr-pane-3d"
               onClick={() => setActiveMprPane('volume')}
               onWheel={handleMprVolumeWheel}
@@ -2626,6 +2653,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
               <header className="mpr-pane-header">
                 <strong>3D</strong>
                 <span>Zoom {viewportTransform.zoom.toFixed(2)}x</span>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={(event) => { event.stopPropagation(); setMprExpandedPane(mprExpandedPane === 'volume' ? null : 'volume'); }}>{mprExpandedPane === 'volume' ? 'Exit Full Window' : 'Full Window'}</button>
               </header>
               <div
                 className="mpr-volume-scene"
@@ -2652,7 +2680,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     volumePreviewLayers.map((layer) => (
                       <img
                         key={`${layer.id}-${layer.sliceIndex}`}
-                        className="volume-slice-layer"
+                        className="volume-slice-voxel"
                         src={layer.url}
                         alt={`Volume reconstruction slice ${layer.sliceIndex}`}
                         draggable={false}
