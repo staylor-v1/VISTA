@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Exit immediately if any command exits with a non-zero status
-set -e
+set -euo pipefail
 
 # Backend run script
 # Tries to load the virtual environment (.venv) from current dir or back one dir before proceeding
@@ -54,7 +54,7 @@ check_postgres() {
         attempt=$((attempt + 1))
     done
     echo "ERROR: PostgreSQL not responding after $max_attempts attempts"
-    echo "Make sure PostgreSQL is running: podman compose up -d postgres"
+    echo "Make sure PostgreSQL is running: ./scripts/dev.sh up (or your compose command)"
     return 1
 }
 
@@ -80,7 +80,7 @@ check_minio() {
         attempt=$((attempt + 1))
     done
     echo "ERROR: MinIO not responding after $max_attempts attempts"
-    echo "Make sure MinIO is running: podman compose up -d minio"
+    echo "Make sure MinIO is running: ./scripts/dev.sh up (or your compose command)"
     return 1
 }
 

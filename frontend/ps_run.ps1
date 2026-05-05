@@ -53,11 +53,11 @@ function Start-Frontend {
     $env:SKIP_PREFLIGHT_CHECK = "true"
     
     # Start the development server with optimizations
-    # Use cross-env if available, otherwise just run npm start directly
+    # Use cross-env if available, otherwise just run npm run dev directly
     if (Get-Command cross-env -ErrorAction SilentlyContinue) {
-        npx cross-env FAST_REFRESH=true GENERATE_SOURCEMAP=true SKIP_PREFLIGHT_CHECK=true npm start
+        npx cross-env FAST_REFRESH=true GENERATE_SOURCEMAP=true SKIP_PREFLIGHT_CHECK=true npm run dev
     } else {
-        npm start
+        npm run dev
     }
 }
 
