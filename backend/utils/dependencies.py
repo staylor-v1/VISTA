@@ -3,7 +3,7 @@ from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 import uuid
 import hashlib
 import secrets
@@ -54,7 +54,15 @@ async def _ensure_user_in_db(email: str, db: AsyncSession) -> User:
         db_user = await crud.get_user_by_email(db=db, email=email)
         if not db_user:
             user_create = UserCreate(email=email)
-            db_user = await crud.create_user(db=db, user=user_create)
+            try:
+                db_user = await crud.create_user(db=db, user=user_create)
+            except IntegrityError:
+                # Another concurrent request may have created the same email
+                # after our initial lookup. Roll back and fetch the existing row.
+                await db.rollback()
+                db_user = await crud.get_user_by_email(db=db, email=email)
+                if not db_user:
+                    raise
     except ProgrammingError as exc:
         err_text = str(exc).lower()
         if "relation \"users\" does not exist" in err_text:
