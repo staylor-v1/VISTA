@@ -8,7 +8,9 @@ const isCheckMode = process.argv.includes('--check');
 const env = {
   ...process.env,
   FAST_REFRESH: 'true',
-  SKIP_PREFLIGHT_CHECK: 'true'
+  SKIP_PREFLIGHT_CHECK: 'true',
+  // Prevent react-scripts from trying to launch a host browser from inside containers/WSL.
+  BROWSER: process.env.BROWSER ?? 'none'
 };
 
 if (isFastMode) {
