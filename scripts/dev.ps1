@@ -32,6 +32,7 @@ Set-Location $ProjectRoot
 
 $RuntimeCmd = $null
 $ComposeCmd = $null
+$ComposeMode = $null
 
 function Test-Command {
     param([Parameter(Mandatory = $true)][string]$Name)
@@ -53,6 +54,13 @@ function Detect-WindowsDesktopEngine {
     return "none"
 }
 
+function Get-PlatformName {
+    if ($env:OS -eq "Windows_NT") { return "windows-shell" }
+    if ($IsLinux) { return "linux" }
+    if ($IsMacOS) { return "macos" }
+    return "unknown"
+}
+
 function Test-CommandWorks {
     param([Parameter(Mandatory = $true)][string]$Command, [string[]]$Args)
     if (-not (Test-Command $Command)) { return $false }
@@ -71,6 +79,7 @@ function Sense-ContainerEngine {
 
 function Sense-ComposeCommand {
     if (Test-CommandWorks -Command $RuntimeCmd -Args @("compose", "version")) {
+        $script:ComposeMode = "plugin"
         $script:ComposeCmd = @($RuntimeCmd, "compose")
         return
     }
@@ -78,6 +87,7 @@ function Sense-ComposeCommand {
     $legacy = @("$RuntimeCmd-compose", "docker-compose", "podman-compose")
     foreach ($cmd in $legacy) {
         if (Test-CommandWorks -Command $cmd -Args @("version")) {
+            $script:ComposeMode = "legacy"
             $script:ComposeCmd = @($cmd)
             return
         }
@@ -96,29 +106,56 @@ function Invoke-Compose {
 }
 
 function Print-EnvironmentSummary {
+    $platform = Get-PlatformName
     $desktop = "n/a"
-    if ($PSVersionTable.PSVersion.Major -ge 5 -and $env:OS -eq "Windows_NT") {
+    if ($platform -eq "windows-shell") {
         $desktop = Detect-WindowsDesktopEngine
     }
 
     Write-Host "Environment detection:"
-    Write-Host "  Runtime CLI:           $RuntimeCmd"
-    Write-Host "  Compose command:       $($ComposeCmd -join ' ')"
-    Write-Host "  Compose file:          $ComposeFile"
+    Write-Host "  Platform:              $platform"
     Write-Host "  Windows desktop app:   $desktop"
+    Write-Host "  Runtime CLI:           $RuntimeCmd"
+    Write-Host "  Compose mode:          $ComposeMode ($($ComposeCmd -join ' '))"
+    Write-Host "  Compose file:          $ComposeFile"
 }
 
 function Wait-ForServiceHealthy {
     param([string]$Service, [int]$TimeoutSeconds = 180)
+    Write-Host (" [WAIT] Container {0,-20} Waiting                                0.0s" -f $Service)
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $elapsed = 0
+    $healthProbePy = @'
+import json, sys
+raw = json.load(sys.stdin)
+rows = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+row = rows[0] if rows else {}
+health = str(row.get('Health') or '').strip().lower()
+state = str(row.get('State') or '').strip().lower()
+status = str(row.get('Status') or '').strip().lower()
+if health:
+    print(health)
+elif 'healthy' in status or '(healthy)' in status:
+    print('healthy')
+elif 'unhealthy' in status or '(unhealthy)' in status:
+    print('unhealthy')
+elif state:
+    print(state)
+else:
+    print('unknown')
+'@
     while ((Get-Date) -lt $deadline) {
-        $health = Invoke-Compose ps --format json $Service | python -c "import json,sys; data=json.load(sys.stdin); print((data[0].get('Health') if data else 'unknown'))" 2>$null
-        if ($health -eq "healthy") { Write-Host "✓ $Service healthy"; return }
-        if ($health -eq "unhealthy") {
+        $status = Invoke-Compose ps --format json $Service | python -c $healthProbePy 2>$null
+        if ($status -eq "healthy") {
+            Write-Host (" [OK]   Container {0,-20} Healthy                                {1}s" -f $Service, $elapsed)
+            return
+        }
+        if ($status -eq "unhealthy") {
             Invoke-Compose logs --tail=50 $Service
             throw "Service '$Service' became unhealthy."
         }
         Start-Sleep -Seconds $HealthPollSeconds
+        $elapsed += $HealthPollSeconds
     }
     Invoke-Compose ps $Service
     Invoke-Compose logs --tail=50 $Service
