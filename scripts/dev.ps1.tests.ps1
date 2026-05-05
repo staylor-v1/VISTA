@@ -48,6 +48,12 @@ function Invoke-Compose {
 }
 Assert-Equal -Name 'Get-ServiceHealthStatus status healthy fallback' -Actual (Get-ServiceHealthStatus -Service 'backend-dev') -Expected 'healthy'
 
+
+# Regression test: script output strings should stay ASCII-safe for Windows PowerShell encoding defaults.
+$devScriptRaw = Get-Content -Path "$PSScriptRoot/dev.ps1" -Raw
+$nonAsciiMatches = [regex]::Matches($devScriptRaw, "[^\u0000-\u007F]")
+Assert-Equal -Name 'dev.ps1 contains only ASCII chars' -Actual $nonAsciiMatches.Count -Expected 0
+
 # Test: top-level script exports Invoke-Main and can be dot-sourced without running compose.
 Assert-True -Name 'Invoke-Main function exists' -Condition ([bool](Get-Command Invoke-Main -ErrorAction SilentlyContinue))
 
