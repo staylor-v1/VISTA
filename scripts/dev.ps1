@@ -166,17 +166,17 @@ function Invoke-ConnectivityChecks {
     Invoke-Compose exec -T backend-dev bash -c @"
 set -e
 cd /app/backend
-python - <<'PY'
+python - <<"PY"
 import asyncio
 import asyncpg
 import urllib.request
 
 async def verify_postgres():
-    conn = await asyncpg.connect('postgresql://postgres:postgres@postgres:5432/postgres')
+    conn = await asyncpg.connect("postgresql://postgres:postgres@postgres:5432/postgres")
     try:
-        value = await conn.fetchval('SELECT 1')
+        value = await conn.fetchval("SELECT 1")
         assert value == 1
-        print('✓ backend-dev -> postgres connectivity OK (SELECT 1)')
+        print("✓ backend-dev -> postgres connectivity OK (SELECT 1)")
     finally:
         await conn.close()
 
