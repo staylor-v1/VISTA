@@ -2464,6 +2464,23 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       ) : (
         <>
           <div className="mpr-control-strip">
+            {projectType === 'PT3' && filteredParts.length > 1 && (
+              <label htmlFor="mpr-part-selector" className="mpr-part-selector">
+                Part
+                <select
+                  id="mpr-part-selector"
+                  data-testid="mpr-part-selector"
+                  value={selectedPart?.id || ''}
+                  onChange={(event) => setSelectedPartId(event.target.value)}
+                >
+                  {filteredParts.map((part) => (
+                    <option key={part.id} value={part.id}>
+                      {part.display_name || part.serial_number || part.id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label htmlFor="mpr-contrast">
               Contrast
               <input
