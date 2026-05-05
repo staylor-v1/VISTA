@@ -7,18 +7,47 @@ import os
 import subprocess
 import sys
 import time
+from typing import Sequence
 
 DEFAULT_ATTEMPTS = 15
 DEFAULT_DELAY_SECONDS = 2.0
 
 
-def _run_alembic_upgrade(target: str) -> subprocess.CompletedProcess[str]:
+def _run_alembic_command(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["alembic", "upgrade", target],
+        ["alembic", *args],
         check=False,
         capture_output=True,
         text=True,
     )
+
+
+def _run_alembic_upgrade(target: str) -> subprocess.CompletedProcess[str]:
+    return _run_alembic_command("upgrade", target)
+
+
+def _run_alembic_heads() -> subprocess.CompletedProcess[str]:
+    return _run_alembic_command("heads")
+
+
+def _run_alembic_merge(heads: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    return _run_alembic_command(
+        "merge",
+        "-m",
+        "auto-merge concurrent heads",
+        *heads,
+    )
+
+
+def _parse_head_revisions(heads_stdout: str) -> list[str]:
+    revisions: list[str] = []
+    for line in heads_stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        revision = stripped.split(" ", 1)[0]
+        revisions.append(revision)
+    return revisions
 
 
 def _is_connection_error(stderr: str) -> bool:
@@ -38,7 +67,20 @@ def run() -> int:
     delay_seconds = float(os.getenv("MIGRATION_RETRY_DELAY_SECONDS", str(DEFAULT_DELAY_SECONDS)))
 
     for attempt in range(1, attempts + 1):
-        result = _run_alembic_upgrade("heads")
+        heads_result = _run_alembic_heads()
+        if heads_result.returncode != 0:
+            result = heads_result
+        else:
+            heads = _parse_head_revisions(heads_result.stdout)
+            if len(heads) > 1:
+                merge_result = _run_alembic_merge(heads)
+                if merge_result.returncode != 0:
+                    result = merge_result
+                else:
+                    result = _run_alembic_upgrade("head")
+            else:
+                result = _run_alembic_upgrade("head")
+
         if result.returncode == 0:
             print("Database migrations applied successfully.")
             return 0
