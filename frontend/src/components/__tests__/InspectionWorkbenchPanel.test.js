@@ -1378,6 +1378,12 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('mpr-panel')).toHaveTextContent('YZ');
     expect(screen.getByTestId('mpr-pane-3d')).toHaveTextContent('3D');
     expect(screen.getByLabelText('3D view')).toHaveValue('orientation');
+    expect(screen.getByTestId('mpr-part-selector')).toHaveValue('part-adv-1');
+    fireEvent.change(screen.getByTestId('mpr-part-selector'), { target: { value: 'part-adv-2' } });
+    expect(screen.getByTestId('mpr-part-selector')).toHaveValue('part-adv-2');
+    expect(screen.getByTestId('mpr-pane-coronal')).toHaveTextContent('No volume stack images');
+    fireEvent.change(screen.getByTestId('mpr-part-selector'), { target: { value: 'part-adv-1' } });
+    expect(screen.getByTestId('mpr-part-selector')).toHaveValue('part-adv-1');
     expect(screen.queryByAltText(/Volume reconstruction slice/)).not.toBeInTheDocument();
     expect(screen.queryByText(/axial/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/coronal/i)).not.toBeInTheDocument();
