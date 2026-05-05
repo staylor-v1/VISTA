@@ -49,6 +49,10 @@ function Invoke-Compose {
 Assert-Equal -Name 'Get-ServiceHealthStatus status healthy fallback' -Actual (Get-ServiceHealthStatus -Service 'backend-dev') -Expected 'healthy'
 
 
+
+# Regression test: benign stderr from native tools should not fail detection probes.
+Assert-True -Name 'Invoke-NativeQuiet tolerates stderr with zero exit' -Condition (Invoke-NativeQuiet -Command 'pwsh' -Args @('-NoProfile','-Command','[Console]::Error.WriteLine("compose provider notice"); exit 0'))
+
 # Regression test: script output strings should stay ASCII-safe for Windows PowerShell encoding defaults.
 $devScriptRaw = Get-Content -Path "$PSScriptRoot/dev.ps1" -Raw
 $nonAsciiMatches = [regex]::Matches($devScriptRaw, "[^\u0000-\u007F]")

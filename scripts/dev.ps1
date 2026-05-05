@@ -59,10 +59,29 @@ function Test-RuntimeReachable {
     param([Parameter(Mandatory = $true)][string]$Command, [string[]]$Args = @("info"))
     if (-not (Test-Command $Command)) { return $false }
     try {
-        & $Command @Args *> $null
+        return (Invoke-NativeQuiet -Command $Command -Args $Args)
+    } catch {
+        return $false
+    }
+}
+
+function Invoke-NativeQuiet {
+    param([Parameter(Mandatory = $true)][string]$Command, [string[]]$Args = @())
+
+    $oldPref = $ErrorActionPreference
+    $hadNativePref = Test-Path Variable:PSNativeCommandUseErrorActionPreference
+    if ($hadNativePref) { $oldNativePref = $PSNativeCommandUseErrorActionPreference }
+
+    try {
+        $ErrorActionPreference = "Continue"
+        if ($hadNativePref) { $PSNativeCommandUseErrorActionPreference = $false }
+        & $Command @Args *> $null 2>&1
         return ($LASTEXITCODE -eq 0)
     } catch {
         return $false
+    } finally {
+        $ErrorActionPreference = $oldPref
+        if ($hadNativePref) { $PSNativeCommandUseErrorActionPreference = $oldNativePref }
     }
 }
 
@@ -118,8 +137,7 @@ function Get-ServiceHealthStatus {
 function Test-CommandWorks {
     param([Parameter(Mandatory = $true)][string]$Command, [string[]]$Args)
     if (-not (Test-Command $Command)) { return $false }
-    & $Command @Args *> $null
-    return ($LASTEXITCODE -eq 0)
+    return (Invoke-NativeQuiet -Command $Command -Args $Args)
 }
 
 function Sense-ContainerEngine {
