@@ -56,8 +56,50 @@ function Detect-WindowsDesktopEngine {
 
 function Get-PlatformName {
     if ($env:OS -eq "Windows_NT") { return "windows-shell" }
-    if ($IsLinux) { return "linux" }
-    if ($IsMacOS) { return "macos" }
+    $isLinuxVar = Get-Variable -Name "IsLinux" -Scope Global -ErrorAction SilentlyContinue
+    $isMacOsVar = Get-Variable -Name "IsMacOS" -Scope Global -ErrorAction SilentlyContinue
+    if ($isLinuxVar -and $isLinuxVar.Value) { return "linux" }
+    if ($isMacOsVar -and $isMacOsVar.Value) { return "macos" }
+    return "unknown"
+}
+
+function Get-ServiceHealthStatus {
+    param([Parameter(Mandatory = $true)][string]$Service)
+
+    $jsonOutput = Invoke-Compose ps --format json $Service
+    if (-not $jsonOutput) { return "unknown" }
+
+    $parsed = $null
+    try {
+        $parsed = $jsonOutput | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        return "unknown"
+    }
+
+    $row = $null
+    if ($parsed -is [System.Collections.IEnumerable] -and -not ($parsed -is [string])) {
+        $items = @($parsed)
+        if ($items.Count -gt 0) { $row = $items[0] }
+    } else {
+        $row = $parsed
+    }
+
+    if (-not $row) { return "unknown" }
+
+    $healthProp = $row.PSObject.Properties["Health"]
+    $stateProp = $row.PSObject.Properties["State"]
+    $statusProp = $row.PSObject.Properties["Status"]
+
+    $health = if ($healthProp) { [string]$healthProp.Value } else { "" }
+    $state = if ($stateProp) { [string]$stateProp.Value } else { "" }
+    $status = if ($statusProp) { [string]$statusProp.Value } else { "" }
+    if ($health) { return $health.Trim().ToLowerInvariant() }
+
+    $statusLower = $status.Trim().ToLowerInvariant()
+    if ($statusLower.Contains("healthy")) { return "healthy" }
+    if ($statusLower.Contains("unhealthy")) { return "unhealthy" }
+
+    if ($state) { return $state.Trim().ToLowerInvariant() }
     return "unknown"
 }
 
@@ -126,25 +168,7 @@ function Wait-ForServiceHealthy {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $elapsed = 0
     while ((Get-Date) -lt $deadline) {
-        $status = Invoke-Compose ps --format json $Service | python -c @"
-import json, sys
-raw = json.load(sys.stdin)
-rows = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
-row = rows[0] if rows else {}
-health = str(row.get('Health') or '').strip().lower()
-state = str(row.get('State') or '').strip().lower()
-status = str(row.get('Status') or '').strip().lower()
-if health:
-    print(health)
-elif 'healthy' in status or '(healthy)' in status:
-    print('healthy')
-elif 'unhealthy' in status or '(unhealthy)' in status:
-    print('unhealthy')
-elif state:
-    print(state)
-else:
-    print('unknown')
-"@ 2>$null
+        $status = Get-ServiceHealthStatus -Service $Service
         if ($status -eq "healthy") {
             Write-Host (" ✔ Container {0,-20} Healthy                                    {1}s" -f $Service, $elapsed)
             return
@@ -226,38 +250,46 @@ function Stop-LogCollectors {
     }
 }
 
-Sense-ContainerEngine
-Sense-ComposeCommand
+function Invoke-Main {
+    param([string[]]$CliArgs = @())
 
-$Command = if ($args.Count -ge 1) { $args[0].ToLowerInvariant() } else { "up" }
-$Arg2 = if ($args.Count -ge 2) { $args[1] } else { "" }
+    Sense-ContainerEngine
+    Sense-ComposeCommand
 
-switch ($Command) {
-    "up" {
-        Print-EnvironmentSummary
-        Invoke-Compose up -d
-        Wait-ForServiceHealthy postgres $PostgresHealthTimeout
-        Wait-ForServiceHealthy minio $MinioHealthTimeout
-        Wait-ForServiceHealthy backend-dev $BackendHealthTimeout
-        Wait-ForServiceHealthy frontend-dev $FrontendHealthTimeout
-        Invoke-ConnectivityChecks
-        Start-LogCollectors
+    $Command = if ($CliArgs.Count -ge 1) { $CliArgs[0].ToLowerInvariant() } else { "up" }
+    $Arg2 = if ($CliArgs.Count -ge 2) { $CliArgs[1] } else { "" }
+
+    switch ($Command) {
+        "up" {
+            Print-EnvironmentSummary
+            Invoke-Compose up -d
+            Wait-ForServiceHealthy postgres $PostgresHealthTimeout
+            Wait-ForServiceHealthy minio $MinioHealthTimeout
+            Wait-ForServiceHealthy backend-dev $BackendHealthTimeout
+            Wait-ForServiceHealthy frontend-dev $FrontendHealthTimeout
+            Invoke-ConnectivityChecks
+            Start-LogCollectors
+        }
+        "verify" {
+            Print-EnvironmentSummary
+            Wait-ForServiceHealthy postgres 120
+            Wait-ForServiceHealthy minio 120
+            Wait-ForServiceHealthy backend-dev 180
+            Wait-ForServiceHealthy frontend-dev 120
+            Invoke-ConnectivityChecks
+        }
+        "down" { Stop-LogCollectors; Invoke-Compose down }
+        "restart" { if ($Arg2) { Invoke-Compose restart $Arg2 } else { Invoke-Compose restart } }
+        "logs" { if ($Arg2) { Invoke-Compose logs -f $Arg2 } else { Invoke-Compose logs -f } }
+        "test" { Invoke-Compose exec backend-dev bash -c "cd /app/backend && pytest tests/"; Invoke-Compose exec frontend-dev npm test -- --watchAll=false }
+        "shell" { if ($Arg2) { Invoke-Compose exec $Arg2 bash } else { Invoke-Compose exec backend-dev bash } }
+        "migrate" { Invoke-Compose exec backend-dev bash -c "cd /app/backend && alembic upgrade head" }
+        "build" { if ($Arg2) { Invoke-Compose build $Arg2 } else { Invoke-Compose build } }
+        "ps" { Invoke-Compose ps }
+        default { throw "Usage: ./scripts/dev.ps1 {up|down|restart|logs|test|shell|migrate|build|ps|verify}" }
     }
-    "verify" {
-        Print-EnvironmentSummary
-        Wait-ForServiceHealthy postgres 120
-        Wait-ForServiceHealthy minio 120
-        Wait-ForServiceHealthy backend-dev 180
-        Wait-ForServiceHealthy frontend-dev 120
-        Invoke-ConnectivityChecks
-    }
-    "down" { Stop-LogCollectors; Invoke-Compose down }
-    "restart" { if ($Arg2) { Invoke-Compose restart $Arg2 } else { Invoke-Compose restart } }
-    "logs" { if ($Arg2) { Invoke-Compose logs -f $Arg2 } else { Invoke-Compose logs -f } }
-    "test" { Invoke-Compose exec backend-dev bash -c "cd /app/backend && pytest tests/"; Invoke-Compose exec frontend-dev npm test -- --watchAll=false }
-    "shell" { if ($Arg2) { Invoke-Compose exec $Arg2 bash } else { Invoke-Compose exec backend-dev bash } }
-    "migrate" { Invoke-Compose exec backend-dev bash -c "cd /app/backend && alembic upgrade head" }
-    "build" { if ($Arg2) { Invoke-Compose build $Arg2 } else { Invoke-Compose build } }
-    "ps" { Invoke-Compose ps }
-    default { throw "Usage: ./scripts/dev.ps1 {up|down|restart|logs|test|shell|migrate|build|ps|verify}" }
+}
+
+if ($MyInvocation.InvocationName -ne '.') {
+    Invoke-Main -CliArgs $args
 }
