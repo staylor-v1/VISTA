@@ -3594,6 +3594,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     setFullscreenZoomLens({
       displayX: position.displayX,
       displayY: position.displayY,
+      naturalX: position.x,
+      naturalY: position.y,
+      naturalWidth: position.naturalWidth,
+      naturalHeight: position.naturalHeight,
+      imageDisplayWidth: position.rect.width,
+      imageDisplayHeight: position.rect.height,
       diameter,
       scale: nextScale,
       backgroundSize: `${position.rect.width * nextScale}px ${position.rect.height * nextScale}px`,
@@ -3716,12 +3722,21 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	    setFullscreenMeasureActive(false);
 	  };
 
-	  const handleFullscreenMeasurePointerDown = async (event) => {
+  const handleFullscreenMeasurePointerDown = async (event) => {
     const position = getFullscreenImagePointerPosition(event);
     if (!position) return;
     if (fullscreenEditingEndpoint?.lineId) {
       const sourceLine = fullscreenEditingEndpoint.line;
-      const adjustedPosition = getReducedSensitivityPosition(position, fullscreenEditingEndpoint.anchor);
+      const lensAnchoredPosition = fullscreenZoomLens && Number.isFinite(fullscreenZoomLens.naturalX) && Number.isFinite(fullscreenZoomLens.naturalY)
+        ? {
+            ...position,
+            x: fullscreenZoomLens.naturalX,
+            y: fullscreenZoomLens.naturalY,
+            naturalWidth: fullscreenZoomLens.naturalWidth || position.naturalWidth,
+            naturalHeight: fullscreenZoomLens.naturalHeight || position.naturalHeight,
+          }
+        : position;
+      const adjustedPosition = getReducedSensitivityPosition(lensAnchoredPosition, fullscreenEditingEndpoint.anchor);
       const coordinatePatch = fullscreenEditingEndpoint.endpoint === 'start'
         ? { x1: adjustedPosition.x, y1: adjustedPosition.y }
         : { x2: adjustedPosition.x, y2: adjustedPosition.y };
@@ -4218,7 +4233,37 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                       backgroundSize: fullscreenZoomLens.backgroundSize,
                       backgroundPosition: fullscreenZoomLens.backgroundPosition,
                     }}
-                  />
+                  >
+                    {fullscreenEditingEndpoint?.line && (
+                      <svg className="inspection-fullscreen-zoom-lens-overlay" width={fullscreenZoomLens.diameter} height={fullscreenZoomLens.diameter} aria-label="Measurement fine-tune overlay">
+                        {(() => {
+                          const line = fullscreenEditingEndpoint.line;
+                          const toLensX = (x) => {
+                            const displayX = (Number(x) / Number(line.imageWidth || fullscreenZoomLens.naturalWidth || 1)) * Number(fullscreenZoomLens.imageDisplayWidth || 1);
+                            return (fullscreenZoomLens.diameter / 2) + ((displayX - fullscreenZoomLens.displayX) * fullscreenZoomLens.scale);
+                          };
+                          const toLensY = (y) => {
+                            const displayY = (Number(y) / Number(line.imageHeight || fullscreenZoomLens.naturalHeight || 1)) * Number(fullscreenZoomLens.imageDisplayHeight || 1);
+                            return (fullscreenZoomLens.diameter / 2) + ((displayY - fullscreenZoomLens.displayY) * fullscreenZoomLens.scale);
+                          };
+                          return (
+                            <g opacity="0.45">
+                              <line
+                                x1={toLensX(line.x1)}
+                                y1={toLensY(line.y1)}
+                                x2={toLensX(line.x2)}
+                                y2={toLensY(line.y2)}
+                                stroke={line.color || '#f97316'}
+                                strokeWidth="2"
+                              />
+                              <circle cx={toLensX(line.x1)} cy={toLensY(line.y1)} r="4" fill="#ffffff" stroke={line.color || '#f97316'} strokeWidth="2" />
+                              <circle cx={toLensX(line.x2)} cy={toLensY(line.y2)} r="4" fill="#ffffff" stroke={line.color || '#f97316'} strokeWidth="2" />
+                            </g>
+                          );
+                        })()}
+                      </svg>
+                    )}
+                  </div>
                 )}
               </div>
 	              <aside className="inspection-fullscreen-annotations" aria-label="Measurement annotations" data-testid="fullscreen-annotation-list">

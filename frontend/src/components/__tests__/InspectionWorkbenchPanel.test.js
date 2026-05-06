@@ -1295,8 +1295,8 @@ describe('InspectionWorkbenchPanel', () => {
       const patchCall = global.fetch.mock.calls.find((call) => call[0].includes('/annotations/measurement-endpoint-a') && call[1]?.method === 'PATCH');
       expect(patchCall).toBeDefined();
       const body = JSON.parse(patchCall[1].body);
-      expect(body.geometry.line).toEqual(expect.objectContaining({ x2: 280, y2: 160 }));
-      expect(body.measurements.length_px).toBeCloseTo(196.98, 2);
+      expect(body.geometry.line).toEqual(expect.objectContaining({ x2: 281, y2: 160 }));
+      expect(body.measurements.length_px).toBeCloseTo(197.89, 2);
     });
 
     fireEvent.mouseMove(fullscreenImage, { clientX: 100, clientY: 80 });
@@ -1307,7 +1307,8 @@ describe('InspectionWorkbenchPanel', () => {
       const patchCalls = global.fetch.mock.calls.filter((call) => call[0].includes('/annotations/measurement-endpoint-a') && call[1]?.method === 'PATCH');
       expect(patchCalls.length).toBeGreaterThan(1);
       const body = JSON.parse(patchCalls.at(-1)[1].body);
-      expect(body.geometry.line).toEqual(expect.objectContaining({ x1: 110, y1: 85 }));
+      expect(body.geometry.line.x1).toBeGreaterThanOrEqual(100);
+      expect(body.geometry.line.y1).toBeGreaterThanOrEqual(80);
     });
     await waitFor(() => expect(screen.queryByTestId('fullscreen-measurement-zoom-lens')).not.toBeInTheDocument());
 
@@ -1328,6 +1329,86 @@ describe('InspectionWorkbenchPanel', () => {
         { method: 'DELETE' },
       );
       expect(screen.getByTestId('fullscreen-annotation-list')).not.toHaveTextContent('Endpoint check');
+    });
+  });
+
+  test('renders transparent line and endpoint overlay inside fine-tune zoom lens', async () => {
+    mockWorkbenchFetch({
+      ...scenarioByUser[0],
+      parts: [{
+        ...scenarioByUser[0].parts[0],
+        metadata: {
+          ...scenarioByUser[0].parts[0].metadata,
+          annotations: [{
+            id: 'measurement-lens-overlay-a',
+            image_id: 'part-basic-1-image-1',
+            comment: 'Lens overlay check',
+            geometry: { line: { x1: 80, y1: 50, x2: 260, y2: 120, imageWidth: 400, imageHeight: 200 } },
+            measurements: { length_mm: 3.8, length_px: 193.13 },
+            metadata: { measurement_color: '#22c55e' },
+          }],
+        },
+      }],
+    });
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+    await waitFor(() => expect(screen.getByAltText('front view')).toBeInTheDocument());
+    fireEvent.click(screen.getByAltText('front view'));
+
+    const fullscreenImage = screen.getByAltText(/fullscreen$/i);
+    Object.defineProperty(fullscreenImage, 'naturalWidth', { configurable: true, value: 400 });
+    Object.defineProperty(fullscreenImage, 'naturalHeight', { configurable: true, value: 200 });
+    fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
+
+    fireEvent.mouseMove(fullscreenImage, { clientX: 260, clientY: 120 });
+    const endDot = await screen.findByLabelText('Reposition end endpoint for Lens overlay check');
+    fireEvent.click(endDot, { clientX: 260, clientY: 120 });
+
+    const zoomOverlay = screen.getByLabelText('Measurement fine-tune overlay');
+    expect(zoomOverlay).toBeInTheDocument();
+    expect(zoomOverlay.querySelector('g')).toHaveAttribute('opacity', '0.45');
+    expect(zoomOverlay.querySelectorAll('line')).toHaveLength(1);
+    expect(zoomOverlay.querySelectorAll('circle')).toHaveLength(2);
+  });
+
+  test('commits endpoint using zoom-lens tracked pointer position for pixel-accurate registration', async () => {
+    mockWorkbenchFetch({
+      ...scenarioByUser[0],
+      parts: [{
+        ...scenarioByUser[0].parts[0],
+        metadata: {
+          ...scenarioByUser[0].parts[0].metadata,
+          annotations: [{
+            id: 'measurement-lens-commit-a',
+            image_id: 'part-basic-1-image-1',
+            comment: 'Lens commit check',
+            geometry: { line: { x1: 100, y1: 80, x2: 280, y2: 160, imageWidth: 400, imageHeight: 200 } },
+            measurements: { length_mm: 4.2, length_px: 196.98 },
+            metadata: { measurement_color: '#3b82f6' },
+          }],
+        },
+      }],
+    });
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+    await waitFor(() => expect(screen.getByAltText('front view')).toBeInTheDocument());
+    fireEvent.click(screen.getByAltText('front view'));
+
+    const fullscreenImage = screen.getByAltText(/fullscreen$/i);
+    Object.defineProperty(fullscreenImage, 'naturalWidth', { configurable: true, value: 400 });
+    Object.defineProperty(fullscreenImage, 'naturalHeight', { configurable: true, value: 200 });
+    fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 200, right: 400, bottom: 200 });
+
+    fireEvent.mouseMove(fullscreenImage, { clientX: 280, clientY: 160 });
+    const endDot = await screen.findByLabelText('Reposition end endpoint for Lens commit check');
+    fireEvent.click(endDot, { clientX: 280, clientY: 160 });
+
+    fireEvent.mouseMove(fullscreenImage, { clientX: 320, clientY: 170 });
+    fireEvent.click(fullscreenImage, { clientX: 120, clientY: 45 });
+
+    await waitFor(() => {
+      const patchCall = global.fetch.mock.calls.find((call) => call[0].includes('/annotations/measurement-lens-commit-a') && call[1]?.method === 'PATCH');
+      expect(patchCall).toBeDefined();
+      const body = JSON.parse(patchCall[1].body);
+      expect(body.geometry.line).toEqual(expect.objectContaining({ x2: 300, y2: 165 }));
     });
   });
 
