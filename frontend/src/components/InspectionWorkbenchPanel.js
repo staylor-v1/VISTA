@@ -1128,10 +1128,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [slicePosition, setSlicePosition] = useState({ axial: 0, coronal: 0, sagittal: 0 });
   const [viewportTransform, setViewportTransform] = useState({ zoom: 1, panX: 0, panY: 0 });
   const [activeMprPane, setActiveMprPane] = useState('axial');
+  const [mprExpandedPane, setMprExpandedPane] = useState(null);
   const [mprRotation, setMprRotation] = useState({ x: -22, y: 32 });
   const [mprReconstructionMode, setMprReconstructionMode] = useState(MPR_RECONSTRUCTION_MODES.orientation);
   const [mprProjectionMirror, setMprProjectionMirror] = useState(DEFAULT_MPR_PROJECTION_MIRROR);
-  const [mprExpandedPane, setMprExpandedPane] = useState(null);
   const [activeWorkbenchModal, setActiveWorkbenchModal] = useState(null);
   const [contrastPercent, setContrastPercent] = useState(100);
   const [activeOverlayIds, setActiveOverlayIds] = useState([]);
@@ -1731,6 +1731,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 
   useEffect(() => {
     const savedInspector = workspaceHydration?.inspector || {};
+    setShortcutHelpVisible(savedInspector.shortcut_help_visible === true);
     setNormalizationTriageField(
       typeof savedInspector.normalization_triage_field === 'string'
         ? savedInspector.normalization_triage_field
@@ -1743,7 +1744,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     setEnabledModalities(savedModalities.length > 0 ? savedModalities : getModalities(selectedPart).slice(0, 1));
     setSelectedViewName(savedInspector.view_name ? String(savedInspector.view_name) : '');
     setImageEnabled(typeof savedInspector.image_enabled === 'boolean' ? savedInspector.image_enabled : true);
-    setShortcutHelpVisible(savedInspector.shortcut_help_visible === true);
     setMeasurementEntries(normalizeSavedMeasurements(savedInspector.measurements));
     const savedInspectorViewport = savedInspector.viewport_transform || {};
     setInspectorViewport({
@@ -2672,15 +2672,17 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   className={`mpr-pane mpr-pane-${axis} ${activeMprPane === axis ? 'active-pane' : ''} ${mprExpandedPane && mprExpandedPane !== axis ? 'mpr-pane-hidden' : ''}`}
                   style={{ '--mpr-axis-color': config?.color, ...crosshairStyle }}
                   data-testid={`mpr-pane-${axis}`}
-                  onClick={() => { setActiveMprPane(axis); setMprExpandedPane(axis); openMprAnnotationTool(axis, 'measure'); setFullscreenMeasureActive(false); }}
+                  onClick={() => {
+                    setActiveMprPane(axis);
+                    setMprExpandedPane((prev) => (prev === axis ? null : axis));
+                    openMprAnnotationTool(axis, 'measure');
+                    setFullscreenMeasureActive(false);
+                  }}
                   onWheel={(event) => handleMprPaneWheel(axis, event)}
                 >
                   <header className="mpr-pane-header">
                     <strong>{label}</strong>
                     <div className="mpr-pane-header-controls">
-                      <button type="button" className="btn btn-secondary btn-sm" onClick={(event) => { event.stopPropagation(); setMprExpandedPane(mprExpandedPane === axis ? null : axis); }}>
-                        {mprExpandedPane === axis ? 'Exit Full Window' : 'Full Window'}
-                      </button>
                       <span>{config?.sliceLabel || axis.toUpperCase()} {slicePosition[axis]} / {upper}</span>
                       <label className="mpr-mirror-toggle" htmlFor={`mpr-mirror-${axis}`} onClick={(event) => event.stopPropagation()}>
                         <input
@@ -2738,13 +2740,15 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
             <article
               className={`mpr-pane mpr-pane-volume ${activeMprPane === 'volume' ? 'active-pane' : ''} ${mprExpandedPane && mprExpandedPane !== 'volume' ? 'mpr-pane-hidden' : ''}`}
               data-testid="mpr-pane-3d"
-              onClick={() => setActiveMprPane('volume')}
+              onClick={() => {
+                setActiveMprPane('volume');
+                setMprExpandedPane((prev) => (prev === 'volume' ? null : 'volume'));
+              }}
               onWheel={handleMprVolumeWheel}
             >
               <header className="mpr-pane-header">
                 <strong>3D</strong>
                 <span>Zoom {viewportTransform.zoom.toFixed(2)}x</span>
-                <button type="button" className="btn btn-secondary btn-sm" onClick={(event) => { event.stopPropagation(); setMprExpandedPane(mprExpandedPane === 'volume' ? null : 'volume'); }}>{mprExpandedPane === 'volume' ? 'Exit Full Window' : 'Full Window'}</button>
               </header>
               <div
                 className="mpr-volume-scene"

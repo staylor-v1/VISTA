@@ -663,7 +663,9 @@ describe('InspectionWorkbenchPanel', () => {
       });
 
       if (scenario.workspaceState?.inspector?.shortcut_help_visible === true) {
-        expect(screen.queryByTestId('shortcut-help-panel')).toBeInTheDocument();
+        await waitFor(() => {
+          expect(screen.queryByTestId('shortcut-help-panel')).toBeInTheDocument();
+        });
       }
 
       fireEvent.keyDown(document, { key: scenario.hotkeys.toggle_shortcut_help });
