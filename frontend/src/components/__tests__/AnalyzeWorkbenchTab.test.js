@@ -167,7 +167,7 @@ describe('AnalyzeWorkbenchTab', () => {
     mockFetch();
     render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
 
-    expect(await screen.findByRole('heading', { name: 'Workflow Studio' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Pipeline Studio' })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId('analyze-source-summary')).toHaveTextContent('1 parts'));
     expect(screen.getByLabelText('Analyze Workbench')).not.toBeEmptyDOMElement();
     expect(screen.getByLabelText('Analyze toolbox')).toHaveTextContent('Input');
@@ -320,7 +320,7 @@ describe('AnalyzeWorkbenchTab', () => {
     mockFetch();
     render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
 
-    await screen.findByRole('heading', { name: 'Workflow Studio' });
+    await screen.findByRole('heading', { name: 'Pipeline Studio' });
     await waitFor(() => expect(screen.getByTestId('analyze-source-summary')).toHaveTextContent('2 images'));
 
     fireEvent.click(screen.getByRole('button', { name: /Workflow block Loaded Part Images/i }));
@@ -346,7 +346,7 @@ describe('AnalyzeWorkbenchTab', () => {
     mockFetch();
     render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
 
-    await screen.findByRole('heading', { name: 'Workflow Studio' });
+    await screen.findByRole('heading', { name: 'Pipeline Studio' });
     await waitFor(() => expect(screen.getByTestId('analyze-source-summary')).toHaveTextContent('2 images'));
     fireEvent.click(screen.getByRole('button', { name: /Workflow block Loaded Part Images/i }));
     expect(screen.queryByRole('dialog', { name: 'Loaded Images to Process' })).not.toBeInTheDocument();

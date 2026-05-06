@@ -1004,7 +1004,7 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
       <div className="analyze-command-strip">
         <div>
           <p className="analyze-eyebrow">Analyze / {projectType || 'PT1'}</p>
-          <h2>Workflow Studio</h2>
+          <h2>Pipeline Studio</h2>
         </div>
         <div className="analyze-source-stats" data-testid="analyze-source-summary">
           <span>{inputSource?.source?.part_count || 0} parts</span>
@@ -1054,7 +1054,6 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
 
         <main className="analyze-canvas-panel">
           <div className="analyze-canvas-toolbar">
-            <strong>{DEFAULT_WORKFLOW_NAME}</strong>
             <div className="workbench-detail-actions">
               <button type="button" className="btn btn-secondary" disabled={status.loading} onClick={() => submitWorkflow('validate')}>
                 Validate
