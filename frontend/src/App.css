@@ -6225,6 +6225,18 @@ ul li:hover {
   padding: 12px;
 }
 
+.parts-column-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.parts-column-header h3 {
+  margin: 0;
+}
+
 .images-to-parts-part-card {
   border: 1px solid #d9e2ec;
   border-radius: 8px;
@@ -6516,4 +6528,44 @@ ul li:hover {
 .volume-slice-voxel {
   image-rendering: pixelated;
   border: 1px solid rgba(148,163,184,0.14);
+}
+
+.unassigned-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.unassigned-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.unassigned-selection-surface {
+  position: relative;
+  min-height: 120px;
+}
+
+.image-part-chip.selected {
+  border-color: #2563eb;
+  background: #dbeafe;
+  color: #1e3a8a;
+}
+
+.selection-rect {
+  position: fixed;
+  border: 1px dashed #1d4ed8;
+  background: rgba(59, 130, 246, 0.15);
+  pointer-events: none;
+  z-index: 2100;
+}
+
+.fullscreen-some-modal {
+  width: min(1200px, 95vw);
+  height: 90vh;
+}
+
+.fullscreen-some-modal .modal-body {
+  overflow: auto;
 }

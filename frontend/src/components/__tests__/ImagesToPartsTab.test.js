@@ -131,6 +131,82 @@ describe('ImagesToPartsTab', () => {
     );
   });
 
+
+  test('creates a new part from the parts section button', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true, json: async () => ({}) });
+    const onAssignmentsChanged = jest.fn().mockResolvedValue();
+    const promptSpy = jest.spyOn(window, 'prompt')
+      .mockReturnValueOnce('SN-NEW-001')
+      .mockReturnValueOnce('New Part Name');
+
+    render(
+      <ImagesToPartsTab
+        projectId="proj-1"
+        parts={[]}
+        images={[]}
+        onAssignmentsChanged={onAssignmentsChanged}
+        setError={jest.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create new part' }));
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalledWith('/api/projects/proj-1/parts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serial_number: 'SN-NEW-001', display_name: 'New Part Name' }),
+      });
+    });
+    expect(promptSpy).toHaveBeenCalledTimes(2);
+    await waitFor(() => {
+      expect(onAssignmentsChanged).toHaveBeenCalled();
+    });
+  });
+
+
+
+  test('supports All and None selection controls in Unassigned panel', () => {
+    render(
+      <ImagesToPartsTab
+        projectId="proj-1"
+        parts={[]}
+        images={[
+          { id: 'img-a', filename: 'unassigned-a.png' },
+          { id: 'img-b', filename: 'unassigned-b.png' },
+        ]}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'All' }));
+    expect(document.querySelectorAll('.image-part-chip.selected')).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole('button', { name: 'None' }));
+    expect(document.querySelectorAll('.image-part-chip.selected')).toHaveLength(0);
+  });
+
+  test('drags multiple selected unassigned images to a part', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true, json: async () => ({}) });
+    render(
+      <ImagesToPartsTab
+        projectId="proj-1"
+        parts={[{ id: 'part-1', serial_number: 'SN-001', display_name: 'Part 1', metadata: { source_images: [] } }]}
+        images={[{ filename: 'unassigned-a.png' }, { filename: 'unassigned-b.png' }]}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'All' }));
+    fireEvent.dragStart(screen.getByRole('button', { name: 'unassigned-a.png' }));
+    fireEvent.drop(screen.getByTestId('images-to-parts-target-part-1'));
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalledWith('/api/projects/proj-1/parts/image-assignments', expect.objectContaining({
+        method: 'POST',
+      }));
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+  });
+
   test('toggles inline image thumbnails on and off', () => {
     const { container } = render(
       <ImagesToPartsTab
