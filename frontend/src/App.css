@@ -5310,9 +5310,16 @@ ul li:hover {
   position: absolute;
   border: 3px solid #ffffff;
   border-radius: 50%;
+  overflow: hidden;
   box-shadow: 0 0 0 2px #111827, 0 16px 42px rgba(0, 0, 0, 0.45);
   pointer-events: none;
   z-index: 3;
+}
+
+.inspection-fullscreen-zoom-lens-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }
 
 .inspection-fullscreen-zoom-lens::after {

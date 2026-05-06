@@ -116,6 +116,29 @@ if (typeof global.crypto.randomUUID === 'undefined') {
   };
 }
 
+// Provide a minimal canvas mock for tests that trigger histogram rendering paths.
+if (typeof HTMLCanvasElement !== 'undefined') {
+  Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
+    configurable: true,
+    value: () => ({
+    drawImage: jest.fn(),
+    getImageData: jest.fn(() => ({ data: new Uint8ClampedArray(4), width: 1, height: 1 })),
+    putImageData: jest.fn(),
+    clearRect: jest.fn(),
+    beginPath: jest.fn(),
+    moveTo: jest.fn(),
+    lineTo: jest.fn(),
+    closePath: jest.fn(),
+    stroke: jest.fn(),
+    fill: jest.fn(),
+    setLineDash: jest.fn(),
+    arc: jest.fn(),
+    fillRect: jest.fn(),
+    fillText: jest.fn(),
+    }),
+  });
+}
+
 // Reduce noisy console output from React Router future-flag warnings
 // and expected app logs during tests, while preserving other warnings/errors.
 
