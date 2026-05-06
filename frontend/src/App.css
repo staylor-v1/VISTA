@@ -6180,12 +6180,6 @@ ul li:hover {
   }
 }
 
-@media (max-width: 900px) {
-  .mpr-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
 .phase-flow {
   margin: 0;
   display: flex;
