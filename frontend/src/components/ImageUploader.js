@@ -418,10 +418,10 @@ function ImageUploader({ projectId, projectType = 'PT1', onUploadComplete, setEr
                 +
               </div>
               <div className="upload-area-text">
-                Drag and drop images here, or click to select files
+                Drag and drop images/voxel data here, or click to select files
               </div>
               <div className="upload-area-subtext">
-                Supports multiple image files (JPG, PNG, GIF, etc.)
+                Supports image files and 3D voxel arrays (.npy, .npz, .inspiro)
               </div>
               <div className={`upload-area-status ${selectedFiles.length > 0 ? 'has-files' : 'no-files'}`}>
                 {selectedFiles.length > 0 
@@ -432,7 +432,7 @@ function ImageUploader({ projectId, projectType = 'PT1', onUploadComplete, setEr
             <input 
               type="file" 
               id="file-input" 
-              accept="image/*,image/tiff,.tiff,.tif" 
+              accept="image/*,image/tiff,.tiff,.tif,.npy,.npz,.inspiro" 
               multiple 
               style={{ display: 'none' }}
               onChange={handleFileChange}

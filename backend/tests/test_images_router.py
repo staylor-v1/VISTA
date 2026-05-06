@@ -1,6 +1,8 @@
 import io
 import uuid
+import zipfile
 import pytest
+import numpy as np
 from PIL import Image
 
 
@@ -51,6 +53,61 @@ def test_upload_image_bad_metadata(client):
     data = {"metadata": "{not-json}"}
     r = client.post(f"/api/projects/{pid}/images", files=files, data=data)
     assert r.status_code == 400
+
+
+def test_upload_numpy_voxel_data_accepts_3d_arrays(client):
+    pr = client.post("/api/projects/", json={"name": "P5", "description": None, "meta_group_id": "g"})
+    pid = pr.json()["id"]
+
+    voxel_array = np.zeros((8, 16, 16), dtype=np.float32)
+    payload = io.BytesIO()
+    np.save(payload, voxel_array)
+    payload.seek(0)
+
+    r = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("volume.npy", payload, "application/octet-stream")},
+    )
+    assert r.status_code == 201
+    assert r.json()["filename"] == "volume.npy"
+
+
+def test_upload_numpy_voxel_data_rejects_non_3d_arrays(client):
+    pr = client.post("/api/projects/", json={"name": "P6", "description": None, "meta_group_id": "g"})
+    pid = pr.json()["id"]
+
+    voxel_array = np.zeros((16, 16), dtype=np.float32)
+    payload = io.BytesIO()
+    np.save(payload, voxel_array)
+    payload.seek(0)
+
+    r = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("invalid_volume.npy", payload, "application/octet-stream")},
+    )
+    assert r.status_code == 400
+    assert "Invalid 3D voxel data" in str(r.json())
+
+
+def test_upload_inspiro_voxel_data_accepts_3d_arrays(client):
+    pr = client.post("/api/projects/", json={"name": "P7", "description": None, "meta_group_id": "g"})
+    pid = pr.json()["id"]
+
+    npy_bytes = io.BytesIO()
+    np.save(npy_bytes, np.zeros((4, 8, 8), dtype=np.uint16))
+    npy_bytes.seek(0)
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("voxels.npy", npy_bytes.getvalue())
+    payload.seek(0)
+
+    r = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("scan.inspiro", payload, "application/octet-stream")},
+    )
+    assert r.status_code == 201
+    assert r.json()["filename"] == "scan.inspiro"
 
 
 def test_get_download_url_and_content_and_thumbnail(client, monkeypatch):
