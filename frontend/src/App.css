@@ -5977,12 +5977,12 @@ ul li:hover {
 
 .plane-axial {
   color: #3b82f6;
-  transform: rotateX(90deg) translateZ(var(--slice-axial-depth, 0));
+  transform: translateZ(var(--slice-axial-depth, 0));
 }
 
 .plane-coronal {
   color: #f59e0b;
-  transform: translateY(var(--slice-coronal-y, 0));
+  transform: rotateX(90deg) translateZ(var(--slice-coronal-y, 0));
 }
 
 .plane-sagittal {
