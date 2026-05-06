@@ -792,6 +792,29 @@ function getMprCrosshairStyle(axis, slicePosition, dimensions, mirroredAxes = DE
   return { '--crosshair-x': displayX(y), '--crosshair-y': displayY(z), ...representedStyle };
 }
 
+function getPlaneFocusRange(position, maxDimension) {
+  const half = maxDimension / 10;
+  let lo = position - half;
+  let hi = position + half;
+  if (lo < 0) { hi -= lo; lo = 0; }
+  if (hi > maxDimension) { lo -= (hi - maxDimension); hi = maxDimension; }
+  return [Math.max(0, lo), hi];
+}
+
+function projectMprPointToOverlay(vx, vy, vz, dims, rotation, zoom, width, height) {
+  const rx = (rotation.x * Math.PI) / 180;
+  const ry = (rotation.y * Math.PI) / 180;
+  const cosRx = Math.cos(rx), sinRx = Math.sin(rx);
+  const cosRy = Math.cos(ry), sinRy = Math.sin(ry);
+  const maxDim = Math.max(dims.sagittal, dims.coronal, dims.axial);
+  let px = vx - dims.sagittal / 2;
+  let py = vy - dims.coronal / 2;
+  let pz = vz - dims.axial / 2;
+  let t = px * cosRy - pz * sinRy; pz = px * sinRy + pz * cosRy; px = t;
+  t = py * cosRx + pz * sinRx; pz = -py * sinRx + pz * cosRx; py = t;
+  return { x: (px * zoom / maxDim + 0.5) * width, y: (py * zoom / maxDim + 0.5) * height, z: pz };
+}
+
 function useMprVolumeCache(imageStack, dimensions) {
   const cacheKey = useMemo(() => getMprVolumeCacheKey(imageStack), [imageStack]);
   const [cacheState, setCacheState] = useState({ key: '', status: 'idle', cache: null });
@@ -1189,6 +1212,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const fullscreenImageRef = useRef(null);
   const fullscreenPanDragRef = useRef(null);
   const suppressNextTileClickRef = useRef(false);
+  const mprOverlayCanvasRef = useRef(null);
 
   const inspectionHierarchy = useMemo(() => {
     const normalized = normalizeInspectionHierarchy(hierarchy || {});
@@ -1484,6 +1508,73 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     [filteredParts, selectedPartId],
   );
   const mprDimensions = useMemo(() => getMprDimensions(selectedPart), [selectedPart]);
+
+  useEffect(() => {
+    const canvas = mprOverlayCanvasRef.current;
+    if (!canvas) return;
+    const parent = canvas.parentElement;
+    if (!parent) return;
+    canvas.width = parent.clientWidth;
+    canvas.height = parent.clientHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (activeMprPane !== 'volume') return;
+    const dims = {
+      sagittal: Math.max(1, mprDimensions.sagittal || 1),
+      coronal: Math.max(1, mprDimensions.coronal || 1),
+      axial: Math.max(1, mprDimensions.axial || 1),
+    };
+    const sx = slicePosition.sagittal;
+    const sy = slicePosition.coronal;
+    const sz = slicePosition.axial;
+    const full = {
+      axial: [[0, 0, sz], [dims.sagittal, 0, sz], [dims.sagittal, dims.coronal, sz], [0, dims.coronal, sz]],
+      sagittal: [[sx, 0, 0], [sx, dims.coronal, 0], [sx, dims.coronal, dims.axial], [sx, 0, dims.axial]],
+      coronal: [[0, sy, 0], [dims.sagittal, sy, 0], [dims.sagittal, sy, dims.axial], [0, sy, dims.axial]],
+    };
+    const [axX0, axX1] = getPlaneFocusRange(sx, dims.sagittal);
+    const [axY0, axY1] = getPlaneFocusRange(sy, dims.coronal);
+    const [sgY0, sgY1] = getPlaneFocusRange(sy, dims.coronal);
+    const [sgZ0, sgZ1] = getPlaneFocusRange(sz, dims.axial);
+    const [coX0, coX1] = getPlaneFocusRange(sx, dims.sagittal);
+    const [coZ0, coZ1] = getPlaneFocusRange(sz, dims.axial);
+    const focus = {
+      axial: [[axX0, axY0, sz], [axX1, axY0, sz], [axX1, axY1, sz], [axX0, axY1, sz]],
+      sagittal: [[sx, sgY0, sgZ0], [sx, sgY1, sgZ0], [sx, sgY1, sgZ1], [sx, sgY0, sgZ1]],
+      coronal: [[coX0, sy, coZ0], [coX1, sy, coZ0], [coX1, sy, coZ1], [coX0, sy, coZ1]],
+    };
+    const drawOrder = MPR_AXES;
+    drawOrder.forEach((axis) => {
+      const color = MPR_AXIS_CONFIG[axis].color;
+      const line = full[axis].map(([x, y, z]) => projectMprPointToOverlay(x, y, z, dims, mprRotation, viewportTransform.zoom, canvas.width, canvas.height));
+      ctx.beginPath();
+      ctx.moveTo(line[0].x, line[0].y);
+      line.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
+      ctx.closePath();
+      ctx.globalAlpha = 0.45;
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = color;
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const active = activeMprPane === axis ? axis : null;
+      if (active) {
+        const quad = focus[axis].map(([x, y, z]) => projectMprPointToOverlay(x, y, z, dims, mprRotation, viewportTransform.zoom, canvas.width, canvas.height));
+        ctx.beginPath();
+        ctx.moveTo(quad[0].x, quad[0].y);
+        quad.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
+        ctx.closePath();
+        ctx.globalAlpha = 0.18;
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.globalAlpha = 0.9;
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = color;
+        ctx.stroke();
+      }
+    });
+  }, [activeMprPane, mprDimensions, mprRotation, slicePosition, viewportTransform.zoom]);
   const overlayLayers = useMemo(() => getOverlayLayers(selectedPart), [selectedPart]);
   const modalityOptions = useMemo(() => getModalities(selectedPart), [selectedPart]);
   const activeViewName = useMemo(() => {
@@ -2665,6 +2756,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 onPointerCancel={handleMprVolumePointerUp}
                 onDragStart={preventMprNativeDrag}
               >
+                <canvas className="mpr-volume-overlay" ref={mprOverlayCanvasRef} aria-hidden="true" />
                 <div
                   className={`mpr-volume-model reconstruction-${effectiveMprReconstructionMode}`}
                   style={{
