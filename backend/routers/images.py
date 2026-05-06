@@ -20,10 +20,42 @@ from utils.file_security import get_content_disposition_header
 from utils.cache_manager import get_cache
 import json as _json
 from PIL import Image
+from utils.volume_loader import read_npy_header
 
 router = APIRouter(
     tags=["Images"],
 )
+
+VOXEL_DATA_EXTENSIONS = {".npy", ".npz", ".inspiro"}
+
+
+def _validate_voxel_data(file: UploadFile) -> None:
+    filename = (file.filename or "").lower()
+    if not any(filename.endswith(ext) for ext in VOXEL_DATA_EXTENSIONS):
+        return
+
+    try:
+        if filename.endswith(".npy"):
+            shape, _dtype = read_npy_header(file.file)
+            if len(shape) != 3:
+                raise ValueError("NumPy volume must be exactly 3D")
+        else:
+            import zipfile
+
+            with zipfile.ZipFile(file.file) as archive:
+                npy_members = sorted(name for name in archive.namelist() if name.endswith(".npy"))
+                if not npy_members:
+                    if filename.endswith(".inspiro"):
+                        raise ValueError(".inspiro archive must contain at least one .npy voxel array")
+                    raise ValueError("NumPy .npz archive does not contain a .npy array")
+                with archive.open(npy_members[0]) as member:
+                    shape, _dtype = read_npy_header(io.BytesIO(member.read()))
+                    if len(shape) != 3:
+                        raise ValueError("NumPy volume must be exactly 3D")
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid 3D voxel data: {exc}") from exc
+    finally:
+        file.file.seek(0)
 
 
 def _inline_image_bytes(db_image: models.DataInstance) -> Optional[bytes]:
@@ -65,6 +97,7 @@ async def upload_image_to_project(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON format for metadata")
     # If metadata_json is None or empty string, parsed_metadata remains None
     # Basic validation
+    _validate_voxel_data(file)
     max_size = int(os.getenv("MAX_UPLOAD_BYTES", "10485760"))  # 10MB default
     # Try to read a small chunk to estimate streaming health, but do not load all into memory
     try:

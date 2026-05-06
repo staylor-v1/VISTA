@@ -108,7 +108,7 @@ def load_slice_stack(path: str | Path) -> VolumeInfo:
     )
 
 
-def _read_npy_header(file_obj: BinaryIO) -> tuple[tuple[int, ...], str]:
+def read_npy_header(file_obj: BinaryIO) -> tuple[tuple[int, ...], str]:
     magic = file_obj.read(6)
     if magic != b"\x93NUMPY":
         raise ValueError("Not a NumPy .npy file")
@@ -137,10 +137,10 @@ def load_numpy_volume(path: str | Path) -> VolumeInfo:
                 raise ValueError("NumPy .npz archive does not contain a .npy array")
             with archive.open(npy_members[0]) as member:
                 payload = io.BytesIO(member.read())
-                shape, dtype = _read_npy_header(payload)
+                shape, dtype = read_npy_header(payload)
     else:
         with volume_path.open("rb") as file_obj:
-            shape, dtype = _read_npy_header(file_obj)
+            shape, dtype = read_npy_header(file_obj)
     return VolumeInfo(
         format="numpy",
         shape=shape,
