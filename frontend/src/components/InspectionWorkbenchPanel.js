@@ -1128,6 +1128,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [slicePosition, setSlicePosition] = useState({ axial: 0, coronal: 0, sagittal: 0 });
   const [viewportTransform, setViewportTransform] = useState({ zoom: 1, panX: 0, panY: 0 });
   const [activeMprPane, setActiveMprPane] = useState('axial');
+  const [mprExpandedPane, setMprExpandedPane] = useState(null);
   const [mprRotation, setMprRotation] = useState({ x: -22, y: 32 });
   const [mprReconstructionMode, setMprReconstructionMode] = useState(MPR_RECONSTRUCTION_MODES.orientation);
   const [mprProjectionMirror, setMprProjectionMirror] = useState(DEFAULT_MPR_PROJECTION_MIRROR);
@@ -1730,6 +1731,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 
   useEffect(() => {
     const savedInspector = workspaceHydration?.inspector || {};
+    setShortcutHelpVisible(savedInspector.shortcut_help_visible === true);
     setNormalizationTriageField(
       typeof savedInspector.normalization_triage_field === 'string'
         ? savedInspector.normalization_triage_field
@@ -1742,7 +1744,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     setEnabledModalities(savedModalities.length > 0 ? savedModalities : getModalities(selectedPart).slice(0, 1));
     setSelectedViewName(savedInspector.view_name ? String(savedInspector.view_name) : '');
     setImageEnabled(typeof savedInspector.image_enabled === 'boolean' ? savedInspector.image_enabled : true);
-    setShortcutHelpVisible(savedInspector.shortcut_help_visible === true);
     setMeasurementEntries(normalizeSavedMeasurements(savedInspector.measurements));
     const savedInspectorViewport = savedInspector.viewport_transform || {};
     setInspectorViewport({
@@ -2657,7 +2658,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
               <button type="button" className="btn btn-secondary btn-sm" onClick={() => openMprAnnotationTool(activeMprPane === 'volume' ? 'axial' : activeMprPane, 'box')}>Draw Box</button>
             </div>
           </div>
-          <div className="mpr-grid mpr-grid-four">
+          <div className={`mpr-grid ${mprExpandedPane ? 'mpr-grid-single' : 'mpr-grid-four'}`}>
             {MPR_AXES.map((axis) => {
               const upper = Math.max(0, (mprDimensions[axis] || 1) - 1);
               const config = MPR_AXIS_CONFIG[axis];
@@ -2668,10 +2669,15 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
               return (
                 <article
                   key={axis}
-                  className={`mpr-pane mpr-pane-${axis} ${activeMprPane === axis ? 'active-pane' : ''}`}
+                  className={`mpr-pane mpr-pane-${axis} ${activeMprPane === axis ? 'active-pane' : ''} ${mprExpandedPane && mprExpandedPane !== axis ? 'mpr-pane-hidden' : ''}`}
                   style={{ '--mpr-axis-color': config?.color, ...crosshairStyle }}
                   data-testid={`mpr-pane-${axis}`}
-                  onClick={() => { setActiveMprPane(axis); openMprAnnotationTool(axis, 'measure'); setFullscreenMeasureActive(false); }}
+                  onClick={() => {
+                    setActiveMprPane(axis);
+                    setMprExpandedPane((prev) => (prev === axis ? null : axis));
+                    openMprAnnotationTool(axis, 'measure');
+                    setFullscreenMeasureActive(false);
+                  }}
                   onWheel={(event) => handleMprPaneWheel(axis, event)}
                 >
                   <header className="mpr-pane-header">
@@ -2732,9 +2738,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
               );
             })}
             <article
-              className={`mpr-pane mpr-pane-volume ${activeMprPane === 'volume' ? 'active-pane' : ''}`}
+              className={`mpr-pane mpr-pane-volume ${activeMprPane === 'volume' ? 'active-pane' : ''} ${mprExpandedPane && mprExpandedPane !== 'volume' ? 'mpr-pane-hidden' : ''}`}
               data-testid="mpr-pane-3d"
-              onClick={() => setActiveMprPane('volume')}
+              onClick={() => {
+                setActiveMprPane('volume');
+                setMprExpandedPane((prev) => (prev === 'volume' ? null : 'volume'));
+              }}
               onWheel={handleMprVolumeWheel}
             >
               <header className="mpr-pane-header">
