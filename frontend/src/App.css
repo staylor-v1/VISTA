@@ -2305,13 +2305,13 @@ ul li:hover {
   
   .gallery-header {
     flex-direction: column;
-    align-items: stretch;
+    align-items: start;
     gap: var(--space-4);
   }
   
   .gallery-controls {
     flex-direction: column;
-    align-items: stretch;
+    align-items: start;
   }
   
   .view-controls {
@@ -3792,7 +3792,7 @@ ul li:hover {
   
   .api-key-display {
     flex-direction: column;
-    align-items: stretch;
+    align-items: start;
     gap: var(--space-3);
   }
 }
@@ -3982,7 +3982,7 @@ ul li:hover {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 16px;
-  align-items: stretch;
+  align-items: start;
   overflow-x: auto;
   scrollbar-width: thin;
 }
@@ -4133,7 +4133,7 @@ ul li:hover {
 @container (max-width: 340px) {
   .workbench-controls-compact {
     grid-template-columns: 1fr;
-    align-items: stretch;
+    align-items: start;
   }
 
   .workbench-part-row {
@@ -4416,11 +4416,7 @@ ul li:hover {
   display: grid;
   grid-template-columns: minmax(220px, 280px) minmax(0, 1fr) minmax(240px, 320px);
   gap: 12px;
-  align-items: stretch;
-}
-
-.project-main-panel[data-active-main-tab="analyze"] .analyze-grid {
-  min-height: max(540px, calc(100vh - 290px));
+  align-items: start;
 }
 
 .analyze-toolbox,
@@ -4443,8 +4439,7 @@ ul li:hover {
 
 .project-main-panel[data-active-main-tab="analyze"] .analyze-toolbox,
 .project-main-panel[data-active-main-tab="analyze"] .analyze-inspector {
-  max-height: none;
-  min-height: max(540px, calc(100vh - 290px));
+  max-height: max(540px, calc(100vh - 290px));
 }
 
 .analyze-toolbox {
@@ -4540,7 +4535,7 @@ ul li:hover {
 .project-main-panel[data-active-main-tab="analyze"] .analyze-canvas-panel {
   display: flex;
   flex-direction: column;
-  min-height: max(540px, calc(100vh - 290px));
+  max-height: max(540px, calc(100vh - 290px));
 }
 
 .analyze-canvas-toolbar {
@@ -5238,7 +5233,7 @@ ul li:hover {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
   gap: 12px;
-  align-items: stretch;
+  align-items: start;
 }
 
 .inspection-fullscreen-image-frame {
@@ -6185,7 +6180,7 @@ ul li:hover {
   }
 
   .workbench-controls-row {
-    align-items: stretch;
+    align-items: start;
   }
 
   .workbench-controls-row > label,
@@ -6533,7 +6528,7 @@ ul li:hover {
 @media (max-width: 900px) {
   .project-configuration-panel .config-entry-grid {
     grid-template-columns: 1fr;
-    align-items: stretch;
+    align-items: start;
   }
 
   .project-configuration-panel .config-entry-grid > .btn {
