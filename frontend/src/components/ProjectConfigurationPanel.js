@@ -265,7 +265,31 @@ const EMPTY_CONFIG = {
     name: '',
     email: '',
   },
+  file_naming_scheme: {
+    hierarchy_levels: [
+      { id: 'drawing_number', label: 'Drawing Number', abbreviation: 'D' },
+      { id: 'part_number', label: 'Part Number', abbreviation: 'P' },
+      { id: 'lot_number', label: 'Lot Number', abbreviation: 'L' },
+      { id: 'serial_number', label: 'Serial Number', abbreviation: 'S' },
+      { id: 'revision', label: 'Revision', abbreviation: 'R' },
+    ],
+    image_descriptors: [
+      { id: 'view', label: 'View', abbreviation: 'V' },
+      { id: 'modality', label: 'Modality', abbreviation: 'M' },
+    ],
+  },
 };
+const FILE_NAME_ELEMENT_OPTIONS = [
+  { id: 'drawing_number', label: 'Drawing Number', abbreviation: 'D' },
+  { id: 'part_number', label: 'Part Number', abbreviation: 'P' },
+  { id: 'lot_number', label: 'Lot Number', abbreviation: 'L' },
+  { id: 'serial_number', label: 'Serial Number', abbreviation: 'S' },
+  { id: 'revision', label: 'Revision', abbreviation: 'R' },
+  { id: 'batch', label: 'Batch', abbreviation: 'B' },
+  { id: 'sub_batch', label: 'Sub Batch', abbreviation: 'SB' },
+  { id: 'timestamp', label: 'Timestamp', abbreviation: 'T' },
+  { id: 'operator', label: 'Operator', abbreviation: 'O' },
+];
 
 const DEFAULT_DEFECT_TYPE_COLORS = ['#ef4444', '#f59e0b', '#3b82f6'];
 
@@ -315,7 +339,25 @@ function normalizeProjectConfiguration(config, projectType) {
     defect_types: defectTypes,
     serial_number_scheme: normalizeSerialNumberScheme(incomingConfig),
     phase_settings: normalizePhaseSettings(incomingConfig),
+    file_naming_scheme: normalizeFileNamingScheme(incomingConfig),
   };
+}
+
+function normalizeFileNamingScheme(config) {
+  const source = config?.file_naming_scheme || {};
+  const normalizeEntry = (entry) => ({
+    id: (entry?.id || 'other').trim() || 'other',
+    label: (entry?.label || '').trim(),
+    abbreviation: (entry?.abbreviation || '').trim(),
+  });
+  const defaultScheme = EMPTY_CONFIG.file_naming_scheme;
+  const hierarchyLevels = Array.isArray(source.hierarchy_levels) && source.hierarchy_levels.length > 0
+    ? source.hierarchy_levels.map(normalizeEntry)
+    : defaultScheme.hierarchy_levels;
+  const imageDescriptors = Array.isArray(source.image_descriptors) && source.image_descriptors.length > 0
+    ? source.image_descriptors.map(normalizeEntry)
+    : defaultScheme.image_descriptors;
+  return { hierarchy_levels: hierarchyLevels, image_descriptors: imageDescriptors };
 }
 
 function ProjectConfigurationPanel({
@@ -463,6 +505,7 @@ function ProjectConfigurationPanel({
           ...payload.config,
           serial_number_scheme: normalizeSerialNumberScheme(payload.config),
           phase_settings: normalizePhaseSettings(payload.config),
+          file_naming_scheme: normalizeFileNamingScheme(payload.config),
         }));
         if (typeof onConfigurationSaved === 'function') {
           onConfigurationSaved(payload.config);
@@ -596,6 +639,38 @@ function ProjectConfigurationPanel({
     }));
   };
 
+  const updateFileNameEntry = (entryType, index, patch) => {
+    setConfig((previous) => ({
+      ...previous,
+      file_naming_scheme: {
+        ...normalizeFileNamingScheme(previous),
+        [entryType]: normalizeFileNamingScheme(previous)[entryType].map((entry, entryIndex) =>
+          entryIndex === index ? { ...entry, ...patch } : entry,
+        ),
+      },
+    }));
+  };
+
+  const addFileNameEntry = (entryType) => {
+    setConfig((previous) => ({
+      ...previous,
+      file_naming_scheme: {
+        ...normalizeFileNamingScheme(previous),
+        [entryType]: [...normalizeFileNamingScheme(previous)[entryType], { id: 'other', label: '', abbreviation: '' }],
+      },
+    }));
+  };
+
+  const removeFileNameEntry = (entryType, index) => {
+    setConfig((previous) => ({
+      ...previous,
+      file_naming_scheme: {
+        ...normalizeFileNamingScheme(previous),
+        [entryType]: normalizeFileNamingScheme(previous)[entryType].filter((_, entryIndex) => entryIndex !== index),
+      },
+    }));
+  };
+
   const copyConfiguration = async () => {
     if (!copySourceProjectId || copyingConfiguration) return;
 
@@ -620,6 +695,7 @@ function ProjectConfigurationPanel({
         ...clonedConfig,
         serial_number_scheme: normalizeSerialNumberScheme(clonedConfig),
         phase_settings: normalizePhaseSettings(clonedConfig),
+        file_naming_scheme: normalizeFileNamingScheme(clonedConfig),
       });
       const copiedFromProject = selectedCopySourceProject?.name || 'existing project';
       setCopySourceProjectId('');
@@ -679,6 +755,76 @@ function ProjectConfigurationPanel({
               <label htmlFor="project-owner-email">Owner Email</label>
               <input id="project-owner-email" className="form-control" value={config.project_owner?.email || ''} onChange={(event) => setConfig((previous) => ({ ...previous, project_owner: { ...(previous.project_owner || {}), email: event.target.value } }))} />
             </div>
+          </section>
+          <section className="part-detail-panel" aria-label="File naming configuration">
+            <h3>Project Configuration: File Name Convention</h3>
+            <p>Customize hierarchy and image descriptor elements used to build file names.</p>
+            <h4>Hierarchy Levels</h4>
+            <div className="workbench-controls-row">
+              <button className="btn btn-secondary" type="button" onClick={() => addFileNameEntry('hierarchy_levels')}>
+                Add Hierarchy Level
+              </button>
+            </div>
+            {normalizeFileNamingScheme(config).hierarchy_levels.map((level, index) => (
+              <div className="workbench-controls-row config-entry-grid" key={`hierarchy-level-${index}`}>
+                <label htmlFor={`hierarchy-level-select-${index}`}>Level {index + 1}</label>
+                <select
+                  id={`hierarchy-level-select-${index}`}
+                  value={level.id}
+                  onChange={(event) => {
+                    const selected = FILE_NAME_ELEMENT_OPTIONS.find((option) => option.id === event.target.value);
+                    updateFileNameEntry('hierarchy_levels', index, selected
+                      ? { id: selected.id, label: selected.label, abbreviation: selected.abbreviation }
+                      : { id: 'other', label: '', abbreviation: '' });
+                  }}
+                >
+                  {FILE_NAME_ELEMENT_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                  <option value="other">Other</option>
+                </select>
+                {level.id === 'other' && (
+                  <>
+                    <label htmlFor={`hierarchy-level-custom-label-${index}`}>Custom Label</label>
+                    <input id={`hierarchy-level-custom-label-${index}`} value={level.label} onChange={(event) => updateFileNameEntry('hierarchy_levels', index, { label: event.target.value })} />
+                  </>
+                )}
+                <label htmlFor={`hierarchy-level-abbreviation-${index}`}>Abbreviation</label>
+                <input id={`hierarchy-level-abbreviation-${index}`} value={level.abbreviation} onChange={(event) => updateFileNameEntry('hierarchy_levels', index, { abbreviation: event.target.value })} />
+                <button className="btn btn-secondary" type="button" onClick={() => removeFileNameEntry('hierarchy_levels', index)}>Remove</button>
+              </div>
+            ))}
+            <h4>Image Descriptors</h4>
+            <div className="workbench-controls-row">
+              <button className="btn btn-secondary" type="button" onClick={() => addFileNameEntry('image_descriptors')}>
+                Add Image Descriptor
+              </button>
+            </div>
+            {normalizeFileNamingScheme(config).image_descriptors.map((descriptor, index) => (
+              <div className="workbench-controls-row config-entry-grid" key={`image-descriptor-${index}`}>
+                <label htmlFor={`image-descriptor-select-${index}`}>Descriptor {index + 1}</label>
+                <select
+                  id={`image-descriptor-select-${index}`}
+                  value={descriptor.id}
+                  onChange={(event) => {
+                    const selected = FILE_NAME_ELEMENT_OPTIONS.find((option) => option.id === event.target.value);
+                    updateFileNameEntry('image_descriptors', index, selected
+                      ? { id: selected.id, label: selected.label, abbreviation: selected.abbreviation }
+                      : { id: 'other', label: '', abbreviation: '' });
+                  }}
+                >
+                  {FILE_NAME_ELEMENT_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                  <option value="other">Other</option>
+                </select>
+                {descriptor.id === 'other' && (
+                  <>
+                    <label htmlFor={`image-descriptor-custom-label-${index}`}>Custom Label</label>
+                    <input id={`image-descriptor-custom-label-${index}`} value={descriptor.label} onChange={(event) => updateFileNameEntry('image_descriptors', index, { label: event.target.value })} />
+                  </>
+                )}
+                <label htmlFor={`image-descriptor-abbreviation-${index}`}>Abbreviation</label>
+                <input id={`image-descriptor-abbreviation-${index}`} value={descriptor.abbreviation} onChange={(event) => updateFileNameEntry('image_descriptors', index, { abbreviation: event.target.value })} />
+                <button className="btn btn-secondary" type="button" onClick={() => removeFileNameEntry('image_descriptors', index)}>Remove</button>
+              </div>
+            ))}
           </section>
           <section className="part-detail-panel" aria-label="Process settings">
             <h3>Process Settings</h3>
