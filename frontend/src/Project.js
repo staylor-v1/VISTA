@@ -13,6 +13,7 @@ import ProjectReportTab from './components/ProjectReportTab';
 import ProjectPhaseFlow from './components/ProjectPhaseFlow';
 import ImagesToPartsTab from './components/ImagesToPartsTab';
 import BatchesTab from './components/BatchesTab';
+import RemoveImagesTab from './components/RemoveImagesTab';
 import { resolveCurrentProjectPhase } from './utils/projectPhases';
 import { DEFAULT_INTERFACE_HIERARCHY, loadInterfaceHierarchy } from './utils/interfaceHierarchy';
 
@@ -27,6 +28,7 @@ const PROJECT_DATA_TABS = {
   load_images: { label: 'Load Images' },
   batches: { label: 'Batches' },
   images_to_parts: { label: 'Images to Parts' },
+  remove_images: { label: 'Remove Images' },
   recently_deleted: { label: 'Recently Deleted' },
 };
 
@@ -399,7 +401,18 @@ function Project({ currentUserGroups = [] }) {
         />
       )}
 
-      {activeProjectDataTab === 'recently_deleted' && (
+
+      {activeProjectDataTab === 'remove_images' && (
+        <RemoveImagesTab
+          projectId={id}
+          parts={projectParts}
+          images={projectImages}
+          onImagesRemoved={refreshProjectCounts}
+          setError={setError}
+        />
+      )}
+
+            {activeProjectDataTab === 'recently_deleted' && (
         <section className="workbench-panel recently-deleted-overlays-panel" role="tabpanel" aria-label="Recently Deleted">
           <header className="workbench-header">
             <div>

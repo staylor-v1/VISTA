@@ -27,6 +27,7 @@ router = APIRouter(
 )
 
 VOXEL_DATA_EXTENSIONS = {".npy", ".npz", ".inspiro"}
+TIFF_EXTENSIONS = {".tif", ".tiff"}
 
 
 def _tiff_dimensionality_metadata(file: UploadFile) -> Dict[str, str]:
@@ -86,6 +87,24 @@ def _inline_image_bytes(db_image: models.DataInstance) -> Optional[bytes]:
     except Exception:
         return None
 
+
+def _inspect_tiff_dimensionality(file: UploadFile) -> Optional[str]:
+    filename = (file.filename or "").lower()
+    if not any(filename.endswith(ext) for ext in TIFF_EXTENSIONS):
+        return None
+
+    try:
+        with Image.open(file.file) as tiff:
+            frame_count = max(1, int(getattr(tiff, "n_frames", 1)))
+            return "3d" if frame_count > 1 else "2d"
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid TIFF image data: {exc}",
+        ) from exc
+    finally:
+        file.file.seek(0)
+
 @router.post("/projects/{project_id}/images", response_model=schemas.DataInstance, status_code=status.HTTP_201_CREATED)
 async def upload_image_to_project(
     project_id: uuid.UUID,
@@ -119,6 +138,12 @@ async def upload_image_to_project(
     # If metadata_json is None or empty string, parsed_metadata remains None
     # Basic validation
     _validate_voxel_data(file)
+    tiff_dimensionality = _inspect_tiff_dimensionality(file)
+    if tiff_dimensionality:
+        if parsed_metadata is None:
+            parsed_metadata = {}
+        parsed_metadata["tiff_dimensionality"] = tiff_dimensionality
+        parsed_metadata["load_mode"] = "volume" if tiff_dimensionality == "3d" else "single_image"
     max_size = int(os.getenv("MAX_UPLOAD_BYTES", "10485760"))  # 10MB default
     # Try to read a small chunk to estimate streaming health, but do not load all into memory
     try:
