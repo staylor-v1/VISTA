@@ -83,3 +83,30 @@ def test_common_3d_cube_formats_are_documented():
     assert COMMON_VOLUME_FORMATS["dicom"]["extensions"] == [".dcm", ".dicom"]
     assert COMMON_VOLUME_FORMATS["matlab"]["extensions"] == [".mat"]
     assert COMMON_VOLUME_FORMATS["nifti"]["extensions"] == [".nii", ".nii.gz"]
+
+
+def test_loads_implicit_python_voxel_array_npz(tmp_path):
+    npy_path = tmp_path / "volume.npy"
+    _write_minimal_npy(npy_path, shape=(5, 6, 7))
+
+    import zipfile
+
+    archive_path = tmp_path / "volume.npz"
+    with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.write(npy_path, arcname="voxels.npy")
+
+    volume = load_volume(archive_path)
+
+    assert volume.format == "numpy"
+    assert volume.shape == (5, 6, 7)
+
+
+def test_loads_multipage_tiff_volume(tmp_path):
+    tiff_path = tmp_path / "stack.tiff"
+    frames = [Image.new("L", (9, 11), color=i * 20) for i in range(3)]
+    frames[0].save(tiff_path, save_all=True, append_images=frames[1:])
+
+    volume = load_volume(tiff_path)
+
+    assert volume.format == "multipage_tiff"
+    assert volume.shape == (3, 11, 9)

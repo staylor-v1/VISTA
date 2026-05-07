@@ -14,6 +14,114 @@ def _make_png_bytes(size=(10, 10), color=(255, 0, 0)):
     return buf
 
 
+
+
+def _make_raster_bytes(fmt: str, size=(12, 10), color=(64, 128, 192)):
+    img = Image.new("RGB", size, color)
+    buf = io.BytesIO()
+    img.save(buf, format=fmt)
+    buf.seek(0)
+    return buf
+
+
+def _create_project(client, name="Synthetic Formats"):
+    pr = client.post("/api/projects/", json={"name": name, "description": None, "meta_group_id": "g"})
+    assert pr.status_code == 201
+    return pr.json()["id"]
+
+
+@pytest.mark.parametrize(
+    "filename,content_type,pil_format",
+    [
+        ("synthetic.png", "image/png", "PNG"),
+        ("synthetic.jpg", "image/jpeg", "JPEG"),
+        ("synthetic.bmp", "image/bmp", "BMP"),
+        ("synthetic.tiff", "image/tiff", "TIFF"),
+    ],
+)
+def test_e2e_supported_2d_formats_upload_and_render_thumbnail(client, monkeypatch, filename, content_type, pil_format):
+    pid = _create_project(client, name=f"2d-{pil_format}")
+
+    payload = _make_raster_bytes(pil_format)
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": (filename, payload, content_type)},
+    )
+    assert upload.status_code == 201
+    image_id = upload.json()["id"]
+
+
+    class Resp:
+        def __init__(self, data, ctype):
+            self._data = data
+            self.headers = {"content-type": ctype}
+            self.status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        async def aread(self):
+            return self._data
+
+        def iter_bytes(self):
+            yield self._data
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            return Resp(payload.getvalue(), content_type)
+
+    monkeypatch.setattr("routers.images.httpx.AsyncClient", Client)
+    thumb = client.get(f"/api/images/{image_id}/thumbnail?width=16&height=16")
+    assert thumb.status_code == 200
+    assert thumb.headers["content-type"].startswith("image/")
+
+
+def test_e2e_supported_3d_numpy_formats_upload_and_volume_introspection(client):
+    pid = _create_project(client, name="3d-all")
+
+    volume = np.arange(4 * 6 * 8, dtype=np.uint16).reshape((4, 6, 8))
+
+    npy_payload = io.BytesIO()
+    np.save(npy_payload, volume)
+    npy_payload.seek(0)
+    npy_upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("synthetic.npy", npy_payload, "application/octet-stream")},
+    )
+    assert npy_upload.status_code == 201
+
+    npz_payload = io.BytesIO()
+    np.savez(npz_payload, voxels=volume)
+    npz_payload.seek(0)
+    npz_upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("synthetic.npz", npz_payload, "application/octet-stream")},
+    )
+    assert npz_upload.status_code == 201
+
+    inspiro_payload = io.BytesIO()
+    with zipfile.ZipFile(inspiro_payload, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        array_buf = io.BytesIO()
+        np.save(array_buf, volume)
+        archive.writestr("voxels.npy", array_buf.getvalue())
+    inspiro_payload.seek(0)
+    inspiro_upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("synthetic.inspiro", inspiro_payload, "application/octet-stream")},
+    )
+    assert inspiro_upload.status_code == 201
+
+    listed = client.get(f"/api/projects/{pid}/images")
+    assert listed.status_code == 200
+    filenames = {item["filename"] for item in listed.json()}
+    assert {"synthetic.npy", "synthetic.npz", "synthetic.inspiro"}.issubset(filenames)
+
 def test_list_images_nonexistent_project_returns_empty(client):
     pid = uuid.uuid4()
     r = client.get(f"/api/projects/{pid}/images")
