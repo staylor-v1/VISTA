@@ -110,3 +110,20 @@ def test_loads_multipage_tiff_volume(tmp_path):
 
     assert volume.format == "multipage_tiff"
     assert volume.shape == (3, 11, 9)
+
+
+def test_tif_2d_vs_3d_classification_by_frame_count(tmp_path):
+    single_slice_tif = tmp_path / "single_slice.tif"
+    Image.new("L", (10, 12), color=90).save(single_slice_tif)
+
+    multi_slice_tif = tmp_path / "multi_slice.tif"
+    frames = [Image.new("L", (10, 12), color=v) for v in (10, 40, 70, 100)]
+    frames[0].save(multi_slice_tif, save_all=True, append_images=frames[1:])
+
+    single_volume = load_volume(single_slice_tif)
+    multi_volume = load_volume(multi_slice_tif)
+
+    assert single_volume.format == "multipage_tiff"
+    assert single_volume.shape == (1, 12, 10)
+    assert multi_volume.format == "multipage_tiff"
+    assert multi_volume.shape == (4, 12, 10)
