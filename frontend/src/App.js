@@ -465,6 +465,9 @@ const ProjectItem = memo(function ProjectItem({ project, onEdit, onDelete, canDe
           <div className="project-card-meta">
             ID: {project.id} • Group: {project.meta_group_id} • Type: {project.project_type || 'PT1'}
           </div>
+          <div className="project-card-meta">
+            Images: {project.image_count ?? 0} • Parts: {project.part_count ?? 0}
+          </div>
         </Link>
       </div>
       <Link 
