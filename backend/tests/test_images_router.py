@@ -14,6 +14,14 @@ def _make_png_bytes(size=(10, 10), color=(255, 0, 0)):
     return buf
 
 
+def _make_tiff_bytes(frame_count=1, size=(10, 10)):
+    frames = [Image.new("L", size, color=i * 20) for i in range(frame_count)]
+    buf = io.BytesIO()
+    frames[0].save(buf, format="TIFF", save_all=frame_count > 1, append_images=frames[1:])
+    buf.seek(0)
+    return buf
+
+
 def test_list_images_nonexistent_project_returns_empty(client):
     pid = uuid.uuid4()
     r = client.get(f"/api/projects/{pid}/images")
@@ -87,6 +95,36 @@ def test_upload_numpy_voxel_data_rejects_non_3d_arrays(client):
     )
     assert r.status_code == 400
     assert "Invalid 3D voxel data" in str(r.json())
+
+
+def test_upload_tiff_marks_2d_load_mode(client):
+    pr = client.post("/api/projects/", json={"name": "Tiff2D", "description": None, "meta_group_id": "g"})
+    pid = pr.json()["id"]
+
+    payload = _make_tiff_bytes(frame_count=1)
+    r = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("slice.tif", payload, "image/tiff")},
+    )
+    assert r.status_code == 201
+    metadata = r.json().get("metadata") or {}
+    assert metadata.get("tiff_dimensionality") == "2d"
+    assert metadata.get("load_mode") == "single_image"
+
+
+def test_upload_tiff_marks_3d_load_mode(client):
+    pr = client.post("/api/projects/", json={"name": "Tiff3D", "description": None, "meta_group_id": "g"})
+    pid = pr.json()["id"]
+
+    payload = _make_tiff_bytes(frame_count=4)
+    r = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("stack.tiff", payload, "image/tiff")},
+    )
+    assert r.status_code == 201
+    metadata = r.json().get("metadata") or {}
+    assert metadata.get("tiff_dimensionality") == "3d"
+    assert metadata.get("load_mode") == "volume"
 
 
 def test_upload_inspiro_voxel_data_accepts_3d_arrays(client):
