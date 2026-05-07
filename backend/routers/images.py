@@ -29,6 +29,24 @@ router = APIRouter(
 VOXEL_DATA_EXTENSIONS = {".npy", ".npz", ".inspiro"}
 
 
+def _tiff_dimensionality_metadata(file: UploadFile) -> Dict[str, str]:
+    filename = (file.filename or "").lower()
+    if not (filename.endswith(".tif") or filename.endswith(".tiff")):
+        return {}
+    try:
+        file.file.seek(0)
+        with Image.open(file.file) as image:
+            frame_count = int(getattr(image, "n_frames", 1) or 1)
+    except Exception:
+        return {}
+    finally:
+        file.file.seek(0)
+    return {
+        "tiff_dimensionality": "3d" if frame_count > 1 else "2d",
+        "load_mode": "volume" if frame_count > 1 else "single_image",
+    }
+
+
 def _validate_voxel_data(file: UploadFile) -> None:
     filename = (file.filename or "").lower()
     if not any(filename.endswith(ext) for ext in VOXEL_DATA_EXTENSIONS):
@@ -95,6 +113,9 @@ async def upload_image_to_project(
             parsed_metadata = _json.loads(metadata_json)
         except _json.JSONDecodeError:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON format for metadata")
+    if parsed_metadata is None:
+        parsed_metadata = {}
+    parsed_metadata.update(_tiff_dimensionality_metadata(file))
     # If metadata_json is None or empty string, parsed_metadata remains None
     # Basic validation
     _validate_voxel_data(file)

@@ -14,6 +14,12 @@ def _make_png_bytes(size=(10, 10), color=(255, 0, 0)):
     return buf
 
 
+def _make_tiff_bytes(frame_count=1, size=(10, 10)):
+    frames = [Image.new("L", size, color=i * 20) for i in range(frame_count)]
+    buf = io.BytesIO()
+    frames[0].save(buf, format="TIFF", save_all=frame_count > 1, append_images=frames[1:])
+    buf.seek(0)
+    return buf
 
 
 def _make_raster_bytes(fmt: str, size=(12, 10), color=(64, 128, 192)):
@@ -41,15 +47,10 @@ def _create_project(client, name="Synthetic Formats"):
 )
 def test_e2e_supported_2d_formats_upload_and_render_thumbnail(client, monkeypatch, filename, content_type, pil_format):
     pid = _create_project(client, name=f"2d-{pil_format}")
-
     payload = _make_raster_bytes(pil_format)
-    upload = client.post(
-        f"/api/projects/{pid}/images",
-        files={"file": (filename, payload, content_type)},
-    )
+    upload = client.post(f"/api/projects/{pid}/images", files={"file": (filename, payload, content_type)})
     assert upload.status_code == 201
     image_id = upload.json()["id"]
-
 
     class Resp:
         def __init__(self, data, ctype):
@@ -81,46 +82,6 @@ def test_e2e_supported_2d_formats_upload_and_render_thumbnail(client, monkeypatc
     assert thumb.status_code == 200
     assert thumb.headers["content-type"].startswith("image/")
 
-
-def test_e2e_supported_3d_numpy_formats_upload_and_volume_introspection(client):
-    pid = _create_project(client, name="3d-all")
-
-    volume = np.arange(4 * 6 * 8, dtype=np.uint16).reshape((4, 6, 8))
-
-    npy_payload = io.BytesIO()
-    np.save(npy_payload, volume)
-    npy_payload.seek(0)
-    npy_upload = client.post(
-        f"/api/projects/{pid}/images",
-        files={"file": ("synthetic.npy", npy_payload, "application/octet-stream")},
-    )
-    assert npy_upload.status_code == 201
-
-    npz_payload = io.BytesIO()
-    np.savez(npz_payload, voxels=volume)
-    npz_payload.seek(0)
-    npz_upload = client.post(
-        f"/api/projects/{pid}/images",
-        files={"file": ("synthetic.npz", npz_payload, "application/octet-stream")},
-    )
-    assert npz_upload.status_code == 201
-
-    inspiro_payload = io.BytesIO()
-    with zipfile.ZipFile(inspiro_payload, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
-        array_buf = io.BytesIO()
-        np.save(array_buf, volume)
-        archive.writestr("voxels.npy", array_buf.getvalue())
-    inspiro_payload.seek(0)
-    inspiro_upload = client.post(
-        f"/api/projects/{pid}/images",
-        files={"file": ("synthetic.inspiro", inspiro_payload, "application/octet-stream")},
-    )
-    assert inspiro_upload.status_code == 201
-
-    listed = client.get(f"/api/projects/{pid}/images")
-    assert listed.status_code == 200
-    filenames = {item["filename"] for item in listed.json()}
-    assert {"synthetic.npy", "synthetic.npz", "synthetic.inspiro"}.issubset(filenames)
 
 def test_list_images_nonexistent_project_returns_empty(client):
     pid = uuid.uuid4()
@@ -197,6 +158,36 @@ def test_upload_numpy_voxel_data_rejects_non_3d_arrays(client):
     assert "Invalid 3D voxel data" in str(r.json())
 
 
+def test_upload_tiff_marks_2d_load_mode(client):
+    pr = client.post("/api/projects/", json={"name": "Tiff2D", "description": None, "meta_group_id": "g"})
+    pid = pr.json()["id"]
+
+    payload = _make_tiff_bytes(frame_count=1)
+    r = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("slice.tif", payload, "image/tiff")},
+    )
+    assert r.status_code == 201
+    metadata = r.json().get("metadata") or {}
+    assert metadata.get("tiff_dimensionality") == "2d"
+    assert metadata.get("load_mode") == "single_image"
+
+
+def test_upload_tiff_marks_3d_load_mode(client):
+    pr = client.post("/api/projects/", json={"name": "Tiff3D", "description": None, "meta_group_id": "g"})
+    pid = pr.json()["id"]
+
+    payload = _make_tiff_bytes(frame_count=4)
+    r = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("stack.tiff", payload, "image/tiff")},
+    )
+    assert r.status_code == 201
+    metadata = r.json().get("metadata") or {}
+    assert metadata.get("tiff_dimensionality") == "3d"
+    assert metadata.get("load_mode") == "volume"
+
+
 def test_upload_inspiro_voxel_data_accepts_3d_arrays(client):
     pr = client.post("/api/projects/", json={"name": "P7", "description": None, "meta_group_id": "g"})
     pid = pr.json()["id"]
@@ -216,6 +207,47 @@ def test_upload_inspiro_voxel_data_accepts_3d_arrays(client):
     )
     assert r.status_code == 201
     assert r.json()["filename"] == "scan.inspiro"
+
+
+def test_e2e_supported_3d_numpy_formats_upload_and_volume_introspection(client):
+    pid = _create_project(client, name="3d-all")
+
+    volume = np.arange(4 * 6 * 8, dtype=np.uint16).reshape((4, 6, 8))
+
+    npy_payload = io.BytesIO()
+    np.save(npy_payload, volume)
+    npy_payload.seek(0)
+    npy_upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("synthetic.npy", npy_payload, "application/octet-stream")},
+    )
+    assert npy_upload.status_code == 201
+
+    npz_payload = io.BytesIO()
+    np.savez(npz_payload, voxels=volume)
+    npz_payload.seek(0)
+    npz_upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("synthetic.npz", npz_payload, "application/octet-stream")},
+    )
+    assert npz_upload.status_code == 201
+
+    inspiro_payload = io.BytesIO()
+    with zipfile.ZipFile(inspiro_payload, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        array_buf = io.BytesIO()
+        np.save(array_buf, volume)
+        archive.writestr("voxels.npy", array_buf.getvalue())
+    inspiro_payload.seek(0)
+    inspiro_upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("synthetic.inspiro", inspiro_payload, "application/octet-stream")},
+    )
+    assert inspiro_upload.status_code == 201
+
+    listed = client.get(f"/api/projects/{pid}/images")
+    assert listed.status_code == 200
+    filenames = {item["filename"] for item in listed.json()}
+    assert {"synthetic.npy", "synthetic.npz", "synthetic.inspiro"}.issubset(filenames)
 
 
 def test_get_download_url_and_content_and_thumbnail(client, monkeypatch):
