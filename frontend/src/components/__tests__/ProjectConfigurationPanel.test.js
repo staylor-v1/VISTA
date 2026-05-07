@@ -260,6 +260,40 @@ describe('ProjectConfigurationPanel', () => {
     expect(global.fetch).not.toHaveBeenCalledWith('/api/projects');
   });
 
+  test('renders file naming configuration defaults and supports hierarchy customization', async () => {
+    const config = makeConfig('PT1', 'basic');
+    mockFetch(config, 'PT1');
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await waitFor(() => expect(screen.getByText('Project Configuration: File Name Convention')).toBeInTheDocument());
+    expect(screen.getByLabelText('Level 1')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('D')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Level 1'), { target: { value: 'other' } });
+    expect(screen.getByLabelText('Custom Label')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Custom Label'), { target: { value: 'Workcell' } });
+    fireEvent.change(screen.getByLabelText('Abbreviation', { selector: '#hierarchy-level-abbreviation-0' }), {
+      target: { value: 'W' },
+    });
+    expect(screen.getByDisplayValue('W')).toBeInTheDocument();
+  });
+
+  test('adds and removes hierarchy and image descriptor rows', async () => {
+    const config = makeConfig('PT1', 'basic');
+    mockFetch(config, 'PT1');
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await waitFor(() => expect(screen.getByText('Add Hierarchy Level')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Add Hierarchy Level'));
+    expect(screen.getByLabelText('Level 6')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Add Image Descriptor'));
+    expect(screen.getByLabelText('Descriptor 3')).toBeInTheDocument();
+
+    const removeButtons = screen.getAllByRole('button', { name: 'Remove' });
+    fireEvent.click(removeButtons[removeButtons.length - 1]);
+    expect(screen.queryByLabelText('Descriptor 3')).not.toBeInTheDocument();
+  });
+
   test('adds backend service diagnostics when project configuration fetch fails', async () => {
     let configRequestCount = 0;
     global.fetch = jest.fn((url) => {
