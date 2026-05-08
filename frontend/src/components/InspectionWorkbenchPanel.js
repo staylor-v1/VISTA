@@ -1232,7 +1232,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const rightRegion = inspectionHierarchy.regions[inspectionHierarchy.rightColumn];
   const inspectorRegion = inspectionHierarchy.regions.inspector;
   const availableLayoutWidth = workbenchWidth > 0 ? workbenchWidth : viewportWidth;
-  const inspectionLayoutCollapsed = availableLayoutWidth <= inspectionHierarchy.layout.collapseBreakpointPx;
+  const inspectionLayoutCollapsed = projectType !== 'PT3'
+    && availableLayoutWidth <= inspectionHierarchy.layout.collapseBreakpointPx;
   const minSideColumnWidthPx = Math.max(120, Math.round(availableLayoutWidth * 0.05));
   const defaultLeftColumnWidthPx = Math.max(220, Math.round(normalizeLayoutNumber(leftRegion?.widthPx ?? leftRegion?.minWidthPx, 220) * 0.5));
   const defaultRightColumnWidthPx = Math.max(220, Math.round(normalizeLayoutNumber(rightRegion?.widthPx ?? rightRegion?.minWidthPx, 220) * 0.5));
