@@ -1148,13 +1148,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [inspectorViewport, setInspectorViewport] = useState({ zoom: 1, panX: 0, panY: 0 });
   const [annotations, setAnnotations] = useState([]);
   const [annotationsLoading, setAnnotationsLoading] = useState(false);
-  const [editingAnnotationId, setEditingAnnotationId] = useState(null);
-  const [annotationEditDraft, setAnnotationEditDraft] = useState({
-    defect_class: '',
-    modality: '',
-    comment: '',
-    disposition: 'open',
-  });
   const [annotationDraft, setAnnotationDraft] = useState({
     defect_class: '',
     modality: '',
@@ -2371,68 +2364,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       setFullscreenEditingBoxCorner((prev) => (String(prev?.boxId) === String(lineId) ? null : prev));
     } catch (err) {
       setError(err.message || 'Failed to delete measurement annotation');
-    }
-  };
-
-  const updateAnnotationVisibility = async (annotationId, hidden) => {
-    if (!selectedPart?.id) return;
-    try {
-      const resp = await fetch(`/api/projects/${projectId}/parts/${selectedPart.id}/annotations/${annotationId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hidden }),
-      });
-      if (!resp.ok) {
-        throw new Error(`Failed to update annotation (${resp.status})`);
-      }
-      const updated = await resp.json();
-      setAnnotations((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
-    } catch (err) {
-      setError(err.message || 'Failed to update annotation');
-    }
-  };
-
-  const startAnnotationEdit = (annotation) => {
-    setEditingAnnotationId(annotation.id);
-    setAnnotationEditDraft({
-      defect_class: annotation.defect_class || '',
-      modality: annotation.modality || '',
-      comment: annotation.comment || '',
-      disposition: annotation.disposition || 'open',
-    });
-  };
-
-  const cancelAnnotationEdit = () => {
-    setEditingAnnotationId(null);
-    setAnnotationEditDraft({
-      defect_class: '',
-      modality: '',
-      comment: '',
-      disposition: 'open',
-    });
-  };
-
-  const updateAnnotationDetails = async (annotationId) => {
-    if (!selectedPart?.id || !annotationEditDraft.defect_class.trim()) return;
-    try {
-      const resp = await fetch(`/api/projects/${projectId}/parts/${selectedPart.id}/annotations/${annotationId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          defect_class: annotationEditDraft.defect_class.trim(),
-          modality: (annotationEditDraft.modality || enabledModalities[0] || modalityOptions[0] || 'visual').trim(),
-          comment: annotationEditDraft.comment.trim() || null,
-          disposition: annotationEditDraft.disposition,
-        }),
-      });
-      if (!resp.ok) {
-        throw new Error(`Failed to update annotation (${resp.status})`);
-      }
-      const updated = await resp.json();
-      setAnnotations((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
-      cancelAnnotationEdit();
-    } catch (err) {
-      setError(err.message || 'Failed to update annotation');
     }
   };
 
