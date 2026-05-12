@@ -1133,7 +1133,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [mprReconstructionMode, setMprReconstructionMode] = useState(MPR_RECONSTRUCTION_MODES.orientation);
   const [mprProjectionMirror, setMprProjectionMirror] = useState(DEFAULT_MPR_PROJECTION_MIRROR);
   const [activeWorkbenchModal, setActiveWorkbenchModal] = useState(null);
-  const [contrastPercent, setContrastPercent] = useState(100);
+  const [displayWindow, setDisplayWindow] = useState({ min: 0, max: 255 });
   const [activeOverlayIds, setActiveOverlayIds] = useState([]);
   const [cursorProbe, setCursorProbe] = useState({ x: 50, y: 50 });
   const [segmentationRun, setSegmentationRun] = useState(null);
@@ -1665,16 +1665,18 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 
   const tooltipValues = useMemo(() => {
     const axisSeed = slicePosition.axial + slicePosition.coronal + slicePosition.sagittal;
-    const base = Math.min(
+    const sourceValue = Math.min(
       255,
-      Math.max(0, Math.round(((cursorProbe.x * 0.35 + cursorProbe.y * 0.65 + axisSeed) * contrastPercent) / 100)),
+      Math.max(0, Math.round(cursorProbe.x * 0.35 + cursorProbe.y * 0.65 + axisSeed)),
     );
+    const windowRange = Math.max(1, displayWindow.max - displayWindow.min);
+    const base = Math.round(((Math.min(displayWindow.max, Math.max(displayWindow.min, sourceValue)) - displayWindow.min) / windowRange) * 255);
     const overlays = activeOverlayIds.map((overlayId, index) => {
       const value = Number((((base + (index + 1) * 17) / 255) * 100).toFixed(1));
       return { overlayId, value };
     });
     return { base, overlays };
-  }, [activeOverlayIds, contrastPercent, cursorProbe.x, cursorProbe.y, slicePosition]);
+  }, [activeOverlayIds, cursorProbe.x, cursorProbe.y, displayWindow.max, displayWindow.min, slicePosition]);
 
   useEffect(() => {
     if (selectedPart && selectedPart.id !== selectedPartId) {
@@ -1715,7 +1717,13 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         : MPR_RECONSTRUCTION_MODES.orientation,
     );
     setMprProjectionMirror(normalizeMprProjectionMirror(savedMpr.projection_mirror));
-    setContrastPercent(clampRange(savedMpr.contrast_percent, 50, 150, 100));
+    const savedDisplayWindow = savedMpr.display_window || {};
+    const fallbackContrast = clampRange(savedMpr.contrast_percent, 50, 150, 100);
+    const fallbackMin = Math.max(0, Math.round(((100 - fallbackContrast) / 100) * 127));
+    const fallbackMax = Math.min(255, Math.round((fallbackContrast / 100) * 255));
+    const minValue = clampRange(savedDisplayWindow.min, 0, 254, fallbackMin);
+    const maxValue = clampRange(savedDisplayWindow.max, minValue + 1, 255, Math.max(minValue + 1, fallbackMax));
+    setDisplayWindow({ min: minValue, max: maxValue });
     const defaultActive = getOverlayLayers(selectedPart)
       .slice(0, 2)
       .map((overlay) => overlay.id);
@@ -1818,7 +1826,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   viewport_transform: viewportTransform,
                   reconstruction_mode: mprReconstructionMode,
                   projection_mirror: mprProjectionMirror,
-                  contrast_percent: contrastPercent,
+                  display_window: displayWindow,
                   active_overlay_ids: activeOverlayIds,
                   cursor_probe: cursorProbe,
                 }
@@ -1844,7 +1852,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   }, [
     activeOverlayIds,
     activeViewName,
-    contrastPercent,
+    displayWindow,
     cursorProbe,
     reviewFilter,
     partFilter,
@@ -2595,18 +2603,32 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 </select>
               </label>
             )}
-            <label htmlFor="mpr-contrast">
-              Contrast
+            <label htmlFor="mpr-window-min">
+              Display window
               <input
-                id="mpr-contrast"
+                id="mpr-window-min"
                 type="range"
-                min="50"
-                max="150"
-                value={contrastPercent}
-                onChange={(event) => setContrastPercent(Number(event.target.value))}
+                min="0"
+                max={Math.max(0, displayWindow.max - 1)}
+                value={displayWindow.min}
+                onChange={(event) => {
+                  const nextMin = Number(event.target.value);
+                  setDisplayWindow((previous) => ({ ...previous, min: Math.min(nextMin, previous.max - 1) }));
+                }}
+              />
+              <input
+                id="mpr-window-max"
+                type="range"
+                min={Math.min(255, displayWindow.min + 1)}
+                max="255"
+                value={displayWindow.max}
+                onChange={(event) => {
+                  const nextMax = Number(event.target.value);
+                  setDisplayWindow((previous) => ({ ...previous, max: Math.max(nextMax, previous.min + 1) }));
+                }}
               />
             </label>
-            <span className="group-badge">{contrastPercent}%</span>
+            <span className="group-badge">{displayWindow.min}–{displayWindow.max}</span>
             <label className="mpr-reconstruction-selector" htmlFor="mpr-reconstruction-mode">
               3D view
               <select
