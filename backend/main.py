@@ -117,12 +117,10 @@ async def lifespan(app: FastAPI):
 
 
 
-def _build_error_detail(*, request: Request, status_code: int, base_detail):
-    """Return consistently detailed API error payloads for easier debugging."""
-    detail_text = base_detail if isinstance(base_detail, str) else "Request failed"
+def _build_error_detail(*, request: Request, status_code: int):
+    """Return structured error context without changing the public `detail` message contract."""
     request_id = request.headers.get("x-request-id", "not-provided")
     return {
-        "message": detail_text,
         "status_code": status_code,
         "method": request.method,
         "path": request.url.path,
@@ -188,10 +186,10 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content={
-                "detail": _build_error_detail(
+                "detail": "Validation failed for one or more fields.",
+                "error_context": _build_error_detail(
                     request=request,
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    base_detail="Validation failed for one or more fields.",
                 ),
                 "validation_errors": exc.errors(),
             },
@@ -202,11 +200,11 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=exc.status_code,
             content={
-                "detail": _build_error_detail(
+                "detail": exc.detail,
+                "error_context": _build_error_detail(
                     request=request,
                     status_code=exc.status_code,
-                    base_detail=exc.detail,
-                )
+                ),
             },
             headers=exc.headers,
         )
@@ -220,11 +218,11 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
-                "detail": _build_error_detail(
+                "detail": "Unexpected server error.",
+                "error_context": _build_error_detail(
                     request=request,
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    base_detail="Unexpected server error.",
-                )
+                ),
             },
         )
 

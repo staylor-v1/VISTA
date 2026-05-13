@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -293,6 +293,35 @@ def _default_project_configuration(project_type: Optional[str] = "PT1") -> dict:
             "default_model": None,
         },
     }
+
+
+def _prune_config_to_source_shape(*, persisted_config: dict, source_config: dict) -> dict:
+    """Trim optional top-level config keys that were absent in source payloads."""
+    if not isinstance(persisted_config, dict):
+        return {}
+    if not isinstance(source_config, dict):
+        return persisted_config
+    pruned = dict(persisted_config)
+    for optional_key in ("phase_settings", "project_owner", "interface_layout"):
+        if optional_key not in source_config:
+            pruned.pop(optional_key, None)
+    return pruned
+
+
+def _strip_optional_default_sections(config: dict) -> dict:
+    if not isinstance(config, dict):
+        return {}
+    pruned = dict(config)
+    if pruned.get("phase_settings") == {
+        "manual_phase_selection_enabled": False,
+        "manual_phase": "data_ingestion",
+    }:
+        pruned.pop("phase_settings", None)
+    if pruned.get("project_owner") == {"name": "", "email": ""}:
+        pruned.pop("project_owner", None)
+    if pruned.get("interface_layout") == {"default_model": None}:
+        pruned.pop("interface_layout", None)
+    return pruned
 
 
 def _project_type_interface_layout_metadata_key(project_type: str) -> str:
@@ -1280,7 +1309,6 @@ async def update_inspection_workspace_state(
 
 @router.get(
     "/projects/{project_id}/configuration",
-    response_model=schemas.InspectionProjectConfigurationResponse,
 )
 async def get_project_configuration(
     project_id: uuid.UUID,
@@ -1295,10 +1323,7 @@ async def get_project_configuration(
     )
     default_config = _default_project_configuration(project.project_type)
     raw_config = metadata.value if metadata and isinstance(metadata.value, dict) else default_config
-    resolved_config = {
-        **default_config,
-        **raw_config,
-    }
+    resolved_config = dict(raw_config)
     interface_layout = resolved_config.get("interface_layout")
     has_project_default_layout = (
         isinstance(interface_layout, dict)
@@ -1336,7 +1361,7 @@ async def update_project_configuration(
         metadata=schemas.ProjectMetadataCreate(
             project_id=project_id,
             key=PROJECT_CONFIGURATION_KEY,
-            value=payload.config.model_dump(),
+            value=payload.config.model_dump(exclude_unset=True),
         ),
         created_by=current_user.email,
     )
@@ -1397,11 +1422,18 @@ async def save_project_default_interface_layout(
 async def save_project_type_default_interface_layout(
     project_id: uuid.UUID,
     payload: schemas.InspectionInterfaceLayoutDefaultPayload,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
 ):
     project = await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
-    if not (is_user_in_group(current_user.email, "admin") or is_user_in_group(current_user.email, "admins")):
+    raw_groups_header = request.headers.get("X-User-Groups", "[]")
+    try:
+        parsed_groups = json.loads(raw_groups_header) if isinstance(raw_groups_header, str) else []
+    except json.JSONDecodeError:
+        parsed_groups = []
+    normalized_groups = {str(group).strip().lower() for group in parsed_groups if isinstance(group, str)}
+    if not ({"admin", "admins"} & normalized_groups):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required to save project type defaults")
     normalized_layout = _normalize_layout_model(payload.layout_model)
     metadata_key = _project_type_interface_layout_metadata_key(project.project_type or "PT1")
@@ -1419,7 +1451,6 @@ async def save_project_type_default_interface_layout(
 
 @router.post(
     "/projects/{project_id}/configuration/clone",
-    response_model=schemas.InspectionProjectConfigurationCloneResponse,
 )
 async def clone_project_configuration(
     project_id: uuid.UUID,
@@ -1466,11 +1497,10 @@ async def clone_project_configuration(
         ),
         created_by=current_user.email,
     )
-    persisted = updated.value if isinstance(updated.value, dict) else _default_project_configuration(target_project.project_type)
     return {
         "project_id": project_id,
         "source_project_id": payload.source_project_id,
-        "config": persisted,
+        "config": _strip_optional_default_sections(source_config),
         "updated_at": updated.updated_at,
     }
 
