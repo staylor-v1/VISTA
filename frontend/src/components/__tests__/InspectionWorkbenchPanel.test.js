@@ -1502,6 +1502,19 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('mpr-pane-3d')).toHaveTextContent('Zoom 1.30x');
     fireEvent.wheel(screen.getByTestId('mpr-pane-3d'), { deltaY: -80 });
     expect(screen.getByTestId('mpr-pane-3d')).toHaveTextContent('Zoom 1.42x');
+    expect(document.querySelector('.mpr-grid')).toHaveClass('mpr-grid-four');
+
+    const minSlider = screen.getByLabelText('Display window minimum');
+    const maxSlider = screen.getByLabelText('Display window maximum');
+    fireEvent.change(minSlider, { target: { value: '30' } });
+    fireEvent.change(maxSlider, { target: { value: '180' } });
+    expect(screen.getByTestId('mpr-panel')).toHaveTextContent('30–180');
+    expect(screen.getAllByTestId('mpr-preview-axial')[0].querySelector('.mpr-slice-canvas')).toHaveAttribute('data-display-window', '30-180');
+
+    fireEvent.click(screen.getByTestId('mpr-pane-axial'));
+    const zoomLayer = document.querySelector('.inspection-fullscreen-image-zoom-layer');
+    expect(zoomLayer).toHaveStyle({ transform: 'translate(0px, 0px) scale(1)' });
+    expect(document.querySelector('.mpr-grid')).toHaveClass('mpr-grid-four');
 
     fireEvent.click(screen.getByRole('button', { name: 'Part Selection' }));
     expect(screen.getByRole('heading', { name: 'Part Selection' })).toBeInTheDocument();
