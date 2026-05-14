@@ -855,7 +855,7 @@ function useMprVolumeCache(imageStack, dimensions) {
   return cacheState;
 }
 
-function MprSliceCanvas({ axis, volumeCache, volumeCacheStatus, slicePosition, dimensions }) {
+function MprSliceCanvas({ axis, volumeCache, volumeCacheStatus, slicePosition, dimensions, displayWindow }) {
   const canvasRef = useRef(null);
   const relevantSlicePosition = slicePosition[axis];
 
@@ -881,8 +881,21 @@ function MprSliceCanvas({ axis, volumeCache, volumeCacheStatus, slicePosition, d
     canvas.height = sliceCanvas.height || 1;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(sliceCanvas, 0, 0, canvas.width, canvas.height);
+    const minWindow = clampRange(displayWindow?.min, 0, 254, 0);
+    const maxWindow = clampRange(displayWindow?.max, minWindow + 1, 255, 255);
+    const windowRange = Math.max(1, maxWindow - minWindow);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const { data } = imageData;
+    for (let i = 0; i < data.length; i += 4) {
+      const value = data[i];
+      const normalized = Math.round(((Math.min(maxWindow, Math.max(minWindow, value)) - minWindow) / windowRange) * 255);
+      data[i] = normalized;
+      data[i + 1] = normalized;
+      data[i + 2] = normalized;
+    }
+    ctx.putImageData(imageData, 0, 0);
     return undefined;
-  }, [axis, dimensions, relevantSlicePosition, slicePosition, volumeCache]);
+  }, [axis, dimensions, displayWindow?.max, displayWindow?.min, relevantSlicePosition, slicePosition, volumeCache]);
 
   return (
     <canvas
@@ -890,6 +903,7 @@ function MprSliceCanvas({ axis, volumeCache, volumeCacheStatus, slicePosition, d
       className="mpr-slice-canvas"
       aria-hidden="true"
       data-volume-cache-status={volumeCacheStatus}
+      data-display-window={`${displayWindow?.min ?? 0}-${displayWindow?.max ?? 255}`}
     />
   );
 }
@@ -2536,28 +2550,32 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
             )}
             <label htmlFor="mpr-window-min">
               Display window
-              <input
-                id="mpr-window-min"
-                type="range"
-                min="0"
-                max={Math.max(0, displayWindow.max - 1)}
-                value={displayWindow.min}
-                onChange={(event) => {
-                  const nextMin = Number(event.target.value);
-                  setDisplayWindow((previous) => ({ ...previous, min: Math.min(nextMin, previous.max - 1) }));
-                }}
-              />
-              <input
-                id="mpr-window-max"
-                type="range"
-                min={Math.min(255, displayWindow.min + 1)}
-                max="255"
-                value={displayWindow.max}
-                onChange={(event) => {
-                  const nextMax = Number(event.target.value);
-                  setDisplayWindow((previous) => ({ ...previous, max: Math.max(nextMax, previous.min + 1) }));
-                }}
-              />
+              <div className="pt3-window-dual-slider">
+                <input
+                  id="mpr-window-min"
+                  type="range"
+                  aria-label="Display window minimum"
+                  min="0"
+                  max={Math.max(0, displayWindow.max - 1)}
+                  value={displayWindow.min}
+                  onChange={(event) => {
+                    const nextMin = Number(event.target.value);
+                    setDisplayWindow((previous) => ({ ...previous, min: Math.min(nextMin, previous.max - 1) }));
+                  }}
+                />
+                <input
+                  id="mpr-window-max"
+                  type="range"
+                  aria-label="Display window maximum"
+                  min={Math.min(255, displayWindow.min + 1)}
+                  max="255"
+                  value={displayWindow.max}
+                  onChange={(event) => {
+                    const nextMax = Number(event.target.value);
+                    setDisplayWindow((previous) => ({ ...previous, max: Math.max(nextMax, previous.min + 1) }));
+                  }}
+                />
+              </div>
             </label>
             <span className="group-badge">{displayWindow.min}–{displayWindow.max}</span>
             <label className="mpr-reconstruction-selector" htmlFor="mpr-reconstruction-mode">
@@ -2628,9 +2646,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   data-testid={`mpr-pane-${axis}`}
                   onClick={() => {
                     setActiveMprPane(axis);
-                    setMprExpandedPane((prev) => (prev === axis ? null : axis));
+                    setMprExpandedPane(null);
                     openMprAnnotationTool(axis, 'measure');
                     setFullscreenMeasureActive(false);
+                    setFullscreenImageZoom({ scale: 1, panX: 0, panY: 0, originX: 50, originY: 50 });
                   }}
                   onWheel={(event) => handleMprPaneWheel(axis, event)}
                 >
@@ -2662,6 +2681,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                         volumeCacheStatus={volumeCacheState.status}
                         slicePosition={slicePosition}
                         dimensions={mprDimensions}
+                        displayWindow={displayWindow}
                       />
                     ) : fallbackImage ? (
                       <img

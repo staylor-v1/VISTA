@@ -5559,6 +5559,25 @@ ul li:hover {
 .mpr-control-strip input[type='range'] {
   width: 120px;
 }
+.pt3-window-dual-slider {
+  position: relative;
+  width: 130px;
+  height: 24px;
+}
+.pt3-window-dual-slider input[type='range'] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  margin: 0;
+  background: transparent;
+  pointer-events: none;
+}
+.pt3-window-dual-slider input[type='range']::-webkit-slider-thumb {
+  pointer-events: auto;
+}
+.pt3-window-dual-slider input[type='range']::-moz-range-thumb {
+  pointer-events: auto;
+}
 
 .mpr-reconstruction-selector select {
   min-width: 150px;
