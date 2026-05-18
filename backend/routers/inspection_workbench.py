@@ -289,6 +289,10 @@ def _default_project_configuration(project_type: Optional[str] = "PT1") -> dict:
             "name": "",
             "email": "",
         },
+        "current_user": {
+            "username": "",
+            "sso_authenticated": False,
+        },
         "interface_layout": {
             "default_model": None,
         },
@@ -302,7 +306,7 @@ def _prune_config_to_source_shape(*, persisted_config: dict, source_config: dict
     if not isinstance(source_config, dict):
         return persisted_config
     pruned = dict(persisted_config)
-    for optional_key in ("phase_settings", "project_owner", "interface_layout"):
+    for optional_key in ("phase_settings", "project_owner", "current_user", "interface_layout"):
         if optional_key not in source_config:
             pruned.pop(optional_key, None)
     return pruned
@@ -319,6 +323,8 @@ def _strip_optional_default_sections(config: dict) -> dict:
         pruned.pop("phase_settings", None)
     if pruned.get("project_owner") == {"name": "", "email": ""}:
         pruned.pop("project_owner", None)
+    if pruned.get("current_user") == {"username": "", "sso_authenticated": False}:
+        pruned.pop("current_user", None)
     if pruned.get("interface_layout") == {"default_model": None}:
         pruned.pop("interface_layout", None)
     return pruned
@@ -1144,6 +1150,12 @@ async def create_part_annotation(
         config_value = config_metadata.value if config_metadata and isinstance(config_metadata.value, dict) else {}
         project_owner = config_value.get("project_owner") if isinstance(config_value.get("project_owner"), dict) else {}
         attribution_owner = str(project_owner.get("email") or project_owner.get("name") or "").strip()
+        if not attribution_owner:
+            current_config_user = config_value.get("current_user") if isinstance(config_value.get("current_user"), dict) else {}
+            username = str(current_config_user.get("username") or "").strip()
+            if username:
+                sso_authenticated = bool(current_config_user.get("sso_authenticated"))
+                attribution_owner = username if sso_authenticated else f"{username} (manual)"
 
     annotation_entry = {
         "id": str(uuid.uuid4()),
