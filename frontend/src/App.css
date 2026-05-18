@@ -4884,6 +4884,9 @@ ul li:hover {
   color: var(--primary-color);
   box-shadow: 0 0 0 1px var(--primary-color) inset;
 }
+.part-summary-images .btn.muted-toggle {
+  opacity: 0.55;
+}
 
 .view-cell {
   cursor: pointer;
@@ -5018,9 +5021,23 @@ ul li:hover {
 
 .view-board {
   display: grid;
-  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  grid-template-columns: repeat(3, minmax(calc(120px * var(--inspection-tile-scale, 1)), 1fr));
   gap: 10px;
   width: 100%;
+}
+.view-board-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.tile-size-control,
+.view-category-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 @media (max-width: 900px) {

@@ -84,6 +84,10 @@ const REVIEW_LABELS = {
   reject_pending: 'Reject',
   reject_confirmed: 'Reject',
 };
+const IMAGE_RENDER_CATEGORIES = [
+  { id: 'source', label: 'Source images' },
+  { id: 'overlay', label: 'Overlays' },
+];
 function hasDroppedMetadataField(part, field) {
   const metadata = part?.metadata;
   if (!metadata || typeof metadata !== 'object') return false;
@@ -1156,6 +1160,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [workspaceHydration, setWorkspaceHydration] = useState({});
   const [enabledModalities, setEnabledModalities] = useState([]);
   const [selectedViewName, setSelectedViewName] = useState('');
+  const [hiddenViewNames, setHiddenViewNames] = useState([]);
+  const [renderCategories, setRenderCategories] = useState(['source', 'overlay']);
+  const [tileSizePercent, setTileSizePercent] = useState(100);
   const [imageEnabled, setImageEnabled] = useState(true);
   const [measurementEntries, setMeasurementEntries] = useState([]);
   const [inspectorViewport, setInspectorViewport] = useState({ zoom: 1, panX: 0, panY: 0 });
@@ -1596,6 +1603,14 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     if (!selectedPart?.metadata || typeof selectedPart.metadata !== 'object') return [];
     return getPartImageRefs(selectedPart);
   }, [selectedPart]);
+  const visibleSelectedPartImageRefs = useMemo(() => {
+    const hidden = new Set(hiddenViewNames.map((name) => String(name).toLowerCase()));
+    return selectedPartImageRefs.filter((entry) => {
+      const category = entry.overlay ? 'overlay' : 'source';
+      if (!renderCategories.includes(category)) return false;
+      return !hidden.has(String(entry.viewName || '').toLowerCase());
+    });
+  }, [hiddenViewNames, renderCategories, selectedPartImageRefs]);
   const annotationSourceImageIdLookup = useMemo(
     () => getAnnotationSourceImageIdLookup(selectedPartImageRefs, projectImageLookup),
     [projectImageLookup, selectedPartImageRefs],
@@ -2020,6 +2035,18 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       if (prev.includes(overlayId)) return prev.filter((id) => id !== overlayId);
       return [...prev, overlayId];
     });
+  };
+  const toggleRenderCategory = (categoryId) => {
+    setRenderCategories((prev) => (prev.includes(categoryId)
+      ? prev.filter((entry) => entry !== categoryId)
+      : [...prev, categoryId]));
+  };
+  const toggleViewVisibility = (viewName) => {
+    const key = String(viewName || '').toLowerCase();
+    if (!key) return;
+    setHiddenViewNames((prev) => (prev.includes(key)
+      ? prev.filter((entry) => entry !== key)
+      : [...prev, key]));
   };
 
   const toggleMprProjectionMirror = (axis) => {
@@ -2489,21 +2516,25 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                           </div>
                           {imageEntries.length > 0 && (
                             <div className="part-summary-images">
-                              {imageEntries.map(([viewName, imageRef]) => (
+                              {imageEntries.map(([viewName, imageRef]) => {
+                                const isHidden = hiddenViewNames.includes(String(viewName).toLowerCase());
+                                return (
                                 <button
                                   type="button"
                                   key={`${part.id}-${viewName}`}
-                                  className={`btn btn-secondary btn-sm ${isSelected && activeViewName === viewName ? 'active' : ''}`}
+                                  className={`btn btn-secondary btn-sm ${isSelected && activeViewName === viewName ? 'active' : ''} ${isHidden ? 'muted-toggle' : ''}`}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     setSelectedPartId(part.id);
+                                    toggleViewVisibility(viewName);
                                     setSelectedViewName(viewName);
                                     setSelectedImageRef(String(imageRef || ''));
                                   }}
                                 >
                                   {viewName.toUpperCase()}
                                 </button>
-                              ))}
+                                );
+                              })}
                             </div>
                           )}
                         </div>
@@ -2841,11 +2872,27 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         ) : (
           !selectedPart ? (
             <p className="muted">No part selected. Select a part to inspect mapped images.</p>
-          ) : selectedPartImageRefs.length === 0 ? (
+          ) : visibleSelectedPartImageRefs.length === 0 ? (
             <p className="muted">No mapped images for this part.</p>
           ) : (
-            <div className="view-board" data-layout-region="visual_workspace">
-              {selectedPartImageRefs.map((entry) => {
+            <>
+            <div className="view-board-controls">
+              <label className="tile-size-control">
+                Tile size
+                <input type="range" min="70" max="160" step="5" value={tileSizePercent} onChange={(event) => setTileSizePercent(Number(event.target.value))} />
+                <span>{tileSizePercent}%</span>
+              </label>
+              <div className="view-category-controls" aria-label="Image categories">
+                {IMAGE_RENDER_CATEGORIES.map((category) => (
+                  <label key={category.id}>
+                    <input type="checkbox" checked={renderCategories.includes(category.id)} onChange={() => toggleRenderCategory(category.id)} />
+                    {category.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="view-board" data-layout-region="visual_workspace" style={{ '--inspection-tile-scale': tileSizePercent / 100 }}>
+              {visibleSelectedPartImageRefs.map((entry) => {
                 const viewName = entry.viewName || 'image';
                 const imageRef = String(entry.imageRef || '');
                 const imageRecord = projectImageLookup[entry.imageId] || projectImageLookup[imageRef];
@@ -2980,6 +3027,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 );
               })}
             </div>
+            </>
           )
         )}
       </div>
