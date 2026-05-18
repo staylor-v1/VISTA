@@ -1131,6 +1131,20 @@ function normalizeInspectionColumnWidths(candidate = {}) {
   };
 }
 
+
+function getAnnotationTooltip(annotation) {
+  if (!annotation || typeof annotation !== 'object') return '';
+  const details = [];
+  const type = getAnnotationListType(annotation);
+  const value = getAnnotationListValue(annotation);
+  if (type) details.push(type);
+  if (value) details.push(value);
+  const createdAt = annotation?.created_at ? new Date(annotation.created_at).toLocaleString() : '';
+  if (createdAt) details.push(`Created: ${createdAt}`);
+  if (annotation?.created_by) details.push(`By: ${annotation.created_by}`);
+  return details.join(' • ');
+}
+
 function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFilters }) {
   const [batches, setBatches] = useState([]);
   const [parts, setParts] = useState([]);
@@ -1179,6 +1193,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   });
   const [annotationToolMode, setAnnotationToolMode] = useState('');
   const [otherAnnotationModalVisible, setOtherAnnotationModalVisible] = useState(false);
+  const [annotationEditModalVisible, setAnnotationEditModalVisible] = useState(false);
+  const [customDefectTypeDraft, setCustomDefectTypeDraft] = useState('');
   const [tileAnnotationDraft, setTileAnnotationDraft] = useState(null);
   const [tileAnnotationPreview, setTileAnnotationPreview] = useState(null);
   const [inspectorHotkeys, setInspectorHotkeys] = useState(DEFAULT_INSPECTOR_HOTKEYS);
@@ -1205,6 +1221,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [fullscreenImageZoom, setFullscreenImageZoom] = useState({ scale: 1, originX: 50, originY: 50, panX: 0, panY: 0 });
   const [fullscreenImagePanning, setFullscreenImagePanning] = useState(false);
   const [sessionCalibrationByImageId, setSessionCalibrationByImageId] = useState({});
+  const configuredDefectTypes = useMemo(() => (Array.isArray(projectConfiguration?.defect_types) ? projectConfiguration.defect_types
+    .map((entry) => String(entry?.name || '').trim())
+    .filter(Boolean) : []), [projectConfiguration]);
   const measurementLinesByImageId = useMemo(() => getMeasurementLinesByImageId(annotations), [annotations]);
   const boxAnnotationsByImageId = useMemo(() => getBoxAnnotationsByImageId(annotations), [annotations]);
   const [pendingMeasurePoint, setPendingMeasurePoint] = useState(null);
@@ -1788,7 +1807,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       disposition: 'open',
       measurement_name: '',
       measurement_value: '',
-      bbox: { x: '', y: '', width: '', height: '' },
     });
   }, [selectedPart, workspaceHydration]);
 
@@ -2133,7 +2151,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       disposition: 'open',
       measurement_name: '',
       measurement_value: '',
-      bbox: { x: '', y: '', width: '', height: '' },
     });
   };
 
@@ -2151,23 +2168,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     const measurements = measurementName && Number.isFinite(measurementValue)
       ? { [measurementName]: Number(measurementValue.toFixed(2)) }
       : {};
-    const bboxPayload = ['x', 'y', 'width', 'height'].reduce((acc, key) => {
-      const rawValue = String(annotationDraft.bbox[key] ?? '').trim();
-      if (!rawValue) return acc;
-      const value = Number(rawValue);
-      if (Number.isFinite(value)) {
-        acc[key] = value;
-      }
-      return acc;
-    }, {});
-
     const payload = {
-      defect_class: annotationDraft.defect_class.trim(),
+      defect_class: (annotationDraft.defect_class === 'Other' ? (customDefectTypeDraft.trim() || 'Other') : annotationDraft.defect_class).trim(),
       modality: (annotationDraft.modality || enabledModalities[0] || modalityOptions[0] || 'visual').trim(),
       comment: annotationDraft.comment.trim() || null,
       disposition: annotationDraft.disposition,
       measurements,
-      bbox: Object.keys(bboxPayload).length === 4 ? bboxPayload : null,
       hidden: false,
     };
 
@@ -3094,11 +3100,14 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 className={`annotation-entry ${selectedAnnotationId === annotation.id ? 'selected' : ''}`}
                 role="button"
                 tabIndex={0}
-                onClick={() => setSelectedAnnotationId(annotation.id)}
+                title={getAnnotationTooltip(annotation)}
+                onClick={() => { setSelectedAnnotationId(annotation.id);
+                    setAnnotationEditModalVisible(true); setAnnotationEditModalVisible(true); }}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
                     setSelectedAnnotationId(annotation.id);
+                    setAnnotationEditModalVisible(true);
                   }
                 }}
               >
@@ -3179,9 +3188,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	                onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, defect_class: event.target.value }))}
 	              >
 	                <option value="">Defect type</option>
-	                <option value="Crack">Crack</option>
-	                <option value="Dent">Dent</option>
-	                <option value="Scratch">Scratch</option>
+	                {configuredDefectTypes.map((defectType) => (
+	                  <option key={defectType} value={defectType}>{defectType}</option>
+	                ))}
 	                <option value="Other">Other</option>
 	              </select>
 	              <input
@@ -3221,21 +3230,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	                onChange={(event) => setAnnotationDraft((prev) => ({ ...prev, comment: event.target.value }))}
 	              />
 	            </div>
-	            <div className="measurement-fields">
-	              {['x', 'y', 'width', 'height'].map((key) => (
-	                <input
-	                  key={key}
-	                  type="number"
-	                  placeholder={`bbox ${key}`}
-	                  value={annotationDraft.bbox[key]}
-	                  onChange={(event) => setAnnotationDraft((prev) => ({
-	                    ...prev,
-	                    bbox: { ...prev.bbox, [key]: event.target.value },
-	                  }))}
-	                />
-	              ))}
-	            </div>
-	            <div className="modal-actions">
+		            <div className="modal-actions">
 	              <button type="button" className="btn btn-secondary" onClick={() => setOtherAnnotationModalVisible(false)}>
 	                Cancel
 	              </button>
@@ -3254,7 +3249,52 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	    );
 	  };
 
-	  const renderWorkbenchModal = () => {
+	
+
+
+
+  const updateAnnotationFromModal = async () => {
+    const selected = annotations.find((annotation) => annotation.id === selectedAnnotationId);
+    if (!selected || !selectedPart?.id) return;
+    try {
+      const resp = await fetch(`/api/projects/${projectId}/parts/${selectedPart.id}/annotations/${selected.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          defect_class: selected.defect_class,
+          comment: selected.comment,
+          measurements: selected.measurements || {},
+          disposition: selected.disposition || 'open',
+        }),
+      });
+      if (!resp.ok) throw new Error(`Failed to update annotation (${resp.status})`);
+      const updated = await resp.json();
+      setAnnotations((prev) => prev.map((annotation) => (annotation.id === updated.id ? updated : annotation)));
+      setAnnotationEditModalVisible(false);
+    } catch (err) {
+      setError(err.message || 'Failed to update annotation');
+    }
+  };
+
+  const renderAnnotationEditModal = () => {
+    if (!annotationEditModalVisible) return null;
+    const selected = annotations.find((annotation) => annotation.id === selectedAnnotationId);
+    if (!selected) return null;
+    return (
+      <div className="modal" style={{ display: 'flex' }} onClick={() => setAnnotationEditModalVisible(false)}>
+        <div className="modal-content workbench-utility-modal" role="dialog" aria-label="Edit annotation" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-header"><h3>Edit Annotation</h3></div>
+          <div className="modal-body">
+            <input type="text" value={selected.defect_class || ""} onChange={(event) => setAnnotations((prev) => prev.map((annotation) => (annotation.id === selected.id ? { ...annotation, defect_class: event.target.value } : annotation)))} />
+            <input type="text" value={selected.comment || ""} onChange={(event) => setAnnotations((prev) => prev.map((annotation) => (annotation.id === selected.id ? { ...annotation, comment: event.target.value } : annotation)))} />
+            <div className="modal-actions"><button type="button" className="btn btn-primary" onClick={updateAnnotationFromModal}>Save</button></div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderWorkbenchModal = () => {
     if (!activeWorkbenchModal) return null;
     const modalTitle = activeWorkbenchModal === 'parts' ? 'Part Selection' : 'Annotations';
     return (
@@ -4294,7 +4334,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	                        <button
 	                          type="button"
 	                          className="inspection-fullscreen-annotation-body"
-	                          onClick={() => setSelectedAnnotationId(annotation.id)}
+	                          onClick={() => { setSelectedAnnotationId(annotation.id);
+                    setAnnotationEditModalVisible(true); setAnnotationEditModalVisible(true); }}
 	                        >
 	                          <span className="inspection-fullscreen-annotation-title">{annotation.title || `Annotation ${index + 1}`}</span>
 	                          <span className="inspection-fullscreen-annotation-length">{annotation.summary}</span>
@@ -4413,6 +4454,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         </>
 	      )}
 	      {renderOtherAnnotationModal()}
+      {renderAnnotationEditModal()}
 	      {renderFullscreenImageModal()}
 	    </section>
 	  );

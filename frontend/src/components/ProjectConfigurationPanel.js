@@ -265,6 +265,10 @@ const EMPTY_CONFIG = {
     name: '',
     email: '',
   },
+  current_user: {
+    username: '',
+    sso_authenticated: false,
+  },
   file_naming_scheme: {
     hierarchy_levels: [
       { id: 'drawing_number', label: 'Drawing Number', abbreviation: 'D' },
@@ -376,6 +380,26 @@ function ProjectConfigurationPanel({
   const [error, setError] = useState(null);
   const [statusMessage, setStatusMessage] = useState('');
   const [copyingConfiguration, setCopyingConfiguration] = useState(false);
+
+  useEffect(() => {
+    const loadCurrentUser = async () => {
+      try {
+        const resp = await fetch('/api/users/me');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const username = String(data?.email || data?.username || "").trim();
+        if (!username) return;
+        setConfig((previous) => ({
+          ...previous,
+          current_user: {
+            username,
+            sso_authenticated: true,
+          },
+        }));
+      } catch (_err) {}
+    };
+    loadCurrentUser();
+  }, []);
   const [savingInterfaceLayoutDefault, setSavingInterfaceLayoutDefault] = useState(false);
   const [savingProjectTypeLayoutDefault, setSavingProjectTypeLayoutDefault] = useState(false);
   const hasCompatibleCopySources = availableProjects.length > 0;
@@ -756,6 +780,18 @@ function ProjectConfigurationPanel({
               <input id="project-owner-email" className="form-control" value={config.project_owner?.email || ''} onChange={(event) => setConfig((previous) => ({ ...previous, project_owner: { ...(previous.project_owner || {}), email: event.target.value } }))} />
             </div>
           </section>
+          
+          <section className="part-detail-panel" aria-label="Current user">
+            <h3>Current User</h3>
+            <div className="workbench-controls-row">
+              <label htmlFor="current-user-name">Active Username</label>
+              <input id="current-user-name" className="form-control" value={config.current_user?.username || ''} onChange={(event) => setConfig((previous) => ({ ...previous, current_user: { ...(previous.current_user || {}), username: event.target.value, sso_authenticated: false } }))} />
+              <p className="muted">
+                Status: {config.current_user?.sso_authenticated ? 'Authenticated via SSO' : 'Manual (manual)'}
+              </p>
+            </div>
+          </section>
+
           <section className="part-detail-panel" aria-label="File naming configuration">
             <h3>Project Configuration: File Name Convention</h3>
             <p>Customize hierarchy and image descriptor elements used to build file names.</p>

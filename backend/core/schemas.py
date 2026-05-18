@@ -319,6 +319,11 @@ class InspectionProjectOwnerConfig(BaseModel):
     name: str = Field(default="", max_length=255)
     email: str = Field(default="", max_length=255)
 
+
+class InspectionProjectCurrentUserConfig(BaseModel):
+    username: str = Field(default="", max_length=255)
+    sso_authenticated: bool = False
+
 class InspectionProjectConfiguration(BaseModel):
     image_modalities: List[InspectionProjectModalityConfig] = Field(default_factory=list)
     part_views: List[InspectionProjectPartViewConfig] = Field(default_factory=list)
@@ -328,6 +333,7 @@ class InspectionProjectConfiguration(BaseModel):
     phase_settings: InspectionProjectPhaseSettingsConfig = Field(default_factory=InspectionProjectPhaseSettingsConfig)
     interface_layout: InspectionProjectInterfaceLayoutConfig = Field(default_factory=InspectionProjectInterfaceLayoutConfig)
     project_owner: InspectionProjectOwnerConfig = Field(default_factory=InspectionProjectOwnerConfig)
+    current_user: InspectionProjectCurrentUserConfig = Field(default_factory=InspectionProjectCurrentUserConfig)
 
 
 class InspectionProjectConfigurationPayload(BaseModel):
