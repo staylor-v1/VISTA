@@ -604,7 +604,7 @@ describe('InspectionWorkbenchPanel', () => {
       }
 
       // Review action updates indicator
-      fireEvent.click(screen.getByRole('button', { name: /mark pass/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^pass$/i }));
       await waitFor(() => {
         expect(screen.getByText('Passed: 1')).toBeInTheDocument();
       });

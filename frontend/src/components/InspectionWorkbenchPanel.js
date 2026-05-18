@@ -80,10 +80,9 @@ const DEFAULT_PANEL_LAYOUT = {
 const PANEL_LAYOUT_KEYS = ['part_list', 'inspector', 'mpr_controls'];
 const REVIEW_LABELS = {
   unreviewed: 'Unreviewed',
-  in_review: 'In Review',
   pass: 'Pass',
-  reject_pending: 'Reject Pending',
-  reject_confirmed: 'Reject Confirmed',
+  reject_pending: 'Reject',
+  reject_confirmed: 'Reject',
 };
 function hasDroppedMetadataField(part, field) {
   const metadata = part?.metadata;
@@ -1922,7 +1921,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         updatePartReviewState(selectedPart, 'pass');
       } else if (key === inspectorHotkeys.reject_classification) {
         event.preventDefault();
-        updatePartReviewState(selectedPart, 'reject_pending');
+        updatePartReviewState(selectedPart, 'reject_confirmed');
       }
     };
     document.addEventListener('keydown', handleInspectorHotkeys);
@@ -1936,7 +1935,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         acc[state] = (acc[state] || 0) + 1;
         return acc;
       },
-      { unreviewed: 0, in_review: 0, pass: 0, reject_pending: 0, reject_confirmed: 0 },
+      { unreviewed: 0, pass: 0, reject_pending: 0, reject_confirmed: 0 },
     );
   }, [parts]);
 
@@ -2410,8 +2409,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
           >
             <option value="all">All</option>
             <option value="pass">Pass</option>
-            <option value="reject_pending">Fail</option>
-            <option value="reject_confirmed">Fail (confirmed)</option>
+            <option value="reject_confirmed">Reject</option>
             <option value="manual">Manual</option>
             <option value="none">None</option>
           </select>
@@ -3258,25 +3256,18 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
           {selectedPart && (
             <>
               <button
-                className="btn btn-secondary"
-                disabled={savingPartId === selectedPart.id}
-                onClick={() => updatePartReviewState(selectedPart, 'in_review')}
-              >
-                In Review
-              </button>
-              <button
                 className="btn btn-success"
                 disabled={savingPartId === selectedPart.id}
                 onClick={() => updatePartReviewState(selectedPart, 'pass')}
               >
-                Mark Pass
+                Pass
               </button>
               <button
                 className="btn btn-danger"
                 disabled={savingPartId === selectedPart.id}
-                onClick={() => updatePartReviewState(selectedPart, 'reject_pending')}
+                onClick={() => updatePartReviewState(selectedPart, 'reject_confirmed')}
               >
-                Flag Reject
+                Reject
               </button>
             </>
           )}
@@ -3287,7 +3278,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
           <strong>Shortcut help</strong>
           <ul>
             <li>Mark Pass: {inspectorHotkeys.accept_classification.toUpperCase()}</li>
-            <li>Flag Reject: {inspectorHotkeys.reject_classification.toUpperCase()}</li>
+            <li>Reject: {inspectorHotkeys.reject_classification.toUpperCase()}</li>
             <li>Toggle this help: {inspectorHotkeys.toggle_shortcut_help.toUpperCase()}</li>
           </ul>
         </div>
@@ -4307,25 +4298,18 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     <h3>{selectedPart.display_name || selectedPart.serial_number}</h3>
                     <div className="workbench-detail-actions">
                       <button
-                        className="btn btn-secondary"
-                        disabled={savingPartId === selectedPart.id}
-                        onClick={() => updatePartReviewState(selectedPart, 'in_review')}
-                      >
-                        Set In Review
-                      </button>
-                      <button
                         className="btn btn-success"
                         disabled={savingPartId === selectedPart.id}
                         onClick={() => updatePartReviewState(selectedPart, 'pass')}
                       >
-                        Mark Pass ✓
+                        Pass
                       </button>
                       <button
                         className="btn btn-danger"
                         disabled={savingPartId === selectedPart.id}
-                        onClick={() => updatePartReviewState(selectedPart, 'reject_pending')}
+                        onClick={() => updatePartReviewState(selectedPart, 'reject_confirmed')}
                       >
-                        Flag Reject
+                        Reject
                       </button>
                     </div>
                   </div>
@@ -4339,7 +4323,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                       <strong>Shortcut help</strong>
                       <ul>
                         <li>Mark Pass: {inspectorHotkeys.accept_classification.toUpperCase()}</li>
-                        <li>Flag Reject: {inspectorHotkeys.reject_classification.toUpperCase()}</li>
+                        <li>Reject: {inspectorHotkeys.reject_classification.toUpperCase()}</li>
                         <li>Toggle this help: {inspectorHotkeys.toggle_shortcut_help.toUpperCase()}</li>
                       </ul>
                     </div>

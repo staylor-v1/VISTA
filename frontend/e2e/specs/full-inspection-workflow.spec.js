@@ -62,20 +62,20 @@ test.describe('Full inspection workflow end-to-end', () => {
     await frontImageButton.click();
     await expect(workbench.locator('.view-cell.selected .view-cell-title')).toHaveText('FRONT');
 
-    await page.getByRole('button', { name: 'Mark Pass ✓' }).click();
+    await page.getByRole('button', { name: 'Pass' }).click();
     await expect(page.getByText('Passed: 1')).toBeVisible();
     await expect(page.getByText('Rejected: 0')).toBeVisible();
 
     await page.locator('article.workbench-part-row', { hasText: 'Housing E2E B' }).click();
-    await page.getByRole('button', { name: 'Flag Reject' }).click();
+    await page.getByRole('button', { name: 'Reject' }).click();
 
     await expect(page.getByText('Passed: 1')).toBeVisible();
     await expect(page.getByText('Rejected: 1')).toBeVisible();
 
     const reviewBadges = page.getByTestId('part-review-state');
-    await expect(reviewBadges).toContainText(['Pass', 'Reject Pending']);
+    await expect(reviewBadges).toContainText(['Pass', 'Reject']);
 
-    await expect.poll(() => getParts().map((part) => part.review_state)).toEqual(['pass', 'reject_pending']);
+    await expect.poll(() => getParts().map((part) => part.review_state)).toEqual(['pass', 'reject_confirmed']);
     await expect.poll(() => getSavedWorkspaceStates().length).toBeGreaterThan(0);
 
     await page.getByRole('tab', { name: 'Report' }).click();
@@ -87,7 +87,7 @@ test.describe('Full inspection workflow end-to-end', () => {
     await expect.poll(() => getReportRequests().length).toBe(1);
     await expect.poll(() => getReportRequests()[0]?.summary).toEqual(expect.objectContaining({
       passed: 1,
-      reject_pending: 1,
+      reject_confirmed: 1,
       total_images: 3,
     }));
 
