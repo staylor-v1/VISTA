@@ -570,6 +570,17 @@ def test_project_json_report_supports_three_progressive_users(client, project_ty
         assert payload["summary"]["total_images"] == scenario["part_count"]
         assert payload["summary"]["reviewed_parts"] >= 0
         assert payload["summary"]["unreviewed_parts"] >= 0
+        assert "part_assignments" in payload
+        assert "image_part_mappings" in payload
+        assert isinstance(payload["part_assignments"], list)
+        assert isinstance(payload["image_part_mappings"], list)
+        if payload["part_assignments"]:
+            assignment = payload["part_assignments"][0]
+            assert "part_identifier" in assignment
+            assert "pass_fail" in assignment
+            assert "username" in assignment
+            assert "batch_owner" in assignment
+            assert "assigned_at" in assignment
 
 
 def test_project_json_report_forbidden_for_non_group_member(client):

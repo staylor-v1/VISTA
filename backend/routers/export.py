@@ -366,6 +366,82 @@ async def _build_project_report_payload(project_id: uuid.UUID, db: AsyncSession,
             _, dropped = _normalize_metadata_dict_list(metadata_obj, key)
             metadata_drop_counts[key] += dropped
 
+    part_rows_result = await db.execute(
+        select(
+            models.InspectionPart.id,
+            models.InspectionPart.serial_number,
+            models.InspectionPart.review_state,
+            models.InspectionPart.updated_at,
+            models.InspectionPart.metadata_json,
+            models.InspectionBatch.owner,
+        )
+        .outerjoin(models.InspectionBatch, models.InspectionBatch.id == models.InspectionPart.batch_id)
+        .where(models.InspectionPart.project_id == project_id)
+        .order_by(models.InspectionPart.serial_number.asc())
+    )
+    part_rows = part_rows_result.all()
+
+    image_rows_result = await db.execute(
+        select(
+            models.DataInstance.id,
+            models.DataInstance.filename,
+            models.DataInstance.metadata_json,
+        )
+        .where(models.DataInstance.project_id == project_id)
+        .where(models.DataInstance.deleted_at.is_(None))
+        .order_by(models.DataInstance.created_at.asc())
+    )
+    image_rows = image_rows_result.all()
+
+    image_part_map: dict[str, list[dict]] = defaultdict(list)
+    for image_id, filename, metadata in image_rows:
+        metadata_obj = metadata if isinstance(metadata, dict) else {}
+        raw_part_id = metadata_obj.get("part_id")
+        if raw_part_id:
+            image_part_map[str(raw_part_id)].append({
+                "image_id": str(image_id),
+                "filename": filename or "",
+            })
+
+    part_assignments = []
+    image_part_mappings = []
+    for part_id, serial_number, review_state, updated_at, metadata, batch_owner in part_rows:
+        metadata_obj = metadata if isinstance(metadata, dict) else {}
+        assigned_by = (
+            metadata_obj.get("review_state_assigned_by")
+            or metadata_obj.get("pass_fail_assigned_by")
+            or metadata_obj.get("review_assigned_by")
+            or "unknown"
+        )
+        assigned_at = (
+            metadata_obj.get("review_state_assigned_at")
+            or metadata_obj.get("pass_fail_assigned_at")
+            or metadata_obj.get("review_assigned_at")
+        )
+        if not assigned_at and updated_at:
+            assigned_at = updated_at.isoformat()
+
+        part_assignments.append(
+            {
+                "part_id": str(part_id),
+                "part_identifier": serial_number,
+                "pass_fail": review_state,
+                "username": assigned_by,
+                "batch_owner": batch_owner or "",
+                "assigned_at": assigned_at or "",
+            }
+        )
+
+        for image_record in image_part_map.get(str(part_id), []):
+            image_part_mappings.append(
+                {
+                    "part_id": str(part_id),
+                    "part_identifier": serial_number,
+                    "image_id": image_record["image_id"],
+                    "filename": image_record["filename"],
+                }
+            )
+
     return {
         "project": {
             "id": str(db_project.id),
@@ -383,6 +459,8 @@ async def _build_project_report_payload(project_id: uuid.UUID, db: AsyncSession,
                 "dropped_non_object_items": metadata_drop_counts,
             },
         },
+        "part_assignments": part_assignments,
+        "image_part_mappings": image_part_mappings,
     }
 
 
@@ -390,6 +468,8 @@ def _build_simple_report_pdf(report_payload: dict) -> bytes:
     project = report_payload.get("project", {})
     summary = report_payload.get("summary", {})
     dropped = summary.get("metadata_normalization", {}).get("dropped_non_object_items", {})
+    assignments = report_payload.get("part_assignments", [])
+    image_mappings = report_payload.get("image_part_mappings", [])
     lines = [
         "VISTA Inspection Report",
         f"Project: {project.get('name', 'Unknown')}",
@@ -404,19 +484,37 @@ def _build_simple_report_pdf(report_payload: dict) -> bytes:
     ]
     for field, count in dropped.items():
         lines.append(f"- {field or 'unknown_field'}: {count}")
+    lines.append("Part Pass/Fail Assignments:")
+    for assignment in assignments[:20]:
+        lines.append(
+            f"- {assignment.get('part_identifier', '')}: {assignment.get('pass_fail', '')} by "
+            f"{assignment.get('username', '')} | owner {assignment.get('batch_owner', '')} | "
+            f"{assignment.get('assigned_at', '')}"
+        )
 
-    safe_lines = [str(line).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)") for line in lines]
-    text_lines = ["BT", "/F1 12 Tf", "72 760 Td", "14 TL"]
-    for index, line in enumerate(safe_lines):
-        if index > 0:
-            text_lines.append("T*")
-        text_lines.append(f"({line}) Tj")
-    text_lines.append("ET")
-    content_stream = "\n".join(text_lines).encode("latin-1", errors="replace")
+    mapping_lines = [
+        "VISTA Report Image-to-Part Mapping",
+        f"Project: {project.get('name', 'Unknown')}",
+    ]
+    for mapping in image_mappings[:40]:
+        mapping_lines.append(f"- {mapping.get('filename', '')} -> {mapping.get('part_identifier', '')}")
+
+    def _encode_pdf_lines(content_lines):
+        safe_lines = [str(line).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)") for line in content_lines]
+        text_lines = ["BT", "/F1 10 Tf", "54 760 Td", "13 TL"]
+        for index, line in enumerate(safe_lines):
+            if index > 0:
+                text_lines.append("T*")
+            text_lines.append(f"({line}) Tj")
+        text_lines.append("ET")
+        return "\n".join(text_lines).encode("latin-1", errors="replace")
+
+    content_stream = _encode_pdf_lines(lines)
+    mapping_stream = _encode_pdf_lines(mapping_lines)
 
     objects = []
     objects.append(b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n")
-    objects.append(b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n")
+    objects.append(b"2 0 obj << /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >> endobj\n")
     objects.append(
         b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
         b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n"
@@ -425,6 +523,15 @@ def _build_simple_report_pdf(report_payload: dict) -> bytes:
     objects.append(
         b"5 0 obj << /Length " + str(len(content_stream)).encode("ascii") + b" >> stream\n"
         + content_stream
+        + b"\nendstream endobj\n"
+    )
+    objects.append(
+        b"6 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Resources << /Font << /F1 4 0 R >> >> /Contents 7 0 R >> endobj\n"
+    )
+    objects.append(
+        b"7 0 obj << /Length " + str(len(mapping_stream)).encode("ascii") + b" >> stream\n"
+        + mapping_stream
         + b"\nendstream endobj\n"
     )
 
