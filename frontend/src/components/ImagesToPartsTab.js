@@ -103,6 +103,27 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], onAssignmentsCha
         body: JSON.stringify({ serial_number: serialNumber, display_name: displayName || undefined }),
       });
       if (!response.ok) throw new Error(`Failed to create part (${response.status})`);
+      let createdPart = null;
+      try {
+        createdPart = await response.json();
+      } catch {
+        createdPart = null;
+      }
+      const createdPartId = createdPart?.id ? String(createdPart.id) : `new-${Date.now()}`;
+      const createdSerialNumber = createdPart?.serial_number || serialNumber;
+      const createdDisplayName = createdPart?.display_name || displayName || createdSerialNumber;
+      setLocalBuckets((previous) => ({
+        ...previous,
+        partBuckets: [
+          {
+            id: createdPartId,
+            serialNumber: createdSerialNumber,
+            displayName: createdDisplayName,
+            images: [],
+          },
+          ...previous.partBuckets,
+        ],
+      }));
       if (onAssignmentsChanged) await onAssignmentsChanged();
       if (setError) setError(null);
     } catch (err) {

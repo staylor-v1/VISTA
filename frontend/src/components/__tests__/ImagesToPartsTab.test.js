@@ -164,6 +164,40 @@ describe('ImagesToPartsTab', () => {
     });
   });
 
+  test('adds an empty new part above existing parts after creating a part', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: 'part-new', serial_number: 'SN-NEW-001', display_name: 'New Part Name' }),
+    });
+    jest.spyOn(window, 'prompt')
+      .mockReturnValueOnce('SN-NEW-001')
+      .mockReturnValueOnce('New Part Name');
+
+    const { container } = render(
+      <ImagesToPartsTab
+        projectId="proj-1"
+        parts={[
+          { id: 'part-1', serial_number: 'SN-001', display_name: 'Part 1', metadata: { source_images: [] } },
+          { id: 'part-2', serial_number: 'SN-002', display_name: 'Part 2', metadata: { source_images: [] } },
+        ]}
+        images={[]}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create new part' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'New Part Name' })).toBeInTheDocument();
+    });
+    expect(screen.getByText('Serial: SN-NEW-001')).toBeInTheDocument();
+    expect(screen.getAllByText('No mapped images.')[0]).toBeInTheDocument();
+
+    const partHeadings = Array.from(container.querySelectorAll('.parts-column .part-heading-button')).map((node) =>
+      node.textContent?.trim()
+    );
+    expect(partHeadings).toEqual(['New Part Name', 'Part 1', 'Part 2']);
+  });
+
 
 
   test('supports All and None selection controls in Unassigned panel', () => {
