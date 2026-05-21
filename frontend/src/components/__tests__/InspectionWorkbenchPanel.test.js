@@ -203,6 +203,7 @@ const scenarioByUser = [
         metadata: {
           defects: [{ severity: 'critical' }, { severity: 'critical' }, { severity: 'major' }],
           modalities: ['visual', 'infrared', 'uv'],
+          voxel_dtype: 'uint16',
           view_images: { front: 'adv-front.png', top: 'adv-top.png' },
           volume_shape: { axial: 128, coronal: 96, sagittal: 80 },
           overlay_layers: [
@@ -573,6 +574,8 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getByText(`Parts: ${scenario.parts.length}`)).toBeInTheDocument();
       if (projectType === 'PT3') {
         expect(screen.getByTestId('mpr-panel')).toBeInTheDocument();
+        expect(screen.getByTestId('pt3-inspection-layout')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Draw 3D box on MPR slices' })).toBeInTheDocument();
         expect(screen.queryByTestId('selected-image-panel')).not.toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: 'Part Selection' }));
         expect(screen.getByRole('heading', { name: 'Part Selection' })).toBeInTheDocument();
@@ -609,14 +612,12 @@ describe('InspectionWorkbenchPanel', () => {
         expect(screen.getByText('Passed: 1')).toBeInTheDocument();
       });
 
-      if (projectType === 'PT3') {
-        fireEvent.click(screen.getByRole('button', { name: 'Close Part Selection' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Annotations' }));
-      }
+      if (projectType === 'PT3') fireEvent.click(screen.getByRole('button', { name: 'Close Part Selection' }));
       const seedAnnotationType = scenario.parts[0].metadata.annotations[0].defect_class;
       await waitFor(() => {
         expect(screen.getByTestId('annotation-list')).toHaveTextContent(seedAnnotationType);
-        expect(screen.getByTestId('annotation-list')).not.toHaveTextContent('@ 2026-03-28');
+        expect(screen.getByTestId('annotation-list')).toHaveTextContent('seed-user@example.com');
+        expect(screen.getByTestId('annotation-list')).toHaveTextContent(new Date('2026-03-28T11:00:00Z').toLocaleString());
       });
       fireEvent.click(screen.getByRole('button', { name: 'Other' }));
       fireEvent.change(screen.getByLabelText('Annotation defect type'), { target: { value: 'Other' } });
@@ -631,10 +632,7 @@ describe('InspectionWorkbenchPanel', () => {
         expect(screen.getByTestId('annotation-list')).toHaveTextContent('Other');
         expect(screen.getByTestId('annotation-list')).toHaveTextContent(`${scenario.user}-crack`);
       });
-      if (projectType === 'PT3') {
-        fireEvent.click(screen.getByRole('button', { name: 'Close Annotations' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Part Selection' }));
-      }
+      if (projectType === 'PT3') fireEvent.click(screen.getByRole('button', { name: 'Part Selection' }));
       fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'all' } });
       fireEvent.change(screen.getByLabelText('Batch'), { target: { value: '' } });
       await waitFor(() => {
@@ -710,6 +708,89 @@ describe('InspectionWorkbenchPanel', () => {
       expect(savedViewNames.every((value) => typeof value === 'string')).toBe(true);
       unmount();
     }
+  });
+
+  test('keeps PT3 MPR quadrants constrained after clicking the 3D pane', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mpr-panel')).toBeInTheDocument();
+    });
+
+    const mprGrid = screen.getByTestId('mpr-grid');
+    const quadrantPaneIds = ['mpr-pane-axial', 'mpr-pane-coronal', 'mpr-pane-sagittal', 'mpr-pane-3d'];
+
+    expect(mprGrid).toHaveClass('mpr-grid-four');
+    expect(mprGrid).not.toHaveClass('mpr-grid-single');
+    quadrantPaneIds.forEach((testId) => {
+      expect(screen.getByTestId(testId)).not.toHaveClass('mpr-pane-hidden');
+    });
+
+    fireEvent.click(screen.getByTestId('mpr-pane-3d'));
+
+    expect(mprGrid).toHaveClass('mpr-grid-four');
+    expect(mprGrid).not.toHaveClass('mpr-grid-single');
+    quadrantPaneIds.forEach((testId) => {
+      expect(screen.getByTestId(testId)).not.toHaveClass('mpr-pane-hidden');
+    });
+  });
+
+  test('creates PT3 cube annotations from boxes on two MPR slices', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('pt3-inspection-layout')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('annotation-controls')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Draw 3D box on MPR slices' }));
+
+    const axialPreview = screen.getByTestId('mpr-preview-axial');
+    axialPreview.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      width: 300,
+      height: 150,
+      right: 300,
+      bottom: 150,
+    });
+
+    fireEvent.mouseDown(axialPreview, { clientX: 30, clientY: 20, button: 0 });
+    fireEvent.mouseMove(axialPreview, { clientX: 120, clientY: 80 });
+    fireEvent.mouseUp(axialPreview, { clientX: 120, clientY: 80, button: 0 });
+
+    fireEvent.change(document.querySelector('#mpr-slice-axial'), { target: { value: '12' } });
+
+    fireEvent.mouseDown(axialPreview, { clientX: 45, clientY: 30, button: 0 });
+    fireEvent.mouseMove(axialPreview, { clientX: 135, clientY: 90 });
+    fireEvent.mouseUp(axialPreview, { clientX: 135, clientY: 90, button: 0 });
+
+    await waitFor(() => {
+      const cubePost = global.fetch.mock.calls.find((call) => {
+        if (!call[0].includes('/annotations') || call[1]?.method !== 'POST') return false;
+        const body = JSON.parse(call[1].body);
+        return body.geometry?.cube;
+      });
+      expect(cubePost).toBeDefined();
+      const body = JSON.parse(cubePost[1].body);
+      expect(body.defect_class).toBe('3D Box');
+      expect(body.geometry.cube.axis).toBe('axial');
+      expect(body.geometry.cube.vertices).toHaveLength(8);
+      expect(body.metadata).toEqual(expect.objectContaining({
+        annotation_color: '#f97316',
+        annotation_fill_opacity: 0.5,
+      }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('annotation-list')).toHaveTextContent('3D Box');
+    });
+    const axialOverlay = within(axialPreview).getByLabelText('XY annotation overlay');
+    const shadedRect = axialOverlay.querySelector('rect[fill="#f97316"]');
+    expect(shadedRect).toBeInTheDocument();
+    expect(shadedRect.getAttribute('fill-opacity') || shadedRect.getAttribute('fillOpacity')).toBe('0.5');
   });
 
   test.each(projectTypes)('saves configurable hotkeys for progressive %s workflows', async (projectType) => {
@@ -951,6 +1032,15 @@ describe('InspectionWorkbenchPanel', () => {
 
     await waitFor(() => expect(screen.getAllByText('Analyze Output Part').length).toBeGreaterThan(0));
     const composite = screen.getByTestId('inspection-overlay-composite');
+    const viewBoard = document.querySelector('.view-board');
+    expect(screen.getByLabelText('Inspection tile columns')).toHaveAttribute('max', '2');
+    expect(viewBoard.style.getPropertyValue('--inspection-tile-columns')).toBe('2');
+    fireEvent.change(screen.getByLabelText('Inspection tile columns'), { target: { value: '1' } });
+    expect(viewBoard.style.getPropertyValue('--inspection-tile-columns')).toBe('1');
+    expect(screen.getByLabelText('Inspection tile columns value')).toHaveValue(1);
+    fireEvent.change(screen.getByLabelText('Inspection tile columns value'), { target: { value: '2' } });
+    expect(screen.getByLabelText('Inspection tile columns')).toHaveValue('2');
+    expect(viewBoard.style.getPropertyValue('--inspection-tile-columns')).toBe('2');
     expect(screen.getByText('Watershed From Seeds :: Segmentation Overlay')).toBeInTheDocument();
     expect(within(composite).getByAltText('front source')).toHaveAttribute('src', '/api/images/source-image-1/content');
     expect(within(composite).getByAltText('front overlay')).toHaveAttribute('src', '/api/images/overlay-image-1/content');
@@ -1126,8 +1216,12 @@ describe('InspectionWorkbenchPanel', () => {
           annotations: [{
             id: 'measurement-a',
             image_id: 'part-basic-1-image-1',
+            defect_class: 'Measurement',
+            comment: 'Line check',
             geometry: { line: { x1: 100, y1: 80, x2: 280, y2: 160, imageWidth: 400, imageHeight: 200 } },
             measurements: { length_mm: 4.2 },
+            created_by: 'inspector@example.com',
+            created_at: '2026-04-01T09:15:00Z',
           }],
         },
       }],
@@ -1135,6 +1229,32 @@ describe('InspectionWorkbenchPanel', () => {
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
     await waitFor(() => expect(screen.getByLabelText('tile measurement overlay')).toBeInTheDocument());
     await waitFor(() => expect(screen.queryByText('Loading annotations…')).not.toBeInTheDocument());
+    expect(screen.getByTestId('annotation-list')).toHaveTextContent('inspector@example.com');
+    expect(screen.getByTestId('annotation-list')).toHaveTextContent(new Date('2026-04-01T09:15:00Z').toLocaleString());
+    fireEvent.click(screen.getByTestId('annotation-list').querySelector('.annotation-entry'));
+    expect(document.querySelector('.inspection-annotation-selected')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit annotation Line check' }));
+    expect(screen.getByRole('dialog', { name: 'Edit annotation' })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Edit annotation comment'), { target: { value: 'Unsaved edit' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel edit annotation' }));
+    expect(screen.queryByRole('dialog', { name: 'Edit annotation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit annotation Unsaved edit' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit annotation Line check' }));
+    fireEvent.change(screen.getByLabelText('Edit annotation comment'), { target: { value: 'Saved edit' } });
+    fireEvent.change(screen.getByLabelText('Edit annotation color'), { target: { value: '#22c55e' } });
+    fireEvent.change(screen.getByLabelText('Edit annotation fill opacity'), { target: { value: '0.35' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit annotation Saved edit' })).toBeInTheDocument());
+    const stylePatchCall = global.fetch.mock.calls.find((call) => {
+      if (!call[0].includes('/annotations/measurement-a') || call[1]?.method !== 'PATCH') return false;
+      const body = JSON.parse(call[1].body);
+      return body.comment === 'Saved edit';
+    });
+    expect(JSON.parse(stylePatchCall[1].body).metadata).toEqual(expect.objectContaining({
+      annotation_color: '#22c55e',
+      measurement_color: '#22c55e',
+      annotation_fill_opacity: 0.35,
+    }));
     expect(screen.getAllByText('4.20 mm').length).toBeGreaterThan(0);
     fireEvent.click(screen.getByAltText('front view'));
     await waitFor(() => expect(screen.getAllByText('4.20 mm').length).toBeGreaterThan(1));
@@ -1467,14 +1587,14 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('mpr-pane-coronal')).toHaveTextContent('No volume stack images');
     fireEvent.change(screen.getByTestId('mpr-part-selector'), { target: { value: 'part-adv-1' } });
     expect(screen.getByTestId('mpr-part-selector')).toHaveValue('part-adv-1');
-    expect(screen.queryByAltText(/Volume reconstruction slice/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: /Volume reconstruction slice/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/axial/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/coronal/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/sagittal/i)).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'stack' } });
-    expect(screen.getAllByAltText(/Volume reconstruction slice/).length).toBeGreaterThan(0);
-    expect(screen.getAllByAltText(/Volume reconstruction slice/)[0]).toHaveAttribute('draggable', 'false');
+    expect(screen.getAllByRole('img', { name: /Volume reconstruction slice/ }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('img', { name: /Volume reconstruction slice/ })[0]).toHaveAttribute('draggable', 'false');
 
     const coronalPreview = screen.getByTestId('mpr-preview-coronal');
     const initialCoronalCrosshairY = coronalPreview.style.getPropertyValue('--crosshair-y');
@@ -1508,8 +1628,15 @@ describe('InspectionWorkbenchPanel', () => {
     const maxSlider = screen.getByLabelText('Display window maximum');
     fireEvent.change(minSlider, { target: { value: '30' } });
     fireEvent.change(maxSlider, { target: { value: '180' } });
-    expect(screen.getByTestId('mpr-panel')).toHaveTextContent('30–180');
+    expect(screen.getByTestId('mpr-panel')).toHaveTextContent('30-180');
     expect(screen.getAllByTestId('mpr-preview-axial')[0].querySelector('.mpr-slice-canvas')).toHaveAttribute('data-display-window', '30-180');
+    expect(screen.getAllByTestId('mpr-preview-axial')[0].querySelector('.mpr-slice-canvas')).toHaveAttribute('data-display-domain', '0-65535');
+    expect(screen.getByLabelText('Display window maximum handle')).toHaveAttribute('max', '65535');
+
+    fireEvent.change(screen.getByLabelText('Display window minimum'), { target: { value: '4096' } });
+    expect(screen.getByLabelText('Display window minimum handle')).toHaveValue('4096');
+    fireEvent.change(screen.getByLabelText('Display window maximum handle'), { target: { value: '32768' } });
+    expect(screen.getByLabelText('Display window maximum')).toHaveValue(32768);
 
     fireEvent.click(screen.getByTestId('mpr-pane-axial'));
     const zoomLayer = document.querySelector('.inspection-fullscreen-image-zoom-layer');
@@ -1529,11 +1656,11 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getByTestId('mpr-panel')).toBeInTheDocument();
     });
 
-    expect(screen.queryByAltText(/Volume reconstruction slice/)).not.toBeInTheDocument();
-    expect(screen.getAllByAltText(/fallback projection from front view/i).length).toBeGreaterThan(0);
-    expect(screen.queryByAltText(/Fallback visual hull shell front view/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: /Volume reconstruction slice/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('img', { name: /fallback projection from front view/i }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('img', { name: /Fallback visual hull shell front view/i })).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'shell' } });
-    expect(screen.getByAltText(/Fallback visual hull shell front view/i)).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /Fallback visual hull shell front view/i })).toBeInTheDocument();
     expect(screen.queryByText('No stack')).not.toBeInTheDocument();
   });
 
