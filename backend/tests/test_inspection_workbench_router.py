@@ -1063,6 +1063,8 @@ def test_project_configuration_extended_fields_survive_save_and_reload(client):
         },
         "project_owner": {"name": "QA Owner", "email": "owner@example.com"},
         "current_user": {"username": "qa-user", "sso_authenticated": False},
+        "calibration": {"pixels_per_mm": 25, "unit": "mm"},
+        "custom_future_setting": {"enabled": True, "label": "preserve-me"},
         "file_naming_scheme": {
             "hierarchy_levels": [
                 {"id": "drawing_number", "label": "Drawing", "abbreviation": "DWG"},
@@ -1090,6 +1092,8 @@ def test_project_configuration_extended_fields_survive_save_and_reload(client):
         "inspection_layout",
         "project_owner",
         "current_user",
+        "calibration",
+        "custom_future_setting",
     ]:
         assert saved_config[key] == payload[key]
 
@@ -1102,6 +1106,8 @@ def test_project_configuration_extended_fields_survive_save_and_reload(client):
         "inspection_layout",
         "project_owner",
         "current_user",
+        "calibration",
+        "custom_future_setting",
     ]:
         assert reloaded_config[key] == payload[key]
 

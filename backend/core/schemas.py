@@ -380,6 +380,8 @@ class InspectionProjectCurrentUserConfig(BaseModel):
     sso_authenticated: bool = False
 
 class InspectionProjectConfiguration(BaseModel):
+    model_config = {"extra": "allow"}
+
     image_modalities: List[InspectionProjectModalityConfig] = Field(default_factory=list)
     part_views: List[InspectionProjectPartViewConfig] = Field(default_factory=list)
     defect_types: List[InspectionProjectDefectTypeConfig] = Field(default_factory=list)
