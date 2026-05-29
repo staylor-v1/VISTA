@@ -7292,6 +7292,50 @@ ul li:hover {
   margin-bottom: 0;
 }
 
+.configuration-impact-note {
+  border: 1px solid #bfdbfe;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #eff6ff 0%, #f8fafc 100%);
+  color: #1e3a8a;
+  padding: 12px 14px;
+  line-height: 1.45;
+}
+
+.configuration-impact-note span {
+  display: block;
+  margin-top: 4px;
+  color: #475569;
+}
+
+.configuration-form-layout {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.project-configuration-panel .configuration-card {
+  grid-column: span 6;
+  height: 100%;
+  margin-bottom: 0;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.project-configuration-panel .configuration-card-wide {
+  grid-column: 1 / -1;
+}
+
+.configuration-action-bar {
+  position: sticky;
+  bottom: 12px;
+  z-index: 5;
+  padding: 12px;
+  border: 1px solid #dbe4ee;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+}
+
 .project-configuration-panel .part-detail-panel {
   padding: 14px;
 }
@@ -7318,6 +7362,19 @@ ul li:hover {
 }
 
 @media (max-width: 900px) {
+  .configuration-form-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .project-configuration-panel .configuration-card,
+  .project-configuration-panel .configuration-card-wide {
+    grid-column: 1 / -1;
+  }
+
+  .configuration-action-bar {
+    position: static;
+  }
+
   .project-configuration-panel .config-entry-grid {
     grid-template-columns: 1fr;
     align-items: start;

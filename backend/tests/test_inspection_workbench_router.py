@@ -1027,6 +1027,85 @@ def test_project_configuration_round_trip_supports_progressive_users(client, pro
             assert reloaded_config[key] == value
 
 
+def test_project_configuration_extended_fields_survive_save_and_reload(client):
+    headers = {
+        "X-User-Id": "config-filename-hierarchy@example.com",
+        "X-User-Groups": '["config-filename-hierarchy"]',
+    }
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": "Filename hierarchy persistence",
+            "description": "Verify filename decoding config persists",
+            "meta_group_id": "config-filename-hierarchy",
+            "project_type": "PT1",
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+
+    initial_resp = client.get(f"/api/projects/{project_id}/configuration", headers=headers)
+    assert initial_resp.status_code == 200, initial_resp.text
+    initial_config = initial_resp.json()["config"]
+    assert "file_naming_scheme" in initial_config
+
+    payload = {
+        **initial_config,
+        "serial_number_scheme": {
+            "batch_sn_enabled": False,
+            "sub_batching_enabled": True,
+            "sub_batch_sn_enabled": True,
+            "part_sn_enabled": False,
+        },
+        "inspection_layout": {
+            "column_widths": {"left_px": 312, "right_px": 408},
+        },
+        "project_owner": {"name": "QA Owner", "email": "owner@example.com"},
+        "current_user": {"username": "qa-user", "sso_authenticated": False},
+        "file_naming_scheme": {
+            "hierarchy_levels": [
+                {"id": "drawing_number", "label": "Drawing", "abbreviation": "DWG"},
+                {"id": "lot_number", "label": "Lot", "abbreviation": "LT"},
+                {"id": "part_number", "label": "Part", "abbreviation": "PN"},
+                {"id": "serial_number", "label": "Serial", "abbreviation": "SN"},
+            ],
+            "image_descriptors": [
+                {"id": "view", "label": "View", "abbreviation": "VW"},
+                {"id": "modality", "label": "Modality", "abbreviation": "MD"},
+            ],
+        },
+    }
+
+    save_resp = client.put(
+        f"/api/projects/{project_id}/configuration",
+        json={"config": payload},
+        headers=headers,
+    )
+    assert save_resp.status_code == 200, save_resp.text
+    saved_config = save_resp.json()["config"]
+    for key in [
+        "file_naming_scheme",
+        "serial_number_scheme",
+        "inspection_layout",
+        "project_owner",
+        "current_user",
+    ]:
+        assert saved_config[key] == payload[key]
+
+    reload_resp = client.get(f"/api/projects/{project_id}/configuration", headers=headers)
+    assert reload_resp.status_code == 200, reload_resp.text
+    reloaded_config = reload_resp.json()["config"]
+    for key in [
+        "file_naming_scheme",
+        "serial_number_scheme",
+        "inspection_layout",
+        "project_owner",
+        "current_user",
+    ]:
+        assert reloaded_config[key] == payload[key]
+
+
 @pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
 def test_project_configuration_rejects_invalid_hotkeys(client, project_type):
     headers = {

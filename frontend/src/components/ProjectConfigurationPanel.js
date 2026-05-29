@@ -770,8 +770,13 @@ function ProjectConfigurationPanel({
             </article>
           </div>
 
+          <div className="configuration-impact-note" data-testid="configuration-effect-matrix">
+            <strong>Downstream effects:</strong> filename convention drives Load Images decoding; phase settings drive the project phase banner; defect types populate inspection annotation choices; hotkeys drive inspection shortcuts; inspection layout stores workbench column widths.
+            <span> Stored with no active downstream behavior yet: owner/current user labels, serial-number scheme toggles, modality/view definitions beyond validation, display colormap options, and advanced review policy toggles.</span>
+          </div>
 
-          <section className="part-detail-panel" aria-label="Project owner">
+          <div className="configuration-form-layout" data-testid="configuration-form-layout">
+          <section className="part-detail-panel configuration-card" aria-label="Project owner">
             <h3>Project Owner</h3>
             <div className="workbench-controls-row">
               <label htmlFor="project-owner-name">Owner Name</label>
@@ -781,7 +786,7 @@ function ProjectConfigurationPanel({
             </div>
           </section>
           
-          <section className="part-detail-panel" aria-label="Current user">
+          <section className="part-detail-panel configuration-card" aria-label="Current user">
             <h3>Current User</h3>
             <div className="workbench-controls-row">
               <label htmlFor="current-user-name">Active Username</label>
@@ -792,7 +797,7 @@ function ProjectConfigurationPanel({
             </div>
           </section>
 
-          <section className="part-detail-panel" aria-label="File naming configuration">
+          <section className="part-detail-panel configuration-card configuration-card-wide" aria-label="File naming configuration">
             <h3>Project Configuration: File Name Convention</h3>
             <p>Customize hierarchy and image descriptor elements used to build file names.</p>
             <h4>Hierarchy Levels</h4>
@@ -862,7 +867,7 @@ function ProjectConfigurationPanel({
               </div>
             ))}
           </section>
-          <section className="part-detail-panel" aria-label="Process settings">
+          <section className="part-detail-panel configuration-card" aria-label="Process settings">
             <h3>Process Settings</h3>
             <label>
               <input
@@ -879,6 +884,38 @@ function ProjectConfigurationPanel({
                 }}
               />
               Require disposition on submit
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={Boolean(config.process_settings?.require_measurement_for_critical)}
+                onChange={(event) => {
+                  setConfig((previous) => ({
+                    ...previous,
+                    process_settings: {
+                      ...previous.process_settings,
+                      require_measurement_for_critical: event.target.checked,
+                    },
+                  }));
+                }}
+              />
+              Require measurement for critical defects
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={Boolean(config.process_settings?.require_second_reviewer_for_reject)}
+                onChange={(event) => {
+                  setConfig((previous) => ({
+                    ...previous,
+                    process_settings: {
+                      ...previous.process_settings,
+                      require_second_reviewer_for_reject: event.target.checked,
+                    },
+                  }));
+                }}
+              />
+              Require second reviewer for rejects
             </label>
             <div className="workbench-controls-row">
               <label htmlFor="hotkey-accept">Accept hotkey</label>
@@ -947,7 +984,7 @@ function ProjectConfigurationPanel({
             </div>
           </section>
 
-          <section className="part-detail-panel" aria-label="Serial number scheme">
+          <section className="part-detail-panel configuration-card" aria-label="Serial number scheme">
             <h3>Serial Number Scheme</h3>
             <p>Choose whether serial numbers are tracked at batch, sub-batch, and part levels.</p>
             <label>
@@ -1021,7 +1058,7 @@ function ProjectConfigurationPanel({
             </label>
           </section>
 
-          <section className="part-detail-panel" aria-label="Project phase settings">
+          <section className="part-detail-panel configuration-card" aria-label="Project phase settings">
             <h3>Project Phase Settings</h3>
             <p>
               By default, projects progress automatically from Data Ingestion to Part Inspection to Reporting as data is
@@ -1069,7 +1106,7 @@ function ProjectConfigurationPanel({
             </div>
           </section>
 
-          <section className="part-detail-panel" aria-label="Image modalities">
+          <section className="part-detail-panel configuration-card configuration-card-wide" aria-label="Image modalities">
             <h3>Image Modalities</h3>
             <p>Manage modality definitions and calibration requirements for this project.</p>
             <div className="workbench-controls-row">
@@ -1134,7 +1171,7 @@ function ProjectConfigurationPanel({
             )}
           </section>
 
-          <section className="part-detail-panel" aria-label="Defect types">
+          <section className="part-detail-panel configuration-card configuration-card-wide" aria-label="Defect types">
             <h3>Defect Types</h3>
             <p>Define the defect taxonomy used in annotations and review workflows.</p>
             <div className="workbench-controls-row">
@@ -1185,7 +1222,7 @@ function ProjectConfigurationPanel({
             )}
           </section>
 
-          <section className="part-detail-panel" aria-label="Part views">
+          <section className="part-detail-panel configuration-card configuration-card-wide" aria-label="Part views">
             <h3>Part Views</h3>
             <p>Configure external/internal views and required modalities for each view.</p>
             <div className="workbench-controls-row">
@@ -1253,30 +1290,71 @@ function ProjectConfigurationPanel({
             )}
           </section>
 
-          <section className="part-detail-panel" aria-label="Display settings">
+          <section className="part-detail-panel configuration-card" aria-label="Display settings">
             <h3>Display Settings</h3>
-            <label htmlFor="default-colormap">Default colormap</label>
-            <select
-              id="default-colormap"
-              value={config.display_settings?.default_colormap || 'grayscale'}
-              onChange={(event) => {
-                const nextValue = event.target.value;
-                setConfig((previous) => ({
-                  ...previous,
-                  display_settings: {
-                    ...previous.display_settings,
-                    default_colormap: nextValue,
-                  },
-                }));
-              }}
-            >
-              <option value="grayscale">grayscale</option>
-              <option value="magma">magma</option>
-              <option value="viridis">viridis</option>
-            </select>
+            <div className="workbench-controls-row">
+              <label htmlFor="default-colormap">Default colormap</label>
+              <select
+                id="default-colormap"
+                aria-label="Default colormap"
+                value={config.display_settings?.default_colormap || 'grayscale'}
+                onChange={(event) => {
+                  const nextValue = event.target.value;
+                  setConfig((previous) => ({
+                    ...previous,
+                    display_settings: {
+                      ...previous.display_settings,
+                      default_colormap: nextValue,
+                    },
+                  }));
+                }}
+              >
+                <option value="grayscale">grayscale</option>
+                <option value="magma">magma</option>
+                <option value="viridis">viridis</option>
+              </select>
+            </div>
+            <div className="workbench-controls-row">
+              <label htmlFor="anomaly-colormap">Anomaly colormap</label>
+              <select
+                id="anomaly-colormap"
+                aria-label="Anomaly colormap"
+                value={config.display_settings?.anomaly_colormap || 'viridis'}
+                onChange={(event) => {
+                  const nextValue = event.target.value;
+                  setConfig((previous) => ({
+                    ...previous,
+                    display_settings: {
+                      ...previous.display_settings,
+                      anomaly_colormap: nextValue,
+                    },
+                  }));
+                }}
+              >
+                <option value="grayscale">grayscale</option>
+                <option value="magma">magma</option>
+                <option value="viridis">viridis</option>
+              </select>
+            </div>
+            <label>
+              <input
+                type="checkbox"
+                checked={Boolean(config.display_settings?.grayscale_base_image)}
+                onChange={(event) => {
+                  setConfig((previous) => ({
+                    ...previous,
+                    display_settings: {
+                      ...previous.display_settings,
+                      grayscale_base_image: event.target.checked,
+                    },
+                  }));
+                }}
+              />
+              Render base images in grayscale
+            </label>
           </section>
 
-          <section className="part-detail-panel" aria-label="Copy configuration">
+          <section className="part-detail-panel configuration-card" aria-label="Copy configuration">
             <h3>Copy Configuration</h3>
             <p>
               Copy settings from another project into this one.
@@ -1317,8 +1395,9 @@ function ProjectConfigurationPanel({
               </button>
             </div>
           </section>
+          </div>
 
-          <div className="workbench-controls-row">
+          <div className="workbench-controls-row configuration-action-bar">
             <button className="btn btn-primary" type="button" disabled={saving} onClick={saveConfiguration}>
               {saving ? 'Saving...' : 'Save Configuration'}
             </button>

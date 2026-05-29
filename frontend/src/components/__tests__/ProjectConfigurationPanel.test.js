@@ -294,6 +294,96 @@ describe('ProjectConfigurationPanel', () => {
     expect(screen.queryByLabelText('Descriptor 3')).not.toBeInTheDocument();
   });
 
+
+  test('saves every editable configuration field and identifies fields without active downstream effects', async () => {
+    const config = makeConfig('PT1', 'basic');
+    mockFetch(config, 'PT1');
+
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('configuration-form-layout')).toBeInTheDocument());
+    expect(screen.getByTestId('configuration-effect-matrix')).toHaveTextContent('Stored with no active downstream behavior yet');
+
+    fireEvent.change(screen.getByLabelText('Owner Name'), { target: { value: 'Avery Owner' } });
+    fireEvent.change(screen.getByLabelText('Owner Email'), { target: { value: 'avery.owner@example.com' } });
+    fireEvent.change(screen.getByLabelText('Active Username'), { target: { value: 'avery.inspector' } });
+
+    fireEvent.change(document.querySelector('#hierarchy-level-abbreviation-0'), { target: { value: 'DWG' } });
+    fireEvent.change(document.querySelector('#image-descriptor-abbreviation-0'), { target: { value: 'VW' } });
+
+    fireEvent.click(screen.getByLabelText('Require disposition on submit'));
+    fireEvent.click(screen.getByLabelText('Require measurement for critical defects'));
+    fireEvent.click(screen.getByLabelText('Require second reviewer for rejects'));
+    fireEvent.change(screen.getByLabelText('Accept hotkey'), { target: { value: 'u' } });
+    fireEvent.change(screen.getByLabelText('Reject hotkey'), { target: { value: 'i' } });
+    fireEvent.change(screen.getByLabelText('Help hotkey'), { target: { value: 'o' } });
+
+    fireEvent.click(screen.getByLabelText('Track serial number at batch level'));
+    fireEvent.click(screen.getByLabelText('Organize each batch into sub-batches'));
+    fireEvent.click(screen.getByLabelText('Track serial number at sub-batch level'));
+    fireEvent.click(screen.getByLabelText('Track serial number at part level'));
+
+    fireEvent.click(screen.getByLabelText('Manually choose current project phase'));
+    fireEvent.change(screen.getByLabelText('Manual project phase'), { target: { value: 'reporting' } });
+
+    fireEvent.change(screen.getByLabelText('Image modality label 1'), { target: { value: 'Visible Light' } });
+    fireEvent.change(screen.getByLabelText('Defect type name 1'), { target: { value: 'Crack' } });
+    fireEvent.change(screen.getByLabelText('Defect type color 1'), { target: { value: '#22c55e' } });
+    fireEvent.change(screen.getByLabelText('Defect type definition 1'), { target: { value: 'Visible crack' } });
+    fireEvent.change(screen.getByLabelText('Part view label 1'), { target: { value: 'Front Face' } });
+    fireEvent.change(screen.getByLabelText('Part view source 1'), { target: { value: 'auto' } });
+
+    fireEvent.change(screen.getByLabelText('Default colormap'), { target: { value: 'magma' } });
+    fireEvent.change(screen.getByLabelText('Anomaly colormap'), { target: { value: 'grayscale' } });
+    fireEvent.click(screen.getByLabelText('Render base images in grayscale'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/projects/proj-1/configuration',
+        expect.objectContaining({ method: 'PUT' }),
+      );
+    });
+
+    const saveCall = global.fetch.mock.calls.find(
+      ([url, options = {}]) => url === '/api/projects/proj-1/configuration' && options.method === 'PUT',
+    );
+    const savedConfig = JSON.parse(saveCall[1].body).config;
+    expect(savedConfig.project_owner).toEqual({ name: 'Avery Owner', email: 'avery.owner@example.com' });
+    expect(savedConfig.current_user).toEqual({ username: 'avery.inspector', sso_authenticated: false });
+    expect(savedConfig.file_naming_scheme.hierarchy_levels[0].abbreviation).toBe('DWG');
+    expect(savedConfig.file_naming_scheme.image_descriptors[0].abbreviation).toBe('VW');
+    expect(savedConfig.process_settings).toEqual(expect.objectContaining({
+      require_disposition_on_submit: false,
+      require_measurement_for_critical: true,
+      require_second_reviewer_for_reject: true,
+      configurable_hotkeys: {
+        accept_classification: 'u',
+        reject_classification: 'i',
+        toggle_shortcut_help: 'o',
+      },
+    }));
+    expect(savedConfig.serial_number_scheme).toEqual({
+      batch_sn_enabled: false,
+      sub_batching_enabled: true,
+      sub_batch_sn_enabled: true,
+      part_sn_enabled: false,
+    });
+    expect(savedConfig.phase_settings).toEqual({
+      manual_phase_selection_enabled: true,
+      manual_phase: 'reporting',
+    });
+    expect(savedConfig.image_modalities[0]).toEqual(expect.objectContaining({ label: 'Visible Light' }));
+    expect(savedConfig.defect_types[0]).toEqual(expect.objectContaining({ name: 'Crack', color: '#22c55e', definition: 'Visible crack' }));
+    expect(savedConfig.part_views[0]).toEqual(expect.objectContaining({ label: 'Front Face', source: 'auto' }));
+    expect(savedConfig.display_settings).toEqual({
+      default_colormap: 'magma',
+      anomaly_colormap: 'grayscale',
+      grayscale_base_image: false,
+    });
+  }, 20000);
+
   test('adds backend service diagnostics when project configuration fetch fails', async () => {
     let configRequestCount = 0;
     global.fetch = jest.fn((url) => {

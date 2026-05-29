@@ -259,7 +259,7 @@ const scenarioByUser = [
 
 const defaultCalibration = { pixels_per_mm: 20, pixels_per_inch: 508, unit: 'mm' };
 
-function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys, metadataDict = { calibration_default: defaultCalibration } }) {
+function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys, configuration = null, metadataDict = { calibration_default: defaultCalibration } }) {
   let mutableParts = [...parts];
   const savedWorkspaceStates = [];
   const savedConfigurations = [];
@@ -374,8 +374,10 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
         ok: true,
         json: async () => ({
           config: {
+            ...(configuration || {}),
             process_settings: {
-              configurable_hotkeys: hotkeys || {
+              ...((configuration && configuration.process_settings) || {}),
+              configurable_hotkeys: hotkeys || configuration?.process_settings?.configurable_hotkeys || {
                 accept_classification: 'a',
                 reject_classification: 'r',
                 toggle_shortcut_help: 'h',
@@ -671,6 +673,52 @@ describe('InspectionWorkbenchPanel', () => {
     }
   }, 90000);
 
+
+  test('shows filename-decoded image to part mappings in inspection workbench', async () => {
+    const decodedScenario = {
+      user: 'filename-decoding',
+      hotkeys: { accept_classification: 'a', reject_classification: 'r', toggle_shortcut_help: 'h' },
+      workspaceState: { selected_part_id: 'part-decoded-1' },
+      batches: [],
+      parts: [
+        {
+          id: 'part-decoded-1',
+          batch_id: null,
+          serial_number: '9',
+          display_name: '100 22 7 9',
+          review_state: 'unreviewed',
+          metadata: {
+            design_number: '100',
+            lot_number: '22',
+            set_number: '7',
+            serial_number: '9',
+            configured_views: ['left', 'right'],
+            modalities: ['thermal', 'visual'],
+            view_images: {
+              left: 'DWG100_LT22_PN7_SN9_VWleft_MDvisual_false.png',
+              right: 'DWG100_LT22_PN7_SN9_VWright_MDthermal_false.png',
+            },
+            source_images: [
+              { filename: 'DWG100_LT22_PN7_SN9_VWleft_MDvisual_false.png', image_id: 'img-left', side: 'left', modality: 'visual', overlay: false },
+              { filename: 'DWG100_LT22_PN7_SN9_VWright_MDthermal_false.png', image_id: 'img-right', side: 'right', modality: 'thermal', overlay: false },
+            ],
+            annotations: [],
+          },
+        },
+      ],
+    };
+
+    mockWorkbenchFetch(decodedScenario);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('100 22 7 9').length).toBeGreaterThan(0);
+    });
+    expect(screen.getByRole('button', { name: 'LEFT' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'RIGHT' })).toBeInTheDocument();
+    expect(screen.getByTestId('selected-image-panel')).toBeInTheDocument();
+  });
+
   test.each(projectTypes)('applies configurable inspector hotkeys for %s', async (projectType) => {
     for (const scenario of scenarioByUser) {
       const workspaceTracker = mockWorkbenchFetch(scenario);
@@ -813,6 +861,35 @@ describe('InspectionWorkbenchPanel', () => {
     const shadedRect = axialOverlay.querySelector('rect[fill="#f97316"]');
     expect(shadedRect).toBeInTheDocument();
     expect(shadedRect.getAttribute('fill-opacity') || shadedRect.getAttribute('fillOpacity')).toBe('0.5');
+  });
+
+
+  test('applies persisted defect types and inspection layout configuration downstream', async () => {
+    const configuredScenario = {
+      ...scenarioByUser[0],
+      workspaceState: { selected_part_id: 'part-basic-1' },
+      configuration: {
+        defect_types: [
+          { name: 'Config Crack', color: '#22c55e', definition: 'Crack from project config' },
+          { name: 'Config Void', color: '#3b82f6', definition: 'Void from project config' },
+        ],
+        inspection_layout: {
+          column_widths: { left_px: 360, right_px: 420 },
+        },
+      },
+    };
+
+    mockWorkbenchFetch(configuredScenario);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('inspection-layout-grid')).toHaveStyle('--inspection-grid-template-columns: 360px minmax(0, 1fr) 420px');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Other' }));
+    const defectSelect = screen.getByLabelText('Annotation defect type');
+    expect(within(defectSelect).getByRole('option', { name: 'Config Crack' })).toBeInTheDocument();
+    expect(within(defectSelect).getByRole('option', { name: 'Config Void' })).toBeInTheDocument();
   });
 
   test.each(projectTypes)('saves configurable hotkeys for progressive %s workflows', async (projectType) => {
