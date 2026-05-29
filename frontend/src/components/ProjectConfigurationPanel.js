@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { PROJECT_PHASE_LABELS, PROJECT_PHASE_SEQUENCE } from '../utils/projectPhases';
 import { buildErrorWithServiceDiagnostics } from '../utils/serviceDiagnostics';
+import './ProjectConfigurationPanel.css';
 
 
 function isSingleAlphanumeric(value) {
