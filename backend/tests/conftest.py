@@ -4,9 +4,12 @@ import asyncio
 import os
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 from unittest.mock import Mock, patch
 import uuid
+import re
 
 if os.name != "nt":
     try:
@@ -16,8 +19,51 @@ if os.name != "nt":
     except ImportError:
         pass
 
-# Set test environment variables before importing app components
-os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
+# Set test environment variables before importing app components.
+# Prefer the CI/local PostgreSQL test database so backend tests exercise the
+# same database dialect used in production. TEST_DATABASE_URL can override
+# DATABASE_URL when a developer wants tests to target a separate database.
+DEFAULT_TEST_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/postgres_test"
+
+
+def _worker_database_name(database_name: str) -> str:
+    worker_id = os.getenv("PYTEST_XDIST_WORKER")
+    if not worker_id:
+        return database_name
+    sanitized_worker_id = re.sub(r"[^a-zA-Z0-9_]", "_", worker_id)
+    return f"{database_name}_{sanitized_worker_id}"
+
+
+def _ensure_postgres_database(database_url: str) -> str:
+    url = make_url(database_url)
+    database_name = _worker_database_name(url.database or "postgres_test")
+    test_url = url.set(database=database_name)
+
+    # PostgreSQL services in CI create the base database, but pytest-xdist
+    # workers need their own databases to avoid cross-process table resets.
+    import psycopg2
+    from psycopg2 import sql
+
+    admin_url = url.set(drivername="postgresql", database="postgres")
+    conn = psycopg2.connect(admin_url.render_as_string(hide_password=False))
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s", (database_name,))
+            if cursor.fetchone() is None:
+                cursor.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database_name)))
+    finally:
+        conn.close()
+
+    return test_url.render_as_string(hide_password=False)
+
+
+SQLALCHEMY_DATABASE_URL = os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_URL") or DEFAULT_TEST_DATABASE_URL
+if SQLALCHEMY_DATABASE_URL.startswith("postgresql://"):
+    SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+if SQLALCHEMY_DATABASE_URL.startswith("postgresql"):
+    SQLALCHEMY_DATABASE_URL = _ensure_postgres_database(SQLALCHEMY_DATABASE_URL)
+os.environ["DATABASE_URL"] = SQLALCHEMY_DATABASE_URL
 os.environ["FAST_TEST_MODE"] = "true"
 os.environ["S3_ENDPOINT"] = "localhost:9000"
 os.environ["S3_ACCESS_KEY"] = "test-key"
@@ -30,12 +76,23 @@ from core.database import Base, get_db
 from core.schemas import User
 
 # Test database setup
-SQLALCHEMY_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
-
 engine = create_async_engine(
     SQLALCHEMY_DATABASE_URL,
-    echo=True,
+    echo=False,
+    poolclass=NullPool,
 )
+
+
+async def _reset_test_database():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+
+
+async def _drop_test_database():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+
 
 TestingSessionLocal = sessionmaker(
     bind=engine,
@@ -54,20 +111,12 @@ app.dependency_overrides[get_db] = override_get_db
 @pytest.fixture
 def client():
     """Create test client with fresh database"""
-    async def setup_db():
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
-    async def teardown_db():
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
-
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-    loop.run_until_complete(setup_db())
+    loop.run_until_complete(_reset_test_database())
     # Patch S3 helpers to avoid external calls during tests
     # Important: Patch where they are used (routers.images.*), not the module defining them
     from unittest.mock import patch
@@ -75,19 +124,17 @@ def client():
          patch('routers.images.get_presigned_download_url', return_value='http://example/presigned'):
         with TestClient(app) as c:
             yield c
-    loop.run_until_complete(teardown_db())
+    loop.run_until_complete(_drop_test_database())
 
 @pytest_asyncio.fixture
 async def db_session():
     """Create a test database session"""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    
+    await _reset_test_database()
+
     async with TestingSessionLocal() as session:
         yield session
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+    await _drop_test_database()
 
 
 @pytest.fixture
