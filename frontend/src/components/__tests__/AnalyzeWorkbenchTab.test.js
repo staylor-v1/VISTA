@@ -531,6 +531,65 @@ describe('AnalyzeWorkbenchTab', () => {
     expect(workflow.source.selected_image_ids).toEqual(['img-2']);
   });
 
+
+  test('confirms stop, aborts the active execute request, and ignores returned results', async () => {
+    let executeSignal;
+    global.fetch = jest.fn((url, options = {}) => {
+      if (url === '/api/analyze/toolbox') {
+        return Promise.resolve({ ok: true, json: async () => toolboxPayload });
+      }
+      if (url === '/api/projects/proj-1/analyze/input-source') {
+        return Promise.resolve({ ok: true, json: async () => inputPayload });
+      }
+      if (url === '/api/projects/proj-1/metadata/vista.analyze.workflow' && (!options.method || options.method === 'GET')) {
+        return Promise.resolve({ ok: false, status: 404, json: async () => ({ detail: 'not found' }) });
+      }
+      if (url === '/api/projects/proj-1/metadata/vista.analyze.workflow' && options.method === 'PUT') {
+        return Promise.resolve({ ok: true, json: async () => ({}) });
+      }
+      if (url === '/api/projects/proj-1/analyze/workflows/execute' && options.method === 'POST') {
+        executeSignal = options.signal;
+        return new Promise((resolve, reject) => {
+          options.signal.addEventListener('abort', () => {
+            const error = new Error('aborted');
+            error.name = 'AbortError';
+            reject(error);
+          });
+          setTimeout(() => resolve({
+            ok: true,
+            json: async () => ({
+              status: 'completed',
+              image_count: 2,
+              node_results: [{ node_id: 'late-output' }],
+              warnings: ['late overlay should be ignored'],
+            }),
+          }), 50);
+        });
+      }
+      if (/\/api\/projects\/proj-1\/analyze\/workflows\/.*\/stop$/.test(url) && options.method === 'POST') {
+        return Promise.resolve({ ok: true, json: async () => ({ stopped: true }) });
+      }
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({ detail: 'not found' }) });
+    });
+
+    render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);
+
+    await screen.findByRole('button', { name: /Workflow block Loaded Part Images/i });
+    fireEvent.click(screen.getByRole('button', { name: 'Run' }));
+    await screen.findByText(/Running 2 configured images/i);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(screen.getByRole('dialog', { name: /Stop the running process/i })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop and Ignore Results' }));
+
+    await waitFor(() => expect(screen.getByText(/Analysis stopped/i)).toBeVisible());
+    expect(executeSignal.aborted).toBe(true);
+    expect(screen.queryByTestId('analyze-run-summary')).not.toBeInTheDocument();
+    expect(global.fetch.mock.calls.some(([url]) => /\/api\/projects\/proj-1\/analyze\/workflows\/.*\/stop$/.test(url))).toBe(true);
+    const executeCall = global.fetch.mock.calls.find(([url]) => url === '/api/projects/proj-1/analyze/workflows/execute');
+    expect(executeCall[1].headers['X-Vista-Analyze-Run-Id']).toBeTruthy();
+  });
+
   test('snaps a dragged processing block into a nearby chain after the eighty percent threshold', async () => {
     mockFetch();
     render(<AnalyzeWorkbenchTab projectId="proj-1" projectType="PT3" setError={jest.fn()} />);

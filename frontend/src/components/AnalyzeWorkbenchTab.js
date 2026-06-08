@@ -12,6 +12,13 @@ const GRAPH_ORDER_STEP = GRAPH_NODE_WIDTH + 56;
 const GRAPH_CHAIN_SNAP_PROGRESS = 0.8;
 const GRAPH_NODE_HEIGHT = 76;
 
+function makeAnalyzeRunId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `analyze-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 function groupMethods(methods) {
   return methods.reduce((groups, method) => {
     const category = method.category || 'Other';
@@ -623,10 +630,13 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
   const [status, setStatus] = useState({ loading: true, message: 'Loading analyze workspace...', result: null });
   const [collapsedCategories, setCollapsedCategories] = useState({});
   const [toolboxPreview, setToolboxPreview] = useState({ methodId: null, parameters: {} });
+  const [stopModalOpen, setStopModalOpen] = useState(false);
   const graphDragRef = useRef(null);
   const graphRef = useRef(null);
   const marqueeRef = useRef(null);
   const suppressNodeClickRef = useRef(null);
+  const activeWorkflowRef = useRef(null);
+  const stoppedRunIdsRef = useRef(new Set());
   const [marquee, setMarquee] = useState(null);
 
   const methodById = useMemo(() => new Map(methods.map((method) => [method.id, method])), [methods]);
@@ -967,6 +977,9 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
   }, []);
 
   const submitWorkflow = useCallback(async (mode, runScope = 'all') => {
+    const runId = makeAnalyzeRunId();
+    const controller = new AbortController();
+    activeWorkflowRef.current = { runId, controller, mode };
     try {
       const selectedIds = processImageIds.length > 0 ? processImageIds : loadedImages.map(imageIdFor).filter(Boolean);
       const runLabel = runScope === 'example' ? 'example image' : `${selectedIds.length || 0} configured images`;
@@ -980,11 +993,13 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
       });
       const resp = await fetch(`/api/projects/${projectId}/analyze/workflows/${mode}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Vista-Analyze-Run-Id': runId },
         body: JSON.stringify(workflow),
+        signal: controller.signal,
       });
       const payload = await resp.json();
       if (!resp.ok) throw new Error(payload?.detail || `Workflow ${mode} failed`);
+      if (stoppedRunIdsRef.current.has(runId) || activeWorkflowRef.current?.runId !== runId) return;
       setStatus({
         loading: false,
         message: mode === 'execute'
@@ -993,11 +1008,41 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
         result: payload,
       });
     } catch (err) {
+      if (err?.name === 'AbortError' || stoppedRunIdsRef.current.has(runId)) return;
       const message = err.message || 'Workflow request failed';
       setStatus({ loading: false, message, result: null });
       if (setError) setError(message);
+    } finally {
+      if (activeWorkflowRef.current?.runId === runId) {
+        activeWorkflowRef.current = null;
+      }
     }
   }, [exampleImageId, inputSource, loadedImages, nodes, processImageIds, projectId, setError]);
+
+  const requestStopWorkflow = useCallback(() => {
+    if (!activeWorkflowRef.current) return;
+    setStopModalOpen(true);
+  }, []);
+
+  const confirmStopWorkflow = useCallback(() => {
+    const activeRun = activeWorkflowRef.current;
+    if (!activeRun) {
+      setStopModalOpen(false);
+      return;
+    }
+    stoppedRunIdsRef.current.add(activeRun.runId);
+    if (activeRun.mode === 'execute') {
+      fetch(`/api/projects/${projectId}/analyze/workflows/${encodeURIComponent(activeRun.runId)}/stop`, { method: 'POST' }).catch(() => {});
+    }
+    activeRun.controller.abort();
+    activeWorkflowRef.current = null;
+    setStopModalOpen(false);
+    setStatus({
+      loading: false,
+      message: 'Analysis stopped. Vista will ignore any results returned by the stopped run.',
+      result: null,
+    });
+  }, [projectId]);
 
   return (
     <section className="analyze-workbench" aria-label="Analyze Workbench">
@@ -1063,6 +1108,9 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
               </button>
               <button type="button" className="btn btn-primary" disabled={status.loading || nodes.length === 0} onClick={() => submitWorkflow('execute', 'all')}>
                 Run
+              </button>
+              <button type="button" className="btn btn-danger" disabled={!status.loading} onClick={requestStopWorkflow}>
+                Stop
               </button>
             </div>
           </div>
@@ -1209,6 +1257,31 @@ function AnalyzeWorkbenchTab({ projectId, projectType, setError }) {
           )}
         </aside>
       </div>
+      {stopModalOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal-content analyze-stop-modal" role="dialog" aria-modal="true" aria-labelledby="analyze-stop-title">
+            <div className="modal-header">
+              <div>
+                <p className="analyze-eyebrow">Stop Analysis</p>
+                <h3 id="analyze-stop-title">Stop the running process?</h3>
+              </div>
+              <button type="button" className="modal-close" onClick={() => setStopModalOpen(false)} aria-label="Close stop confirmation">&times;</button>
+            </div>
+            <div className="modal-body">
+              <p>Stopping will halt analysis processing that Vista controls and ignore any results returned by this run.</p>
+              <p className="muted">New overlays or analysis outputs from the stopped run will not be created by Vista.</p>
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn btn-secondary" onClick={() => setStopModalOpen(false)}>
+                Continue Running
+              </button>
+              <button type="button" className="btn btn-danger" onClick={confirmStopWorkflow}>
+                Stop and Ignore Results
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {inputModalOpen && (
         <InputSelectionModal
           inputSource={inputSource}

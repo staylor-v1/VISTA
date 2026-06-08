@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -89,6 +89,23 @@ MODEL_SERVICE_METHOD_IDS = {
     "ml.yolov8.segment",
     "ml.yolo.ultralytics",
 }
+CANCELLED_ANALYZE_RUN_IDS: set[str] = set()
+
+
+def _normalize_analyze_run_id(run_id: Optional[str]) -> Optional[str]:
+    normalized = str(run_id or "").strip()
+    return normalized[:128] if normalized else None
+
+
+def _is_analyze_run_cancelled(run_id: Optional[str]) -> bool:
+    normalized = _normalize_analyze_run_id(run_id)
+    return bool(normalized and normalized in CANCELLED_ANALYZE_RUN_IDS)
+
+
+def _stopped_execution_result(result: ToolboxExecutionResult, run_id: Optional[str]) -> ToolboxExecutionResult:
+    warning = "Analyze run was stopped; returned results were ignored and no overlays were created."
+    warnings = [warning, *[item for item in result.warnings if item != warning]]
+    return result.model_copy(update={"status": "failed", "warnings": warnings})
 
 
 def _require_toolbox() -> None:
@@ -132,6 +149,11 @@ class AnalyzeInputSourceResponse(BaseModel):
     source: WorkflowInputSource
     parts: List[AnalyzePartSourceRecord] = Field(default_factory=list)
     images: List[AnalyzeImageSourceRecord] = Field(default_factory=list)
+
+
+class AnalyzeStopResponse(BaseModel):
+    run_id: str
+    stopped: bool = True
 
 
 class AnalyzeDeletedOverlayRecord(BaseModel):
@@ -1029,17 +1051,36 @@ async def validate_analyze_workflow(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
+@router.post("/projects/{project_id}/analyze/workflows/{run_id}/stop", response_model=AnalyzeStopResponse)
+async def stop_analyze_workflow(
+    project_id: uuid.UUID,
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await get_project_or_403(project_id, db, current_user)
+    normalized = _normalize_analyze_run_id(run_id)
+    if not normalized:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Analyze run id is required")
+    CANCELLED_ANALYZE_RUN_IDS.add(normalized)
+    return AnalyzeStopResponse(run_id=normalized)
+
+
 @router.post("/projects/{project_id}/analyze/workflows/execute", response_model=ToolboxExecutionResult)
 async def execute_analyze_workflow(
     project_id: uuid.UUID,
     workflow: WorkflowGraph,
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
+    x_vista_analyze_run_id: Optional[str] = Header(default=None),
 ):
     _require_toolbox()
     await get_project_or_403(project_id, db, current_user)
     workflow = await _workflow_with_server_source(project_id=project_id, workflow=workflow, db=db)
+    run_id = _normalize_analyze_run_id(x_vista_analyze_run_id)
     try:
+        if _is_analyze_run_cancelled(run_id):
+            return ToolboxExecutionResult(workflow_name=workflow.name, status="failed", execution_mode="execution", image_count=0, warnings=["Analyze run was stopped before execution started."])
         images = await _load_execution_images(db=db, project_id=project_id, workflow=workflow)
         model_service_warning = None
         try:
@@ -1047,10 +1088,14 @@ async def execute_analyze_workflow(
         except Exception as exc:
             result = None
             model_service_warning = f"Configured toolbox model service was unavailable; used local executor fallback ({exc})."
+        if _is_analyze_run_cancelled(run_id):
+            return _stopped_execution_result(result or ToolboxExecutionResult(workflow_name=workflow.name, status="failed", execution_mode="execution", image_count=len(images)), run_id)
         if result is None:
             result = execute_image_workflow(workflow, images)
             if model_service_warning:
                 result = result.model_copy(update={"warnings": [model_service_warning, *result.warnings]})
+        if _is_analyze_run_cancelled(run_id):
+            return _stopped_execution_result(result, run_id)
         return await _attach_analysis_outputs_to_parts(
             project_id=project_id,
             workflow=workflow,

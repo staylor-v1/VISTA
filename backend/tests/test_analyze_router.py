@@ -363,6 +363,41 @@ async def test_analyze_workflow_uses_configured_model_service_and_preserves_yolo
     assert yolo_node.summary["detections"][0]["class_name"] == "person"
 
 
+
+def test_analyze_workflow_stop_prevents_stopped_run_from_creating_outputs(client):
+    headers, project_id, image = _create_project_with_part_image(client)
+    run_id = "run-stop-before-attach"
+    stop_resp = client.post(f"/api/projects/{project_id}/analyze/workflows/{run_id}/stop", headers=headers)
+    assert stop_resp.status_code == 200, stop_resp.text
+    assert stop_resp.json()["stopped"] is True
+
+    workflow = {
+        "name": "Stopped workflow",
+        "source": {
+            "kind": "manual_selection",
+            "selected_image_ids": [image["id"]],
+            "example_image_id": image["id"],
+            "image_count": 1,
+            "part_count": 1,
+        },
+        "nodes": [
+            {"id": "input", "method_id": "source.project_part_images", "label": "Input", "parameters": {}},
+            {"id": "output", "method_id": "output.versioned_image_artifact", "label": "Versioned Output", "parameters": {"mode": "overlay_artifact"}},
+        ],
+        "edges": [{"source_node": "input", "target_node": "output"}],
+        "output": {"mode": "overlay_artifact", "version_strategy": "recipe_metadata"},
+    }
+    execute_headers = {**headers, "X-Vista-Analyze-Run-Id": run_id}
+    execute_resp = client.post(f"/api/projects/{project_id}/analyze/workflows/execute", json=workflow, headers=execute_headers)
+    assert execute_resp.status_code == 200, execute_resp.text
+    assert execute_resp.json()["status"] == "failed"
+    assert any("stopped" in warning.lower() for warning in execute_resp.json()["warnings"])
+
+    parts_resp = client.get(f"/api/projects/{project_id}/parts", headers=headers)
+    assert parts_resp.status_code == 200, parts_resp.text
+    part = parts_resp.json()[0]
+    assert "analysis_outputs" not in part["metadata"]
+
 def test_analyze_workflow_manual_selection_counts_selected_images(client):
     headers, project_id, image = _create_project_with_part_image(client)
     workflow = {
