@@ -312,3 +312,71 @@ test.describe('Project Data metadata hierarchy screenshot artifact', () => {
     await panel.screenshot({ path: pr14ScreenshotPath });
   });
 });
+test.describe('PT3 .nsipro metadata inspection', () => {
+  test('loads a .nsipro file with PT3 image data and displays parsed fields in the metadata modal', async ({ page }) => {
+    const { projectId, getIngestValidationRequests } = await mockInspectionWorkbenchRoutes(page, { type: 'PT3', scenario: 'basic' });
+    const nsiproText = [
+      '# Synthetic NanoString nCounter-style project metadata.',
+      '# Uses common run/sample fields documented for nCounter workflows, including comments, date, FOV count, and file/library identifiers.',
+      '[Cartridge]',
+      'CartridgeID=NCT-PT3-CART-042',
+      'FOVCount=280',
+      'ReporterLibraryFile=HumanImmunology_V2.rlf',
+      '[Sample]',
+      'SampleID=PT3-NSI-001',
+      'LaneID=1',
+      'Owner=Dr. Avery Chen',
+      'Comments=PT3 inspection metadata modal validation',
+      'Date=20260610',
+      '[Run]',
+      'Instrument=nCounter Pro',
+      'ScannerID=DA-777',
+    ].join('\n');
+
+    await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
+    await page.getByRole('tab', { name: 'Project Data' }).click();
+
+    await page.locator('#file-input').setInputFiles({
+      name: 'pt3-volume-axial-000.png',
+      mimeType: 'image/png',
+      buffer: Buffer.from('synthetic-png-data'),
+    });
+    await page.getByLabel('Metadata File (Optional)').setInputFiles({
+      name: 'pt3-ncounter-run.nsipro',
+      mimeType: 'text/plain',
+      buffer: Buffer.from(nsiproText),
+    });
+    await expect(page.getByText(/Associated pt3-ncounter-run\.nsipro as associated_upload_metadata:/)).toBeVisible();
+    await page.getByLabel('Metadata (Optional JSON)').fill(JSON.stringify({
+      volume_stack_id: 'NSIPRO-STACK-042',
+      serial_number: 'PT3-NSI-001',
+      display_name: 'PT3 NanoString Volume',
+      slice_axis: 'axial',
+      slice_index: 0,
+      modality: 'volume',
+      source: 'nsipro-e2e-upload',
+    }));
+
+    await page.getByRole('button', { name: 'Upload Images' }).click();
+    await expect.poll(() => getIngestValidationRequests().length).toBeGreaterThan(0);
+    await page.reload({ waitUntil: 'networkidle' });
+
+    await page.getByRole('tab', { name: 'Inspection' }).click();
+    const inspectionPanel = page.locator('section[aria-label="Inspection Workbench"]');
+    await expect(inspectionPanel).toBeVisible();
+    await inspectionPanel.getByRole('button', { name: 'Metadata' }).click();
+
+    const modal = page.locator('.workbench-utility-modal');
+    await expect(modal.getByRole('heading', { name: 'Part Metadata' })).toBeVisible();
+    await expect(modal.getByRole('tab', { name: '.nsipro' })).toHaveAttribute('aria-selected', 'true');
+    await expect(modal).toContainText('project_metadata.associated_upload_metadata:pt3-ncounter-run.nsipro');
+    await expect(modal).toContainText('metadata.Cartridge.CartridgeID');
+    await expect(modal).toContainText('NCT-PT3-CART-042');
+    await expect(modal).toContainText('metadata.Cartridge.FOVCount');
+    await expect(modal).toContainText('280');
+    await expect(modal).toContainText('metadata.Sample.SampleID');
+    await expect(modal).toContainText('PT3-NSI-001');
+    await expect(modal).toContainText('metadata.Run.Instrument');
+    await expect(modal).toContainText('nCounter Pro');
+  });
+});

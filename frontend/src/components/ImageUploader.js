@@ -247,6 +247,19 @@ function normalizeHierarchyMetadata(candidate) {
   return normalized;
 }
 
+
+function pickAssociatedMetadataReferenceFields(metadata) {
+  if (!metadata || typeof metadata !== 'object') return {};
+  const referenceFields = {};
+  if (metadata.associated_metadata_ref) {
+    referenceFields.associated_metadata_ref = metadata.associated_metadata_ref;
+  }
+  if (metadata.associated_metadata && typeof metadata.associated_metadata === 'object') {
+    referenceFields.associated_metadata = metadata.associated_metadata;
+  }
+  return referenceFields;
+}
+
 export function buildInspectionPartIngestPayload(uploadedRecords) {
   const partsByKey = new Map();
   const volumePartsByKey = new Map();
@@ -268,6 +281,7 @@ export function buildInspectionPartIngestPayload(uploadedRecords) {
             source: recordMetadata.source || 'manual-build-it',
             project_type: 'PT3',
             volume_stack_id: volumeStackId,
+            ...pickAssociatedMetadataReferenceFields(recordMetadata),
             source_images: [],
           },
         });
@@ -313,6 +327,7 @@ export function buildInspectionPartIngestPayload(uploadedRecords) {
           design_number: metadata.design_number,
           lot_number: metadata.lot_number,
           serial_number: metadata.serial_number,
+          ...pickAssociatedMetadataReferenceFields(metadata),
           configured_views: [],
           modalities: [],
           view_images: {},

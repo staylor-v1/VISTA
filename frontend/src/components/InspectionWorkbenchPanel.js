@@ -296,6 +296,54 @@ function collectNsiproMetadataEntries(value, path = 'metadata') {
   });
 }
 
+function collectMetadataLeafEntries(value, path) {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return [{ path, value }];
+    return value.flatMap((entry, index) => collectMetadataLeafEntries(entry, formatMetadataPath(path, index)));
+  }
+  if (isPlainMetadataObject(value)) {
+    const entries = Object.entries(value);
+    if (entries.length === 0) return [{ path, value }];
+    return entries.flatMap(([key, entryValue]) => collectMetadataLeafEntries(entryValue, formatMetadataPath(path, key)));
+  }
+  return [{ path, value }];
+}
+
+function getAssociatedNsiproProjectMetadata(partMetadata, projectMetadata = {}) {
+  const references = new Set();
+  const visit = (value) => {
+    if (!value || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    const associatedMetadata = value.associated_metadata;
+    if (typeof value.associated_metadata_ref === 'string' && value.associated_metadata_ref.trim()) {
+      references.add(value.associated_metadata_ref.trim());
+    }
+    if (associatedMetadata && typeof associatedMetadata === 'object') {
+      const fileType = String(associatedMetadata.file_type || '').toLowerCase();
+      const parser = String(associatedMetadata.parser || '').toLowerCase();
+      const filename = String(associatedMetadata.filename || '').toLowerCase();
+      if (
+        (fileType === 'nsipro' || parser.includes('nsipro') || filename.endsWith('.nsipro'))
+        && typeof associatedMetadata.project_metadata_key === 'string'
+        && associatedMetadata.project_metadata_key.trim()
+      ) {
+        references.add(associatedMetadata.project_metadata_key.trim());
+      }
+    }
+    Object.values(value).forEach(visit);
+  };
+  visit(partMetadata);
+  return Array.from(references).flatMap((referenceKey) => {
+    const metadataRecord = projectMetadata?.[referenceKey];
+    const metadata = metadataRecord?.metadata;
+    if (!isPlainMetadataObject(metadata) && !Array.isArray(metadata)) return [];
+    return collectMetadataLeafEntries(metadata, `project_metadata.${referenceKey}.metadata`);
+  });
+}
+
 function omitNsiproMetadata(value, key = '') {
   if (isNsiproMetadataKey(key) || isNsiproMetadataString(value)) return undefined;
   if (Array.isArray(value)) {
@@ -313,10 +361,14 @@ function omitNsiproMetadata(value, key = '') {
   return value;
 }
 
-function getPartMetadataBreakout(part) {
+function getPartMetadataBreakout(part, projectMetadata = {}) {
   const metadata = isPlainMetadataObject(part?.metadata) ? part.metadata : {};
+  const nsiproEntries = [
+    ...getAssociatedNsiproProjectMetadata(metadata, projectMetadata),
+    ...collectNsiproMetadataEntries(metadata),
+  ];
   return {
-    nsiproEntries: collectNsiproMetadataEntries(metadata),
+    nsiproEntries,
     otherMetadata: omitNsiproMetadata(metadata) || {},
   };
 }
@@ -5919,7 +5971,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 
   const renderMetadataModalBody = () => {
     if (!selectedPart) return <p className="metadata-modal-empty">Select a part to view metadata.</p>;
-    const { nsiproEntries, otherMetadata } = getPartMetadataBreakout(selectedPart);
+    const { nsiproEntries, otherMetadata } = getPartMetadataBreakout(selectedPart, projectMetadata);
     const otherRows = Object.entries(otherMetadata).map(([key, value]) => ({ path: `metadata.${key}`, value }));
     return (
       <div className="part-metadata-modal-body">

@@ -232,6 +232,22 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
   };
   let mutableParts = [...parts];
   let mutableAnnotations = {};
+  const metadataDict = {
+    project_type: type,
+    inspection_profile: {
+      scenario,
+      required_views: scenario === 'basic' ? ['front', 'back'] : ['front', 'back', 'left', 'right'],
+      validation: {
+        ingest_enabled: true,
+        reviewer_level: scenario,
+      },
+    },
+    data_contract: {
+      batches: batches.length,
+      parts: parts.length,
+    },
+  };
+  let uploadedImageSequence = 1;
   const savedWorkspaceStates = [];
   const exportBundleArchiveRequests = [];
   const ingestValidationRequests = [];
@@ -263,22 +279,16 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({
-          project_type: type,
-          inspection_profile: {
-            scenario,
-            required_views: scenario === 'basic' ? ['front', 'back'] : ['front', 'back', 'left', 'right'],
-            validation: {
-              ingest_enabled: true,
-              reviewer_level: scenario,
-            },
-          },
-          data_contract: {
-            batches: batches.length,
-            parts: parts.length,
-          },
-        }),
+        body: JSON.stringify(metadataDict),
       });
+      return;
+    }
+    if (url.endsWith(`/api/projects/${projectId}/metadata`) && method === 'POST') {
+      const payload = route.request().postDataJSON() || {};
+      if (payload.key) {
+        metadataDict[payload.key] = payload.value;
+      }
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ key: payload.key, value: payload.value }) });
       return;
     }
     if (url.endsWith('/api/projects') || url.endsWith('/api/projects/')) {
@@ -300,8 +310,18 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ has_groups: false }) });
       return;
     }
-    if (url.includes(`/api/projects/${projectId}/images`)) {
+    if (url.includes(`/api/projects/${projectId}/images`) && method === 'GET') {
       await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+      return;
+    }
+    if (url.includes(`/api/projects/${projectId}/images`) && method === 'POST') {
+      const contentDisposition = route.request().headers()['content-disposition'] || '';
+      const fallbackFilename = `uploaded-pt3-${uploadedImageSequence}.png`;
+      const filenameMatch = contentDisposition.match(/filename="([^"]+)"/);
+      const filename = filenameMatch ? filenameMatch[1] : fallbackFilename;
+      const image = { id: `uploaded-image-${uploadedImageSequence}`, filename, metadata: {} };
+      uploadedImageSequence += 1;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(image) });
       return;
     }
     if (url.endsWith(`/api/projects/${projectId}/batches`)) {
@@ -357,9 +377,23 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
     if (url.endsWith(`/api/projects/${projectId}/ingest`) && method === 'POST') {
       const payload = route.request().postDataJSON() || {};
       ingestValidationRequests.push(payload);
-      const partsReceived = Array.isArray(payload.batches)
-        ? payload.batches.reduce((acc, batch) => acc + (Array.isArray(batch.parts) ? batch.parts.length : 0), 0)
-        : 0;
+      const incomingParts = [
+        ...(Array.isArray(payload.batches) ? payload.batches.flatMap((batch) => (
+          Array.isArray(batch.parts) ? batch.parts.map((part) => ({ ...part, batch_id: batch.name || null })) : []
+        )) : []),
+        ...(Array.isArray(payload.unassigned_parts) ? payload.unassigned_parts : []),
+      ].map((part, index) => ({
+        id: `ingested-${Date.now()}-${index}`,
+        batch_id: batches.some((batch) => batch.id === part.batch_id) ? part.batch_id : (batches[0]?.id || null),
+        serial_number: part.serial_number || `INGESTED-${index + 1}`,
+        display_name: part.display_name || part.serial_number || `Ingested ${index + 1}`,
+        review_state: 'unreviewed',
+        metadata: part.metadata || {},
+      }));
+      if (incomingParts.length > 0) {
+        mutableParts = [...incomingParts, ...mutableParts];
+      }
+      const partsReceived = incomingParts.length;
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
