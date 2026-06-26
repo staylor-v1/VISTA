@@ -1572,6 +1572,49 @@ def test_load_test_data_seeds_project_type_fixtures(client, project_type):
         assert parts[0]["metadata"]["design_number"].startswith("D")
 
 
+def test_pt1_load_test_data_invalidates_cached_empty_image_list(client):
+    headers = {
+        "X-User-Id": "loader-pt1-cache@example.com",
+        "X-User-Groups": "[\"pt1-loader-cache\"]",
+    }
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": "PT1 loader cache regression",
+            "description": "reproduce stale image-list cache after load test data",
+            "meta_group_id": "pt1-loader-cache",
+            "project_type": "PT1",
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+
+    empty_images_resp = client.get(f"/api/projects/{project_id}/images?include_deleted=true&limit=2000", headers=headers)
+    assert empty_images_resp.status_code == 200, empty_images_resp.text
+    assert empty_images_resp.json() == []
+
+    with patch("routers.inspection_workbench.upload_file_to_s3", return_value=True):
+        load_resp = client.post(f"/api/projects/{project_id}/load-test-data", headers=headers)
+
+    assert load_resp.status_code == 200, load_resp.text
+    assert load_resp.json()["images_received"] == 20
+
+    images_resp = client.get(f"/api/projects/{project_id}/images?include_deleted=true&limit=2000", headers=headers)
+    assert images_resp.status_code == 200, images_resp.text
+    images = images_resp.json()
+    assert len(images) == 20
+    image_ids = {image["id"] for image in images}
+
+    parts_resp = client.get(f"/api/projects/{project_id}/parts", headers=headers)
+    assert parts_resp.status_code == 200, parts_resp.text
+    source_image_ids = {
+        source_image["image_id"]
+        for part in parts_resp.json()
+        for source_image in part["metadata"].get("source_images", [])
+    }
+    assert source_image_ids == image_ids
+
 def test_pt3_load_test_data_survives_fixture_image_upload_failure(client):
     headers = {
         "X-User-Id": "loader-pt3-nos3@example.com",
