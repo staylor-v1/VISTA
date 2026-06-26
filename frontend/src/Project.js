@@ -438,6 +438,7 @@ function Project({ currentUserGroups = [] }) {
           projectId={id}
           parts={projectParts}
           images={projectImages}
+          projectConfiguration={projectConfiguration}
           onAssignmentsChanged={refreshProjectCounts}
           setError={setError}
         />
@@ -448,6 +449,7 @@ function Project({ currentUserGroups = [] }) {
           projectId={id}
           parts={projectParts}
           images={projectImages}
+          projectConfiguration={projectConfiguration}
           onAssignmentsChanged={refreshProjectCounts}
           setError={setError}
         />

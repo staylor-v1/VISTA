@@ -427,24 +427,24 @@ describe('ImagesToPartsTab', () => {
       />
     );
 
-    expect(screen.getByText('L1SN1 (2)')).toBeInTheDocument();
-    expect(screen.getByText('L1SN2 (2)')).toBeInTheDocument();
-    expect(screen.getByText('L2SN1 (2)')).toBeInTheDocument();
-    expect(screen.getByText('L2SN2 (2)')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Filename key for autoassign'), { target: { value: 'SN' } });
+
+    expect(screen.getByText('1 (4)')).toBeInTheDocument();
+    expect(screen.getByText('2 (4)')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Assign Parts' }));
 
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith('/api/projects/proj-1/parts', expect.objectContaining({
       method: 'POST',
-      body: JSON.stringify({ serial_number: 'L1SN1', display_name: 'L1SN1' }),
+      body: JSON.stringify({ serial_number: '1', display_name: '1' }),
     })));
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith('/api/projects/proj-1/parts/image-assignments', expect.objectContaining({
       method: 'POST',
-      body: JSON.stringify({ filename: 'L2_SN2_back.png', image_id: 'img-8', to_part_id: 'part-L2SN2' }),
+      body: JSON.stringify({ filename: 'L2_SN2_back.png', image_id: 'img-8', to_part_id: 'part-2' }),
     })));
     await waitFor(() => expect(onAssignmentsChanged).toHaveBeenCalled());
-    expect(screen.getByRole('button', { name: 'L1SN1' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'L2SN2' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '1' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '2' })).toBeInTheDocument();
   });
 
   test('can use a numeric filename segment with no letter identifier as the assignment key', async () => {
@@ -467,9 +467,7 @@ describe('ImagesToPartsTab', () => {
       />
     );
 
-    fireEvent.click(screen.getByLabelText(/Segment 1/));
-    fireEvent.click(screen.getByLabelText(/Segment 2/));
-    fireEvent.click(screen.getByLabelText(/Segment 3/));
+    fireEvent.change(screen.getByLabelText('Filename key for autoassign'), { target: { value: '' } });
 
     expect(screen.getByText('001 (1)')).toBeInTheDocument();
     expect(screen.getByText('002 (1)')).toBeInTheDocument();

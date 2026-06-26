@@ -1158,7 +1158,7 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
       setTestDataResult(payload);
       setError(null);
       if (onUploadComplete) {
-        onUploadComplete(payload);
+        await onUploadComplete(payload);
       }
     } catch (err) {
       const detail = err?.message ? ` ${err.message}` : '';
