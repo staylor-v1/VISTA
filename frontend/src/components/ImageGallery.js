@@ -8,6 +8,13 @@ import BulkMetadataModal from './BulkMetadataModal';
 import { loadGalleryStateWithDefaults, saveGalleryState, filterBySearch, filterByReviewStatus, sortImages } from '../utils/galleryState';
 import { isUserMetadataKey } from '../utils/metadataKeys';
 
+function shallowEqualObject(left, right) {
+  const leftKeys = Object.keys(left || {});
+  const rightKeys = Object.keys(right || {});
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every(key => left[key] === right[key]);
+}
+
 function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, refreshProjectImages }) {
   const navigate = useNavigate();
   // galleryKey distinguishes between project-level and group-level gallery state
@@ -27,6 +34,7 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
   const [lastSelectedId, setLastSelectedId] = useState(null);
   const [actionError, setActionError] = useState(null);
   const [reviewStatuses, setReviewStatuses] = useState({});
+  const reviewStatusesRef = useRef(reviewStatuses);
   const [reviewFilter, setReviewFilter] = useState(savedState.reviewFilter);
   const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
   const [showBulkMetaModal, setShowBulkMetaModal] = useState(false);
@@ -94,7 +102,10 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
       const response = await fetch(`/api/projects/${projectId}/image-review-statuses`);
       if (response.ok) {
         const data = await response.json();
-        setReviewStatuses(data);
+        if (!shallowEqualObject(reviewStatusesRef.current, data)) {
+          reviewStatusesRef.current = data;
+          setReviewStatuses(data);
+        }
       }
     } catch (err) {
       console.error('Failed to load review statuses:', err);
