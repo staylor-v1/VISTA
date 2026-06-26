@@ -61,6 +61,35 @@ async function buildHttpErrorMessage(response, fallbackLabel) {
   ].filter(Boolean).join(' | ');
 }
 
+function normalizeProjectImagesPayload(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object') return [];
+  for (const key of ['images', 'items', 'results', 'data']) {
+    if (Array.isArray(payload[key])) return payload[key];
+  }
+  return [];
+}
+
+function synthesizeImagesFromPartSources(parts = []) {
+  const byKey = new Map();
+  (Array.isArray(parts) ? parts : []).forEach((part) => {
+    const sourceImages = Array.isArray(part?.metadata?.source_images) ? part.metadata.source_images : [];
+    sourceImages.forEach((record, index) => {
+      if (!record?.filename) return;
+      const imageId = record?.image_id ? String(record.image_id) : '';
+      const filename = String(record.filename);
+      const key = imageId || `${filename}:${part?.id || 'part'}:${index}`;
+      if (byKey.has(key)) return;
+      byKey.set(key, {
+        id: imageId || key,
+        filename,
+        metadata: { recovered_from_part_source: true },
+      });
+    });
+  });
+  return Array.from(byKey.values());
+}
+
 function Project({ currentUserGroups = [] }) {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -128,19 +157,21 @@ function Project({ currentUserGroups = [] }) {
       const imagePayload = imageResp.ok ? await imageResp.json() : [];
       const configPayload = configResp.ok ? await configResp.json() : {};
 
-      const allImages = Array.isArray(imagePayload) ? imagePayload : [];
+      const normalizedParts = Array.isArray(partsPayload) ? partsPayload : [];
+      const bundleRawImageCount = Number(bundlePayload?.bundle_summary?.images?.total) || 0;
+      const imageList = normalizeProjectImagesPayload(imagePayload);
+      const allImages = imageList.length > 0 || bundleRawImageCount === 0 ? imageList : synthesizeImagesFromPartSources(normalizedParts);
       setProjectImages(allImages);
-      setProjectParts(Array.isArray(partsPayload) ? partsPayload : []);
+      setProjectParts(normalizedParts);
       const activeImageCount = allImages.filter((image) => !image?.deleted_at).length;
       const imageMetadata = allImages.reduce((count, image) => {
         const metadataObj = image?.metadata;
         return count + (metadataObj && typeof metadataObj === 'object' ? Object.keys(metadataObj).length : 0);
       }, 0);
-      const bundleRawImageCount = Number(bundlePayload?.bundle_summary?.images?.total) || 0;
 
       setProjectConfiguration(configPayload?.config || null);
       setDataCounts({
-        partsLoaded: Array.isArray(partsPayload) ? partsPayload.length : 0,
+        partsLoaded: normalizedParts.length,
         rawImages: Math.max(bundleRawImageCount, activeImageCount),
         imageMetadata,
         overlayImages: bundlePayload?.bundle_summary?.overlays?.configured_layers || 0,
@@ -438,6 +469,7 @@ function Project({ currentUserGroups = [] }) {
           projectId={id}
           parts={projectParts}
           images={projectImages}
+          projectConfiguration={projectConfiguration}
           onAssignmentsChanged={refreshProjectCounts}
           setError={setError}
         />
@@ -448,6 +480,7 @@ function Project({ currentUserGroups = [] }) {
           projectId={id}
           parts={projectParts}
           images={projectImages}
+          projectConfiguration={projectConfiguration}
           onAssignmentsChanged={refreshProjectCounts}
           setError={setError}
         />

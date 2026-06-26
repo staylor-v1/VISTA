@@ -29,24 +29,130 @@ function buildActiveImageRefs(images) {
   });
 }
 
+
+function getFilenameStem(filename = '') {
+  const base = String(filename || '').split(/[\\/]/).pop() || '';
+  const dotIndex = base.lastIndexOf('.');
+  return dotIndex > 0 ? base.slice(0, dotIndex) : base;
+}
+
+function tokenizeFilename(filename = '', delimiter = '') {
+  const stem = getFilenameStem(filename);
+  if (delimiter) return stem.split(delimiter).map((token) => token.trim()).filter(Boolean);
+  return stem.split(/[^A-Za-z0-9]+/).map((token) => token.trim()).filter(Boolean);
+}
+
+function getTokenLetterKey(token = '') {
+  const match = String(token || '').match(/^[A-Za-z]+/);
+  return match ? match[0] : '';
+}
+
+function getFilenameAutoAssignConfig(projectConfiguration = null) {
+  const scheme = projectConfiguration?.file_naming_scheme || {};
+  const extractor = scheme.metadata_extractor || {};
+  const delimiter = String(extractor.pattern || extractor.delimiter || scheme.delimiter || '_');
+  const configuredKeys = Array.isArray(extractor.keys) ? extractor.keys : [];
+  return { delimiter, configuredKeys };
+}
+
+function normalizePartKey(value = '') {
+  return String(value || '').replace(/[^A-Za-z0-9]+/g, '').trim();
+}
+
+function buildAutoAssignPreview(images, selectedTokenIndexes, delimiter = '') {
+  const indexes = new Set(selectedTokenIndexes);
+  if (indexes.size === 0) return [];
+  const groups = new Map();
+  (Array.isArray(images) ? images : []).forEach((image) => {
+    const tokens = tokenizeFilename(image.filename, delimiter);
+    const partKey = normalizePartKey(tokens.filter((_, index) => indexes.has(index)).join(''));
+    if (!partKey) return;
+    if (!groups.has(partKey)) groups.set(partKey, []);
+    groups.get(partKey).push(image);
+  });
+  return Array.from(groups.entries())
+    .map(([partKey, groupedImages]) => ({ partKey, images: groupedImages }))
+    .sort((left, right) => left.partKey.localeCompare(right.partKey));
+}
+
+function buildTokenOptions(images, projectConfiguration = null) {
+  const { delimiter, configuredKeys } = getFilenameAutoAssignConfig(projectConfiguration);
+  const optionsByKey = new Map();
+
+  (Array.isArray(images) ? images : []).forEach((image) => {
+    tokenizeFilename(image.filename, delimiter).forEach((token, index) => {
+      const letterKey = getTokenLetterKey(token);
+      const configuredKey = configuredKeys[index];
+      const optionKey = configuredKey || letterKey || '__blank__';
+      const label = configuredKey || (letterKey ? `Key ${letterKey}` : 'Blank key');
+      if (!optionsByKey.has(optionKey)) {
+        optionsByKey.set(optionKey, {
+          value: optionKey,
+          label,
+          indexes: new Set(),
+          examples: new Set(),
+        });
+      }
+      const option = optionsByKey.get(optionKey);
+      option.indexes.add(index);
+      if (option.examples.size < 3) option.examples.add(token);
+    });
+  });
+
+  const options = Array.from(optionsByKey.values()).map((option) => ({
+    ...option,
+    indexes: Array.from(option.indexes),
+    examples: Array.from(option.examples),
+  }));
+
+  const combinedLetterOptions = options.filter((option) => option.value !== '__blank__' && option.indexes.length === 1 && option.examples.some((example) => /\d/.test(example)));
+  if (combinedLetterOptions.length > 1 && !optionsByKey.has('__combined_letters__')) {
+    options.unshift({
+      value: '__combined_letters__',
+      label: combinedLetterOptions.map((option) => option.label.replace(/^Key /, '')).join(' + '),
+      indexes: combinedLetterOptions.flatMap((option) => option.indexes),
+      examples: combinedLetterOptions.flatMap((option) => option.examples.slice(0, 1)),
+    });
+  }
+
+  return options;
+}
+
 function buildImageIndexes(images) {
   const refs = buildActiveImageRefs(images);
   const byId = new Map();
   const byFilename = new Map();
+  const knownDeletedIds = new Set();
+  const knownDeletedFilenames = new Set();
+  (Array.isArray(images) ? images : []).forEach((image) => {
+    if (!image?.deleted_at) return;
+    if (image.id) knownDeletedIds.add(String(image.id));
+    if (image.filename) knownDeletedFilenames.add(String(image.filename));
+  });
   refs.forEach((ref) => {
     if (ref.id) byId.set(ref.id, ref);
     if (!byFilename.has(ref.filename)) byFilename.set(ref.filename, []);
     byFilename.get(ref.filename).push(ref);
   });
-  return { refs, byId, byFilename };
+  return { refs, byId, byFilename, knownDeletedIds, knownDeletedFilenames };
 }
 
 function buildImageRefFromSource(sourceRecord, imageIndexes) {
   const imageId = sourceRecord?.image_id ? String(sourceRecord.image_id) : '';
   const filename = typeof sourceRecord?.filename === 'string' ? sourceRecord.filename : '';
   const matched = (imageId && imageIndexes.byId.get(imageId)) || (filename && (imageIndexes.byFilename.get(filename) || [])[0]) || null;
-  if (!matched) return null;
-  return { ...matched, filename: filename || matched.filename, id: imageId || matched.id };
+  if (matched) return { ...matched, filename: filename || matched.filename, id: imageId || matched.id };
+  if (!filename) return null;
+  if ((imageId && imageIndexes.knownDeletedIds.has(imageId)) || imageIndexes.knownDeletedFilenames.has(filename)) return null;
+  return {
+    key: imageId ? `source:${imageId}` : `source:${filename}`,
+    id: imageId,
+    filename,
+    displayName: filename,
+    contentUrl: imageId ? `/api/images/${encodeURIComponent(imageId)}/content` : '',
+    thumbnailUrl: imageId ? `/api/images/${encodeURIComponent(imageId)}/thumbnail?width=96&height=96` : '',
+    sourceOnly: true,
+  };
 }
 
 function getImageAssignmentKey(imageRef) {
@@ -81,7 +187,7 @@ function buildBuckets({ parts, images }) {
 
   return { partBuckets, unassigned };
 }
-function ImagesToPartsTab({ projectId, parts = [], images = [], onAssignmentsChanged, setError }) {
+function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfiguration = null, onAssignmentsChanged, setError }) {
   const initialBuckets = useMemo(() => buildBuckets({ parts, images }), [parts, images]);
   const [localBuckets, setLocalBuckets] = useState(initialBuckets);
   const [movingImages, setMovingImages] = useState([]);
@@ -91,6 +197,8 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], onAssignmentsCha
   const [selectionDrag, setSelectionDrag] = useState(null);
   const [showSomeModal, setShowSomeModal] = useState(false);
   const [someFilter, setSomeFilter] = useState('');
+  const [selectedAutoAssignKey, setSelectedAutoAssignKey] = useState('');
+  const [autoAssigning, setAutoAssigning] = useState(false);
   const unassignedRef = useRef(null);
 
   React.useEffect(() => {
@@ -298,6 +406,79 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], onAssignmentsCha
     </button>
   );
 
+  const autoAssignConfig = useMemo(() => getFilenameAutoAssignConfig(projectConfiguration), [projectConfiguration]);
+  const tokenOptions = useMemo(() => buildTokenOptions(localBuckets.unassigned, projectConfiguration), [localBuckets.unassigned, projectConfiguration]);
+  const selectedTokenOption = tokenOptions.find((option) => option.value === selectedAutoAssignKey) || tokenOptions[0] || null;
+  const autoAssignTokenIndexes = useMemo(() => selectedTokenOption?.indexes || [], [selectedTokenOption]);
+  const autoAssignPreview = useMemo(
+    () => buildAutoAssignPreview(localBuckets.unassigned, autoAssignTokenIndexes, autoAssignConfig.delimiter),
+    [localBuckets.unassigned, autoAssignTokenIndexes, autoAssignConfig.delimiter]
+  );
+
+  React.useEffect(() => {
+    if (selectedAutoAssignKey || tokenOptions.length === 0) return;
+    setSelectedAutoAssignKey(tokenOptions[0].value);
+  }, [selectedAutoAssignKey, tokenOptions]);
+
+  const findPartByKey = (partKey, buckets = localBuckets.partBuckets) => buckets.find((part) => normalizePartKey(part.serialNumber || part.displayName) === partKey);
+
+  const handleAutoAssignParts = async () => {
+    const preview = buildAutoAssignPreview(localBuckets.unassigned, autoAssignTokenIndexes, autoAssignConfig.delimiter);
+    if (preview.length === 0) return;
+    setAutoAssigning(true);
+    try {
+      const nextPartBuckets = [...localBuckets.partBuckets];
+      const partByKey = new Map(nextPartBuckets.map((part) => [normalizePartKey(part.serialNumber || part.displayName), part]));
+      const newlyAssignedKeys = new Set();
+
+      for (const group of preview) {
+        let targetPart = partByKey.get(group.partKey) || findPartByKey(group.partKey, nextPartBuckets);
+        if (!targetPart) {
+          const createResponse = await fetch(`/api/projects/${projectId}/parts`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ serial_number: group.partKey, display_name: group.partKey }),
+          });
+          if (!createResponse.ok) throw new Error(`Failed to create part ${group.partKey} (${createResponse.status})`);
+          const createdPart = await createResponse.json();
+          targetPart = {
+            id: createdPart?.id ? String(createdPart.id) : `new-${group.partKey}-${Date.now()}`,
+            serialNumber: createdPart?.serial_number || group.partKey,
+            displayName: createdPart?.display_name || group.partKey,
+            images: [],
+          };
+          nextPartBuckets.push(targetPart);
+          partByKey.set(group.partKey, targetPart);
+        }
+
+        for (const image of group.images) {
+          const response = await fetch(`/api/projects/${projectId}/parts/image-assignments`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename: image.filename, image_id: image.id || null, to_part_id: targetPart.id }),
+          });
+          if (!response.ok) throw new Error(`Failed to assign ${image.filename} (${response.status})`);
+          const imageKey = image.key || image.id || image.filename;
+          newlyAssignedKeys.add(imageKey);
+          if (!targetPart.images.some((existing) => (existing.key || existing.id || existing.filename) === imageKey)) {
+            targetPart.images.push(image);
+          }
+        }
+        targetPart.images.sort((left, right) => left.filename.localeCompare(right.filename));
+      }
+
+      setLocalBuckets({
+        partBuckets: nextPartBuckets.sort((left, right) => (left.displayName || '').localeCompare(right.displayName || '')),
+        unassigned: localBuckets.unassigned.filter((image) => !newlyAssignedKeys.has(image.key || image.id || image.filename)),
+      });
+      setSelectedUnassigned((prev) => prev.filter((key) => !newlyAssignedKeys.has(key)));
+      if (onAssignmentsChanged) await onAssignmentsChanged();
+      if (setError) setError(null);
+    } catch (err) {
+      if (setError) setError(err.message || 'Failed to auto-assign images to parts');
+    } finally {
+      setAutoAssigning(false);
+    }
+  };
+
   const filteredUnassigned = useMemo(() => {
     if (!someFilter.trim()) return localBuckets.unassigned;
     try {
@@ -314,6 +495,26 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], onAssignmentsCha
         <header className="workbench-header"><div><h2>Images to Parts</h2><p>Drag images into target parts to repair or refine image assignments.</p></div>
           <label className="thumbnail-switch"><input type="checkbox" checked={showThumbnails} onChange={(event) => setShowThumbnails(event.target.checked)} aria-label="Show image thumbnails" />
             <span className="thumbnail-switch-track" aria-hidden="true"><span className="thumbnail-switch-thumb" /></span><span>Thumbnails</span></label></header>
+
+        <section className="auto-assign-parts-panel" aria-label="Automatically assign images to parts">
+          <div>
+            <h3>Automatically Assign Images to Parts</h3>
+            <p className="muted">Select the filename key to build part names. Options are derived from the delimiter and keys used when images were loaded, including a Blank key for fields without a letter prefix.</p>
+          </div>
+          <label className="auto-assign-key-select">
+            <span>Filename key</span>
+            <select value={selectedAutoAssignKey} onChange={(event) => setSelectedAutoAssignKey(event.target.value)} disabled={tokenOptions.length === 0}>
+              {tokenOptions.length === 0 ? <option value="">No filename keys detected</option> : tokenOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label} — examples: {option.examples.join(', ')}</option>
+              ))}
+            </select>
+          </label>
+          <div className="auto-assign-preview-row">
+            <span>{autoAssignPreview.length} part{autoAssignPreview.length === 1 ? '' : 's'} will be updated from {autoAssignPreview.reduce((sum, group) => sum + group.images.length, 0)} image{autoAssignPreview.reduce((sum, group) => sum + group.images.length, 0) === 1 ? '' : 's'}.</span>
+            <button type="button" className="btn btn-primary btn-sm" onClick={handleAutoAssignParts} disabled={autoAssigning || autoAssignPreview.length === 0}>{autoAssigning ? 'Assigning…' : 'Assign Parts'}</button>
+          </div>
+          {autoAssignPreview.length > 0 ? <div className="auto-assign-preview-list">{autoAssignPreview.slice(0, 8).map((group) => <span key={group.partKey}>{group.partKey} ({group.images.length})</span>)}</div> : null}
+        </section>
 
         <div className="images-to-parts-grid">
           <div className="images-to-parts-column assignment-source-column sticky-assignment-column" onDragOver={(event) => event.preventDefault()} onDrop={handleDropToUnassigned} data-testid="images-to-parts-unassigned-target">
