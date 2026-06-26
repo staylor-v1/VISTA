@@ -427,7 +427,9 @@ describe('ImagesToPartsTab', () => {
       />
     );
 
-    fireEvent.change(screen.getByLabelText('Filename key for autoassign'), { target: { value: 'SN' } });
+    const filenameKeyInput = screen.getByRole('textbox', { name: 'Filename key for autoassign' });
+    expect(screen.queryByRole('combobox', { name: 'Filename key for autoassign' })).not.toBeInTheDocument();
+    fireEvent.change(filenameKeyInput, { target: { value: 'SN' } });
 
     expect(screen.getByText('1 (4)')).toBeInTheDocument();
     expect(screen.getByText('2 (4)')).toBeInTheDocument();
