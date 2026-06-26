@@ -369,6 +369,32 @@ describe('ImageUploader', () => {
       expect(props.setError).toHaveBeenCalledWith(null);
     });
 
+    test('keeps loading state until test data refresh completes', async () => {
+      const payload = {
+        project_type: 'PT1',
+        images_created: 16,
+        ingest: { counters: { parts_created: 4 } },
+      };
+      jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => payload,
+      });
+      let resolveRefresh;
+      const onUploadComplete = jest.fn(() => new Promise((resolve) => {
+        resolveRefresh = resolve;
+      }));
+
+      renderUploader({ projectType: 'PT1', onUploadComplete });
+      fireEvent.click(screen.getByRole('button', { name: /load test data/i }));
+
+      await waitFor(() => expect(onUploadComplete).toHaveBeenCalledWith(payload));
+      expect(screen.getByRole('button', { name: /loading test data/i })).toBeDisabled();
+
+      resolveRefresh();
+
+      await waitFor(() => expect(screen.getByRole('button', { name: /load test data/i })).not.toBeDisabled());
+    });
+
     test('surfaces backend detail when project-type test data loading fails', async () => {
       const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
         ok: false,
