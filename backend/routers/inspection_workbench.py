@@ -19,6 +19,7 @@ from utils.dependencies import get_current_user
 import utils.crud as crud
 from core.config import settings
 from utils.boto3_client import upload_file_to_s3
+from utils.cache_manager import get_cache
 from utils.volume_loader import load_slice_stack
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -2624,6 +2625,7 @@ async def load_project_test_data(
         current_user=current_user,
         project_type=project.project_type,
     )
+    get_cache().clear_pattern(f"project_images:{project_id}")
     return {
         "project_id": project_id,
         "project_type": project_type,
