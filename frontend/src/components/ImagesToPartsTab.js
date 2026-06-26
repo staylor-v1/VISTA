@@ -49,11 +49,16 @@ function getAutoAssignDelimiter(projectConfiguration = null) {
   return String(extractor.pattern || extractor.delimiter || scheme.delimiter || '_');
 }
 
-function parseFilenameKeySegment(segment = '') {
+function escapeRegExp(value = '') {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function extractPartKeyFromFilenameSegment(segment = '', filenameKey = '') {
   const value = String(segment || '').trim();
-  const match = value.match(/^([A-Za-z]+)(.*)$/);
-  if (!match) return { key: '', value };
-  return { key: match[1], value: match[2] || value };
+  const key = String(filenameKey ?? '').trim();
+  const pattern = key ? `^${escapeRegExp(key)}(\\d+)$` : '^(\\d+)$';
+  const match = value.match(new RegExp(pattern));
+  return match ? match[1] : '';
 }
 
 function normalizePartKey(value = '') {
@@ -61,15 +66,10 @@ function normalizePartKey(value = '') {
 }
 
 function buildAutoAssignPreview(images, selectedFilenameKey, delimiter = '') {
-  if (selectedFilenameKey === null || selectedFilenameKey === undefined) return [];
   const groups = new Map();
   (Array.isArray(images) ? images : []).forEach((image) => {
-    const matchingValues = tokenizeFilename(image.filename, delimiter)
-      .map(parseFilenameKeySegment)
-      .filter((segment) => segment.key === selectedFilenameKey)
-      .map((segment) => segment.value);
-    matchingValues.forEach((value) => {
-      const partKey = normalizePartKey(value);
+    tokenizeFilename(image.filename, delimiter).forEach((token) => {
+      const partKey = normalizePartKey(extractPartKeyFromFilenameSegment(token, selectedFilenameKey));
       if (!partKey) return;
       if (!groups.has(partKey)) groups.set(partKey, []);
       groups.get(partKey).push(image);
@@ -78,28 +78,6 @@ function buildAutoAssignPreview(images, selectedFilenameKey, delimiter = '') {
   return Array.from(groups.entries())
     .map(([partKey, groupedImages]) => ({ partKey, images: groupedImages }))
     .sort((left, right) => left.partKey.localeCompare(right.partKey));
-}
-
-function buildFilenameKeyOptions(images, delimiter = '') {
-  const examplesByKey = new Map();
-  (Array.isArray(images) ? images : []).forEach((image) => {
-    tokenizeFilename(image.filename, delimiter).forEach((token) => {
-      const parsed = parseFilenameKeySegment(token);
-      if (!examplesByKey.has(parsed.key)) examplesByKey.set(parsed.key, new Set());
-      if (examplesByKey.get(parsed.key).size < 3) examplesByKey.get(parsed.key).add(token);
-    });
-  });
-  return Array.from(examplesByKey.entries())
-    .map(([key, examples]) => ({
-      key,
-      label: key ? `Key ${key}` : 'Blank key (no leading letter)',
-      examples: Array.from(examples),
-    }))
-    .sort((left, right) => {
-      if (left.key === '') return -1;
-      if (right.key === '') return 1;
-      return left.key.localeCompare(right.key);
-    });
 }
 
 function buildImageIndexes(images) {
@@ -374,12 +352,6 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
   );
 
   const autoAssignDelimiter = useMemo(() => getAutoAssignDelimiter(projectConfiguration), [projectConfiguration]);
-  const filenameKeyOptions = useMemo(() => buildFilenameKeyOptions(localBuckets.unassigned, autoAssignDelimiter), [localBuckets.unassigned, autoAssignDelimiter]);
-  React.useEffect(() => {
-    if (!filenameKeyOptions.some((option) => option.key === selectedFilenameKey)) {
-      setSelectedFilenameKey(filenameKeyOptions[0]?.key ?? '');
-    }
-  }, [filenameKeyOptions, selectedFilenameKey]);
   const autoAssignPreview = useMemo(
     () => buildAutoAssignPreview(localBuckets.unassigned, selectedFilenameKey, autoAssignDelimiter),
     [localBuckets.unassigned, selectedFilenameKey, autoAssignDelimiter]
@@ -464,26 +436,20 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
         <section className="auto-assign-parts-panel" aria-label="Automatically assign images to parts">
           <div>
             <h3>Automatically Assign Images to Parts</h3>
-            <p className="muted">Select one filename key to build part names. Keys are derived from the currently loaded filenames using the delimiter selected during loading; segments without a leading letter appear as the blank key.</p>
+            <p className="muted">Enter the filename key that appears after the delimiter and before the part number. Leave blank to match delimiter-separated numeric segments.</p>
           </div>
           <div className="auto-assign-token-list">
-            {filenameKeyOptions.length === 0 ? <p className="muted">Upload or unassign images to detect filename keys.</p> : (
-              <label className="auto-assign-token-option" htmlFor="auto-assign-filename-key">
-                <span><strong>Filename key</strong><small>Delimiter: {autoAssignDelimiter || 'automatic non-alphanumeric split'}</small></span>
-                <select
-                  id="auto-assign-filename-key"
-                  value={selectedFilenameKey}
-                  onChange={(event) => setSelectedFilenameKey(event.target.value)}
-                  aria-label="Filename key for autoassign"
-                >
-                  {filenameKeyOptions.map((option) => (
-                    <option key={option.key || '__blank__'} value={option.key}>
-                      {option.label} — examples: {option.examples.join(', ')}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
+            <label className="auto-assign-token-option" htmlFor="auto-assign-filename-key">
+              <span><strong>Filename key</strong><small>Delimiter: {autoAssignDelimiter || 'automatic non-alphanumeric split'}</small></span>
+              <input
+                id="auto-assign-filename-key"
+                type="text"
+                value={selectedFilenameKey}
+                onChange={(event) => setSelectedFilenameKey(event.target.value)}
+                aria-label="Filename key for autoassign"
+                placeholder="e.g. SN; blank matches 001"
+              />
+            </label>
           </div>
           <div className="auto-assign-preview-row">
             <span>{autoAssignPreview.length} part{autoAssignPreview.length === 1 ? '' : 's'} will be updated from {autoAssignPreview.reduce((sum, group) => sum + group.images.length, 0)} image{autoAssignPreview.reduce((sum, group) => sum + group.images.length, 0) === 1 ? '' : 's'}.</span>
