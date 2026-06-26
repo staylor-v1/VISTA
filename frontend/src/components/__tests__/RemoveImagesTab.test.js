@@ -1,14 +1,26 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import RemoveImagesTab from '../RemoveImagesTab';
 
+const originalFetch = global.fetch;
+
+const waitForAsyncWork = async (assertion) => waitFor(assertion, { timeout: 2000 });
+
 describe('RemoveImagesTab', () => {
-  beforeEach(() => {
+  afterEach(() => {
     jest.restoreAllMocks();
+    if (originalFetch) {
+      global.fetch = originalFetch;
+    } else {
+      delete global.fetch;
+    }
   });
 
   test('labels the subtab panel as Unload Images and unloads selected images', async () => {
-    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true, json: async () => ({}) });
+    const user = userEvent.setup();
+    const fetchSpy = jest.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    global.fetch = fetchSpy;
     jest.spyOn(window, 'confirm').mockReturnValue(true);
     const onImagesRemoved = jest.fn().mockResolvedValue();
 
@@ -25,17 +37,19 @@ describe('RemoveImagesTab', () => {
     expect(screen.getByRole('tabpanel', { name: 'Unload Images' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Unload Images' })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('checkbox'));
-    fireEvent.click(screen.getByRole('button', { name: 'Unload Selected (1)' }));
+    await user.click(screen.getByRole('checkbox', { name: 'unassigned-a.png' }));
+    await user.click(screen.getByRole('button', { name: 'Unload Selected (1)' }));
 
-    await waitFor(() => {
+    await waitForAsyncWork(() => {
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
       expect(fetchSpy).toHaveBeenCalledWith('/api/projects/proj-1/images/img-1', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason: 'Unloaded from Project Data Unload Images tab' }),
       });
     });
-    await waitFor(() => expect(onImagesRemoved).toHaveBeenCalled());
+    await waitForAsyncWork(() => expect(onImagesRemoved).toHaveBeenCalledTimes(1));
+    await waitForAsyncWork(() => expect(screen.getByRole('button', { name: 'Unload Selected (0)' })).toBeDisabled());
   });
 
   test('does not list images removed from active project image records in part buckets', () => {
