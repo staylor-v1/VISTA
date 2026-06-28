@@ -116,4 +116,47 @@ describe('ProjectDataExportPanel', () => {
     expect(setError).toHaveBeenCalledWith(null);
     expect(await screen.findByTestId('project-data-export-result')).toHaveTextContent('4 export sections');
   });
+
+  test('exports and imports project bundles through S3 endpoints', async () => {
+    const user = userEvent.setup();
+    const setError = jest.fn();
+    global.fetch = jest.fn((url) => {
+      if (url.endsWith('/export-bundle/s3')) {
+        return Promise.resolve({ ok: true, json: async () => ({ s3_url: 's3://bucket/project.vistabundle' }) });
+      }
+      if (url.endsWith('/import/s3')) {
+        return Promise.resolve({ ok: true, json: async () => ({ project: { images_created: 2 } }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    render(
+      <ProjectDataExportPanel
+        projectId="project-123"
+        projectName="Inspection Project"
+        counts={{ rawImages: 0, overlayImages: 0, annotations: 0 }}
+        setError={setError}
+      />
+    );
+
+    await user.type(screen.getByLabelText('Export bundle to S3'), 's3://bucket/project.vistabundle');
+    await user.click(screen.getByRole('button', { name: 'Export to S3' }));
+
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith(
+      '/api/projects/project-123/export-bundle/s3',
+      expect.objectContaining({ method: 'POST', body: expect.stringContaining('s3://bucket/project.vistabundle') })
+    ));
+    expect(await screen.findByTestId('project-data-export-result')).toHaveTextContent('Project bundle exported to s3://bucket/project.vistabundle');
+
+    await user.type(screen.getByLabelText('Import project bundle from S3'), 's3://bucket/project.vistabundle');
+    await user.click(screen.getByRole('button', { name: 'Import from S3' }));
+
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith(
+      '/api/projects/project-123/import/s3',
+      expect.objectContaining({ method: 'POST', body: expect.stringContaining('append_active') })
+    ));
+    expect(await screen.findByTestId('project-data-import-result')).toHaveTextContent('Appended S3 project bundle: 2 images imported');
+    expect(setError).toHaveBeenLastCalledWith(null);
+  });
+
 });

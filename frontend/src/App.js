@@ -452,6 +452,8 @@ const DashboardBackupPanel = memo(function DashboardBackupPanel({ onImportComple
   const [preview, setPreview] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [exportProgress, setExportProgress] = useState(null);
+  const [exportS3Url, setExportS3Url] = useState('');
+  const [importS3Url, setImportS3Url] = useState('');
   const [showImportModal, setShowImportModal] = useState(false);
 
   const resetImportSelection = () => {
@@ -511,6 +513,63 @@ const DashboardBackupPanel = memo(function DashboardBackupPanel({ onImportComple
     } finally {
       setExporting(false);
       setExportProgress(null);
+    }
+  };
+
+  const handleExportDashboardToS3 = async () => {
+    const trimmed = exportS3Url.trim();
+    if (!trimmed) {
+      showToast('Enter an S3 URL before exporting.', 'error');
+      return;
+    }
+    setExporting(true);
+    try {
+      const response = await fetch('/api/dashboard/export/s3', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          s3_url: trimmed,
+          include_images: true,
+          include_overlays: true,
+          include_metadata: true,
+          include_created_overlays: true,
+          include_project_configuration: true,
+          include_ui_state: true,
+          dashboard_state: collectDashboardState(),
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || `S3 export failed (${response.status})`);
+      showToast(`Dashboard backup exported to ${payload.s3_url || trimmed}.`, 'success');
+    } catch (error) {
+      showToast(error.message || 'Failed to export dashboard backup to S3.', 'error');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleImportDashboardFromS3 = async () => {
+    const trimmed = importS3Url.trim();
+    if (!trimmed) {
+      showToast('Enter an S3 URL before importing.', 'error');
+      return;
+    }
+    setImporting(true);
+    try {
+      const response = await fetch('/api/dashboard/import/s3', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ s3_url: trimmed, mode: 'restore_as_new', confirmation: 'IMPORT' }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || `S3 import failed (${response.status})`);
+      restoreDashboardState(payload.dashboard_state);
+      showToast(`Imported ${payload.project_count || 0} project backup(s) from S3.`, 'success');
+      onImportComplete?.();
+    } catch (error) {
+      showToast(error.message || 'Failed to import dashboard backup from S3.', 'error');
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -585,6 +644,18 @@ const DashboardBackupPanel = memo(function DashboardBackupPanel({ onImportComple
             <button type="button" className="btn btn-primary" onClick={openImportModal} disabled={importing}>
               Import Dashboard
             </button>
+          </div>
+        </div>
+        <div className="dashboard-s3-backup-section">
+          <div className="form-group">
+            <label htmlFor="dashboard-export-s3-url">Export dashboard to S3</label>
+            <input id="dashboard-export-s3-url" className="form-control" type="text" value={exportS3Url} onChange={(event) => setExportS3Url(event.target.value)} placeholder="s3://bucket/path/dashboard.vistabundle" />
+            <button type="button" className="btn btn-secondary" onClick={handleExportDashboardToS3} disabled={exporting || !exportS3Url.trim()}>Export to S3</button>
+          </div>
+          <div className="form-group">
+            <label htmlFor="dashboard-import-s3-url">Import dashboard from S3</label>
+            <input id="dashboard-import-s3-url" className="form-control" type="text" value={importS3Url} onChange={(event) => setImportS3Url(event.target.value)} placeholder="s3://bucket/path/dashboard.vistabundle" />
+            <button type="button" className="btn btn-primary" onClick={handleImportDashboardFromS3} disabled={importing || !importS3Url.trim()}>Import from S3</button>
           </div>
         </div>
         {exporting && exportProgress && (

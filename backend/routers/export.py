@@ -11,6 +11,8 @@ from decimal import Decimal
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile, status
+from pydantic import BaseModel, Field, field_validator
+from urllib.parse import urlparse, unquote
 from fastapi.responses import JSONResponse, StreamingResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete, func as _func
@@ -31,6 +33,113 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Export"])
 
 PROJECT_CONFIGURATION_KEY = "inspection_workbench.project_configuration"
+
+
+class S3BundleLocation(BaseModel):
+    s3_url: str = Field(..., min_length=1, max_length=2048)
+
+    @field_validator("s3_url")
+    @classmethod
+    def validate_s3_url(cls, value: str) -> str:
+        cleaned = value.strip()
+        bucket, key = _parse_backup_s3_url(cleaned)
+        if not key or key.endswith("/"):
+            raise ValueError("S3 URL must include a destination object key, not just a bucket or prefix.")
+        return cleaned
+
+
+class S3ProjectExportRequest(S3BundleLocation):
+    include_images: bool = True
+    include_overlays: bool = True
+    include_metadata: bool = True
+    include_created_overlays: bool = True
+    include_project_configuration: bool = True
+    include_deleted: bool = False
+
+
+class S3ProjectImportRequest(S3BundleLocation):
+    mode: str = "append_active"
+    confirmation: str = ""
+
+
+class S3DashboardExportRequest(S3BundleLocation):
+    include_images: bool = True
+    include_overlays: bool = True
+    include_metadata: bool = True
+    include_created_overlays: bool = True
+    include_project_configuration: bool = True
+    include_deleted: bool = False
+    include_archived: bool = False
+    include_ui_state: bool = True
+    dashboard_state: dict = Field(default_factory=dict)
+    limit: int = 1000
+
+
+class S3DashboardImportRequest(S3BundleLocation):
+    mode: str = "restore_as_new"
+    confirmation: str = ""
+
+
+def _parse_backup_s3_url(raw_url: str) -> tuple[str, str]:
+    cleaned = (raw_url or "").strip()
+    parsed = urlparse(cleaned)
+    if parsed.scheme == "s3":
+        return parsed.netloc, unquote(parsed.path.lstrip("/"))
+    if parsed.scheme in {"http", "https"}:
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if ".s3." in parsed.netloc or parsed.netloc.endswith(".s3.amazonaws.com"):
+            return parsed.netloc.split(".")[0], unquote(parsed.path.lstrip("/"))
+        if parsed.netloc.startswith("s3.") or ".amazonaws.com" in parsed.netloc or "localhost" in parsed.netloc or ":" in parsed.netloc:
+            if not path_parts:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="S3 URL must include a bucket")
+            return path_parts[0], unquote("/".join(path_parts[1:]))
+        return parsed.netloc.split(".")[0], unquote(parsed.path.lstrip("/"))
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Use an s3://, http://, or https:// S3 URL")
+
+
+async def _zip_entries_to_bytes(entries: list[StreamingZipEntry]) -> bytes:
+    chunks = []
+    async for chunk in iter_streaming_zip(entries):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _upload_backup_bytes_to_s3(s3_url: str, payload: bytes, content_type: str) -> dict:
+    if not boto3_client:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="S3 client is not configured for this backend")
+    bucket, key = _parse_backup_s3_url(s3_url)
+    if not bucket or not key or key.endswith("/"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="S3 URL must include a bucket and object key")
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(
+            None,
+            lambda: boto3_client.upload_fileobj(
+                io.BytesIO(payload),
+                bucket,
+                key,
+                ExtraArgs={"ContentType": content_type},
+            ),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Unable to upload backup to S3: {exc}") from exc
+    return {"ok": True, "s3_url": s3_url, "bucket": bucket, "key": key, "bytes": len(payload)}
+
+
+async def _download_backup_from_s3(s3_url: str) -> io.BytesIO:
+    if not boto3_client:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="S3 client is not configured for this backend")
+    bucket, key = _parse_backup_s3_url(s3_url)
+    if not bucket or not key:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="S3 URL must include a bucket and object key")
+    buffer = io.BytesIO()
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(None, lambda: boto3_client.download_fileobj(bucket, key, buffer))
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Unable to download backup from S3: {exc}") from exc
+    buffer.seek(0)
+    return buffer
 
 
 def _tag_duplicate_filename(filename: str, occurrence: int) -> str:
@@ -1790,6 +1899,32 @@ async def export_project_bundle_json(
     return JSONResponse(content=bundle_payload)
 
 
+@router.post("/projects/{project_id}/export-bundle/s3")
+async def export_project_bundle_archive_to_s3(
+    project_id: uuid.UUID,
+    payload: S3ProjectExportRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    db_project = await _get_project_with_export_access(project_id=project_id, db=db, current_user=current_user)
+    context = await _collect_project_backup_payload(
+        project_id=project_id,
+        db=db,
+        db_project=db_project,
+        current_user=current_user,
+        include_images=payload.include_images,
+        include_overlays=payload.include_overlays,
+        include_metadata=payload.include_metadata,
+        include_created_overlays=payload.include_created_overlays,
+        include_project_configuration=payload.include_project_configuration,
+        include_deleted=payload.include_deleted,
+    )
+    archive_bytes = await _zip_entries_to_bytes(_project_backup_entries(context, include_legacy_files=True))
+    result = await _upload_backup_bytes_to_s3(payload.s3_url, archive_bytes, "application/zip")
+    result["project_id"] = str(project_id)
+    return result
+
+
 @router.get("/projects/{project_id}/export-bundle")
 async def export_project_bundle_archive(
     project_id: uuid.UUID,
@@ -1938,6 +2073,24 @@ async def import_project_backup(
         "dashboard_state": dashboard_state,
     }
 
+@router.post("/projects/{project_id}/import/s3")
+async def import_project_backup_into_active_project_from_s3(
+    project_id: uuid.UUID,
+    payload: S3ProjectImportRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    s3_file = UploadFile(filename=payload.s3_url, file=await _download_backup_from_s3(payload.s3_url))
+    return await import_project_backup_into_active_project(
+        project_id=project_id,
+        file=s3_file,
+        mode=payload.mode,
+        confirmation=payload.confirmation,
+        db=db,
+        current_user=current_user,
+    )
+
+
 @router.post("/projects/{project_id}/import")
 async def import_project_backup_into_active_project(
     project_id: uuid.UUID,
@@ -2000,12 +2153,11 @@ async def import_project_backup_into_active_project(
 
 
 
-@router.post("/dashboard/export")
-async def export_dashboard_backup(
-    options: dict = Body(default_factory=dict),
-    db: AsyncSession = Depends(get_db),
-    current_user: schemas.User = Depends(get_current_user),
-):
+async def _build_dashboard_backup_entries(
+    options: dict,
+    db: AsyncSession,
+    current_user: schemas.User,
+) -> tuple[list[StreamingZipEntry], dict, int]:
     include_archived = bool(options.get("include_archived", False))
     projects = await get_accessible_projects_for_user(
         db=db,
@@ -2049,20 +2201,39 @@ async def export_dashboard_backup(
             "include_ui_state": bool(options.get("include_ui_state", True)),
         },
     }
-
     entries: list[StreamingZipEntry] = []
     for context in contexts:
         entries.extend(_project_backup_entries(context, include_legacy_files=False, include_root_manifest=False))
     entries.append(StreamingZipEntry("manifest.json", lambda: _json_bytes(manifest_payload)))
     entries.append(StreamingZipEntry("dashboard-state.json", lambda: _json_bytes(dashboard_state)))
+    return entries, dashboard_state, _estimate_dashboard_backup_size_bytes(contexts, dashboard_state)
 
+
+@router.post("/dashboard/export/s3")
+async def export_dashboard_backup_to_s3(
+    payload: S3DashboardExportRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    entries, _dashboard_state, _estimate = await _build_dashboard_backup_entries(payload.model_dump(), db, current_user)
+    archive_bytes = await _zip_entries_to_bytes(entries)
+    return await _upload_backup_bytes_to_s3(payload.s3_url, archive_bytes, "application/vnd.vista.dashboard-backup+zip")
+
+
+@router.post("/dashboard/export")
+async def export_dashboard_backup(
+    options: dict = Body(default_factory=dict),
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    entries, _dashboard_state, estimated_bytes = await _build_dashboard_backup_entries(options, db, current_user)
     filename = f"vista-dashboard-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.vistabundle"
     return StreamingResponse(
         iter_streaming_zip(entries),
         media_type="application/vnd.vista.dashboard-backup+zip",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
-            "X-VISTA-Backup-Estimated-Bytes": str(_estimate_dashboard_backup_size_bytes(contexts, dashboard_state)),
+            "X-VISTA-Backup-Estimated-Bytes": str(estimated_bytes),
         },
     )
 
@@ -2073,6 +2244,22 @@ async def preview_dashboard_backup_import(
     current_user: schemas.User = Depends(get_current_user),
 ):
     return await preview_project_backup_import(file=file, current_user=current_user)
+
+
+@router.post("/dashboard/import/s3")
+async def import_dashboard_backup_from_s3(
+    payload: S3DashboardImportRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    s3_file = UploadFile(filename=payload.s3_url, file=await _download_backup_from_s3(payload.s3_url))
+    return await import_project_backup(
+        file=s3_file,
+        mode=payload.mode,
+        confirmation=payload.confirmation,
+        db=db,
+        current_user=current_user,
+    )
 
 
 @router.post("/dashboard/import")

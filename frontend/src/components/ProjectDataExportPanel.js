@@ -88,6 +88,8 @@ function ProjectDataExportPanel({ projectId, projectName, counts = {}, setError,
     EXPORT_OPTIONS.reduce((acc, option) => ({ ...acc, [option.key]: true }), {})
   ));
   const [exportState, setExportState] = useState({ loading: false, detail: null, progress: null });
+  const [s3Url, setS3Url] = useState('');
+  const [s3ImportUrl, setS3ImportUrl] = useState('');
   const [importState, setImportState] = useState({ loading: false, detail: null, file: null, mode: null, modalOpen: false });
   const importInputRef = useRef(null);
 
@@ -198,6 +200,59 @@ function ProjectDataExportPanel({ projectId, projectName, counts = {}, setError,
     }
   };
 
+
+
+  const exportProjectDataToS3 = async () => {
+    const trimmed = s3Url.trim();
+    if (!trimmed) {
+      if (setError) setError('Enter an S3 URL before exporting.');
+      return;
+    }
+    try {
+      setExportState({ loading: true, detail: null, progress: null });
+      const response = await fetch(`/api/projects/${projectId}/export-bundle/s3`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          s3_url: trimmed,
+          ...options,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || `S3 export failed (${response.status})`);
+      setExportState({ loading: false, detail: `Project bundle exported to ${payload.s3_url || trimmed}.`, progress: null });
+      if (setError) setError(null);
+    } catch (err) {
+      setExportState({ loading: false, detail: null, progress: null });
+      if (setError) setError(err.message || 'Failed to export project bundle to S3');
+    }
+  };
+
+  const importProjectDataFromS3 = async (mode) => {
+    const trimmed = s3ImportUrl.trim();
+    if (!trimmed) {
+      if (setError) setError('Enter an S3 URL before importing.');
+      return;
+    }
+    try {
+      setImportState((prev) => ({ ...prev, loading: true, detail: null, modalOpen: false, mode }));
+      const response = await fetch(`/api/projects/${projectId}/import/s3`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ s3_url: trimmed, mode, confirmation: 'IMPORT' }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || `S3 import failed (${response.status})`);
+      const projectResult = payload.project || {};
+      setImportState({ loading: false, detail: `${mode === 'overwrite_active' ? 'Overwrote' : 'Appended'} S3 project bundle: ${projectResult.images_created || 0} images imported.`, file: null, mode, modalOpen: false });
+      if (setError) setError(null);
+      onImportComplete?.(payload);
+    } catch (err) {
+      setImportState((prev) => ({ ...prev, loading: false, detail: null, modalOpen: false }));
+      if (setError) setError(err.message || 'Failed to import project bundle from S3');
+    }
+  };
+
   return (
     <div className="card project-data-export-card">
       <div className="card-header">
@@ -243,6 +298,21 @@ function ProjectDataExportPanel({ projectId, projectName, counts = {}, setError,
         >
           {exportState.loading ? 'Exporting Project...' : 'Export Project Bundle'}
         </button>
+
+        <div className="form-group project-data-s3-section">
+          <label htmlFor="project-export-s3-url">Export bundle to S3</label>
+          <input
+            id="project-export-s3-url"
+            type="text"
+            className="form-control"
+            value={s3Url}
+            onChange={(event) => setS3Url(event.target.value)}
+            placeholder="s3://bucket/path/project.vistabundle"
+          />
+          <button type="button" className="btn btn-secondary" disabled={exportState.loading || !s3Url.trim()} onClick={exportProjectDataToS3}>
+            Export to S3
+          </button>
+        </div>
 
         {exportState.loading && exportState.progress && (
           <div
@@ -300,6 +370,20 @@ function ProjectDataExportPanel({ projectId, projectName, counts = {}, setError,
             disabled={importState.loading}
           />
           <small>Supported formats: project export .zip or VISTA .vistabundle with one project.</small>
+          <div className="form-group project-data-s3-section">
+            <label htmlFor="project-import-s3-url">Import project bundle from S3</label>
+            <input
+              id="project-import-s3-url"
+              type="text"
+              className="form-control"
+              value={s3ImportUrl}
+              onChange={(event) => setS3ImportUrl(event.target.value)}
+              placeholder="s3://bucket/path/project.vistabundle"
+            />
+            <button type="button" className="btn btn-secondary" disabled={importState.loading || !s3ImportUrl.trim()} onClick={() => importProjectDataFromS3(hasProjectData ? 'append_active' : 'append_active')}>
+              Import from S3
+            </button>
+          </div>
           {importState.loading && (
             <div role="status" className="export-data-status">Importing project bundle...</div>
           )}
