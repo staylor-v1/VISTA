@@ -27,6 +27,7 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
   const [lastSelectedId, setLastSelectedId] = useState(null);
   const [actionError, setActionError] = useState(null);
   const [reviewStatuses, setReviewStatuses] = useState({});
+  const reviewStatusesRef = useRef(reviewStatuses);
   const [reviewFilter, setReviewFilter] = useState(savedState.reviewFilter);
   const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
   const [showBulkMetaModal, setShowBulkMetaModal] = useState(false);
@@ -88,13 +89,16 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
     setAvailableMetadataKeys(Array.from(keys).sort());
   }, [images]);
 
-  const loadReviewStatuses = useCallback(async () => {
+  const loadReviewStatuses = useCallback(async (isCurrent = () => true) => {
     if (!projectId) return;
     try {
       const response = await fetch(`/api/projects/${projectId}/image-review-statuses`);
-      if (response.ok) {
+      if (response.ok && isCurrent()) {
         const data = await response.json();
-        setReviewStatuses(data);
+        if (isCurrent() && JSON.stringify(reviewStatusesRef.current) !== JSON.stringify(data)) {
+          reviewStatusesRef.current = data;
+          setReviewStatuses(data);
+        }
       }
     } catch (err) {
       console.error('Failed to load review statuses:', err);
@@ -102,7 +106,11 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
   }, [projectId]);
 
   useEffect(() => {
-    loadReviewStatuses();
+    let isCurrent = true;
+    loadReviewStatuses(() => isCurrent);
+    return () => {
+      isCurrent = false;
+    };
   }, [loadReviewStatuses]);
 
   useEffect(() => {
