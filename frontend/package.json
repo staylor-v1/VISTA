@@ -20,7 +20,9 @@
     "test:e2e": "playwright test",
     "test:e2e:pr03": "playwright test e2e/specs/inspection-workbench.spec.js",
     "test:e2e:headed": "playwright test --headed --project=chromium-local",
-    "eject": "react-scripts eject"
+    "eject": "react-scripts eject",
+    "test:unit:ci": "CI=true react-scripts test --runInBand --watchAll=false",
+    "test:ci": "npm run test:unit:ci && npm run test:e2e"
   },
   "eslintConfig": {
     "extends": [
