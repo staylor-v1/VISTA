@@ -24,7 +24,7 @@ function renderImageMetadata(props = {}) {
   return { ...render(<ImageMetadata {...defaultProps} />), props: defaultProps };
 }
 
-beforeEach(() => {
+afterEach(() => {
   jest.restoreAllMocks();
 });
 
@@ -46,7 +46,7 @@ describe('ImageMetadata project metadata display', () => {
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith('/api/projects/proj-1/metadata-dict');
     });
-    expect(screen.getByText('associated_upload_metadata:project:abc123')).toBeInTheDocument();
-    expect(screen.getByText(/"operator": "qa"/)).toBeInTheDocument();
+    expect(await screen.findByText('associated_upload_metadata:project:abc123')).toBeInTheDocument();
+    expect(await screen.findByText(/"operator": "qa"/)).toBeInTheDocument();
   });
 });
