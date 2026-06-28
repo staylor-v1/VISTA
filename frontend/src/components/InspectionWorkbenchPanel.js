@@ -3143,9 +3143,19 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   }, [selectedPart, workspaceHydration]);
 
   useEffect(() => {
+    let isCurrent = true;
     const loadAnnotations = async () => {
       if (!selectedPart?.id) {
         setAnnotations([]);
+        return;
+      }
+      if (Array.isArray(selectedPart.metadata?.annotations)) {
+        setAnnotations((previous) => (
+          JSON.stringify(previous) === JSON.stringify(selectedPart.metadata.annotations)
+            ? previous
+            : selectedPart.metadata.annotations
+        ));
+        setAnnotationsLoading(false);
         return;
       }
       setAnnotationsLoading(true);
@@ -3156,16 +3166,27 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         }
         const payload = await resp.json();
         const annotationItems = Array.isArray(payload?.annotations) ? payload.annotations : [];
-        setAnnotations(annotationItems);
+        if (isCurrent) {
+          setAnnotations((previous) => (
+            JSON.stringify(previous) === JSON.stringify(annotationItems) ? previous : annotationItems
+          ));
+        }
       } catch (_err) {
-        setAnnotations([]);
+        if (isCurrent) {
+          setAnnotations((previous) => (previous.length === 0 ? previous : []));
+        }
       } finally {
-        setAnnotationsLoading(false);
+        if (isCurrent) {
+          setAnnotationsLoading(false);
+        }
       }
     };
 
     loadAnnotations();
-  }, [projectId, selectedPart?.id]);
+    return () => {
+      isCurrent = false;
+    };
+  }, [projectId, selectedPart?.id, selectedPart?.metadata?.annotations]);
 
   useEffect(() => {
     if (!annotations.length) {

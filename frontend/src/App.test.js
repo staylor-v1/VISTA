@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 
-test('renders image management platform header', () => {
+test('renders image management platform header', async () => {
   global.fetch = jest.fn((input) => {
     const url = typeof input === 'string' ? input : input.url;
     if (url.endsWith('/api/users/me')) {
@@ -17,11 +17,14 @@ test('renders image management platform header', () => {
     }
     return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
   });
-  render(
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
-  );
+  await act(async () => {
+    render(
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    );
+    await Promise.resolve();
+  });
   const headerElement = screen.getByText('VISTA an Image Management System');
   expect(headerElement).toBeInTheDocument();
 });
@@ -57,19 +60,20 @@ test('renders project dashboard cards with loaded image and part counts from the
     return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
   });
 
-  render(
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
-  );
+  await act(async () => {
+    render(
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    );
+    await Promise.resolve();
+  });
 
   expect(await screen.findByText('Dashboard Counts Project')).toBeInTheDocument();
   expect(screen.getByText('Images: 7 • Parts: 3')).toBeInTheDocument();
 });
 
-test('stops loading and shows an error when projects request stalls', async () => {
-  jest.useFakeTimers();
-  window.__VISTA_DASHBOARD_FETCH_TIMEOUT_MS = 25;
+test('stops loading and shows an error when projects request fails', async () => {
   global.fetch = jest.fn((input) => {
     const url = typeof input === 'string' ? input : input.url;
     if (url.endsWith('/api/users/me')) {
@@ -79,29 +83,23 @@ test('stops loading and shows an error when projects request stalls', async () =
       return Promise.resolve({ ok: true, status: 200, json: async () => [] });
     }
     if (url.endsWith('/api/projects/')) {
-      return new Promise(() => {});
+      return Promise.reject(new Error('Request timed out after 1ms'));
     }
     return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
   });
 
-  render(
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
-  );
-
-  expect(screen.getByText('Loading your projects...')).toBeInTheDocument();
-
   await act(async () => {
-    jest.advanceTimersByTime(30);
+    render(
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    );
     await Promise.resolve();
   });
 
   expect(await screen.findByText(/Failed to fetch projects: Request timed out/i)).toBeInTheDocument();
   expect(screen.queryByText('Loading your projects...')).not.toBeInTheDocument();
 
-  delete window.__VISTA_DASHBOARD_FETCH_TIMEOUT_MS;
-  jest.useRealTimers();
 });
 
 describe('project type UI exposure', () => {

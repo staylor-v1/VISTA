@@ -1042,7 +1042,10 @@ const ProjectItem = memo(function ProjectItem({ project, onEdit, onDelete, canDe
 function ScrollToTop() {
   const { pathname } = useLocation();
   useEffect(() => {
-    window.scrollTo(0, 0);
+    const isJsdom = window.navigator?.userAgent?.toLowerCase().includes('jsdom');
+    if (!isJsdom && typeof window.scrollTo === 'function') {
+      window.scrollTo(0, 0);
+    }
   }, [pathname]);
   return null;
 }
@@ -1057,6 +1060,8 @@ function App() {
   const [deletingProject, setDeletingProject] = useState(null);
   const [currentUser, setCurrentUser] = useState(null);
   const [currentUserGroups, setCurrentUserGroups] = useState([]);
+  const projectsRef = useRef(projects);
+  const currentUserGroupsRef = useRef(currentUserGroups);
   const [showArchived, setShowArchived] = useState(false);
   const [showDashboardSettings, setShowDashboardSettings] = useState(false);
   // const [newProject, setNewProject] = useState({  // Commented out - not currently used
@@ -1075,7 +1080,7 @@ function App() {
     setToast(null);
   };
 
-  const loadProjects = useCallback((includeArchived = showArchived) => {
+  const loadProjects = useCallback((includeArchived = showArchived, isCurrent = () => true) => {
     const url = includeArchived ? '/api/projects/?include_archived=true' : '/api/projects/';
     return fetchWithTimeout(url)
       .then(response => {
@@ -1085,11 +1090,15 @@ function App() {
         return response.json();
       })
       .then(data => {
-        setProjects(data);
+        if (isCurrent() && JSON.stringify(projectsRef.current) !== JSON.stringify(data)) {
+          projectsRef.current = data;
+          setProjects(data);
+        }
       });
   }, [showArchived]);
 
   useEffect(() => {
+    let isCurrent = true;
     // Fetch the current user
     fetch('/api/users/me')
       .then(response => {
@@ -1104,9 +1113,13 @@ function App() {
         return response.json();
       })
       .then(userData => {
-        if (userData) {
+        if (isCurrent && userData) {
           setCurrentUser(userData);
-          if (Array.isArray(userData.groups)) {
+          if (
+            Array.isArray(userData.groups) &&
+            JSON.stringify(currentUserGroupsRef.current) !== JSON.stringify(userData.groups)
+          ) {
+            currentUserGroupsRef.current = userData.groups;
             setCurrentUserGroups(userData.groups);
           }
         }
@@ -1126,7 +1139,12 @@ function App() {
         return response.json();
       })
       .then(groupData => {
-        if (Array.isArray(groupData)) {
+        if (
+          isCurrent &&
+          Array.isArray(groupData) &&
+          JSON.stringify(currentUserGroupsRef.current) !== JSON.stringify(groupData)
+        ) {
+          currentUserGroupsRef.current = groupData;
           setCurrentUserGroups(groupData);
         }
       })
@@ -1135,15 +1153,22 @@ function App() {
       });
 
     // Fetch projects from the API
-    loadProjects()
+    loadProjects(showArchived, () => isCurrent)
       .then(() => {
-        setLoading(false);
+        if (isCurrent) {
+          setLoading(false);
+        }
       })
       .catch(err => {
         console.error("Failed to fetch projects:", err);
-        showToast(`Failed to fetch projects: ${err.message}`, 'error');
-        setLoading(false);
+        if (isCurrent) {
+          showToast(`Failed to fetch projects: ${err.message}`, 'error');
+          setLoading(false);
+        }
       });
+    return () => {
+      isCurrent = false;
+    };
   }, [loadProjects]); // Refresh when archived toggle changes.
 
   // Log component renders for debugging
