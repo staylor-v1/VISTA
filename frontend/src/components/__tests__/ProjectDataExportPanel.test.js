@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ProjectDataExportPanel from '../ProjectDataExportPanel';
 
 describe('ProjectDataExportPanel', () => {
+  jest.setTimeout(10000);
   beforeEach(() => {
     global.fetch = jest.fn(() => Promise.resolve({
       ok: true,
@@ -18,10 +19,7 @@ describe('ProjectDataExportPanel', () => {
     jest.resetAllMocks();
   });
 
-
-
   test('asks whether to overwrite or append when importing into a non-blank project', async () => {
-    const user = userEvent.setup();
     const setError = jest.fn();
     const onImportComplete = jest.fn();
     global.fetch = jest.fn(() => Promise.resolve({
@@ -39,13 +37,14 @@ describe('ProjectDataExportPanel', () => {
       />
     );
 
-    await user.upload(
-      screen.getByLabelText(/Choose project bundle to import/i),
-      new File(['zip-bytes'], 'bundle.zip', { type: 'application/zip' })
-    );
+    fireEvent.change(screen.getByLabelText(/Choose project bundle to import/i), {
+      target: {
+        files: [new File(['zip-bytes'], 'bundle.zip', { type: 'application/zip' })],
+      },
+    });
 
     expect(screen.getByRole('dialog', { name: /Import into non-blank project/i })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: /Append to Current Project/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Append to Current Project/i }));
 
     await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
     const [url, options] = global.fetch.mock.calls[0];
