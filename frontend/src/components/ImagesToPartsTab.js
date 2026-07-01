@@ -61,6 +61,22 @@ function extractPartKeyFromFilenameSegment(segment = '', filenameKey = '') {
   return match ? match[1] : '';
 }
 
+function extractFilenameKeyFromSegment(segment = '') {
+  const match = String(segment || '').trim().match(/^([A-Za-z]+)\d+$/);
+  return match ? match[1] : '';
+}
+
+function buildFilenameKeyOptions(images, delimiter = '') {
+  const keys = new Set();
+  (Array.isArray(images) ? images : []).forEach((image) => {
+    tokenizeFilename(image.filename, delimiter).forEach((token) => {
+      const key = extractFilenameKeyFromSegment(token);
+      if (key) keys.add(key);
+    });
+  });
+  return Array.from(keys).sort((left, right) => left.localeCompare(right));
+}
+
 function normalizePartKey(value = '') {
   return String(value || '').replace(/[^A-Za-z0-9]+/g, '').trim();
 }
@@ -352,6 +368,10 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
   );
 
   const autoAssignDelimiter = useMemo(() => getAutoAssignDelimiter(projectConfiguration), [projectConfiguration]);
+  const filenameKeyOptions = useMemo(
+    () => buildFilenameKeyOptions(images, autoAssignDelimiter),
+    [images, autoAssignDelimiter]
+  );
   const autoAssignPreview = useMemo(
     () => buildAutoAssignPreview(localBuckets.unassigned, selectedFilenameKey, autoAssignDelimiter),
     [localBuckets.unassigned, selectedFilenameKey, autoAssignDelimiter]
@@ -436,19 +456,20 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
         <section className="auto-assign-parts-panel" aria-label="Automatically assign images to parts">
           <div>
             <h3>Automatically Assign Images to Parts</h3>
-            <p className="muted">Enter the filename key that appears after the delimiter and before the part number. Leave blank to match delimiter-separated numeric segments.</p>
+            <p className="muted">Select a filename key found in loaded files. Keys are the full letter portion of a letter-number pattern between delimiters. Use Blank key to match delimiter-separated numeric segments.</p>
           </div>
           <div className="auto-assign-token-list">
             <label className="auto-assign-token-option" htmlFor="auto-assign-filename-key">
               <span><strong>Filename key</strong><small>Delimiter: {autoAssignDelimiter || 'automatic non-alphanumeric split'}</small></span>
-              <input
+              <select
                 id="auto-assign-filename-key"
-                type="text"
                 value={selectedFilenameKey}
                 onChange={(event) => setSelectedFilenameKey(event.target.value)}
                 aria-label="Filename key for autoassign"
-                placeholder="e.g. SN; blank matches 001"
-              />
+              >
+                <option value="">Blank key (numeric segment)</option>
+                {filenameKeyOptions.map((key) => <option key={key} value={key}>{key}</option>)}
+              </select>
             </label>
           </div>
           <div className="auto-assign-preview-row">

@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import ImagesToPartsTab from '../ImagesToPartsTab';
 
 describe('ImagesToPartsTab', () => {
@@ -427,9 +427,10 @@ describe('ImagesToPartsTab', () => {
       />
     );
 
-    const filenameKeyInput = screen.getByRole('textbox', { name: 'Filename key for autoassign' });
-    expect(screen.queryByRole('combobox', { name: 'Filename key for autoassign' })).not.toBeInTheDocument();
-    fireEvent.change(filenameKeyInput, { target: { value: 'SN' } });
+    const filenameKeySelect = screen.getByRole('combobox', { name: 'Filename key for autoassign' });
+    expect(within(filenameKeySelect).getByRole('option', { name: 'Blank key (numeric segment)' })).toBeInTheDocument();
+    expect(within(filenameKeySelect).getByRole('option', { name: 'SN' })).toBeInTheDocument();
+    fireEvent.change(filenameKeySelect, { target: { value: 'SN' } });
 
     expect(screen.getByText('1 (4)')).toBeInTheDocument();
     expect(screen.getByText('2 (4)')).toBeInTheDocument();
