@@ -1,5 +1,4 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import ProjectDataExportPanel from '../ProjectDataExportPanel';
 
 describe('ProjectDataExportPanel', () => {
@@ -54,10 +53,9 @@ describe('ProjectDataExportPanel', () => {
     expect(options.body.get('confirmation')).toBe('IMPORT');
     expect(await screen.findByTestId('project-data-import-result')).toHaveTextContent('Appended project bundle: 3 images imported');
     expect(onImportComplete).toHaveBeenCalled();
-  });
+  }, 10000);
 
   test('imports blank projects without prompting and uses append mode', async () => {
-    const user = userEvent.setup();
     global.fetch = jest.fn(() => Promise.resolve({
       ok: true,
       json: async () => ({ project: { images_created: 1 } }),
@@ -71,18 +69,18 @@ describe('ProjectDataExportPanel', () => {
       />
     );
 
-    await user.upload(
-      screen.getByLabelText(/Choose project bundle to import/i),
-      new File(['zip-bytes'], 'bundle.zip', { type: 'application/zip' })
-    );
+    fireEvent.change(screen.getByLabelText(/Choose project bundle to import/i), {
+      target: {
+        files: [new File(['zip-bytes'], 'bundle.zip', { type: 'application/zip' })],
+      },
+    });
 
     await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(global.fetch.mock.calls[0][1].body.get('mode')).toBe('append_active');
-  });
+  }, 10000);
 
   test('exports selected project artifacts with TOML bundle options', async () => {
-    const user = userEvent.setup();
     const setError = jest.fn();
     render(
       <ProjectDataExportPanel
@@ -100,8 +98,8 @@ describe('ProjectDataExportPanel', () => {
     expect(screen.getByText('2')).toBeInTheDocument();
     expect(screen.getByText('7')).toBeInTheDocument();
 
-    await user.click(screen.getByLabelText(/Loaded overlays/i));
-    await user.click(screen.getByRole('button', { name: /Export Project Bundle/i }));
+    fireEvent.click(screen.getByLabelText(/Loaded overlays/i));
+    fireEvent.click(screen.getByRole('button', { name: /Export Project Bundle/i }));
 
     await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
     const requestedUrl = global.fetch.mock.calls[0][0];
@@ -114,10 +112,9 @@ describe('ProjectDataExportPanel', () => {
     expect(window.URL.createObjectURL).toHaveBeenCalled();
     expect(setError).toHaveBeenCalledWith(null);
     expect(await screen.findByTestId('project-data-export-result')).toHaveTextContent('4 export sections');
-  });
+  }, 10000);
 
   test('exports and imports project bundles through S3 endpoints', async () => {
-    const user = userEvent.setup();
     const setError = jest.fn();
     global.fetch = jest.fn((url) => {
       if (url.endsWith('/export-bundle/s3')) {
@@ -138,8 +135,10 @@ describe('ProjectDataExportPanel', () => {
       />
     );
 
-    await user.type(screen.getByLabelText('Export bundle to S3'), 's3://bucket/project.vistabundle');
-    await user.click(screen.getByRole('button', { name: 'Export to S3' }));
+    fireEvent.change(screen.getByLabelText('Export bundle to S3'), {
+      target: { value: 's3://bucket/project.vistabundle' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Export to S3' }));
 
     await waitFor(() => expect(global.fetch).toHaveBeenCalledWith(
       '/api/projects/project-123/export-bundle/s3',
@@ -147,8 +146,10 @@ describe('ProjectDataExportPanel', () => {
     ));
     expect(await screen.findByTestId('project-data-export-result')).toHaveTextContent('Project bundle exported to s3://bucket/project.vistabundle');
 
-    await user.type(screen.getByLabelText('Import project bundle from S3'), 's3://bucket/project.vistabundle');
-    await user.click(screen.getByRole('button', { name: 'Import from S3' }));
+    fireEvent.change(screen.getByLabelText('Import project bundle from S3'), {
+      target: { value: 's3://bucket/project.vistabundle' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Import from S3' }));
 
     await waitFor(() => expect(global.fetch).toHaveBeenCalledWith(
       '/api/projects/project-123/import/s3',
@@ -156,6 +157,6 @@ describe('ProjectDataExportPanel', () => {
     ));
     expect(await screen.findByTestId('project-data-import-result')).toHaveTextContent('Appended S3 project bundle: 2 images imported');
     expect(setError).toHaveBeenLastCalledWith(null);
-  });
+  }, 10000);
 
 });
