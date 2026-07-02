@@ -2466,3 +2466,186 @@ def test_duplicate_filename_assignment_and_overlay_use_image_ids(client):
     assert [record["image_id"] for record in base_records] == [base["id"]]
     assert [record["image_id"] for record in overlay_records] == [overlay["id"]]
     assert overlay_records[0]["overlay_base_image_id"] == base["id"]
+
+
+def _png_bytes(color):
+    img = Image.new("RGB", (12, 10), color)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
+def _upload_image(client, project_id, filename, metadata, color):
+    response = client.post(
+        f"/api/projects/{project_id}/images",
+        files={"file": (filename, _png_bytes(color), "image/png")},
+        data={"metadata": json.dumps(metadata)},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_multi_part_multi_modality_overlay_project_can_be_reset_to_empty(client):
+    headers = {"X-User-Id": "reset-workflow@example.com", "X-User-Groups": '["reset-workflow"]'}
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": "Reset regression project",
+            "description": "several parts with repeated views, modalities, overlays, and annotations",
+            "meta_group_id": "reset-workflow",
+            "project_type": "PT2",
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+
+    uploaded_images = []
+    modalities = ["visible", "infrared"]
+    colors = [(20, 80, 160), (160, 80, 20), (80, 160, 20), (160, 20, 80)]
+
+    for part_index in range(3):
+        part_resp = client.post(
+            f"/api/projects/{project_id}/parts",
+            json={
+                "serial_number": f"RESET-{part_index + 1:03d}",
+                "display_name": f"Reset part {part_index + 1}",
+            },
+            headers=headers,
+        )
+        assert part_resp.status_code == 201, part_resp.text
+        part = part_resp.json()
+        base_images = []
+        for repeat_index, modality in enumerate(modalities):
+            image = _upload_image(
+                client,
+                project_id,
+                filename=f"part-{part_index + 1}-top-{modality}-{repeat_index + 1}.png",
+                metadata={"side": "top", "modality": modality, "capture_index": repeat_index + 1},
+                color=colors[(part_index + repeat_index) % len(colors)],
+            )
+            uploaded_images.append(image)
+            base_images.append(image)
+            assign_resp = client.post(
+                f"/api/projects/{project_id}/parts/image-assignments",
+                json={
+                    "filename": image["filename"],
+                    "image_id": image["id"],
+                    "to_part_id": part["id"],
+                },
+                headers=headers,
+            )
+            assert assign_resp.status_code == 200, assign_resp.text
+
+        overlay = _upload_image(
+            client,
+            project_id,
+            filename=f"part-{part_index + 1}-top-mask-overlay.png",
+            metadata={"side": "top", "modality": "mask", "overlay": True},
+            color=(255, 0, 0),
+        )
+        uploaded_images.append(overlay)
+        overlay_resp = client.post(
+            f"/api/projects/{project_id}/parts/overlay-assignments",
+            json={
+                "overlay_filename": overlay["filename"],
+                "overlay_image_id": overlay["id"],
+                "base_filename": base_images[0]["filename"],
+                "base_image_id": base_images[0]["id"],
+            },
+            headers=headers,
+        )
+        assert overlay_resp.status_code == 200, overlay_resp.text
+
+        analysis_resp = client.post(
+            f"/api/images/{base_images[0]['id']}/analyses",
+            json={
+                "image_id": base_images[0]["id"],
+                "model_name": "resnet50_classifier",
+                "model_version": "reset-regression",
+                "parameters": {"part": part["serial_number"]},
+            },
+            headers=headers,
+        )
+        assert analysis_resp.status_code == 201, analysis_resp.text
+        bulk_resp = client.post(
+            f"/api/analyses/{analysis_resp.json()['id']}/annotations:bulk",
+            json={
+                "annotations": [
+                    {
+                        "annotation_type": "bounding_box",
+                        "class_name": "scratch",
+                        "confidence": 0.91,
+                        "data": {"x": 1, "y": 2, "width": 4, "height": 5},
+                    },
+                    {
+                        "annotation_type": "heatmap",
+                        "class_name": "thermal",
+                        "confidence": 0.72,
+                        "data": {"artifact": overlay["filename"]},
+                    },
+                ]
+            },
+            headers=headers,
+        )
+        assert bulk_resp.status_code == 200, bulk_resp.text
+
+        part_annotation_resp = client.post(
+            f"/api/projects/{project_id}/parts/{part['id']}/annotations",
+            json={
+                "image_id": base_images[1]["id"],
+                "defect_class": "operator-markup",
+                "modality": "infrared",
+                "comment": "Vista-created overlay annotation",
+                "disposition": "open",
+                "bbox": {"x": 2, "y": 2, "width": 5, "height": 4},
+                "metadata": {"overlay_color": "#ff0000"},
+            },
+            headers=headers,
+        )
+        assert part_annotation_resp.status_code == 201, part_annotation_resp.text
+
+    populated_parts_resp = client.get(f"/api/projects/{project_id}/parts", headers=headers)
+    assert populated_parts_resp.status_code == 200, populated_parts_resp.text
+    assert len(populated_parts_resp.json()) == 3
+    for part in populated_parts_resp.json():
+        metadata = part["metadata"]
+        assert len(metadata["source_images"]) == 3
+        expected_top_view = next(
+            record["filename"] for record in metadata["source_images"] if not record.get("overlay")
+        )
+        assert metadata["view_images"] == {"top": expected_top_view}
+        assert metadata["overlay_images"]["top"]["mask"].endswith("mask-overlay.png")
+        assert len(metadata["annotations"]) == 1
+
+    images_resp = client.get(f"/api/projects/{project_id}/images", headers=headers)
+    assert images_resp.status_code == 200, images_resp.text
+    assert len(images_resp.json()) == 9
+
+    for part in populated_parts_resp.json():
+        delete_part_resp = client.delete(f"/api/projects/{project_id}/parts/{part['id']}", headers=headers)
+        assert delete_part_resp.status_code == 204, delete_part_resp.text
+
+    for image in uploaded_images:
+        delete_image_resp = client.request(
+            "DELETE",
+            f"/api/projects/{project_id}/images/{image['id']}",
+            json={"reason": "reset regression cleanup", "force": True},
+            headers=headers,
+        )
+        assert delete_image_resp.status_code == 200, delete_image_resp.text
+        assert delete_image_resp.json()["deleted_at"] is not None
+        assert delete_image_resp.json()["storage_deleted"] is True
+
+    empty_parts_resp = client.get(f"/api/projects/{project_id}/parts", headers=headers)
+    assert empty_parts_resp.status_code == 200, empty_parts_resp.text
+    assert empty_parts_resp.json() == []
+
+    empty_images_resp = client.get(f"/api/projects/{project_id}/images", headers=headers)
+    assert empty_images_resp.status_code == 200, empty_images_resp.text
+    assert empty_images_resp.json() == []
+
+    deleted_images_resp = client.get(f"/api/projects/{project_id}/images?deleted_only=true", headers=headers)
+    assert deleted_images_resp.status_code == 200, deleted_images_resp.text
+    assert len(deleted_images_resp.json()) == 9
