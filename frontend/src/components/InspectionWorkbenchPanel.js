@@ -1217,13 +1217,19 @@ function getPartImageRefs(part) {
     return acc;
   }, {});
   const getRecordModality = (record) => String(record?.modality || record?.metadata?.modality || '').toLowerCase();
+  const getRecordIdentities = (record = {}) => [record.image_id, record.filename]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  const addSeenIdentities = (record = {}) => {
+    getRecordIdentities(record).forEach((identity) => seen.add(identity));
+  };
   const imagesByView = part?.metadata?.view_images;
   if (imagesByView && typeof imagesByView === 'object') {
     Object.entries(imagesByView).forEach(([viewName, imageRef]) => {
       const ref = String(imageRef || '');
       if (!ref || seen.has(ref)) return;
       const sourceRecord = sourceImageByFilename[ref] || {};
-      seen.add(ref);
+      addSeenIdentities({ ...sourceRecord, filename: ref });
       refs.push({
         id: `${part.id}-view-${viewName}`,
         viewName: String(viewName || '').toLowerCase(),
@@ -1235,7 +1241,6 @@ function getPartImageRefs(part) {
       });
     });
   }
-  const hasViewRefs = refs.length > 0;
   const isAnalyzeOutputRecord = (record) => {
     const modality = String(record?.modality || '').toLowerCase();
     return Boolean(
@@ -1251,10 +1256,11 @@ function getPartImageRefs(part) {
     const overlay = forceOverlay || record.overlay === true || record.analysis_output === true;
     const cropChild = record.crop_child_image === true || record.cropChildImage === true;
     const cropSubtitle = String(record.crop_subtitle || record.cropSubtitle || '').trim();
-    if (!overlay && hasViewRefs && !cropChild) return;
     const imageRef = String(record.image_id || record.filename || '');
-    if (!imageRef || seen.has(imageRef)) return;
-    seen.add(imageRef);
+    if (!imageRef) return;
+    const identities = getRecordIdentities(record);
+    if (identities.some((identity) => seen.has(identity))) return;
+    identities.forEach((identity) => seen.add(identity));
     const modality = getRecordModality(record);
     const label = cropChild
       ? String(record.crop_title || record.filename || `CROP ${index + 1}`)
