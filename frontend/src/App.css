@@ -4214,9 +4214,26 @@ ul li:hover {
 }
 
 .workbench-controls-compact {
-  grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);
-  align-items: center;
-  column-gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-items: end;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.workbench-controls-compact .form-label {
+  display: none;
+}
+
+.workbench-controls-compact .form-control {
+  min-height: 30px;
+  padding: 4px 7px;
+  font-size: 0.78rem;
+}
+
+.workbench-controls-compact .muted {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 0.74rem;
 }
 
 .workbench-layout {
@@ -4274,8 +4291,8 @@ ul li:hover {
 
 @container (max-width: 340px) {
   .workbench-controls-compact {
-    grid-template-columns: 1fr;
-    align-items: start;
+    grid-template-columns: 1fr 1fr;
+    align-items: end;
   }
 
   .workbench-part-row {
@@ -5013,11 +5030,34 @@ ul li:hover {
   color: #1f2937;
 }
 
-.part-summary-images {
+.part-summary-chip-group {
   margin-top: 6px;
+}
+
+.part-summary-chip-label {
+  display: block;
+  margin-bottom: 2px;
+  color: #64748b;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.part-summary-images {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+.part-summary-images .btn.btn-sm {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 2px 7px;
+  font-size: 0.68rem;
+  line-height: 1.15;
 }
 
 .part-summary-images .btn.active {

@@ -255,11 +255,6 @@ const REVIEW_LABELS = {
   reject_pending: 'Reject',
   reject_confirmed: 'Reject',
 };
-const IMAGE_RENDER_CATEGORIES = [
-  { id: 'source', label: 'Source images' },
-  { id: 'overlay', label: 'Overlays' },
-];
-
 const NSIPRO_METADATA_PATTERN = /nsi[\s_-]*pro|\.nsipro/i;
 
 function isPlainMetadataObject(value) {
@@ -909,7 +904,7 @@ function getPartSummaryModalities(part, imageRefs = getPartImageRefs(part)) {
   const loadedModalities = new Set();
   imageRefs.forEach((entry) => {
     const modality = String(entry?.modality || '').trim().toLowerCase();
-    if (!modality || modality === 'analyze-overlay') return;
+    if (!modality || modality === 'analyze-overlay' || modality === 'overlay') return;
     loadedModalities.add(modality);
   });
   const configuredModalities = getModalities(part);
@@ -4655,6 +4650,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     const partImageRefs = getPartImageRefs(part)
                       .filter((entry) => isInspectionImageRefLoaded(entry, projectImageLookup));
                     const partModalities = getPartSummaryModalities(part, partImageRefs);
+                    const partOverlayLayers = getOverlayLayers(part);
+                    const hasAnalyzeOverlays = partImageRefs.some((entry) => entry.overlay);
+                    const isSourceCategoryVisible = renderCategories.includes('source');
+                    const isOverlayCategoryVisible = renderCategories.includes('overlay');
                     return (
                       <article
                         key={part.id}
@@ -4674,58 +4673,118 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                             Defects: {defectCount} • Annotations: {annotationCount}
                           </div>
                           {imageEntries.length > 0 && (
-                            <div className="part-summary-images" aria-label={`${part.display_name || part.serial_number} view toggles`}>
-                              {imageEntries.map(([viewName, imageRef]) => {
-                                const normalizedViewName = String(viewName).toLowerCase();
-                                const isHidden = hiddenViewNames.includes(normalizedViewName);
-                                return (
-                                  <button
-                                    type="button"
-                                    key={`${part.id}-${viewName}`}
-                                    className={`btn btn-secondary btn-sm ${isSelected && activeViewName === normalizedViewName ? 'active' : ''} ${isHidden ? 'muted-toggle' : ''}`}
-                                    aria-pressed={!isHidden}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      setSelectedPartId(part.id);
-                                      toggleViewVisibility(viewName);
-                                      setSelectedViewName(normalizedViewName);
-                                      setSelectedImageRef(String(imageRef || ''));
-                                    }}
-                                  >
-                                    {viewName.toUpperCase()}
-                                  </button>
-                                );
-                              })}
+                            <div className="part-summary-chip-group">
+                              <span className="part-summary-chip-label">Views</span>
+                              <div className="part-summary-images" aria-label={`${part.display_name || part.serial_number} view toggles`}>
+                                {imageEntries.map(([viewName, imageRef]) => {
+                                  const normalizedViewName = String(viewName).toLowerCase();
+                                  const isHidden = hiddenViewNames.includes(normalizedViewName);
+                                  return (
+                                    <button
+                                      type="button"
+                                      key={`${part.id}-${viewName}`}
+                                      className={`btn btn-secondary btn-sm ${isSelected && activeViewName === normalizedViewName ? 'active' : ''} ${isHidden ? 'muted-toggle' : ''}`}
+                                      aria-pressed={!isHidden}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setSelectedPartId(part.id);
+                                        toggleViewVisibility(viewName);
+                                        setSelectedViewName(normalizedViewName);
+                                        setSelectedImageRef(String(imageRef || ''));
+                                      }}
+                                    >
+                                      {viewName.toUpperCase()}
+                                    </button>
+                                  );
+                                })}
+                              </div>
                             </div>
                           )}
                           {partModalities.length > 0 && (
-                            <div className="part-summary-images part-summary-modalities" aria-label={`${part.display_name || part.serial_number} modality toggles`}>
-                              {partModalities.map((modality) => {
-                                const normalizedModality = String(modality).toLowerCase();
-                                const isEnabled = enabledModalities.map((entry) => String(entry).toLowerCase()).includes(normalizedModality);
-                                const matchingImage = partImageRefs.find((entry) => String(entry.modality || '').toLowerCase() === normalizedModality);
-                                return (
+                            <div className="part-summary-chip-group">
+                              <span className="part-summary-chip-label">Modalities</span>
+                              <div className="part-summary-images part-summary-modalities" aria-label={`${part.display_name || part.serial_number} modality toggles`}>
+                                {partModalities.map((modality) => {
+                                  const normalizedModality = String(modality).toLowerCase();
+                                  const isEnabled = enabledModalities.map((entry) => String(entry).toLowerCase()).includes(normalizedModality);
+                                  const matchingImage = partImageRefs.find((entry) => String(entry.modality || '').toLowerCase() === normalizedModality);
+                                  return (
+                                    <button
+                                      type="button"
+                                      key={`${part.id}-modality-${normalizedModality}`}
+                                      className={`btn btn-secondary btn-sm ${isEnabled ? 'active' : 'muted-toggle'}`}
+                                      aria-pressed={isEnabled}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setSelectedPartId(part.id);
+                                        if (!(matchingImage?.overlay && (matchingImage.overlayBaseImageId || matchingImage.overlayBaseFilename))) {
+                                          toggleModalityVisibility(normalizedModality);
+                                        }
+                                        if (matchingImage) {
+                                          setSelectedViewName(String(matchingImage.viewName || '').toLowerCase());
+                                          setSelectedImageRef(String(matchingImage.imageRef || matchingImage.imageId || ''));
+                                        }
+                                      }}
+                                    >
+                                      {normalizedModality.toUpperCase()}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                          {(partImageRefs.length > 0 || hasAnalyzeOverlays || partOverlayLayers.length > 0) && (
+                            <div className="part-summary-chip-group">
+                              <span className="part-summary-chip-label">Layers</span>
+                              <div className="part-summary-images part-summary-layers" aria-label={`${part.display_name || part.serial_number} layer toggles`}>
+                                {partImageRefs.length > 0 && (
                                   <button
                                     type="button"
-                                    key={`${part.id}-modality-${normalizedModality}`}
-                                    className={`btn btn-secondary btn-sm ${isEnabled ? 'active' : 'muted-toggle'}`}
-                                    aria-pressed={isEnabled}
+                                    className={`btn btn-secondary btn-sm ${isSourceCategoryVisible ? 'active' : 'muted-toggle'}`}
+                                    aria-pressed={isSourceCategoryVisible}
                                     onClick={(event) => {
                                       event.stopPropagation();
                                       setSelectedPartId(part.id);
-                                      if (!(matchingImage?.overlay && (matchingImage.overlayBaseImageId || matchingImage.overlayBaseFilename))) {
-                                        toggleModalityVisibility(normalizedModality);
-                                      }
-                                      if (matchingImage) {
-                                        setSelectedViewName(String(matchingImage.viewName || '').toLowerCase());
-                                        setSelectedImageRef(String(matchingImage.imageRef || matchingImage.imageId || ''));
-                                      }
+                                      toggleRenderCategory('source');
                                     }}
                                   >
-                                    {normalizedModality.toUpperCase()}
+                                    SOURCE
                                   </button>
-                                );
-                              })}
+                                )}
+                                {hasAnalyzeOverlays && (
+                                  <button
+                                    type="button"
+                                    className={`btn btn-secondary btn-sm ${isOverlayCategoryVisible ? 'active' : 'muted-toggle'}`}
+                                    aria-pressed={isOverlayCategoryVisible}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setSelectedPartId(part.id);
+                                      toggleRenderCategory('overlay');
+                                    }}
+                                  >
+                                    ANALYSIS OVERLAYS
+                                  </button>
+                                )}
+                                {partOverlayLayers.map((overlay) => {
+                                  const isActiveOverlay = activeOverlayIds.includes(overlay.id);
+                                  return (
+                                    <button
+                                      type="button"
+                                      key={`${part.id}-overlay-${overlay.id}`}
+                                      className={`btn btn-secondary btn-sm ${isActiveOverlay ? 'active' : 'muted-toggle'}`}
+                                      aria-pressed={isActiveOverlay}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        setSelectedPartId(part.id);
+                                        toggleOverlay(overlay.id);
+                                      }}
+                                    >
+                                      <span className="overlay-swatch" style={{ backgroundColor: overlay.color }} />
+                                      {overlay.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
                             </div>
                           )}
                         </div>
@@ -4790,19 +4849,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 </option>
               </select>
             </label>
-            <div className="overlay-toggles">
-              {overlayLayers.map((overlay) => (
-                <label key={overlay.id} className="overlay-toggle">
-                  <input
-                    type="checkbox"
-                    checked={activeOverlayIds.includes(overlay.id)}
-                    onChange={() => toggleOverlay(overlay.id)}
-                  />
-                  <span className="overlay-swatch" style={{ backgroundColor: overlay.color }} />
-                  {overlay.label}
-                </label>
-              ))}
-            </div>
             <span className="mpr-probe-readout">Probe {tooltipValues.base}</span>
             <div className="mpr-ml-actions">
               <button
@@ -5125,14 +5171,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   }}
                 />
                 <span>{normalizedTileColumnCount} / {tileColumnMax}</span>
-              </div>
-              <div className="view-category-controls" aria-label="Image categories">
-                {IMAGE_RENDER_CATEGORIES.map((category) => (
-                  <label key={category.id}>
-                    <input type="checkbox" checked={renderCategories.includes(category.id)} onChange={() => toggleRenderCategory(category.id)} />
-                    {category.label}
-                  </label>
-                ))}
               </div>
             </div>
             <div

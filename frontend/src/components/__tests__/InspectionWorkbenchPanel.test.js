@@ -1472,6 +1472,18 @@ describe('InspectionWorkbenchPanel', () => {
     await waitFor(() => expect(screen.getAllByText('Analyze Output Part').length).toBeGreaterThan(0));
     const composite = screen.getByTestId('inspection-overlay-composite');
     const viewBoard = document.querySelector('.view-board');
+    expect(screen.queryByLabelText('Image categories')).not.toBeInTheDocument();
+    const layerControls = screen.getByLabelText('Analyze Output Part layer toggles');
+    expect(within(layerControls).getByRole('button', { name: 'SOURCE' })).toHaveAttribute('aria-pressed', 'true');
+    const analysisOverlayToggle = within(layerControls).getByRole('button', { name: 'ANALYSIS OVERLAYS' });
+    expect(analysisOverlayToggle).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(analysisOverlayToggle);
+    expect(screen.queryByTestId('inspection-overlay-composite')).not.toBeInTheDocument();
+    expect(analysisOverlayToggle).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(analysisOverlayToggle);
+    const restoredComposite = await screen.findByTestId('inspection-overlay-composite');
+    expect(restoredComposite).toBeInTheDocument();
+    expect(analysisOverlayToggle).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByLabelText('Inspection tile columns')).toHaveAttribute('max', '1');
     expect(viewBoard.style.getPropertyValue('--inspection-tile-columns')).toBe('1');
     fireEvent.change(screen.getByLabelText('Inspection tile columns'), { target: { value: '1' } });
@@ -1481,9 +1493,9 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByLabelText('Inspection tile columns')).toHaveValue('1');
     expect(viewBoard.style.getPropertyValue('--inspection-tile-columns')).toBe('1');
     expect(screen.getByText('Watershed From Seeds :: Segmentation Overlay')).toBeInTheDocument();
-    expect(within(composite).getByAltText('front source')).toHaveAttribute('src', '/api/images/source-image-1/content');
-    expect(within(composite).getByAltText('front overlay')).toHaveAttribute('src', '/api/images/overlay-image-1/content');
-    fireEvent.click(composite);
+    expect(within(restoredComposite).getByAltText('front source')).toHaveAttribute('src', '/api/images/source-image-1/content');
+    expect(within(restoredComposite).getByAltText('front overlay')).toHaveAttribute('src', '/api/images/overlay-image-1/content');
+    fireEvent.click(restoredComposite);
     expect(screen.getByAltText('Watershed From Seeds :: Segmentation Overlay fullscreen')).toBeInTheDocument();
     expect(screen.getByAltText('Watershed From Seeds :: Segmentation Overlay source fullscreen')).toHaveAttribute('src', '/api/images/source-image-1/content');
     fireEvent.click(screen.getByLabelText('Close fullscreen image'));
@@ -2322,19 +2334,21 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getAllByAltText('back overlay')).toHaveLength(1);
     expect(screen.queryByAltText('front view')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByLabelText('Overlays'));
+    expect(screen.queryByLabelText('Image categories')).not.toBeInTheDocument();
+    const layerControls = screen.getByLabelText('Overlay Part 1 layer toggles');
+    const sourceToggle = within(layerControls).getByRole('button', { name: 'SOURCE' });
+    const overlayToggle = within(layerControls).getByRole('button', { name: 'ANALYSIS OVERLAYS' });
+    expect(sourceToggle).toHaveAttribute('aria-pressed', 'true');
+    expect(overlayToggle).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(overlayToggle);
     await waitFor(() => expect(screen.queryByTestId('inspection-overlay-composite')).not.toBeInTheDocument());
     expect(screen.getAllByAltText('front view')).toHaveLength(1);
     expect(screen.getAllByAltText('back view')).toHaveLength(1);
-    expect(screen.getByLabelText('Source images')).toBeChecked();
+    expect(sourceToggle).toHaveAttribute('aria-pressed', 'true');
+    expect(overlayToggle).toHaveAttribute('aria-pressed', 'false');
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'OVERLAY' })[0]);
-    expect(screen.queryByTestId('inspection-overlay-composite')).not.toBeInTheDocument();
-    expect(screen.getAllByAltText('front view')).toHaveLength(1);
-    expect(screen.getAllByAltText('back view')).toHaveLength(1);
-    expect(screen.getByLabelText('Overlays')).not.toBeChecked();
-
-    fireEvent.click(screen.getByLabelText('Overlays'));
+    fireEvent.click(overlayToggle);
     await waitFor(() => expect(screen.getAllByTestId('inspection-overlay-composite')).toHaveLength(2));
   });
 
