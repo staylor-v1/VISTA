@@ -6283,6 +6283,13 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 Pass
               </button>
               <button
+                className="btn btn-secondary"
+                disabled={savingPartId === selectedPart.id}
+                onClick={() => updatePartReviewState(selectedPart, 'unreviewed')}
+              >
+                Reset
+              </button>
+              <button
                 className="btn btn-danger"
                 disabled={savingPartId === selectedPart.id}
                 onClick={() => updatePartReviewState(selectedPart, 'reject_confirmed')}
@@ -7375,6 +7382,13 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                         onClick={() => updatePartReviewState(selectedPart, 'pass')}
                       >
                         Pass
+                      </button>
+                      <button
+                        className="btn btn-secondary"
+                        disabled={savingPartId === selectedPart.id}
+                        onClick={() => updatePartReviewState(selectedPart, 'unreviewed')}
+                      >
+                        Reset
                       </button>
                       <button
                         className="btn btn-danger"

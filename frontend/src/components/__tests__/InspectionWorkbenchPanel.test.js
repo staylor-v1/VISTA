@@ -998,10 +998,20 @@ describe('InspectionWorkbenchPanel', () => {
         expect(screen.getAllByTestId('part-review-state').length).toBe(expectedBatchRows.length);
       }
 
-      // Review action updates indicator
+      // Review action updates indicator, and Reset returns the part to unreviewed.
       fireEvent.click(screen.getByRole('button', { name: /^pass$/i }));
       await waitFor(() => {
         expect(screen.getByText('Passed: 1')).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole('button', { name: /^reset$/i }));
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(
+          expect.stringContaining(`/parts/${scenario.parts[0].id}`),
+          expect.objectContaining({
+            method: 'PATCH',
+            body: JSON.stringify({ review_state: 'unreviewed' }),
+          }),
+        );
       });
 
       if (projectType === 'PT3') fireEvent.click(screen.getByRole('button', { name: 'Close Part Selection' }));
