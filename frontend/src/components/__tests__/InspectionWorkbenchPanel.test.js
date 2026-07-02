@@ -2379,6 +2379,83 @@ describe('InspectionWorkbenchPanel', () => {
     await waitFor(() => expect(screen.queryByAltText('front view')).not.toBeInTheDocument());
   });
 
+  test('shows non-overlay mixed-modality source images alongside configured view images', async () => {
+    mockWorkbenchFetch({
+      user: 'mixed-modality-source',
+      batches: [{ id: 'batch-mixed', name: 'Batch Mixed' }],
+      parts: [
+        {
+          id: 'part-mixed-1',
+          batch_id: 'batch-mixed',
+          serial_number: 'SN-MIXED-1',
+          display_name: 'Mixed Modality Part',
+          review_state: 'in_review',
+          metadata: {
+            configured_views: ['front'],
+            modalities: ['visual', 'thermal'],
+            view_images: { front: 'SN-MIXED-1_front_visual.png' },
+            source_images: [
+              { filename: 'SN-MIXED-1_front_visual.png', image_id: 'mixed-visual-image', side: 'front', modality: 'visual', overlay: false },
+              { filename: 'SN-MIXED-1_front_thermal.png', image_id: 'mixed-thermal-image', side: 'front', modality: 'thermal', overlay: false },
+            ],
+          },
+        },
+      ],
+      workspaceState: { inspector: { image_enabled: true, modalities: ['visual', 'thermal'], view_name: 'front' } },
+      hotkeys: { accept_classification: 'a', reject_classification: 'r', toggle_shortcut_help: 'h' },
+    });
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    await waitFor(() => expect(screen.getAllByText('Mixed Modality Part').length).toBeGreaterThan(0));
+    const modalityToggles = screen.getByLabelText('Mixed Modality Part modality toggles');
+    expect(within(modalityToggles).getByRole('button', { name: 'VISUAL' })).toBeInTheDocument();
+    expect(within(modalityToggles).getByRole('button', { name: 'THERMAL' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByAltText('front view')).toHaveLength(2));
+    const visibleImageSources = screen.getAllByAltText('front view').map((image) => image.getAttribute('src'));
+    expect(visibleImageSources).toEqual(expect.arrayContaining([
+      '/api/images/mixed-visual-image/content',
+      '/api/images/mixed-thermal-image/content',
+    ]));
+  });
+
+  test('red team: keeps same-side adversarial filenames from hiding different modalities', async () => {
+    mockWorkbenchFetch({
+      user: 'mixed-modality-red-team',
+      batches: [{ id: 'batch-red-team', name: 'Batch Red Team' }],
+      parts: [
+        {
+          id: 'part-red-team-1',
+          batch_id: 'batch-red-team',
+          serial_number: 'SN_RED_TEAM_001',
+          display_name: 'Red Team Mixed Part',
+          review_state: 'in_review',
+          metadata: {
+            configured_views: ['front'],
+            modalities: ['visual', 'infrared', 'uv'],
+            view_images: { front: 'SN_RED_TEAM_001__front__visual.png' },
+            source_images: [
+              { filename: 'SN_RED_TEAM_001__front__visual.png', image_id: 'red-team-visual', side: 'front', modality: 'visual', overlay: false },
+              { filename: 'SN_RED_TEAM_001__front__visual.backup.infrared.png', image_id: 'red-team-infrared', side: 'front', modality: 'infrared', overlay: false },
+              { filename: 'SN_RED_TEAM_001__front__visual.backup.uv.png', image_id: 'red-team-uv', side: 'front', modality: 'uv', overlay: false },
+            ],
+          },
+        },
+      ],
+      workspaceState: { inspector: { image_enabled: true, modalities: ['visual', 'infrared', 'uv'], view_name: 'front' } },
+      hotkeys: { accept_classification: 'a', reject_classification: 'r', toggle_shortcut_help: 'h' },
+    });
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    await waitFor(() => expect(screen.getAllByText('Red Team Mixed Part').length).toBeGreaterThan(0));
+    const modalityToggles = screen.getByLabelText('Red Team Mixed Part modality toggles');
+    expect(within(modalityToggles).getByRole('button', { name: 'VISUAL' })).toBeInTheDocument();
+    expect(within(modalityToggles).getByRole('button', { name: 'INFRARED' })).toBeInTheDocument();
+    expect(within(modalityToggles).getByRole('button', { name: 'UV' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByAltText('front view')).toHaveLength(3));
+  });
+
   test('does not duplicate original front and back images from source_images when view_images exists', async () => {
     mockWorkbenchFetch({
       user: 'dedupe-originals',
