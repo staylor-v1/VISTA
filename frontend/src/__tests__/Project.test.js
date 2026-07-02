@@ -3,12 +3,14 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import Project from '../Project';
 
 let mockPendingAutosave = false;
+let mockSearch = '';
 let mockFlushResolve = null;
 const mockFlushPendingAutosave = jest.fn();
 
 jest.mock('react-router-dom', () => ({
   useParams: () => ({ id: 'proj-1' }),
   useNavigate: () => jest.fn(),
+  useLocation: () => ({ pathname: '/project/proj-1', search: mockSearch }),
 }));
 
 jest.mock('../components/ProjectConfigurationPanel', () => {
@@ -25,7 +27,12 @@ jest.mock('../components/ProjectConfigurationPanel', () => {
 jest.mock('../components/ImageUploader', () => () => <div>Image uploader</div>);
 jest.mock('../components/MetadataManager', () => () => <div>Metadata manager</div>);
 jest.mock('../components/ClassManager', () => () => <div>Class manager</div>);
-jest.mock('../components/InspectionWorkbenchPanel', () => () => <div>Inspection workbench</div>);
+jest.mock('../components/InspectionWorkbenchPanel', () => ({ launchFilters }) => (
+  <div>
+    <div>Inspection workbench</div>
+    <output data-testid="inspection-launch-filters">{JSON.stringify(launchFilters || null)}</output>
+  </div>
+));
 jest.mock('../components/AnalyzeWorkbenchTab', () => () => <div>Analyze workbench</div>);
 jest.mock('../components/ProjectDataSummaryTab', () => () => <div>Project data summary</div>);
 jest.mock('../components/ProjectDataExportPanel', () => () => <div>Project data export</div>);
@@ -35,10 +42,12 @@ jest.mock('../components/ImagesToPartsTab', () => () => <div>Images to parts</di
 jest.mock('../components/OverlaysTab', () => () => <div>Overlays tab</div>);
 jest.mock('../components/BatchesTab', () => () => <div>Batches</div>);
 jest.mock('../components/RemoveImagesTab', () => () => <div>Remove images</div>);
+jest.mock('../components/ProjectDataMetadataTab', () => () => <div>Project data metadata</div>);
 
 describe('Project tab autosave coordination', () => {
   beforeEach(() => {
     mockPendingAutosave = false;
+    mockSearch = '';
     mockFlushResolve = null;
     mockFlushPendingAutosave.mockReset();
     mockFlushPendingAutosave.mockImplementation(() => new Promise((resolve) => {
@@ -98,5 +107,59 @@ describe('Project tab autosave coordination', () => {
 
     await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
     expect(screen.getByText('Project data summary')).toBeInTheDocument();
+  });
+});
+
+
+describe('Project query parameter tab selection', () => {
+  beforeEach(() => {
+    mockPendingAutosave = false;
+    mockSearch = '?tab=inspection&part=part-42&batch=batch-9&review=manual&image=image-7&metadataTab=details';
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/projects/proj-1') {
+        return Promise.resolve({ ok: true, json: async () => ({ id: 'proj-1', name: 'Inspection Project', project_type: 'PT1' }) });
+      }
+      if (url === '/api/projects/proj-1/metadata-dict') {
+        return Promise.resolve({ ok: true, json: async () => ({}) });
+      }
+      if (url === '/api/projects/proj-1/classes') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (String(url).startsWith('/api/projects/proj-1/images')) {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/projects/proj-1/parts') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/projects/proj-1/export-bundle-json') {
+        return Promise.resolve({ ok: true, json: async () => ({ bundle_summary: {} }) });
+      }
+      if (url === '/api/projects/proj-1/configuration') {
+        return Promise.resolve({ ok: true, json: async () => ({ config: {} }) });
+      }
+      if (String(url).startsWith('/interface-hierarchy.toml')) {
+        return Promise.resolve({ ok: false, text: async () => '' });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('selects the Inspection tab from the project URL query string and passes launch filters', async () => {
+    render(<Project />);
+
+    await waitFor(() => expect(screen.getByText('Inspection workbench')).toBeInTheDocument());
+
+    expect(screen.getByRole('tab', { name: 'Inspection' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('inspection-launch-filters')).toHaveTextContent(JSON.stringify({
+      selected_batch_id: 'batch-9',
+      selected_part_id: 'part-42',
+      review_filter: 'manual',
+      selected_image_ref: 'image-7',
+      active_metadata_tab: 'details',
+    }));
   });
 });
