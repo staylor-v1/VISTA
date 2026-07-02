@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import './App.css';
 
 import ImageUploader from './components/ImageUploader';
@@ -27,6 +27,8 @@ const MAIN_TAB_DEFINITIONS = {
   inspection: { label: 'Inspection' },
   report: { label: 'Report' },
 };
+const ALLOWED_PROJECT_QUERY_TABS = new Set(Object.keys(MAIN_TAB_DEFINITIONS));
+
 const PROJECT_DATA_TABS = {
   load_images: { label: 'Load Images' },
   images_to_parts: { label: 'Images to Parts' },
@@ -64,6 +66,7 @@ async function buildHttpErrorMessage(response, fallbackLabel) {
 function Project({ currentUserGroups = [] }) {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const [project, setProject] = useState(null);
   const [metadata, setMetadata] = useState({});
   const [classes, setClasses] = useState([]);
@@ -93,6 +96,34 @@ function Project({ currentUserGroups = [] }) {
   const [inspectionLaunchFilters, setInspectionLaunchFilters] = useState(null);
   const projectConfigurationPanelRef = useRef(null);
   const [autosaveTabDelayMessage, setAutosaveTabDelayMessage] = useState('');
+
+  const projectQueryParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
+  const queryMainTab = projectQueryParams.get('tab');
+  const queryProjectDataTab = projectQueryParams.get('dataTab');
+  const validQueryMainTab = ALLOWED_PROJECT_QUERY_TABS.has(queryMainTab) ? queryMainTab : null;
+  const validQueryProjectDataTab = Object.prototype.hasOwnProperty.call(PROJECT_DATA_TABS, queryProjectDataTab)
+    ? queryProjectDataTab
+    : null;
+
+  const queryInspectionLaunchFilters = useMemo(() => {
+    if (validQueryMainTab !== 'inspection') return null;
+
+    const filterParamMap = {
+      batch: 'selected_batch_id',
+      part: 'selected_part_id',
+      review: 'review_filter',
+      image: 'selected_image_ref',
+      metadataTab: 'active_metadata_tab',
+    };
+
+    const filters = Object.entries(filterParamMap).reduce((acc, [queryKey, filterKey]) => {
+      const value = projectQueryParams.get(queryKey);
+      if (value) acc[filterKey] = value;
+      return acc;
+    }, {});
+
+    return Object.keys(filters).length > 0 ? filters : null;
+  }, [projectQueryParams, validQueryMainTab]);
 
   const fetchImages = useCallback(async (projId) => {
     const PAGE_SIZE = 200;
@@ -205,11 +236,23 @@ function Project({ currentUserGroups = [] }) {
 
       if (validTabs.length === 0) {
         setInterfaceHierarchy(DEFAULT_INTERFACE_HIERARCHY);
-        setActiveMainTab(DEFAULT_INTERFACE_HIERARCHY.mainTabs[0]);
+        setActiveMainTab((prev) => (
+          validQueryMainTab && DEFAULT_INTERFACE_HIERARCHY.mainTabs.includes(validQueryMainTab)
+            ? validQueryMainTab
+            : DEFAULT_INTERFACE_HIERARCHY.mainTabs.includes(prev)
+              ? prev
+              : DEFAULT_INTERFACE_HIERARCHY.mainTabs[0]
+        ));
         return;
       }
       setInterfaceHierarchy(nextHierarchy);
-      setActiveMainTab((prev) => (validTabs.includes(prev) ? prev : validTabs[0]));
+      setActiveMainTab((prev) => (
+        validQueryMainTab && validTabs.includes(validQueryMainTab)
+          ? validQueryMainTab
+          : validTabs.includes(prev)
+            ? prev
+            : validTabs[0]
+      ));
     };
     loadHierarchy();
 
@@ -223,7 +266,26 @@ function Project({ currentUserGroups = [] }) {
       cancelled = true;
       if (intervalId) window.clearInterval(intervalId);
     };
-  }, []);
+  }, [validQueryMainTab]);
+
+
+  useEffect(() => {
+    if (validQueryMainTab && interfaceHierarchy.mainTabs.includes(validQueryMainTab)) {
+      setActiveMainTab(validQueryMainTab);
+    }
+  }, [interfaceHierarchy.mainTabs, validQueryMainTab]);
+
+  useEffect(() => {
+    if (validQueryProjectDataTab) {
+      setActiveProjectDataTab(validQueryProjectDataTab);
+    }
+  }, [validQueryProjectDataTab]);
+
+  useEffect(() => {
+    if (validQueryMainTab === 'inspection') {
+      setInspectionLaunchFilters(queryInspectionLaunchFilters);
+    }
+  }, [queryInspectionLaunchFilters, validQueryMainTab]);
 
   const refreshProjectMetadata = useCallback(async () => {
     const metadataResponse = await fetch(`/api/projects/${id}/metadata-dict`);
