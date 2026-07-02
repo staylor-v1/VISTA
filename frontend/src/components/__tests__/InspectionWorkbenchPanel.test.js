@@ -2859,6 +2859,62 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('segmentation-segment-list')).toHaveTextContent('2 areas');
   });
 
+
+  test('copies an absolute inspection deep link with selected part and image while omitting defaults', async () => {
+    const clipboardWrite = jest.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
+    mockWorkbenchFetch(scenarioByUser[0]);
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    const copyButton = await screen.findByRole('button', { name: /Copy link to current view/i });
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Basic Part' })).toBeInTheDocument());
+
+    fireEvent.click(copyButton);
+
+    await waitFor(() => expect(clipboardWrite).toHaveBeenCalledTimes(1));
+    const copiedUrl = new URL(clipboardWrite.mock.calls[0][0]);
+    expect(copiedUrl.origin).toBe(window.location.origin);
+    expect(copiedUrl.pathname).toBe('/project/proj-1');
+    expect(copiedUrl.searchParams.get('tab')).toBe('inspection');
+    expect(copiedUrl.searchParams.get('batch')).toBe('batch-basic');
+    expect(copiedUrl.searchParams.get('part')).toBe('part-basic-1');
+    expect(copiedUrl.searchParams.get('image')).toBe('front-basic.png');
+    expect(copiedUrl.searchParams.has('review')).toBe(false);
+    expect(copiedUrl.searchParams.has('metadataTab')).toBe(false);
+    expect(copiedUrl.searchParams.has('mprPane')).toBe(false);
+    expect(copiedUrl.searchParams.has('sliceAxial')).toBe(false);
+    expect(copiedUrl.searchParams.has('sliceCoronal')).toBe(false);
+    expect(copiedUrl.searchParams.has('sliceSagittal')).toBe(false);
+    expect(copiedUrl.searchParams.has('zoom')).toBe(false);
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Link copied to clipboard.'));
+  });
+
+  test('shows a selectable inspection deep link fallback when the Clipboard API is unavailable', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    });
+    mockWorkbenchFetch(scenarioByUser[0]);
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Copy link to current view/i }));
+
+    const fallback = await screen.findByLabelText('Current inspection view link');
+    const fallbackUrl = new URL(fallback.value);
+    expect(fallback).toHaveAttribute('readOnly');
+    expect(fallbackUrl.pathname).toBe('/project/proj-1');
+    expect(fallbackUrl.searchParams.get('tab')).toBe('inspection');
+    expect(fallbackUrl.searchParams.get('part')).toBe('part-basic-1');
+    expect(fallbackUrl.searchParams.get('image')).toBe('front-basic.png');
+    expect(fallbackUrl.searchParams.has('review')).toBe(false);
+    expect(screen.getByRole('status')).toHaveTextContent('Clipboard is unavailable');
+  });
+
   test('renders a fast visual shell fallback for PT3 parts without volume metadata', async () => {
     mockWorkbenchFetch(scenarioByUser[0]);
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
