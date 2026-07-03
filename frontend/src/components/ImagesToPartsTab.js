@@ -1,4 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
+import { buildConfiguredFilenameFields } from './FilenameMetadataExtractor';
 
 function tagDuplicateFilename(filename = '', occurrence = 0) {
   const safeFilename = String(filename || 'image').trim() || 'image';
@@ -23,6 +24,7 @@ function buildActiveImageRefs(images) {
       filename,
       displayName: tagDuplicateFilename(filename, occurrence),
       duplicateOccurrence: occurrence,
+      metadata: getImageMetadata(image),
       contentUrl: imageId ? `/api/images/${encodeURIComponent(imageId)}/content` : '',
       thumbnailUrl: imageId ? `/api/images/${encodeURIComponent(imageId)}/thumbnail?width=96&height=96` : '',
     };
@@ -77,13 +79,77 @@ function buildFilenameKeyOptions(images, delimiter = '') {
   return Array.from(keys).sort((left, right) => left.localeCompare(right));
 }
 
+function getImageMetadata(image) {
+  if (image?.metadata && typeof image.metadata === 'object') return image.metadata;
+  if (image?.metadata_ && typeof image.metadata_ === 'object') return image.metadata_;
+  return {};
+}
+
+function buildAutoAssignFieldOptions(images, projectConfiguration = null, delimiter = '') {
+  const configuredFields = buildConfiguredFilenameFields(projectConfiguration?.file_naming_scheme || null);
+  const configuredOptions = configuredFields
+    .map((field) => ({
+      filenameKey: String(field.abbreviation || field.id || '').trim(),
+      metadataKey: String(field.key || '').trim(),
+    }))
+    .filter((option) => option.filenameKey && option.metadataKey);
+
+  const inferredFilenameOptions = buildFilenameKeyOptions(images, delimiter).map((key) => ({
+    filenameKey: key,
+    metadataKey: '',
+  }));
+
+  const metadataKeys = new Set();
+  (Array.isArray(images) ? images : []).forEach((image) => {
+    Object.keys(getImageMetadata(image)).forEach((key) => {
+      if (key) metadataKeys.add(key);
+    });
+  });
+  const inferredMetadataOptions = Array.from(metadataKeys).map((key) => ({
+    filenameKey: '',
+    metadataKey: key,
+  }));
+
+  const bySignature = new Map();
+  [...configuredOptions, ...inferredFilenameOptions, ...inferredMetadataOptions].forEach((option) => {
+    const signature = option.metadataKey || option.filenameKey;
+    if (!bySignature.has(signature)) bySignature.set(signature, option);
+    else {
+      const existing = bySignature.get(signature);
+      bySignature.set(signature, {
+        filenameKey: existing.filenameKey || option.filenameKey,
+        metadataKey: existing.metadataKey || option.metadataKey,
+      });
+    }
+  });
+
+  return Array.from(bySignature.values()).sort((left, right) => {
+    const leftLabel = left.metadataKey || left.filenameKey;
+    const rightLabel = right.metadataKey || right.filenameKey;
+    return leftLabel.localeCompare(rightLabel);
+  });
+}
+
 function normalizePartKey(value = '') {
   return String(value || '').replace(/[^A-Za-z0-9]+/g, '').trim();
 }
 
-function buildAutoAssignPreview(images, selectedFilenameKey, delimiter = '') {
+function buildAutoAssignPreview(images, selectedFilenameKey, delimiter = '', options = {}) {
   const groups = new Map();
+  const source = options.source === 'metadata' ? 'metadata' : 'filename';
+  const selectedMetadataKey = String(options.selectedMetadataKey || '').trim();
+
   (Array.isArray(images) ? images : []).forEach((image) => {
+    if (source === 'metadata' && selectedMetadataKey) {
+      const metadataValue = getImageMetadata(image)[selectedMetadataKey];
+      const partKey = normalizePartKey(metadataValue);
+      if (partKey) {
+        if (!groups.has(partKey)) groups.set(partKey, []);
+        groups.get(partKey).push(image);
+        return;
+      }
+    }
+
     tokenizeFilename(image.filename, delimiter).forEach((token) => {
       const partKey = normalizePartKey(extractPartKeyFromFilenameSegment(token, selectedFilenameKey));
       if (!partKey) return;
@@ -159,6 +225,7 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
   const [showSomeModal, setShowSomeModal] = useState(false);
   const [someFilter, setSomeFilter] = useState('');
   const [selectedFilenameKey, setSelectedFilenameKey] = useState('');
+  const [autoAssignKeySource, setAutoAssignKeySource] = useState('filename');
   const [autoAssigning, setAutoAssigning] = useState(false);
   const unassignedRef = useRef(null);
 
@@ -368,19 +435,29 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
   );
 
   const autoAssignDelimiter = useMemo(() => getAutoAssignDelimiter(projectConfiguration), [projectConfiguration]);
-  const filenameKeyOptions = useMemo(
-    () => buildFilenameKeyOptions(images, autoAssignDelimiter),
-    [images, autoAssignDelimiter]
+  const autoAssignFieldOptions = useMemo(
+    () => buildAutoAssignFieldOptions(images, projectConfiguration, autoAssignDelimiter),
+    [images, projectConfiguration, autoAssignDelimiter]
+  );
+  const selectedAutoAssignOption = useMemo(
+    () => autoAssignFieldOptions.find((option) => (autoAssignKeySource === 'metadata' ? option.metadataKey === selectedFilenameKey : option.filenameKey === selectedFilenameKey)) || null,
+    [autoAssignFieldOptions, autoAssignKeySource, selectedFilenameKey]
   );
   const autoAssignPreview = useMemo(
-    () => buildAutoAssignPreview(localBuckets.unassigned, selectedFilenameKey, autoAssignDelimiter),
-    [localBuckets.unassigned, selectedFilenameKey, autoAssignDelimiter]
+    () => buildAutoAssignPreview(localBuckets.unassigned, selectedAutoAssignOption?.filenameKey || selectedFilenameKey, autoAssignDelimiter, {
+      source: autoAssignKeySource,
+      selectedMetadataKey: selectedAutoAssignOption?.metadataKey || selectedFilenameKey,
+    }),
+    [localBuckets.unassigned, selectedFilenameKey, autoAssignDelimiter, autoAssignKeySource, selectedAutoAssignOption]
   );
 
   const findPartByKey = (partKey, buckets = localBuckets.partBuckets) => buckets.find((part) => normalizePartKey(part.serialNumber || part.displayName) === partKey);
 
   const handleAutoAssignParts = async () => {
-    const preview = buildAutoAssignPreview(localBuckets.unassigned, selectedFilenameKey, autoAssignDelimiter);
+    const preview = buildAutoAssignPreview(localBuckets.unassigned, selectedAutoAssignOption?.filenameKey || selectedFilenameKey, autoAssignDelimiter, {
+      source: autoAssignKeySource,
+      selectedMetadataKey: selectedAutoAssignOption?.metadataKey || selectedFilenameKey,
+    });
     if (preview.length === 0) return;
     setAutoAssigning(true);
     try {
@@ -456,11 +533,23 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
         <section className="auto-assign-parts-panel" aria-label="Automatically assign images to parts">
           <div>
             <h3>Automatically Assign Images to Parts</h3>
-            <p className="muted">Select a filename key found in loaded files. Keys are the full letter portion of a letter-number pattern between delimiters. Use Blank key to match delimiter-separated numeric segments.</p>
+            <p className="muted">Select whether autoassign should use filename elements or their mapped metadata labels. Use Blank key to match delimiter-separated numeric filename segments.</p>
           </div>
           <div className="auto-assign-token-list">
+            <label className="auto-assign-token-option" htmlFor="auto-assign-key-source">
+              <span><strong>Key source</strong><small>Choose filename elements or mapped metadata labels</small></span>
+              <select
+                id="auto-assign-key-source"
+                value={autoAssignKeySource}
+                onChange={(event) => { setAutoAssignKeySource(event.target.value); setSelectedFilenameKey(''); }}
+                aria-label="Autoassign key source"
+              >
+                <option value="filename">Filename</option>
+                <option value="metadata">Metadata</option>
+              </select>
+            </label>
             <label className="auto-assign-token-option" htmlFor="auto-assign-filename-key">
-              <span><strong>Filename key</strong><small>Delimiter: {autoAssignDelimiter || 'automatic non-alphanumeric split'}</small></span>
+              <span><strong>{autoAssignKeySource === 'metadata' ? 'Metadata label' : 'Filename key'}</strong><small>Delimiter: {autoAssignDelimiter || 'automatic non-alphanumeric split'}</small></span>
               <select
                 id="auto-assign-filename-key"
                 value={selectedFilenameKey}
@@ -468,7 +557,10 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
                 aria-label="Filename key for autoassign"
               >
                 <option value="">Blank key (numeric segment)</option>
-                {filenameKeyOptions.map((key) => <option key={key} value={key}>{key}</option>)}
+                {Array.from(new Set(autoAssignFieldOptions
+                  .map((option) => (autoAssignKeySource === 'metadata' ? option.metadataKey : option.filenameKey))
+                  .filter(Boolean)))
+                  .map((value) => <option key={`${autoAssignKeySource}:${value}`} value={value}>{value}</option>)}
               </select>
             </label>
           </div>
