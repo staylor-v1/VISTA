@@ -450,6 +450,41 @@ describe('ImagesToPartsTab', () => {
     expect(screen.getByRole('button', { name: '2' })).toBeInTheDocument();
   });
 
+
+  test('switches autoassign dropdown between filename keys and mapped metadata labels', async () => {
+    const projectConfiguration = {
+      file_naming_scheme: {
+        hierarchy_levels: [
+          { id: 'serial_number', label: 'Serial', abbreviation: 'SN' },
+        ],
+      },
+    };
+
+    render(
+      <ImagesToPartsTab
+        projectId="proj-1"
+        parts={[]}
+        projectConfiguration={projectConfiguration}
+        images={[
+          { id: 'img-1', filename: 'SN100_front.png', metadata: { serial_number: '100' } },
+          { id: 'img-2', filename: 'SN200_front.png', metadata: { serial_number: '200' } },
+        ]}
+      />
+    );
+
+    const keySelect = screen.getByRole('combobox', { name: 'Filename key for autoassign' });
+    expect(within(keySelect).getByRole('option', { name: 'SN' })).toBeInTheDocument();
+    expect(within(keySelect).queryByRole('option', { name: 'serial_number' })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Autoassign key source' }), { target: { value: 'metadata' } });
+
+    expect(within(keySelect).getByRole('option', { name: 'serial_number' })).toBeInTheDocument();
+    expect(within(keySelect).queryByRole('option', { name: 'SN' })).not.toBeInTheDocument();
+    fireEvent.change(keySelect, { target: { value: 'serial_number' } });
+    expect(screen.getByText('100 (1)')).toBeInTheDocument();
+    expect(screen.getByText('200 (1)')).toBeInTheDocument();
+  });
+
   test('can use a numeric filename segment with no letter identifier as the assignment key', async () => {
     const fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (url, options = {}) => {
       if (url === '/api/projects/proj-1/parts') {
