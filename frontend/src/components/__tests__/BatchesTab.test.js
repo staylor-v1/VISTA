@@ -88,4 +88,67 @@ describe('BatchesTab', () => {
     expect(screen.getByTestId('batch-target-unbatched')).toHaveTextContent('Part A');
   });
 
+
+  test('supports file-explorer style ctrl-click, shift-click, and marquee selection across unbatched and batched parts', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: async () => [{ id: 'batch-1', name: 'Batch 1', status: 'not_started', owner: '' }],
+    });
+
+    render(
+      <BatchesTab
+        projectId="proj-1"
+        parts={[
+          { id: 'part-a', display_name: 'Part A', metadata: {} },
+          { id: 'part-b', display_name: 'Part B', metadata: {} },
+          { id: 'part-c', batch_id: 'batch-1', display_name: 'Part C', metadata: {} },
+          { id: 'part-d', batch_id: 'batch-1', display_name: 'Part D', metadata: {} },
+        ]}
+      />,
+    );
+
+    await screen.findByDisplayValue('Batch 1');
+    const partA = screen.getByText('Part A').closest('.batch-part-chip');
+    const partB = screen.getByText('Part B').closest('.batch-part-chip');
+    const partC = screen.getByText('Part C').closest('.batch-part-chip');
+    const partD = screen.getByText('Part D').closest('.batch-part-chip');
+
+    fireEvent.click(partA);
+    expect(partA).toHaveClass('selected');
+
+    fireEvent.click(partC, { shiftKey: true });
+    expect(partA).toHaveClass('selected');
+    expect(partB).toHaveClass('selected');
+    expect(partC).toHaveClass('selected');
+    expect(partD).not.toHaveClass('selected');
+
+    fireEvent.click(partB, { ctrlKey: true });
+    expect(partB).not.toHaveClass('selected');
+    expect(partA).toHaveClass('selected');
+    expect(partC).toHaveClass('selected');
+
+    [partA, partB, partC, partD].forEach((chip, index) => {
+      chip.getBoundingClientRect = jest.fn(() => ({
+        left: 10,
+        right: 110,
+        top: 20 + (index * 30),
+        bottom: 45 + (index * 30),
+        width: 100,
+        height: 25,
+      }));
+    });
+
+    const grid = document.querySelector('.batches-grid');
+    fireEvent.mouseDown(grid, { button: 0, clientX: 0, clientY: 15 });
+    fireEvent.mouseMove(grid, { clientX: 120, clientY: 110 });
+    expect(screen.getByTestId('batch-selection-marquee')).toBeInTheDocument();
+    fireEvent.mouseUp(grid, { clientX: 120, clientY: 110 });
+
+    expect(partA).toHaveClass('selected');
+    expect(partB).toHaveClass('selected');
+    expect(partC).toHaveClass('selected');
+    expect(partD).not.toHaveClass('selected');
+  });
+
+
 });
