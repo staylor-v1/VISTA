@@ -432,8 +432,11 @@ describe('ImagesToPartsTab', () => {
     expect(within(filenameKeySelect).getByRole('option', { name: 'SN' })).toBeInTheDocument();
     fireEvent.change(filenameKeySelect, { target: { value: 'SN' } });
 
-    expect(screen.getByText('1 (4)')).toBeInTheDocument();
-    expect(screen.getByText('2 (4)')).toBeInTheDocument();
+    expect(screen.getByText('Part 1')).toBeInTheDocument();
+    expect(screen.getAllByText('4 images')).toHaveLength(2);
+    expect(screen.getAllByText('L2_SN1_back.png').length).toBeGreaterThan(0);
+    expect(screen.getByText('Part 2')).toBeInTheDocument();
+    expect(screen.getAllByText('L2_SN2_back.png').length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole('button', { name: 'Assign Parts' }));
 
@@ -476,13 +479,15 @@ describe('ImagesToPartsTab', () => {
     expect(within(keySelect).getByRole('option', { name: 'SN' })).toBeInTheDocument();
     expect(within(keySelect).queryByRole('option', { name: 'serial_number' })).not.toBeInTheDocument();
 
-    fireEvent.change(screen.getByRole('combobox', { name: 'Autoassign key source' }), { target: { value: 'metadata' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Use metadata labels for autoassign' }));
 
     expect(within(keySelect).getByRole('option', { name: 'serial_number' })).toBeInTheDocument();
     expect(within(keySelect).queryByRole('option', { name: 'SN' })).not.toBeInTheDocument();
     fireEvent.change(keySelect, { target: { value: 'serial_number' } });
-    expect(screen.getByText('100 (1)')).toBeInTheDocument();
-    expect(screen.getByText('200 (1)')).toBeInTheDocument();
+    expect(screen.getByText('Part 100')).toBeInTheDocument();
+    expect(screen.getAllByText('SN100_front.png').length).toBeGreaterThan(0);
+    expect(screen.getByText('Part 200')).toBeInTheDocument();
+    expect(screen.getAllByText('SN200_front.png').length).toBeGreaterThan(0);
   });
 
   test('can use a numeric filename segment with no letter identifier as the assignment key', async () => {
@@ -507,8 +512,10 @@ describe('ImagesToPartsTab', () => {
 
     fireEvent.change(screen.getByLabelText('Filename key for autoassign'), { target: { value: '' } });
 
-    expect(screen.getByText('001 (1)')).toBeInTheDocument();
-    expect(screen.getByText('002 (1)')).toBeInTheDocument();
+    expect(screen.getByText('Part 001')).toBeInTheDocument();
+    expect(screen.getAllByText('L1_SN1_001.png').length).toBeGreaterThan(0);
+    expect(screen.getByText('Part 002')).toBeInTheDocument();
+    expect(screen.getAllByText('L1_SN1_002.png').length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole('button', { name: 'Assign Parts' }));
 
