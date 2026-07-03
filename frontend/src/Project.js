@@ -19,6 +19,7 @@ import OverlaysTab from './components/OverlaysTab';
 import ProjectDataMetadataTab from './components/ProjectDataMetadataTab';
 import { resolveCurrentProjectPhase } from './utils/projectPhases';
 import { DEFAULT_INTERFACE_HIERARCHY, loadInterfaceHierarchy } from './utils/interfaceHierarchy';
+import { copyCurrentShareUrl } from './utils/shareLink';
 
 const MAIN_TAB_DEFINITIONS = {
   project_configuration: { label: 'Project Configuration' },
@@ -96,6 +97,7 @@ function Project({ currentUserGroups = [] }) {
   const [inspectionLaunchFilters, setInspectionLaunchFilters] = useState(null);
   const projectConfigurationPanelRef = useRef(null);
   const [autosaveTabDelayMessage, setAutosaveTabDelayMessage] = useState('');
+  const [shareLinkMessage, setShareLinkMessage] = useState(null);
 
   const projectQueryParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const queryMainTab = projectQueryParams.get('tab');
@@ -317,7 +319,17 @@ function Project({ currentUserGroups = [] }) {
     navigate({ pathname: location.pathname, search: params.toString() }, { replace: false });
   }, [location.pathname, location.search, navigate]);
 
-
+  const handleCopySessionLink = useCallback(async () => {
+    try {
+      await copyCurrentShareUrl();
+      setShareLinkMessage({ type: 'success', text: 'Session link copied to clipboard.' });
+    } catch (err) {
+      setShareLinkMessage({
+        type: 'error',
+        text: err?.message || 'Unable to copy session link. Please copy the browser URL manually.',
+      });
+    }
+  }, []);
 
   const handleInspectionShareStateChange = useCallback((shareState, options = {}) => {
     const params = new URLSearchParams(location.search);
@@ -756,6 +768,9 @@ function Project({ currentUserGroups = [] }) {
                 <span className="back-icon">←</span>
                 <span>Back to Dashboard</span>
               </button>
+              <button className="back-btn share-link-btn" onClick={handleCopySessionLink}>
+                Copy session link
+              </button>
             </div>
             <div className="project-info">
               <div className="project-title-row">
@@ -781,6 +796,12 @@ function Project({ currentUserGroups = [] }) {
         {autosaveTabDelayMessage && (
           <div className="alert alert-info" role="status">
             {autosaveTabDelayMessage}
+          </div>
+        )}
+
+        {shareLinkMessage && (
+          <div className={`alert alert-${shareLinkMessage.type}`} role="status">
+            {shareLinkMessage.text}
           </div>
         )}
 

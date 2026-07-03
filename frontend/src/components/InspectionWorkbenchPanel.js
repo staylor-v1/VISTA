@@ -2488,9 +2488,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   ));
   const [workbenchWidth, setWorkbenchWidth] = useState(0);
   const [manualFilterNotice, setManualFilterNotice] = useState('');
-  const [deepLinkNotice, setDeepLinkNotice] = useState('');
-  const [deepLinkFallbackUrl, setDeepLinkFallbackUrl] = useState('');
-  const deepLinkFallbackRef = useRef(null);
   const workbenchDetailsRef = useRef(null);
   const inspectionResizeSaveTimerRef = useRef(null);
   const mprDragRef = useRef(null);
@@ -2897,87 +2894,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     });
   }, [activeMprPane, mprDimensions, mprRotation, slicePosition, viewportTransform.zoom]);
 
-  const buildInspectionDeepLink = useCallback(() => {
-    const origin = typeof window !== 'undefined' && window.location?.origin
-      ? window.location.origin
-      : '';
-    const url = new URL(`/project/${encodeURIComponent(String(projectId || ''))}`, origin || 'http://localhost');
-    url.searchParams.set('tab', 'inspection');
-
-    buildInspectionShareParams({
-      selectedBatchId,
-      reviewFilter,
-      selectedPartId: selectedPart?.id,
-      selectedImageRef,
-      activeMetadataTab,
-      activeMprPane: projectType === 'PT3' ? activeMprPane : '',
-      activeOverlayIds: projectType === 'PT3' ? activeOverlayIds : [],
-    }).forEach((value, key) => url.searchParams.set(key, value));
-
-    if (projectType === 'PT3') {
-      if (activeMprPane && activeMprPane !== 'axial') url.searchParams.set('mprPane', activeMprPane);
-      if (Number(slicePosition.axial) !== 0) url.searchParams.set('sliceAxial', String(slicePosition.axial));
-      if (Number(slicePosition.coronal) !== 0) url.searchParams.set('sliceCoronal', String(slicePosition.coronal));
-      if (Number(slicePosition.sagittal) !== 0) url.searchParams.set('sliceSagittal', String(slicePosition.sagittal));
-      if (Number(viewportTransform.zoom) !== 1) url.searchParams.set('zoom', String(viewportTransform.zoom));
-    }
-
-    return url.toString();
-  }, [
-    activeMetadataTab,
-    activeMprPane,
-    projectId,
-    projectType,
-    reviewFilter,
-    selectedBatchId,
-    selectedImageRef,
-    selectedPart?.id,
-    slicePosition.axial,
-    slicePosition.coronal,
-    slicePosition.sagittal,
-    viewportTransform.zoom,
-  ]);
-
-  const handleCopyInspectionDeepLink = useCallback(async () => {
-    const link = buildInspectionDeepLink();
-    setDeepLinkFallbackUrl('');
-    if (navigator?.clipboard?.writeText) {
-      try {
-        await navigator.clipboard.writeText(link);
-        setDeepLinkNotice('Link copied to clipboard.');
-        return;
-      } catch (_) {
-        setDeepLinkNotice('Unable to copy automatically. Select and copy the link below.');
-      }
-    } else {
-      setDeepLinkNotice('Clipboard is unavailable. Select and copy the link below.');
-    }
-    setDeepLinkFallbackUrl(link);
-    window.setTimeout(() => deepLinkFallbackRef.current?.select?.(), 0);
-  }, [buildInspectionDeepLink]);
-
-  const renderInspectionDeepLinkControls = () => (
-    <div className="inspection-deep-link-controls">
-      <button type="button" className="btn btn-secondary" onClick={handleCopyInspectionDeepLink}>
-        Copy link to current view
-      </button>
-      {deepLinkNotice && (
-        <span className="muted" role="status" aria-live="polite">{deepLinkNotice}</span>
-      )}
-      {deepLinkFallbackUrl && (
-        <input
-          ref={deepLinkFallbackRef}
-          className="form-control"
-          aria-label="Current inspection view link"
-          readOnly
-          value={deepLinkFallbackUrl}
-          onFocus={(event) => event.target.select()}
-        />
-      )}
-    </div>
-  );
-
-  const overlayLayers = useMemo(() => getOverlayLayers(selectedPart), [selectedPart]);
   const modalityOptions = useMemo(() => getModalities(selectedPart), [selectedPart]);
   const activeViewName = useMemo(() => {
     if (!selectedPart) return '';
@@ -6328,7 +6244,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
           </span>
         </div>
         <div className="workbench-detail-actions">
-          {renderInspectionDeepLinkControls()}
           <button type="button" className="btn btn-secondary" onClick={() => setActiveWorkbenchModal('parts')}>
             Part Selection
           </button>
@@ -7445,7 +7360,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   <div className="workbench-detail-header">
                     <h3>{selectedPart.display_name || selectedPart.serial_number}</h3>
                     <div className="workbench-detail-actions">
-                      {renderInspectionDeepLinkControls()}
                       <button
                         className="btn btn-success"
                         disabled={savingPartId === selectedPart.id}

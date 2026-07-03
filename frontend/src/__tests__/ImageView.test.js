@@ -798,3 +798,26 @@ describe('ImageView', () => {
     });
   });
 });
+
+describe('ImageView link sharing', () => {
+  test('copies the exact current browser URL from the compact image header', async () => {
+    window.history.pushState({}, '', '/images/test-image-id?project=test-project-id&galleryKey=recent');
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    fetch.mockImplementation((url) => {
+      if (url === '/api/users/me') return Promise.resolve({ ok: false, status: 401 });
+      if (url === `/api/images/${mockParams.imageId}`) return Promise.resolve({ ok: true, json: async () => mockRegularImage });
+      if (url === `/api/projects/test-project-id/images?include_deleted=true`) return Promise.resolve({ ok: true, json: async () => mockProjectImages });
+      if (url === `/api/projects/test-project-id/classes`) return Promise.resolve({ ok: true, json: async () => [] });
+      return Promise.resolve({ ok: true, json: async () => [] });
+    });
+
+    renderImageView();
+    await waitFor(() => expect(screen.getByText('test-image.jpg')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(window.location.href));
+    expect(screen.getByRole('status')).toHaveTextContent('Link copied to clipboard.');
+  });
+});
