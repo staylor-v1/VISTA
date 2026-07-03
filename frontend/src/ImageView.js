@@ -15,7 +15,7 @@ import CalibrationManager from './components/CalibrationManager';
 import MeasurementList from './components/MeasurementList';
 import ReviewPanel from './components/ReviewPanel';
 import ImageGroupPanel from './components/ImageGroupPanel';
-import { loadGalleryState, applyGalleryFilters, sortImages } from './utils/galleryState';
+import { loadGalleryState, loadGalleryStateFromUrl, hasGalleryQueryParams, applyGalleryFilters, sortImages, preserveGalleryQueryParams } from './utils/galleryState';
 
 function ImageView() {
   const { imageId } = useParams();
@@ -139,10 +139,13 @@ function ImageView() {
     try {
       const params = new URLSearchParams({ include_deleted: 'true' });
       const urlGalleryKey = searchParams.get('galleryKey');
-      const isUngroupedGallery = urlGalleryKey && urlGalleryKey.endsWith('_ungrouped');
+      const urlGroupId = searchParams.get('groupId');
+      const isUngroupedGallery = searchParams.get('ungrouped') === 'true' || (urlGalleryKey && urlGalleryKey.endsWith('_ungrouped'));
 
       if (isUngroupedGallery) {
         params.set('ungrouped', 'true');
+      } else if (urlGroupId) {
+        params.set('group_id', urlGroupId);
       } else if (groupId) {
         params.set('group_id', groupId);
       }
@@ -174,7 +177,9 @@ function ImageView() {
       // Load saved gallery filter/sort state and apply it for consistent navigation
       let navImages;
       try {
-        const galleryState = loadGalleryState(galleryStateKey);
+        const galleryState = hasGalleryQueryParams(searchParams)
+          ? { ...loadGalleryState(galleryStateKey), ...loadGalleryStateFromUrl(searchParams) }
+          : loadGalleryState(galleryStateKey);
 
         // Fetch review statuses if a non-default review filter is active
         let reviewStatuses = null;
@@ -290,11 +295,9 @@ function ImageView() {
     }
   }, [image?.id, image?.group_id, projectId, loadProjectImages]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Build query string for navigation, preserving galleryKey if present
+  // Build query string for navigation, preserving recognized gallery context params.
   const buildNavQuery = useCallback(() => {
-    const params = new URLSearchParams({ project: projectId });
-    const galleryKey = searchParams.get('galleryKey');
-    if (galleryKey) params.set('galleryKey', galleryKey);
+    const params = preserveGalleryQueryParams(searchParams, { project: projectId });
     return params.toString();
   }, [projectId, searchParams]);
 

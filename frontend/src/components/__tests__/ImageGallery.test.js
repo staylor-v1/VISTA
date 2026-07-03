@@ -90,6 +90,7 @@ describe('ImageGallery', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
     localStorage.clear();
+    window.history.pushState({}, '', '/');
     global.fetch = jest.fn(() =>
       Promise.resolve({
         ok: true,
@@ -944,6 +945,44 @@ describe('ImageGallery', () => {
         expect(document.querySelector('.sort-select:not([title])').value).toBe('date');
         expect(screen.getByTitle('Filter by review status').value).toBe('all');
       });
+    });
+
+    test('URL query params reproduce filter and sort state without localStorage', async () => {
+      window.history.pushState({}, '', '/project/test-project-id?searchField=filename&searchValue=brick&sortBy=name&sortOrder=asc&reviewFilter=all&galleryKey=test-project-id');
+      renderImageGallery({ images: [mockRegularImage, mockImageWithMetadata] });
+
+      expect(screen.getByPlaceholderText('Search by filename...').value).toBe('brick');
+      expect(document.querySelector('.sort-select:not([title])').value).toBe('name');
+      expect(screen.getByTitle('Sort order').value).toBe('asc');
+      expect(screen.getByText('brick-wall.jpg')).toBeInTheDocument();
+      expect(screen.queryByText('test-image.jpg')).not.toBeInTheDocument();
+    });
+
+    test('filter and sort changes update URL and image navigation preserves gallery params', async () => {
+      window.history.pushState({}, '', '/project/test-project-id');
+      renderImageGallery({ images: [mockRegularImage, mockImageWithMetadata] });
+
+      fireEvent.change(screen.getByPlaceholderText('Search by filename...'), { target: { value: 'brick' } });
+      fireEvent.change(document.querySelector('.sort-select:not([title])'), { target: { value: 'name' } });
+      fireEvent.change(screen.getByTitle('Sort order'), { target: { value: 'asc' } });
+
+      await waitFor(() => {
+        const params = new URLSearchParams(window.location.search);
+        expect(params.get('searchValue')).toBe('brick');
+        expect(params.get('sortBy')).toBe('name');
+        expect(params.get('sortOrder')).toBe('asc');
+        expect(params.get('galleryKey')).toBe('test-project-id');
+        expect(params.has('thumbnailSize')).toBe(false);
+      });
+
+      fireEvent.click(screen.getByAltText('brick-wall.jpg').closest('.gallery-item-image'));
+      const navUrl = mockNavigate.mock.calls.at(-1)[0];
+      expect(navUrl).toContain('/view/img-4?');
+      expect(navUrl).toContain('searchValue=brick');
+      expect(navUrl).toContain('sortBy=name');
+      expect(navUrl).toContain('sortOrder=asc');
+      expect(navUrl).toContain('galleryKey=test-project-id');
+      expect(navUrl).not.toContain('thumbnailSize');
     });
 
     test('includes galleryKey in navigation URL', () => {
