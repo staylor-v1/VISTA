@@ -6,7 +6,7 @@ import mimetypes
 from urllib.parse import urlparse, unquote
 from pathlib import PurePosixPath
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Body
-from sqlalchemy import update
+from sqlalchemy import update, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
@@ -35,6 +35,65 @@ from utils.volume_loader import read_npy_header
 router = APIRouter(
     tags=["Images"],
 )
+
+
+def _candidate_project_metadata_keys(metadata: Any) -> set[str]:
+    if not isinstance(metadata, dict):
+        return set()
+    keys: set[str] = set()
+    for raw in metadata.get("associated_metadata_refs") or []:
+        if raw:
+            keys.add(str(raw))
+    raw_ref = metadata.get("associated_metadata_ref")
+    if raw_ref:
+        keys.add(str(raw_ref))
+    associated = metadata.get("associated_metadata")
+    if isinstance(associated, dict):
+        for candidate_key in ("project_metadata_key", "key"):
+            raw = associated.get(candidate_key)
+            if raw:
+                keys.add(str(raw))
+    sources = metadata.get("associated_metadata_sources")
+    if isinstance(sources, list):
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            for candidate_key in ("project_metadata_key", "key"):
+                raw = source.get(candidate_key)
+                if raw:
+                    keys.add(str(raw))
+    return {key for key in keys if key}
+
+
+async def _remove_unreferenced_project_metadata_for_image(
+    db: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    deleted_image_id: uuid.UUID,
+    image_metadata: Any,
+    deleted_by: Optional[str],
+) -> int:
+    candidate_keys = _candidate_project_metadata_keys(image_metadata)
+    if not candidate_keys:
+        return 0
+
+    result = await db.execute(
+        select(models.DataInstance.metadata_json)
+        .where(
+            models.DataInstance.project_id == project_id,
+            models.DataInstance.id != deleted_image_id,
+            models.DataInstance.deleted_at.is_(None),
+        )
+    )
+    referenced_elsewhere: set[str] = set()
+    for other_metadata in result.scalars().all():
+        referenced_elsewhere.update(_candidate_project_metadata_keys(other_metadata))
+
+    removed_count = 0
+    for key in sorted(candidate_keys - referenced_elsewhere):
+        if await crud.delete_project_metadata_by_key(db=db, project_id=project_id, key=key, deleted_by=deleted_by):
+            removed_count += 1
+    return removed_count
 
 VOXEL_DATA_EXTENSIONS = {".npy", ".npz", ".inspiro"}
 TIFF_EXTENSIONS = {".tif", ".tiff"}
@@ -1051,7 +1110,15 @@ async def delete_image(
     actor_user_id = current_user.id
     if not db_image.deleted_at:
         prev_state = {"deleted_at": None}
+        image_metadata_before_delete = db_image.metadata_json if isinstance(db_image.metadata_json, dict) else {}
         db_image = await crud.soft_delete_image(db, db_image, actor_user_id=actor_user_id, reason=body.reason, retention_days=retention_days)
+        await _remove_unreferenced_project_metadata_for_image(
+            db,
+            project_id=project_id,
+            deleted_image_id=db_image.id,
+            image_metadata=image_metadata_before_delete,
+            deleted_by=current_user.email,
+        )
         await crud.remove_image_from_inspection_parts(
             db,
             project_id,

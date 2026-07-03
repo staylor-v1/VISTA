@@ -1,5 +1,6 @@
 import io
 import uuid
+import json
 from PIL import Image
 
 # Helper to make png bytes
@@ -17,9 +18,10 @@ def _create_project(client):
     return r.json()["id"]
 
 
-def _upload_image(client, project_id, filename="d.png"):
+def _upload_image(client, project_id, filename="d.png", metadata=None):
     files = {"file": (filename, _png(), "image/png")}
-    r = client.post(f"/api/projects/{project_id}/images", files=files)
+    data = {"metadata": json.dumps(metadata)} if metadata is not None else None
+    r = client.post(f"/api/projects/{project_id}/images", files=files, data=data)
     assert r.status_code == 201
     return r.json()
 
@@ -132,3 +134,47 @@ def test_soft_delete_image_removes_inspection_part_references(client):
     assert metadata["source_images"] == []
     assert metadata["view_images"] == {}
     assert metadata["overlay_images"] == {}
+
+
+def test_soft_delete_image_removes_unreferenced_associated_project_metadata(client):
+    pid = _create_project(client)
+    metadata_key = "associated:file-one.nsipro"
+    meta_r = client.post(
+        f"/api/projects/{pid}/metadata",
+        json={"key": metadata_key, "value": {"source_filename": "file-one.nsipro"}},
+    )
+    assert meta_r.status_code == 201, meta_r.text
+    img = _upload_image(
+        client,
+        pid,
+        filename="with-associated.png",
+        metadata={
+            "associated_metadata_ref": metadata_key,
+            "associated_metadata": {"project_metadata_key": metadata_key},
+        },
+    )
+
+    del_r = client.request("DELETE", f"/api/projects/{pid}/images/{img['id']}", json={"reason": "unload associated metadata"})
+    assert del_r.status_code == 200, del_r.text
+
+    meta_after = client.get(f"/api/projects/{pid}/metadata/{metadata_key}")
+    assert meta_after.status_code == 404
+
+
+def test_soft_delete_image_keeps_project_metadata_still_used_by_another_image(client):
+    pid = _create_project(client)
+    metadata_key = "associated:shared.nsipro"
+    meta_r = client.post(
+        f"/api/projects/{pid}/metadata",
+        json={"key": metadata_key, "value": {"source_filename": "shared.nsipro"}},
+    )
+    assert meta_r.status_code == 201, meta_r.text
+    shared_metadata = {"associated_metadata_refs": [metadata_key]}
+    first = _upload_image(client, pid, filename="shared-one.png", metadata=shared_metadata)
+    _upload_image(client, pid, filename="shared-two.png", metadata=shared_metadata)
+
+    del_r = client.request("DELETE", f"/api/projects/{pid}/images/{first['id']}", json={"reason": "unload one shared metadata"})
+    assert del_r.status_code == 200, del_r.text
+
+    meta_after = client.get(f"/api/projects/{pid}/metadata/{metadata_key}")
+    assert meta_after.status_code == 200, meta_after.text
