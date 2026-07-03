@@ -260,3 +260,37 @@ describe('Project query parameter tab selection', () => {
   });
 
 });
+
+describe('Project session link sharing', () => {
+  beforeEach(() => {
+    mockPendingAutosave = false;
+    mockSearch = '?tab=inspection&image=image-7';
+    mockNavigate.mockClear();
+    mockNavigate.mockImplementation(mockNavigateToLocation);
+    window.history.pushState({}, '', `/project/proj-1${mockSearch}`);
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/projects/proj-1') return Promise.resolve({ ok: true, json: async () => ({ id: 'proj-1', name: 'Share Project', project_type: 'PT1' }) });
+      if (url === '/api/projects/proj-1/metadata-dict') return Promise.resolve({ ok: true, json: async () => ({}) });
+      if (url === '/api/projects/proj-1/classes') return Promise.resolve({ ok: true, json: async () => [] });
+      if (String(url).startsWith('/api/projects/proj-1/images')) return Promise.resolve({ ok: true, json: async () => [] });
+      if (url === '/api/projects/proj-1/parts') return Promise.resolve({ ok: true, json: async () => [] });
+      if (url === '/api/projects/proj-1/export-bundle-json') return Promise.resolve({ ok: true, json: async () => ({ bundle_summary: {} }) });
+      if (url === '/api/projects/proj-1/configuration') return Promise.resolve({ ok: true, json: async () => ({ config: {} }) });
+      if (String(url).startsWith('/interface-hierarchy.toml')) return Promise.resolve({ ok: false, text: async () => '' });
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+  });
+
+  test('copies the exact current browser URL from the project header', async () => {
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+
+    render(<Project />);
+    await waitFor(() => expect(screen.getByText('Share Project')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy session link' }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(window.location.href));
+    await waitFor(() => expect(screen.getByText('Session link copied to clipboard.')).toBeInTheDocument());
+  });
+});

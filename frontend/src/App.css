@@ -1007,6 +1007,7 @@ ul li:hover {
 .project-nav {
   display: flex;
   align-items: center;
+  gap: var(--space-2);
   transform: translateY(-2px);
 }
 
@@ -8329,4 +8330,14 @@ ul li:hover {
   border: 1px solid rgba(37, 99, 235, 0.8);
   background: rgba(37, 99, 235, 0.16);
   border-radius: 4px;
+}
+
+.share-link-btn {
+  white-space: nowrap;
+}
+
+.view-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }

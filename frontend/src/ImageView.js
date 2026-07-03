@@ -16,6 +16,7 @@ import MeasurementList from './components/MeasurementList';
 import ReviewPanel from './components/ReviewPanel';
 import ImageGroupPanel from './components/ImageGroupPanel';
 import { loadGalleryState, loadGalleryStateFromUrl, hasGalleryQueryParams, applyGalleryFilters, sortImages, preserveGalleryQueryParams } from './utils/galleryState';
+import { copyCurrentShareUrl } from './utils/shareLink';
 
 function ImageView() {
   const { imageId } = useParams();
@@ -35,6 +36,19 @@ function ImageView() {
   const [sidebarWidth, setSidebarWidth] = useState(350);
   const [isResizing, setIsResizing] = useState(false);
   const [projectArchived, setProjectArchived] = useState(null);
+  const [shareLinkMessage, setShareLinkMessage] = useState(null);
+
+  const handleCopySessionLink = useCallback(async () => {
+    try {
+      await copyCurrentShareUrl();
+      setShareLinkMessage({ type: 'success', text: 'Link copied to clipboard.' });
+    } catch (err) {
+      setShareLinkMessage({
+        type: 'error',
+        text: err?.message || 'Unable to copy link. Please copy the browser URL manually.',
+      });
+    }
+  }, []);
 
   // Navigation settings - restore from localStorage
   const [skipDeletedImages, setSkipDeletedImages] = useState(() => {
@@ -563,18 +577,26 @@ function ImageView() {
     <div className="App" style={{ maxWidth: '100%', padding: '0' }}>
       <header className="view-header-compact">
         <div className="view-header-content">
-          <button
-            className="btn btn-secondary btn-small"
-            onClick={() => {
-              if (image && image.group_id) {
-                navigate(`/project/${projectId}/group/${image.group_id}`);
-              } else {
-                navigate(`/project/${projectId}`);
-              }
-            }}
-          >
-            ← Back
-          </button>
+          <div className="view-header-actions">
+            <button
+              className="btn btn-secondary btn-small"
+              onClick={() => {
+                if (image && image.group_id) {
+                  navigate(`/project/${projectId}/group/${image.group_id}`);
+                } else {
+                  navigate(`/project/${projectId}`);
+                }
+              }}
+            >
+              ← Back
+            </button>
+            <button
+              className="btn btn-secondary btn-small"
+              onClick={handleCopySessionLink}
+            >
+              Copy link
+            </button>
+          </div>
           <span className="view-filename">{image ? image.filename : 'Loading...'}</span>
           {currentUser && (
             <span className="view-user-info">{currentUser.email}</span>
@@ -583,6 +605,12 @@ function ImageView() {
       </header>
 
       <div className="container" style={{ maxWidth: '100%', padding: 'var(--space-4)' }}>
+        {shareLinkMessage && (
+          <div className={`alert alert-${shareLinkMessage.type}`} role="status">
+            {shareLinkMessage.text}
+          </div>
+        )}
+
         {projectArchived === true && (
           <div className="archived-project-notice">
             <strong>This project is archived.</strong> It is read-only. Classifications, comments, reviews, and other edits are disabled.
