@@ -1,25 +1,27 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import GalleryListView from './GalleryListView';
 import GalleryGridView from './GalleryGridView';
 import GalleryDebugPanel from './GalleryDebugPanel';
 import BulkDeleteModal from './BulkDeleteModal';
 import BulkMetadataModal from './BulkMetadataModal';
-import { loadGalleryStateWithDefaults, saveGalleryState, filterBySearch, filterByReviewStatus, sortImages } from '../utils/galleryState';
+import { getGalleryStateFromUrlOrStorage, saveGalleryState, filterBySearch, filterByReviewStatus, sortImages, writeGalleryStateToSearchParams } from '../utils/galleryState';
 import { isUserMetadataKey } from '../utils/metadataKeys';
 
 function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, refreshProjectImages }) {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   // galleryKey distinguishes between project-level and group-level gallery state
   const stateKey = galleryKey || projectId;
 
   const [imageLoadStatus, setImageLoadStatus] = useState({});
   const [currentPage, setCurrentPage] = useState(1);
   // Filter/sort state is loaded once from localStorage and persisted back on change
-  const [savedState] = useState(() => loadGalleryStateWithDefaults(stateKey));
+  const [savedState] = useState(() => getGalleryStateFromUrlOrStorage(searchParams, stateKey));
   const [viewMode, setViewMode] = useState(savedState.viewMode);
   const [thumbnailSize, setThumbnailSize] = useState(savedState.thumbnailSize);
   const [sortBy, setSortBy] = useState(savedState.sortBy);
+  const [sortOrder, setSortOrder] = useState(savedState.sortOrder);
   const [searchField, setSearchField] = useState(savedState.searchField);
   const [searchValue, setSearchValue] = useState(savedState.searchValue);
   const [availableMetadataKeys, setAvailableMetadataKeys] = useState([]);
@@ -37,24 +39,25 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
   useEffect(() => {
     if (prevKeyRef.current !== stateKey) {
       prevKeyRef.current = stateKey;
-      const saved = loadGalleryStateWithDefaults(stateKey);
+      const saved = getGalleryStateFromUrlOrStorage(searchParams, stateKey);
       setViewMode(saved.viewMode);
       setThumbnailSize(saved.thumbnailSize);
       setSortBy(saved.sortBy);
       setSearchField(saved.searchField);
       setSearchValue(saved.searchValue);
+      setSortOrder(saved.sortOrder);
       setReviewFilter(saved.reviewFilter);
       setCurrentPage(1);
     }
-  }, [stateKey]);
+  }, [stateKey, searchParams]);
 
   // Persist filter/sort state to localStorage whenever it changes.
   // Debounce to avoid excessive writes while dragging the thumbnail size slider.
   useEffect(() => {
-    const state = { viewMode, thumbnailSize, sortBy, searchField, searchValue, reviewFilter };
+    const state = { viewMode, thumbnailSize, sortBy, sortOrder, searchField, searchValue, reviewFilter };
     const timer = setTimeout(() => saveGalleryState(stateKey, state), 300);
     return () => clearTimeout(timer);
-  }, [stateKey, viewMode, thumbnailSize, sortBy, searchField, searchValue, reviewFilter]);
+  }, [stateKey, viewMode, thumbnailSize, sortBy, sortOrder, searchField, searchValue, reviewFilter]);
 
   const imagesPerPage = viewMode === 'list' ? 200 : 60;
 
@@ -64,7 +67,8 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
       reviewFilter,
       reviewStatuses
     ),
-    sortBy
+    sortBy,
+    sortOrder
   );
 
   const totalPages = Math.ceil(filteredImages.length / imagesPerPage);
@@ -74,7 +78,7 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [images.length, searchValue, searchField, sortBy, viewMode]);
+  }, [images.length, searchValue, searchField, sortBy, sortOrder, reviewFilter, viewMode]);
 
   useEffect(() => {
     const keys = new Set();
@@ -122,6 +126,42 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchField, searchValue]);
+
+  useEffect(() => {
+    const groupMatch = stateKey && stateKey.match(/_group_(.+)$/);
+    const nextParams = writeGalleryStateToSearchParams(searchParams, {
+      galleryKey: stateKey,
+      groupId: groupMatch ? groupMatch[1] : null,
+      ungrouped: stateKey && stateKey.endsWith('_ungrouped'),
+      searchField,
+      searchValue,
+      sortBy,
+      sortOrder,
+      reviewFilter,
+    });
+    if (nextParams.toString() !== searchParams.toString()) {
+      setSearchParams(nextParams, { replace: true });
+    }
+  }, [stateKey, searchParams, setSearchParams, searchField, searchValue, sortBy, sortOrder, reviewFilter]);
+
+  const buildImageViewUrl = useCallback((imageId) => {
+    const groupMatch = stateKey && stateKey.match(/_group_(.+)$/);
+    const params = writeGalleryStateToSearchParams(searchParams, {
+      galleryKey: stateKey,
+      groupId: groupMatch ? groupMatch[1] : null,
+      ungrouped: stateKey && stateKey.endsWith('_ungrouped'),
+      searchField,
+      searchValue,
+      sortBy,
+      sortOrder,
+      reviewFilter,
+    });
+    const navParams = new URLSearchParams({ project: projectId });
+    for (const [key, value] of params.entries()) {
+      if (key !== 'project') navParams.set(key, value);
+    }
+    return `/view/${imageId}?${navParams.toString()}`;
+  }, [stateKey, searchParams, projectId, searchField, searchValue, sortBy, sortOrder, reviewFilter]);
 
   const handlePageChange = (pageNumber) => {
     setCurrentPage(pageNumber);
@@ -241,6 +281,16 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
               <option value="name">Sort by Name</option>
               <option value="size">Sort by Size</option>
             </select>
+
+            <select
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value)}
+              className="sort-select"
+              title="Sort order"
+            >
+              <option value="desc">Descending</option>
+              <option value="asc">Ascending</option>
+            </select>
             
             <div className="view-mode-buttons">
               <div className="thumbnail-size-control">
@@ -354,7 +404,7 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
                 metadataKeys={availableMetadataKeys}
                 selectedImages={selectedImages}
                 reviewStatuses={reviewStatuses}
-                onImageClick={(imageId) => navigate(`/view/${imageId}?project=${projectId}&galleryKey=${encodeURIComponent(stateKey)}`)}
+                onImageClick={(imageId) => navigate(buildImageViewUrl(imageId))}
                 onToggleSelection={handleImageSelection}
               />
             ) : (
@@ -364,7 +414,7 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
                 thumbnailSize={thumbnailSize}
                 selectedImages={selectedImages}
                 reviewStatuses={reviewStatuses}
-                onImageClick={(imageId) => navigate(`/view/${imageId}?project=${projectId}&galleryKey=${encodeURIComponent(stateKey)}`)}
+                onImageClick={(imageId) => navigate(buildImageViewUrl(imageId))}
                 onToggleSelection={handleImageSelection}
                 onRestore={handleRestore}
                 onImageLoadStatusChange={(imageId, status) => {

@@ -722,6 +722,35 @@ describe('ImageView', () => {
       );
     });
 
+    test('uses URL gallery params for copied URL navigation without localStorage', async () => {
+      localStorage.clear();
+      mockSearchParams = new URLSearchParams('project=test-project-id&galleryKey=test-project-id&searchField=filename&searchValue=bravo&sortBy=name&sortOrder=asc&reviewFilter=all');
+      setupNavFetch();
+      renderImageView();
+      await waitForImageLoad('bravo.png');
+
+      pressArrowAndAdvance('ArrowRight');
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
+
+    test('preserves all recognized gallery params in previous/next navigation URLs', async () => {
+      mockSearchParams = new URLSearchParams('project=test-project-id&galleryKey=test-project-id&searchField=filename&searchValue=&sortBy=name&sortOrder=asc&reviewFilter=all&groupId=grp-1&ungrouped=false&thumbnailSize=500');
+      setupNavFetch();
+      renderImageView();
+      await waitForImageLoad('bravo.png');
+
+      pressArrowAndAdvance('ArrowRight');
+      const navUrl = mockNavigate.mock.calls.at(-1)[0];
+      expect(navUrl).toContain('/view/img-c?');
+      expect(navUrl).toContain('galleryKey=test-project-id');
+      expect(navUrl).toContain('searchField=filename');
+      expect(navUrl).toContain('sortBy=name');
+      expect(navUrl).toContain('sortOrder=asc');
+      expect(navUrl).toContain('reviewFilter=all');
+      expect(navUrl).toContain('groupId=grp-1');
+      expect(navUrl).not.toContain('thumbnailSize');
+    });
+
     test('preserves galleryKey in navigation URLs', async () => {
       mockSearchParams = new URLSearchParams(
         'project=test-project-id&galleryKey=test-project-id_ungrouped'
