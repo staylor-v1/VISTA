@@ -1552,6 +1552,11 @@ def test_load_test_data_seeds_project_type_fixtures(client, project_type):
         assert parts[0]["metadata"]["source"] == "vista-test-data"
         assert parts[0]["metadata"]["design_number"].startswith("D")
         assert parts[0]["metadata"]["set_number"].startswith("SET")
+        images_resp = client.get(f"/api/projects/{project_id}/images?include_deleted=true&limit=2000", headers=headers)
+        assert images_resp.status_code == 200, images_resp.text
+        first_image_metadata = images_resp.json()[0]["metadata"]
+        assert first_image_metadata["source"] == "vista-test-data"
+        assert first_image_metadata["design_number"].startswith("D")
     else:
         source_images = [
             source_image

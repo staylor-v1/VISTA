@@ -1,6 +1,7 @@
 import uuid
 import json
 import mimetypes
+import re
 import base64
 import sys
 from datetime import datetime, timezone
@@ -67,6 +68,16 @@ WORKSPACE_INSPECTOR_DEFAULTS = {
 }
 TEST_DATA_ROOT = Path(__file__).resolve().parents[2] / "test" / "data"
 PT3_TEST_STACK_ROOT = TEST_DATA_ROOT / "3D" / "geometric"
+TEST_DATA_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".txt"}
+FALLBACK_HIERARCHY_KEYS = [
+    "design_number",
+    "lot_number",
+    "set_number",
+    "serial_number",
+    "side",
+    "modality",
+    "overlay",
+]
 SLICE_SEGMENTATION_METHOD_IDS = {
     "segmentation.yolo.placeholder",
     "segmentation.anomalib.placeholder",
@@ -522,6 +533,58 @@ def _metadata_from_hierarchy_filename(path: Path) -> Optional[dict]:
         metadata["set_number"] = part_set_or_batch
     return metadata
 
+
+
+
+def _coerce_filename_metadata(metadata: dict) -> dict:
+    coerced = dict(metadata)
+    for key in ("side", "modality"):
+        if key in coerced and coerced[key] is not None:
+            coerced[key] = str(coerced[key]).strip().lower()
+    if "overlay" in coerced:
+        coerced["overlay"] = str(coerced["overlay"]).strip().lower() in {"true", "1", "yes", "overlay", "ov", "mask", "heatmap"}
+    part_set_or_batch = coerced.pop("part_set_or_batch", None)
+    if part_set_or_batch and not (coerced.get("set_number") or coerced.get("batch_number")):
+        part_set_or_batch = str(part_set_or_batch).strip()
+        if part_set_or_batch.upper().startswith("BATCH"):
+            coerced["batch_number"] = part_set_or_batch
+        else:
+            coerced["set_number"] = part_set_or_batch
+    coerced.setdefault("source", "vista-test-data")
+    return coerced
+
+
+def _metadata_from_regex_file(path: Path, regex_path: Path) -> Optional[dict]:
+    pattern = regex_path.read_text(encoding="utf-8").strip()
+    if not pattern:
+        return None
+    match = re.search(pattern, path.stem)
+    if not match:
+        return None
+    if match.groupdict():
+        metadata = {key: value for key, value in match.groupdict().items() if value is not None}
+    else:
+        metadata = {key: value for key, value in zip(FALLBACK_HIERARCHY_KEYS, match.groups())}
+    return _coerce_filename_metadata(metadata)
+
+
+def _nearest_regex_file(path: Path, root: Path) -> Optional[Path]:
+    current = path.parent
+    root = root.resolve()
+    while True:
+        candidate = current / "regex.txt"
+        if candidate.exists() and candidate.is_file():
+            return candidate
+        if current.resolve() == root:
+            return None
+        current = current.parent
+
+
+def _metadata_from_test_data_file(path: Path, root: Path) -> Optional[dict]:
+    regex_path = _nearest_regex_file(path, root)
+    if regex_path:
+        return _metadata_from_regex_file(path, regex_path)
+    return _metadata_from_hierarchy_filename(path)
 
 def _build_hierarchy_ingest_records(uploaded_records: List[dict]) -> schemas.InspectionBulkIngestPayload:
     parts_by_key: dict[str, dict] = {}
@@ -2595,15 +2658,18 @@ async def load_project_test_data(
             ]
         )
     else:
+        fixture_root = TEST_DATA_ROOT / project_type
+        if not fixture_root.exists() and project_type == "PT2":
+            fixture_root = TEST_DATA_ROOT / "PT1"
         fixture_paths = sorted(
             path
-            for path in TEST_DATA_ROOT.iterdir()
-            if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".txt"}
-        )
+            for path in fixture_root.rglob("*")
+            if path.is_file() and path.name != "regex.txt" and path.suffix.lower() in TEST_DATA_EXTENSIONS
+        ) if fixture_root.exists() else []
         if not fixture_paths:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PT1/PT2 test data not found")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{project_type} test data not found")
         for file_path in fixture_paths:
-            metadata = _metadata_from_hierarchy_filename(file_path)
+            metadata = _metadata_from_test_data_file(file_path, fixture_root)
             if metadata is None:
                 continue
             metadata = {**metadata, "project_type": project_type}
