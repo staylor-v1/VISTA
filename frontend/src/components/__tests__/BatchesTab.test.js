@@ -30,6 +30,29 @@ describe('BatchesTab', () => {
     expect(screen.getByText(/Manual: 1/)).toBeInTheDocument();
   });
 
+
+  test('keeps unbatched parts sticky while batch targets scroll', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: async () => Array.from({ length: 12 }, (_, index) => ({
+        id: `batch-${index + 1}`,
+        name: `Batch ${index + 1}`,
+        status: 'not_started',
+        owner: '',
+      })),
+    });
+
+    render(
+      <BatchesTab
+        projectId="proj-1"
+        parts={[{ id: 'part-1', display_name: 'Part A', serial_number: 'SN-1', metadata: {} }]}
+      />,
+    );
+
+    await screen.findByDisplayValue('Batch 1');
+    expect(screen.getByTestId('batch-target-unbatched')).toHaveClass('sticky-assignment-column');
+  });
+
   test('moves unbatched part into a batch', async () => {
     const fetchSpy = jest.spyOn(global, 'fetch')
       .mockResolvedValueOnce({ ok: true, json: async () => [{ id: 'batch-1', name: 'Batch 1', status: 'not_started', owner: '' }] })

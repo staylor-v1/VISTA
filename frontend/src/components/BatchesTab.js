@@ -266,7 +266,7 @@ function BatchesTab({ projectId, parts = [], onAssignmentsChanged, setError, onI
             />
           ) : null}
           <div
-            className="images-to-parts-column"
+            className="images-to-parts-column assignment-source-column sticky-assignment-column"
             onDragOver={(event) => event.preventDefault()}
             onDrop={() => assignPartToBatch(movingPartId, null)}
             data-testid="batch-target-unbatched"
