@@ -2358,7 +2358,21 @@ function formatAnnotationTimestamp(value) {
   return date.toLocaleString();
 }
 
-function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFilters }) {
+export function buildInspectionShareParams(state = {}) {
+  const params = new URLSearchParams();
+  if (state.selectedBatchId) params.set('batch', String(state.selectedBatchId));
+  if (state.selectedPartId) params.set('part', String(state.selectedPartId));
+  if (state.selectedImageRef) params.set('image', String(state.selectedImageRef));
+  if (state.reviewFilter && state.reviewFilter !== 'all') params.set('review', String(state.reviewFilter));
+  if (state.activeMetadataTab && state.activeMetadataTab !== 'nsipro') params.set('metadataTab', String(state.activeMetadataTab));
+  if (state.activeMprPane && state.activeMprPane !== 'axial') params.set('mprPane', String(state.activeMprPane));
+  if (Array.isArray(state.activeOverlayIds) && state.activeOverlayIds.length > 0) {
+    params.set('overlays', state.activeOverlayIds.map((entry) => String(entry)).filter(Boolean).join(','));
+  }
+  return params;
+}
+
+function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFilters, onInspectionShareStateChange }) {
   const [batches, setBatches] = useState([]);
   const [parts, setParts] = useState([]);
   const [selectedBatchId, setSelectedBatchId] = useState('');
@@ -2655,11 +2669,35 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 
   useEffect(() => {
     if (!launchFilters || typeof launchFilters !== 'object') return;
-    if (String(launchFilters.selected_batch_id || '').trim()) {
-      setSelectedBatchId(String(launchFilters.selected_batch_id));
+    const requestedBatchId = String(launchFilters.selected_batch_id || '').trim();
+    if (requestedBatchId && batches.some((batch) => String(batch.id) === requestedBatchId)) {
+      setSelectedBatchId(requestedBatchId);
     }
-    if (String(launchFilters.review_filter || '').trim()) {
-      setReviewFilter(String(launchFilters.review_filter));
+    const requestedReviewFilter = String(launchFilters.review_filter || '').trim();
+    if (['all', 'pass', 'reject_pending', 'reject_confirmed', 'none', 'manual'].includes(requestedReviewFilter)) {
+      setReviewFilter(requestedReviewFilter);
+    }
+    const requestedPartId = String(launchFilters.selected_part_id || '').trim();
+    if (requestedPartId && parts.some((part) => String(part.id) === requestedPartId)) {
+      setSelectedPartId(requestedPartId);
+    }
+    const requestedImageRef = String(launchFilters.selected_image_ref || '').trim();
+    if (requestedImageRef) {
+      const targetPart = parts.find((part) => String(part.id) === (requestedPartId || selectedPartId));
+      const validImageRefs = getPartImageRefs(targetPart).map((entry) => String(entry.imageRef));
+      if (validImageRefs.includes(requestedImageRef)) setSelectedImageRef(requestedImageRef);
+    }
+    const requestedMetadataTab = String(launchFilters.active_metadata_tab || '').trim();
+    if (requestedMetadataTab) setActiveMetadataTab(requestedMetadataTab);
+    const requestedMprPane = String(launchFilters.active_mpr_pane || '').trim();
+    if (projectType === 'PT3' && ['axial', 'coronal', 'sagittal', 'volume'].includes(requestedMprPane)) {
+      setActiveMprPane(requestedMprPane);
+    }
+    if (projectType === 'PT3' && Array.isArray(launchFilters.active_overlay_ids)) {
+      const targetPart = parts.find((part) => String(part.id) === (requestedPartId || selectedPartId));
+      const stableOverlayIds = new Set(getOverlayLayers(targetPart).map((overlay) => String(overlay.id)));
+      const nextOverlayIds = launchFilters.active_overlay_ids.map((entry) => String(entry)).filter((entry) => stableOverlayIds.has(entry));
+      if (nextOverlayIds.length > 0) setActiveOverlayIds(nextOverlayIds);
     }
     if (launchFilters.review_filter === 'manual') {
       const batchName = String(launchFilters.source_batch_name || '').trim();
@@ -2669,7 +2707,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
           : 'Manual filter applied from Batches tab.',
       );
     }
-  }, [launchFilters]);
+  }, [batches, launchFilters, parts, projectType, selectedPartId]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -2866,11 +2904,15 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     const url = new URL(`/project/${encodeURIComponent(String(projectId || ''))}`, origin || 'http://localhost');
     url.searchParams.set('tab', 'inspection');
 
-    if (selectedBatchId) url.searchParams.set('batch', selectedBatchId);
-    if (reviewFilter && reviewFilter !== 'all') url.searchParams.set('review', reviewFilter);
-    if (selectedPart?.id) url.searchParams.set('part', selectedPart.id);
-    if (selectedImageRef) url.searchParams.set('image', selectedImageRef);
-    if (activeMetadataTab && activeMetadataTab !== 'nsipro') url.searchParams.set('metadataTab', activeMetadataTab);
+    buildInspectionShareParams({
+      selectedBatchId,
+      reviewFilter,
+      selectedPartId: selectedPart?.id,
+      selectedImageRef,
+      activeMetadataTab,
+      activeMprPane: projectType === 'PT3' ? activeMprPane : '',
+      activeOverlayIds: projectType === 'PT3' ? activeOverlayIds : [],
+    }).forEach((value, key) => url.searchParams.set(key, value));
 
     if (projectType === 'PT3') {
       if (activeMprPane && activeMprPane !== 'axial') url.searchParams.set('mprPane', activeMprPane);
@@ -3350,6 +3392,34 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     slicePosition,
     sortMode,
     viewportTransform,
+    workspaceStateLoaded,
+  ]);
+
+
+
+  useEffect(() => {
+    if (typeof onInspectionShareStateChange !== 'function' || loading || !workspaceStateLoaded) return;
+    onInspectionShareStateChange({
+      selectedBatchId,
+      selectedPartId: selectedPart?.id || selectedPartId,
+      selectedImageRef,
+      reviewFilter,
+      activeMetadataTab,
+      activeMprPane: projectType === 'PT3' ? activeMprPane : '',
+      activeOverlayIds: projectType === 'PT3' ? activeOverlayIds : [],
+    }, { replace: true });
+  }, [
+    activeMetadataTab,
+    activeMprPane,
+    activeOverlayIds,
+    loading,
+    onInspectionShareStateChange,
+    projectType,
+    reviewFilter,
+    selectedBatchId,
+    selectedImageRef,
+    selectedPart?.id,
+    selectedPartId,
     workspaceStateLoaded,
   ]);
 

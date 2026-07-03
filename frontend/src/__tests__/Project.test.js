@@ -33,12 +33,44 @@ jest.mock('../components/ProjectConfigurationPanel', () => {
 jest.mock('../components/ImageUploader', () => () => <div>Image uploader</div>);
 jest.mock('../components/MetadataManager', () => () => <div>Metadata manager</div>);
 jest.mock('../components/ClassManager', () => () => <div>Class manager</div>);
-jest.mock('../components/InspectionWorkbenchPanel', () => ({ launchFilters }) => (
-  <div>
-    <div>Inspection workbench</div>
-    <output data-testid="inspection-launch-filters">{JSON.stringify(launchFilters || null)}</output>
-  </div>
-));
+jest.mock('../components/InspectionWorkbenchPanel', () => {
+  const React = require('react');
+  const MockInspectionWorkbenchPanel = ({ launchFilters, onInspectionShareStateChange }) => (
+    <div>
+      <div>Inspection workbench</div>
+      <output data-testid="inspection-launch-filters">{JSON.stringify(launchFilters || null)}</output>
+      <button
+        type="button"
+        onClick={() => onInspectionShareStateChange?.({
+          selectedBatchId: 'batch-10',
+          selectedPartId: 'part-43',
+          selectedImageRef: 'image-8',
+          reviewFilter: 'pass',
+          activeMetadataTab: 'other',
+          activeMprPane: 'coronal',
+          activeOverlayIds: ['overlay-a'],
+        }, { replace: true })}
+      >
+        Share inspection state
+      </button>
+    </div>
+  );
+  return {
+    __esModule: true,
+    default: MockInspectionWorkbenchPanel,
+    buildInspectionShareParams: (state = {}) => {
+      const params = new URLSearchParams();
+      if (state.selectedBatchId) params.set('batch', state.selectedBatchId);
+      if (state.selectedPartId) params.set('part', state.selectedPartId);
+      if (state.selectedImageRef) params.set('image', state.selectedImageRef);
+      if (state.reviewFilter && state.reviewFilter !== 'all') params.set('review', state.reviewFilter);
+      if (state.activeMetadataTab && state.activeMetadataTab !== 'nsipro') params.set('metadataTab', state.activeMetadataTab);
+      if (state.activeMprPane && state.activeMprPane !== 'axial') params.set('mprPane', state.activeMprPane);
+      if (Array.isArray(state.activeOverlayIds) && state.activeOverlayIds.length > 0) params.set('overlays', state.activeOverlayIds.join(','));
+      return params;
+    },
+  };
+});
 jest.mock('../components/AnalyzeWorkbenchTab', () => () => <div>Analyze workbench</div>);
 jest.mock('../components/ProjectDataSummaryTab', () => () => <div>Project data summary</div>);
 jest.mock('../components/ProjectDataExportPanel', () => () => <div>Project data export</div>);
@@ -210,4 +242,21 @@ describe('Project query parameter tab selection', () => {
       active_metadata_tab: 'details',
     }));
   });
+
+  test('replaces the parent route query with allowlisted inspection share state', async () => {
+    render(<Project />);
+
+    await waitFor(() => expect(screen.getByText('Inspection workbench')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Share inspection state' }));
+
+    expect(mockNavigate).toHaveBeenLastCalledWith(
+      {
+        pathname: '/project/proj-1',
+        search: 'tab=inspection&batch=batch-10&part=part-43&image=image-8&review=pass&metadataTab=other&mprPane=coronal&overlays=overlay-a',
+      },
+      { replace: true },
+    );
+  });
+
 });
