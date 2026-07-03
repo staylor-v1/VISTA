@@ -5,7 +5,7 @@ import './App.css';
 import ImageUploader from './components/ImageUploader';
 import MetadataManager from './components/MetadataManager';
 import ClassManager from './components/ClassManager';
-import InspectionWorkbenchPanel from './components/InspectionWorkbenchPanel';
+import InspectionWorkbenchPanel, { buildInspectionShareParams } from './components/InspectionWorkbenchPanel';
 import AnalyzeWorkbenchTab from './components/AnalyzeWorkbenchTab';
 import ProjectConfigurationPanel from './components/ProjectConfigurationPanel';
 import ProjectDataSummaryTab from './components/ProjectDataSummaryTab';
@@ -114,6 +114,7 @@ function Project({ currentUserGroups = [] }) {
       review: 'review_filter',
       image: 'selected_image_ref',
       metadataTab: 'active_metadata_tab',
+      mprPane: 'active_mpr_pane',
     };
 
     const filters = Object.entries(filterParamMap).reduce((acc, [queryKey, filterKey]) => {
@@ -121,6 +122,10 @@ function Project({ currentUserGroups = [] }) {
       if (value) acc[filterKey] = value;
       return acc;
     }, {});
+    const overlayParam = projectQueryParams.get('overlays');
+    if (overlayParam) {
+      filters.active_overlay_ids = overlayParam.split(',').map((entry) => entry.trim()).filter(Boolean);
+    }
 
     return Object.keys(filters).length > 0 ? filters : null;
   }, [projectQueryParams, validQueryMainTab]);
@@ -310,6 +315,22 @@ function Project({ currentUserGroups = [] }) {
     }
 
     navigate({ pathname: location.pathname, search: params.toString() }, { replace: false });
+  }, [location.pathname, location.search, navigate]);
+
+
+
+  const handleInspectionShareStateChange = useCallback((shareState, options = {}) => {
+    const params = new URLSearchParams(location.search);
+    params.set('tab', 'inspection');
+    ['batch', 'part', 'image', 'review', 'metadataTab', 'mprPane', 'overlays'].forEach((key) => params.delete(key));
+    buildInspectionShareParams(shareState).forEach((value, key) => params.set(key, value));
+    const nextSearch = params.toString();
+    const currentSearch = new URLSearchParams(location.search).toString();
+    if (nextSearch === currentSearch) return;
+    navigate(
+      { pathname: location.pathname, search: nextSearch },
+      { replace: options.replace !== false },
+    );
   }, [location.pathname, location.search, navigate]);
 
   const handleMainTabChange = useCallback(async (nextTabKey) => {
@@ -648,6 +669,7 @@ function Project({ currentUserGroups = [] }) {
           projectType={project?.project_type}
           hierarchy={interfaceHierarchy.inspection}
           launchFilters={inspectionLaunchFilters}
+          onInspectionShareStateChange={handleInspectionShareStateChange}
         />
       );
     }
