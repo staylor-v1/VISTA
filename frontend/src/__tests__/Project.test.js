@@ -6,10 +6,16 @@ let mockPendingAutosave = false;
 let mockSearch = '';
 let mockFlushResolve = null;
 const mockFlushPendingAutosave = jest.fn();
+const mockNavigate = jest.fn();
+const mockNavigateToLocation = (to) => {
+  const search = to?.search ? `?${String(to.search).replace(/^\?/, '')}` : '';
+  mockSearch = search;
+  window.history.pushState({}, '', `${to?.pathname || '/project/proj-1'}${search}`);
+};
 
 jest.mock('react-router-dom', () => ({
   useParams: () => ({ id: 'proj-1' }),
-  useNavigate: () => jest.fn(),
+  useNavigate: () => mockNavigate,
   useLocation: () => ({ pathname: '/project/proj-1', search: mockSearch }),
 }));
 
@@ -56,6 +62,9 @@ describe('Project tab autosave coordination', () => {
         resolve(true);
       };
     }));
+    mockNavigate.mockClear();
+    mockNavigate.mockImplementation(mockNavigateToLocation);
+    window.history.pushState({}, '', `/project/proj-1${mockSearch}`);
     global.fetch = jest.fn((url) => {
       if (url === '/api/projects/proj-1') {
         return Promise.resolve({ ok: true, json: async () => ({ id: 'proj-1', name: 'Autosave Project', project_type: 'PT1' }) });
@@ -115,6 +124,9 @@ describe('Project query parameter tab selection', () => {
   beforeEach(() => {
     mockPendingAutosave = false;
     mockSearch = '?tab=inspection&part=part-42&batch=batch-9&review=manual&image=image-7&metadataTab=details';
+    mockNavigate.mockClear();
+    mockNavigate.mockImplementation(mockNavigateToLocation);
+    window.history.pushState({}, '', `/project/proj-1${mockSearch}`);
     global.fetch = jest.fn((url) => {
       if (url === '/api/projects/proj-1') {
         return Promise.resolve({ ok: true, json: async () => ({ id: 'proj-1', name: 'Inspection Project', project_type: 'PT1' }) });
@@ -146,6 +158,42 @@ describe('Project query parameter tab selection', () => {
 
   afterEach(() => {
     jest.clearAllMocks();
+  });
+
+  test('updates the URL query when clicking a main tab while preserving unrelated params and clearing stale dataTab', async () => {
+    mockSearch = '?tab=project_data&dataTab=metadata&batch=batch-9&review=manual';
+    window.history.pushState({}, '', `/project/proj-1${mockSearch}`);
+
+    render(<Project />);
+
+    await waitFor(() => expect(screen.getByText('Project data metadata')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Analyze' }));
+
+    await waitFor(() => expect(screen.getByText('Analyze workbench')).toBeInTheDocument());
+    expect(mockNavigate).toHaveBeenCalledWith(
+      { pathname: '/project/proj-1', search: 'tab=analyze&batch=batch-9&review=manual' },
+      { replace: false },
+    );
+    expect(window.location.search).toBe('?tab=analyze&batch=batch-9&review=manual');
+  });
+
+  test('updates tab and dataTab query params when clicking project data subtabs', async () => {
+    mockSearch = '?tab=project_data&batch=batch-9';
+    window.history.pushState({}, '', `/project/proj-1${mockSearch}`);
+
+    render(<Project />);
+
+    await waitFor(() => expect(screen.getByText('Image uploader')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Overlays' }));
+
+    await waitFor(() => expect(screen.getByText('Overlays tab')).toBeInTheDocument());
+    expect(mockNavigate).toHaveBeenCalledWith(
+      { pathname: '/project/proj-1', search: 'tab=project_data&batch=batch-9&dataTab=overlays' },
+      { replace: false },
+    );
+    expect(window.location.search).toBe('?tab=project_data&batch=batch-9&dataTab=overlays');
   });
 
   test('selects the Inspection tab from the project URL query string and passes launch filters', async () => {

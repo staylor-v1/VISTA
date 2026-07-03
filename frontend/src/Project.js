@@ -300,6 +300,18 @@ function Project({ currentUserGroups = [] }) {
     await refreshProjectMetadata();
   }, [refreshProjectCounts, refreshProjectMetadata]);
 
+  const updateProjectTabRoute = useCallback((nextMainTab, nextDataTab = null) => {
+    const params = new URLSearchParams(location.search);
+    params.set('tab', nextMainTab);
+    if (nextMainTab === 'project_data') {
+      if (nextDataTab) params.set('dataTab', nextDataTab);
+    } else {
+      params.delete('dataTab');
+    }
+
+    navigate({ pathname: location.pathname, search: params.toString() }, { replace: false });
+  }, [location.pathname, location.search, navigate]);
+
   const handleMainTabChange = useCallback(async (nextTabKey) => {
     if (nextTabKey === activeMainTab) return;
 
@@ -313,7 +325,14 @@ function Project({ currentUserGroups = [] }) {
     }
 
     setActiveMainTab(nextTabKey);
-  }, [activeMainTab]);
+    updateProjectTabRoute(nextTabKey, nextTabKey === 'project_data' ? activeProjectDataTab : null);
+  }, [activeMainTab, activeProjectDataTab, updateProjectTabRoute]);
+
+  const handleProjectDataTabChange = useCallback((nextTabKey) => {
+    setActiveMainTab('project_data');
+    setActiveProjectDataTab(nextTabKey);
+    updateProjectTabRoute('project_data', nextTabKey);
+  }, [updateProjectTabRoute]);
 
   const refreshRecentlyDeletedOverlays = useCallback(async () => {
     setRecentlyDeletedLoading(true);
@@ -414,7 +433,7 @@ function Project({ currentUserGroups = [] }) {
             className={`project-tab ${activeProjectDataTab === tabKey ? 'active' : ''}`}
             role="tab"
             aria-selected={activeProjectDataTab === tabKey}
-            onClick={() => setActiveProjectDataTab(tabKey)}
+            onClick={() => handleProjectDataTabChange(tabKey)}
           >
             {definition.label}
           </button>
@@ -599,6 +618,7 @@ function Project({ currentUserGroups = [] }) {
     </>
   ), [
     activeProjectDataTab,
+    handleProjectDataTabChange,
     countsLoading,
     dataCounts,
     id,
