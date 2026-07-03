@@ -531,23 +531,25 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
             <span className="thumbnail-switch-track" aria-hidden="true"><span className="thumbnail-switch-thumb" /></span><span>Thumbnails</span></label></header>
 
         <section className="auto-assign-parts-panel" aria-label="Automatically assign images to parts">
-          <div>
-            <h3>Automatically Assign Images to Parts</h3>
-            <p className="muted">Select whether autoassign should use filename elements or their mapped metadata labels. Use Blank key to match delimiter-separated numeric filename segments.</p>
+          <div className="auto-assign-panel-header">
+            <div>
+              <h3>Automatically Assign Images to Parts</h3>
+              <p className="muted">Select whether autoassign should use filename elements or their mapped metadata labels. Use Blank key to match delimiter-separated numeric filename segments.</p>
+            </div>
+            <label className="auto-assign-source-switch" htmlFor="auto-assign-key-source">
+              <span className={autoAssignKeySource === 'filename' ? 'active' : ''}>Filename</span>
+              <input
+                id="auto-assign-key-source"
+                type="checkbox"
+                checked={autoAssignKeySource === 'metadata'}
+                onChange={(event) => { setAutoAssignKeySource(event.target.checked ? 'metadata' : 'filename'); setSelectedFilenameKey(''); }}
+                aria-label="Use metadata labels for autoassign"
+              />
+              <span className="auto-assign-source-switch-track" aria-hidden="true"><span className="auto-assign-source-switch-thumb" /></span>
+              <span className={autoAssignKeySource === 'metadata' ? 'active' : ''}>Metadata</span>
+            </label>
           </div>
           <div className="auto-assign-token-list">
-            <label className="auto-assign-token-option" htmlFor="auto-assign-key-source">
-              <span><strong>Key source</strong><small>Choose filename elements or mapped metadata labels</small></span>
-              <select
-                id="auto-assign-key-source"
-                value={autoAssignKeySource}
-                onChange={(event) => { setAutoAssignKeySource(event.target.value); setSelectedFilenameKey(''); }}
-                aria-label="Autoassign key source"
-              >
-                <option value="filename">Filename</option>
-                <option value="metadata">Metadata</option>
-              </select>
-            </label>
             <label className="auto-assign-token-option" htmlFor="auto-assign-filename-key">
               <span><strong>{autoAssignKeySource === 'metadata' ? 'Metadata label' : 'Filename key'}</strong><small>Delimiter: {autoAssignDelimiter || 'automatic non-alphanumeric split'}</small></span>
               <select
@@ -568,7 +570,23 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
             <span>{autoAssignPreview.length} part{autoAssignPreview.length === 1 ? '' : 's'} will be updated from {autoAssignPreview.reduce((sum, group) => sum + group.images.length, 0)} image{autoAssignPreview.reduce((sum, group) => sum + group.images.length, 0) === 1 ? '' : 's'}.</span>
             <button type="button" className="btn btn-primary btn-sm" onClick={handleAutoAssignParts} disabled={autoAssigning || autoAssignPreview.length === 0}>{autoAssigning ? 'Assigning…' : 'Assign Parts'}</button>
           </div>
-          {autoAssignPreview.length > 0 ? <div className="auto-assign-preview-list">{autoAssignPreview.slice(0, 8).map((group) => <span key={group.partKey}>{group.partKey} ({group.images.length})</span>)}</div> : null}
+          {autoAssignPreview.length > 0 ? (
+            <div className="auto-assign-preview-list" aria-label="Autoassign preview by part">
+              {autoAssignPreview.slice(0, 8).map((group) => (
+                <div className="auto-assign-preview-card" key={group.partKey}>
+                  <div className="auto-assign-preview-part">
+                    <strong>Part {group.partKey}</strong>
+                    <span>{group.images.length} image{group.images.length === 1 ? '' : 's'}</span>
+                  </div>
+                  <ul className="auto-assign-preview-filenames">
+                    {group.images.map((image) => (
+                      <li key={image.key || image.id || image.filename} title={image.displayName || image.filename}>{image.displayName || image.filename}</li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </section>
 
         <div className="images-to-parts-grid">
