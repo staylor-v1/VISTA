@@ -445,9 +445,12 @@ describe('ProjectConfigurationPanel', () => {
     fireEvent.click(screen.getByLabelText('Require disposition on submit'));
     fireEvent.click(screen.getByLabelText('Require measurement for critical defects'));
     fireEvent.click(screen.getByLabelText('Require second reviewer for rejects'));
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Hotkeys' }));
     fireEvent.change(screen.getByLabelText('Accept hotkey'), { target: { value: 'q' } });
     fireEvent.change(screen.getByLabelText('Reject hotkey'), { target: { value: 'w' } });
     fireEvent.change(screen.getByLabelText('Help hotkey'), { target: { value: 'e' } });
+    fireEvent.click(screen.getByRole('tab', { name: 'General' }));
 
     fireEvent.click(screen.getByLabelText('Track serial number at batch level'));
     fireEvent.click(screen.getByLabelText('Organize each batch into sub-batches'));
@@ -757,7 +760,9 @@ describe('ProjectConfigurationPanel', () => {
 
         render(<ProjectConfigurationPanel projectId="proj-1" />);
 
-        await waitFor(() => expect(screen.getByLabelText('Accept hotkey')).toBeInTheDocument());
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'Hotkeys' })).toBeInTheDocument());
+        fireEvent.click(screen.getByRole('tab', { name: 'Hotkeys' }));
+        expect(screen.getByRole('tabpanel', { name: 'Hotkeys configuration' })).toBeInTheDocument();
 
         fireEvent.change(screen.getByLabelText('Accept hotkey'), { target: { value: 'q' } });
         fireEvent.change(screen.getByLabelText('Reject hotkey'), { target: { value: 'w' } });
@@ -796,10 +801,13 @@ describe('ProjectConfigurationPanel', () => {
 
         render(<ProjectConfigurationPanel projectId="proj-1" />);
 
-        await waitFor(() => expect(screen.getByLabelText('Accept hotkey')).toBeInTheDocument());
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'Hotkeys' })).toBeInTheDocument());
+        fireEvent.click(screen.getByRole('tab', { name: 'Hotkeys' }));
+        expect(screen.getByRole('tabpanel', { name: 'Hotkeys configuration' })).toBeInTheDocument();
 
         fireEvent.change(screen.getByLabelText('Accept hotkey'), { target: { value: 'q' } });
         fireEvent.change(screen.getByLabelText('Reject hotkey'), { target: { value: 'q' } });
+        fireEvent.click(screen.getByRole('tab', { name: 'General' }));
         fireEvent.change(screen.getByLabelText('Defect type color 1'), { target: { value: 'red' } });
         fireEvent.change(screen.getByLabelText('Part view required modalities 1'), {
           target: { value: 'nonexistent_modality' },

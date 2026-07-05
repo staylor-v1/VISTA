@@ -526,6 +526,7 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
   const [error, setError] = useState(null);
   const [statusMessage, setStatusMessage] = useState('');
   const [copyingConfiguration, setCopyingConfiguration] = useState(false);
+  const [activeConfigurationSubtab, setActiveConfigurationSubtab] = useState('general');
   const configRef = useRef(config);
   const autosaveTimerRef = useRef(null);
   const loadCompleteRef = useRef(false);
@@ -1051,7 +1052,37 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
             </article>
           </div>
 
-          <div className="configuration-sections-grid" data-testid="configuration-sections-grid">
+          <div className="configuration-subtabs project-tabs" role="tablist" aria-label="Configuration sections">
+            <button
+              type="button"
+              className={`project-tab ${activeConfigurationSubtab === 'general' ? 'active' : ''}`}
+              role="tab"
+              aria-selected={activeConfigurationSubtab === 'general'}
+              aria-controls="configuration-general-panel"
+              onClick={() => setActiveConfigurationSubtab('general')}
+            >
+              General
+            </button>
+            <button
+              type="button"
+              className={`project-tab ${activeConfigurationSubtab === 'hotkeys' ? 'active' : ''}`}
+              role="tab"
+              aria-selected={activeConfigurationSubtab === 'hotkeys'}
+              aria-controls="configuration-hotkeys-panel"
+              onClick={() => setActiveConfigurationSubtab('hotkeys')}
+            >
+              Hotkeys
+            </button>
+          </div>
+
+          {activeConfigurationSubtab === 'general' && (
+          <div
+            id="configuration-general-panel"
+            className="configuration-sections-grid"
+            data-testid="configuration-sections-grid"
+            role="tabpanel"
+            aria-label="General configuration"
+          >
             <section className="part-detail-panel" aria-label="Project owner">
             <h3>Project Owner</h3>
             <div className="workbench-controls-row">
@@ -1363,71 +1394,6 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
               />
               Require second reviewer for rejects
             </label>
-            <div className="workbench-controls-row">
-              <label htmlFor="hotkey-accept">Accept hotkey</label>
-              <input
-                id="hotkey-accept"
-                aria-label="Accept hotkey"
-                type="text"
-                maxLength={1}
-                value={config.process_settings?.configurable_hotkeys?.accept_classification || 'a'}
-                onChange={(event) => {
-                  const nextValue = event.target.value.toLowerCase();
-                  setConfig((previous) => ({
-                    ...previous,
-                    process_settings: {
-                      ...previous.process_settings,
-                      configurable_hotkeys: {
-                        ...(previous.process_settings?.configurable_hotkeys || {}),
-                        accept_classification: nextValue,
-                      },
-                    },
-                  }));
-                }}
-              />
-              <label htmlFor="hotkey-reject">Reject hotkey</label>
-              <input
-                id="hotkey-reject"
-                aria-label="Reject hotkey"
-                type="text"
-                maxLength={1}
-                value={config.process_settings?.configurable_hotkeys?.reject_classification || 'r'}
-                onChange={(event) => {
-                  const nextValue = event.target.value.toLowerCase();
-                  setConfig((previous) => ({
-                    ...previous,
-                    process_settings: {
-                      ...previous.process_settings,
-                      configurable_hotkeys: {
-                        ...(previous.process_settings?.configurable_hotkeys || {}),
-                        reject_classification: nextValue,
-                      },
-                    },
-                  }));
-                }}
-              />
-              <label htmlFor="hotkey-help">Help hotkey</label>
-              <input
-                id="hotkey-help"
-                aria-label="Help hotkey"
-                type="text"
-                maxLength={1}
-                value={config.process_settings?.configurable_hotkeys?.toggle_shortcut_help || 'h'}
-                onChange={(event) => {
-                  const nextValue = event.target.value.toLowerCase();
-                  setConfig((previous) => ({
-                    ...previous,
-                    process_settings: {
-                      ...previous.process_settings,
-                      configurable_hotkeys: {
-                        ...(previous.process_settings?.configurable_hotkeys || {}),
-                        toggle_shortcut_help: nextValue,
-                      },
-                    },
-                  }));
-                }}
-              />
-            </div>
           </section>
 
           <section className="part-detail-panel" aria-label="Serial number scheme">
@@ -1773,6 +1739,87 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
             </div>
           </section>
           </div>
+          )}
+
+          {activeConfigurationSubtab === 'hotkeys' && (
+            <div
+              id="configuration-hotkeys-panel"
+              className="configuration-hotkeys-panel"
+              role="tabpanel"
+              aria-label="Hotkeys configuration"
+            >
+              <section className="part-detail-panel" aria-label="Hotkeys">
+                <h3>Hotkeys</h3>
+                <p>Customize the single-key shortcuts used while classifying inspection results.</p>
+                <div className="workbench-controls-row config-entry-grid">
+                  <label htmlFor="hotkey-accept">Accept hotkey</label>
+                  <input
+                    id="hotkey-accept"
+                    aria-label="Accept hotkey"
+                    type="text"
+                    maxLength={1}
+                    value={config.process_settings?.configurable_hotkeys?.accept_classification || 'a'}
+                    onChange={(event) => {
+                      const nextValue = event.target.value.toLowerCase();
+                      setConfig((previous) => ({
+                        ...previous,
+                        process_settings: {
+                          ...previous.process_settings,
+                          configurable_hotkeys: {
+                            ...(previous.process_settings?.configurable_hotkeys || {}),
+                            accept_classification: nextValue,
+                          },
+                        },
+                      }));
+                    }}
+                  />
+                  <label htmlFor="hotkey-reject">Reject hotkey</label>
+                  <input
+                    id="hotkey-reject"
+                    aria-label="Reject hotkey"
+                    type="text"
+                    maxLength={1}
+                    value={config.process_settings?.configurable_hotkeys?.reject_classification || 'r'}
+                    onChange={(event) => {
+                      const nextValue = event.target.value.toLowerCase();
+                      setConfig((previous) => ({
+                        ...previous,
+                        process_settings: {
+                          ...previous.process_settings,
+                          configurable_hotkeys: {
+                            ...(previous.process_settings?.configurable_hotkeys || {}),
+                            reject_classification: nextValue,
+                          },
+                        },
+                      }));
+                    }}
+                  />
+                  <label htmlFor="hotkey-help">Help hotkey</label>
+                  <input
+                    id="hotkey-help"
+                    aria-label="Help hotkey"
+                    type="text"
+                    maxLength={1}
+                    value={config.process_settings?.configurable_hotkeys?.toggle_shortcut_help || 'h'}
+                    onChange={(event) => {
+                      const nextValue = event.target.value.toLowerCase();
+                      setConfig((previous) => ({
+                        ...previous,
+                        process_settings: {
+                          ...previous.process_settings,
+                          configurable_hotkeys: {
+                            ...(previous.process_settings?.configurable_hotkeys || {}),
+                            toggle_shortcut_help: nextValue,
+                          },
+                        },
+                      }));
+                    }}
+                  />
+                </div>
+                <p className="muted">Hotkeys must be unique single alphanumeric characters.</p>
+              </section>
+            </div>
+          )}
 
           <div className="workbench-controls-row configuration-action-bar">
             <button className="btn btn-primary" type="button" disabled={saving} onClick={saveConfiguration}>
