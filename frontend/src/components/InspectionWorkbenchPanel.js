@@ -2463,15 +2463,21 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [fullscreenEditingBoxCorner, setFullscreenEditingBoxCorner] = useState(null);
   const [fullscreenImageZoom, setFullscreenImageZoom] = useState({ scale: 1, originX: 50, originY: 50, panX: 0, panY: 0 });
   const [fullscreenImagePanning, setFullscreenImagePanning] = useState(false);
+  const [annotationsVisible, setAnnotationsVisible] = useState(true);
   const [sessionCalibrationByImageId, setSessionCalibrationByImageId] = useState({});
   const configuredDefectTypes = useMemo(() => (Array.isArray(projectConfiguration?.defect_types) ? projectConfiguration.defect_types
     .map((entry) => String(entry?.name || '').trim())
     .filter(Boolean) : []), [projectConfiguration]);
-  const measurementLinesByImageId = useMemo(() => getMeasurementLinesByImageId(annotations), [annotations]);
-  const boxAnnotationsByImageId = useMemo(() => getBoxAnnotationsByImageId(annotations), [annotations]);
-  const mprMeasurementLinesBySlice = useMemo(() => getMprMeasurementLinesBySlice(annotations), [annotations]);
-  const mprBoxAnnotationsBySlice = useMemo(() => getMprBoxAnnotationsBySlice(annotations), [annotations]);
-  const mprCubeAnnotations = useMemo(() => getMprCubeAnnotations(annotations), [annotations]);
+  const storedMeasurementLinesByImageId = useMemo(() => getMeasurementLinesByImageId(annotations), [annotations]);
+  const storedBoxAnnotationsByImageId = useMemo(() => getBoxAnnotationsByImageId(annotations), [annotations]);
+  const storedMprMeasurementLinesBySlice = useMemo(() => getMprMeasurementLinesBySlice(annotations), [annotations]);
+  const storedMprBoxAnnotationsBySlice = useMemo(() => getMprBoxAnnotationsBySlice(annotations), [annotations]);
+  const storedMprCubeAnnotations = useMemo(() => getMprCubeAnnotations(annotations), [annotations]);
+  const measurementLinesByImageId = annotationsVisible ? storedMeasurementLinesByImageId : {};
+  const boxAnnotationsByImageId = annotationsVisible ? storedBoxAnnotationsByImageId : {};
+  const mprMeasurementLinesBySlice = annotationsVisible ? storedMprMeasurementLinesBySlice : {};
+  const mprBoxAnnotationsBySlice = annotationsVisible ? storedMprBoxAnnotationsBySlice : {};
+  const mprCubeAnnotations = annotationsVisible ? storedMprCubeAnnotations : [];
   const selectedSegmentationSegment = useMemo(() => (
     segmentationSegments.find((segment) => segment.id === selectedSegmentationSegmentId) || segmentationSegments[0] || null
   ), [selectedSegmentationSegmentId, segmentationSegments]);
@@ -5329,6 +5335,14 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	      data-layout-region={inspectionHierarchy.rightColumn}
 	    >
 	      <div className="annotation-controls" data-testid="annotation-controls">
+	        <label className="annotation-display-toggle">
+	          <input
+	            type="checkbox"
+	            checked={annotationsVisible}
+	            onChange={(event) => setAnnotationsVisible(event.target.checked)}
+	          />
+	          Show annotations
+	        </label>
 	        <p className="muted">For selected part: {selectedPart?.serial_number || 'No part selected'}</p>
 	        <div className="annotation-tool-buttons" aria-label="Annotation tools">
 	          <button
@@ -6387,7 +6401,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         return true;
       }
       const line = { x1: firstPoint.x, y1: firstPoint.y, x2: position.x, y2: position.y, imageWidth: position.imageWidth, imageHeight: position.imageHeight };
-      const existingLineCount = (measurementLinesByImageId[String(annotationImageId || '')] || []).length;
+      const existingLineCount = (storedMeasurementLinesByImageId[String(annotationImageId || '')] || []).length;
       const color = MEASUREMENT_COLORS[existingLineCount % MEASUREMENT_COLORS.length];
 	      createMeasurementAnnotation({
 	        imageId: annotationImageId,
@@ -6437,7 +6451,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         if (annotationToolMode === 'crop') {
           createCropChildImage({ parentImageId: annotationImageId, cropBox: box });
         } else {
-	        const existingBoxCount = (boxAnnotationsByImageId[String(annotationImageId || '')] || []).length;
+	        const existingBoxCount = (storedBoxAnnotationsByImageId[String(annotationImageId || '')] || []).length;
 	        createBoxAnnotation({
 	          imageId: annotationImageId,
 	          box,
@@ -6533,7 +6547,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         slice_index: firstPoint.sliceIndex,
       };
       const key = getMprSliceKey(axis, firstPoint.sliceIndex);
-      const existingLineCount = (mprMeasurementLinesBySlice[key] || []).length;
+      const existingLineCount = (storedMprMeasurementLinesBySlice[key] || []).length;
       createMeasurementAnnotation({
         imageId: null,
         line,
@@ -6612,7 +6626,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       if (isFiniteAnnotationBox(box)) {
         if (annotationToolMode === 'box') {
           const key = getMprSliceKey(axis, sliceIndex);
-          const existingBoxCount = (mprBoxAnnotationsBySlice[key] || []).length;
+          const existingBoxCount = (storedMprBoxAnnotationsBySlice[key] || []).length;
           createBoxAnnotation({
             imageId: null,
             box,
@@ -6777,7 +6791,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	        return;
 	      }
 	      const annotationSourceImageId = getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId);
-	      const existingBoxCount = (boxAnnotationsByImageId[String(annotationSourceImageId || '')] || []).length;
+	      const existingBoxCount = (storedBoxAnnotationsByImageId[String(annotationSourceImageId || '')] || []).length;
 	      await createBoxAnnotation({
 	        imageId: fullscreenImageModal?.imageId,
 	        box,
@@ -6802,7 +6816,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     const kind = classifyMeasurementLine(line);
     const name = nextMeasurementName(kind);
     const annotationSourceImageId = getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId);
-    const existingLineCount = (measurementLinesByImageId[String(annotationSourceImageId || '')] || []).length
+    const existingLineCount = (storedMeasurementLinesByImageId[String(annotationSourceImageId || '')] || []).length
       + fullscreenMeasurements.filter((item) => String(item.imageId || '') === String(annotationSourceImageId || '')).length;
     const color = MEASUREMENT_COLORS[existingLineCount % MEASUREMENT_COLORS.length];
     const distancePx = Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
