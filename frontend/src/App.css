@@ -8341,3 +8341,13 @@ ul li:hover {
   align-items: center;
   gap: var(--space-2);
 }
+
+.project-configuration-panel .configuration-subtabs {
+  margin: 0 0 10px;
+  border-bottom: 1px solid #dbe2ea;
+}
+
+.project-configuration-panel .configuration-hotkeys-panel {
+  display: grid;
+  gap: 14px;
+}
