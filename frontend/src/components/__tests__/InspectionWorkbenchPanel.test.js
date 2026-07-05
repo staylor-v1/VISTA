@@ -1828,6 +1828,42 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('fullscreen-annotation-list')).toHaveTextContent('4.20 mm');
   });
 
+  test('toggles annotation overlay visibility from the inspection panel', async () => {
+    mockWorkbenchFetch({
+      ...scenarioByUser[0],
+      parts: [{
+        ...scenarioByUser[0].parts[0],
+        metadata: {
+          ...scenarioByUser[0].parts[0].metadata,
+          annotations: [{
+            id: 'measurement-toggle-a',
+            image_id: 'part-basic-1-image-1',
+            defect_class: 'Measurement',
+            comment: 'Toggle line check',
+            geometry: { line: { x1: 100, y1: 80, x2: 280, y2: 160, imageWidth: 400, imageHeight: 200 } },
+            measurements: { length_mm: 4.2 },
+            created_by: 'inspector@example.com',
+            created_at: '2026-04-01T09:15:00Z',
+          }],
+        },
+      }],
+    });
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    const displayToggle = await screen.findByLabelText('Show annotations');
+    await waitFor(() => expect(screen.getByLabelText('tile measurement overlay')).toHaveTextContent('4.20 mm'));
+    expect(displayToggle).toBeChecked();
+    expect(screen.getByTestId('annotation-list')).toHaveTextContent('4.20 mm');
+
+    fireEvent.click(displayToggle);
+    await waitFor(() => expect(screen.getByLabelText('tile measurement overlay')).not.toHaveTextContent('4.20 mm'));
+    expect(screen.getByTestId('annotation-list')).toHaveTextContent('4.20 mm');
+
+    fireEvent.click(displayToggle);
+    await waitFor(() => expect(screen.getByLabelText('tile measurement overlay')).toHaveTextContent('4.20 mm'));
+  });
+
   test('crops bounding box annotations into child images assigned to the workbench', async () => {
     const originalImage = global.Image;
     const originalCreateElement = document.createElement.bind(document);
