@@ -1,6 +1,7 @@
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import Project from '../Project';
+import { PROJECT_TYPE_OPTIONS } from '../projectTypes';
 
 let mockPendingAutosave = false;
 let mockSearch = '';
@@ -81,6 +82,61 @@ jest.mock('../components/OverlaysTab', () => () => <div>Overlays tab</div>);
 jest.mock('../components/BatchesTab', () => () => <div>Batches</div>);
 jest.mock('../components/RemoveImagesTab', () => () => <div>Remove images</div>);
 jest.mock('../components/ProjectDataMetadataTab', () => () => <div>Project data metadata</div>);
+
+
+describe('Project title bar type label', () => {
+  const originalPt2ShortLabel = PROJECT_TYPE_OPTIONS.find((option) => option.value === 'PT2')?.shortLabel;
+
+  beforeEach(() => {
+    mockPendingAutosave = false;
+    mockSearch = '';
+    mockNavigate.mockClear();
+    mockNavigate.mockImplementation(mockNavigateToLocation);
+    window.history.pushState({}, '', '/project/proj-1');
+    const pt2Option = PROJECT_TYPE_OPTIONS.find((option) => option.value === 'PT2');
+    if (pt2Option) pt2Option.shortLabel = 'Config Short Type';
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/projects/proj-1') {
+        return Promise.resolve({ ok: true, json: async () => ({ id: 'proj-1', name: 'Configurable Type Project', project_type: 'PT2' }) });
+      }
+      if (url === '/api/projects/proj-1/metadata-dict') {
+        return Promise.resolve({ ok: true, json: async () => ({}) });
+      }
+      if (url === '/api/projects/proj-1/classes') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (String(url).startsWith('/api/projects/proj-1/images')) {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/projects/proj-1/parts') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/projects/proj-1/export-bundle-json') {
+        return Promise.resolve({ ok: true, json: async () => ({ bundle_summary: {} }) });
+      }
+      if (url === '/api/projects/proj-1/configuration') {
+        return Promise.resolve({ ok: true, json: async () => ({ config: {} }) });
+      }
+      if (String(url).startsWith('/interface-hierarchy.toml')) {
+        return Promise.resolve({ ok: false, text: async () => '' });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+  });
+
+  afterEach(() => {
+    const pt2Option = PROJECT_TYPE_OPTIONS.find((option) => option.value === 'PT2');
+    if (pt2Option) pt2Option.shortLabel = originalPt2ShortLabel;
+    jest.clearAllMocks();
+  });
+
+  test('renders the configured short project type string instead of the raw project type code', async () => {
+    render(<Project />);
+
+    expect(await screen.findByText('Type: Config Short Type')).toBeInTheDocument();
+    expect(screen.queryByText('Type: PT2')).not.toBeInTheDocument();
+  });
+});
 
 describe('Project tab autosave coordination', () => {
   beforeEach(() => {

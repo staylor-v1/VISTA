@@ -20,6 +20,7 @@ import ProjectDataMetadataTab from './components/ProjectDataMetadataTab';
 import { resolveCurrentProjectPhase } from './utils/projectPhases';
 import { DEFAULT_INTERFACE_HIERARCHY, loadInterfaceHierarchy } from './utils/interfaceHierarchy';
 import { copyCurrentShareUrl } from './utils/shareLink';
+import { getProjectTypeLabel } from './projectTypes';
 
 const MAIN_TAB_DEFINITIONS = {
   project_configuration: { label: 'Project Configuration' },
@@ -775,7 +776,7 @@ function Project({ currentUserGroups = [] }) {
             <div className="project-info">
               <div className="project-title-row">
                 <h1 className="project-title">{project ? project.name : 'Loading project...'}</h1>
-                <span className="project-group">Type: {project?.project_type || 'PT1'}</span>
+                <span className="project-group">Type: {getProjectTypeLabel(project?.project_type, { short: true })}</span>
               </div>
             </div>
           </div>
