@@ -22,12 +22,19 @@ jest.mock('react-router-dom', () => ({
 
 jest.mock('../components/ProjectConfigurationPanel', () => {
   const React = require('react');
-  return React.forwardRef(function MockProjectConfigurationPanel(_props, ref) {
+  return React.forwardRef(function MockProjectConfigurationPanel(props, ref) {
     React.useImperativeHandle(ref, () => ({
       hasPendingAutosave: () => mockPendingAutosave,
       flushPendingAutosave: mockFlushPendingAutosave,
     }));
-    return <div>Project configuration editor</div>;
+    return (
+      <div>
+        <div>Project configuration editor</div>
+        <button type="button" onClick={() => props.onActiveSubtabChange?.('general')}>Show general config</button>
+        <button type="button" onClick={() => props.onActiveSubtabChange?.('filenameConvention')}>Show filename config</button>
+        <button type="button" onClick={() => props.onActiveSubtabChange?.('hotkeys')}>Show hotkeys config</button>
+      </div>
+    );
   });
 });
 
@@ -297,6 +304,27 @@ describe('Project query parameter tab selection', () => {
       selected_image_ref: 'image-7',
       active_metadata_tab: 'details',
     }));
+  });
+
+  test('shows project classes and metadata management only on the configuration General subtab', async () => {
+    mockSearch = '?tab=project_configuration';
+    render(<Project />);
+
+    await waitFor(() => expect(screen.getByText('Project configuration editor')).toBeInTheDocument());
+    expect(screen.getByText('Class manager')).toBeInTheDocument();
+    expect(screen.getByText('Metadata manager')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show filename config' }));
+    expect(screen.queryByText('Class manager')).not.toBeInTheDocument();
+    expect(screen.queryByText('Metadata manager')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show hotkeys config' }));
+    expect(screen.queryByText('Class manager')).not.toBeInTheDocument();
+    expect(screen.queryByText('Metadata manager')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show general config' }));
+    expect(screen.getByText('Class manager')).toBeInTheDocument();
+    expect(screen.getByText('Metadata manager')).toBeInTheDocument();
   });
 
   test('replaces the parent route query with allowlisted inspection share state', async () => {

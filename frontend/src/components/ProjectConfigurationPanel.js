@@ -516,6 +516,7 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
   currentInterfaceLayout = null,
   isAdminUser = false,
   onConfigurationSaved = null,
+  onActiveSubtabChange = null,
 }, ref) {
   const [config, setConfig] = useState(EMPTY_CONFIG);
   const [availableProjects, setAvailableProjects] = useState([]);
@@ -537,6 +538,10 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
   useEffect(() => {
     configRef.current = config;
   }, [config]);
+
+  useEffect(() => {
+    onActiveSubtabChange?.(activeConfigurationSubtab);
+  }, [activeConfigurationSubtab, onActiveSubtabChange]);
 
   useEffect(() => () => {
     if (autosaveTimerRef.current) {

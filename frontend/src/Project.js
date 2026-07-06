@@ -78,6 +78,7 @@ function Project({ currentUserGroups = [] }) {
   const [interfaceHierarchy, setInterfaceHierarchy] = useState(DEFAULT_INTERFACE_HIERARCHY);
   const [activeMainTab, setActiveMainTab] = useState(DEFAULT_INTERFACE_HIERARCHY.mainTabs[0]);
   const [activeProjectDataTab, setActiveProjectDataTab] = useState('load_images');
+  const [activeProjectConfigurationSubtab, setActiveProjectConfigurationSubtab] = useState('general');
   const [dataCounts, setDataCounts] = useState({
     partsLoaded: 0,
     rawImages: 0,
@@ -652,6 +653,7 @@ function Project({ currentUserGroups = [] }) {
     </>
   ), [
     activeProjectDataTab,
+    activeProjectConfigurationSubtab,
     handleProjectDataTabChange,
     countsLoading,
     dataCounts,
@@ -708,8 +710,9 @@ function Project({ currentUserGroups = [] }) {
             isAdminUser={currentUserGroups.includes('admin') || currentUserGroups.includes('admins')}
             ref={projectConfigurationPanelRef}
             onConfigurationSaved={(nextConfig) => setProjectConfiguration(nextConfig)}
+            onActiveSubtabChange={setActiveProjectConfigurationSubtab}
           />
-          {!project?.is_archived && (
+          {!project?.is_archived && activeProjectConfigurationSubtab === 'general' && (
             <div className="management-sections project-configuration-management">
               <div className="classes-section">
                 <ClassManager
