@@ -4,6 +4,8 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 import logging
 
+from .project_types import DEFAULT_PROJECT_TYPE, PROJECT_TYPE_PATTERN
+
 logger = logging.getLogger(__name__)
 
 # User schemas
@@ -31,7 +33,7 @@ class ProjectBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     meta_group_id: str = Field(..., min_length=1, max_length=255)
-    project_type: str = Field(default="PT1", pattern=r"^(PT1|PT2|PT3)$")
+    project_type: str = Field(default=DEFAULT_PROJECT_TYPE, pattern=PROJECT_TYPE_PATTERN)
 
     @field_validator("project_type", mode="before")
     @classmethod
@@ -47,7 +49,7 @@ class ProjectUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     description: Optional[str] = None
     meta_group_id: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    project_type: Optional[str] = Field(default=None, pattern=r"^(PT1|PT2|PT3)$")
+    project_type: Optional[str] = Field(default=None, pattern=PROJECT_TYPE_PATTERN)
 
     @field_validator("project_type", mode="before")
     @classmethod

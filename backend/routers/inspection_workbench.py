@@ -19,6 +19,7 @@ from core.group_auth_helper import is_user_in_group
 from utils.dependencies import get_current_user
 import utils.crud as crud
 from core.config import settings
+from core.project_types import DEFAULT_PROJECT_TYPE, normalize_project_type
 from utils.boto3_client import upload_file_to_s3
 from utils.cache_manager import get_cache
 from utils.volume_loader import load_slice_stack
@@ -262,8 +263,7 @@ DEFAULT_DEFECT_TYPE_COLORS = ("#ef4444", "#f59e0b", "#3b82f6")
 
 
 def _normalize_project_type(project_type: Optional[str]) -> str:
-    normalized = str(project_type or "PT1").strip().upper()
-    return normalized if normalized in {"PT1", "PT2", "PT3"} else "PT1"
+    return normalize_project_type(project_type)
 
 
 def _default_defect_types(project_type: Optional[str]) -> List[dict]:
@@ -278,7 +278,7 @@ def _default_defect_types(project_type: Optional[str]) -> List[dict]:
     ]
 
 
-def _default_project_configuration(project_type: Optional[str] = "PT1") -> dict:
+def _default_project_configuration(project_type: Optional[str] = DEFAULT_PROJECT_TYPE) -> dict:
     return {
         "image_modalities": [
             {
