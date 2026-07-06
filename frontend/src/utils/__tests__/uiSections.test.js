@@ -1,0 +1,15 @@
+import { isUiSectionEnabled, normalizeUiSections } from '../uiSections';
+
+describe('uiSections', () => {
+  test('defaults known UI sections to visible', () => {
+    expect(isUiSectionEnabled({}, 'main.analyze')).toBe(true);
+    expect(isUiSectionEnabled({}, 'project_data.batches')).toBe(true);
+  });
+
+  test('preserves explicit hidden section settings', () => {
+    const normalized = normalizeUiSections({ ui_sections: { 'main.analyze': false, 'project_data.batches': false } });
+    expect(normalized['main.analyze']).toBe(false);
+    expect(normalized['project_data.batches']).toBe(false);
+    expect(normalized['project_data.images_to_parts']).toBe(true);
+  });
+});

@@ -378,3 +378,68 @@ describe('Project session link sharing', () => {
     await waitFor(() => expect(screen.getByText('Session link copied to clipboard.')).toBeInTheDocument());
   });
 });
+
+describe('Project configurable UI sections', () => {
+  beforeEach(() => {
+    mockPendingAutosave = false;
+    mockSearch = '';
+    mockNavigate.mockClear();
+    mockNavigate.mockImplementation(mockNavigateToLocation);
+    window.history.pushState({}, '', '/project/proj-1');
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/projects/proj-1') {
+        return Promise.resolve({ ok: true, json: async () => ({ id: 'proj-1', name: 'Configurable UI Project', project_type: 'PT1' }) });
+      }
+      if (url === '/api/projects/proj-1/metadata-dict') {
+        return Promise.resolve({ ok: true, json: async () => ({}) });
+      }
+      if (url === '/api/projects/proj-1/classes') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (String(url).startsWith('/api/projects/proj-1/images')) {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/projects/proj-1/parts') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/projects/proj-1/export-bundle-json') {
+        return Promise.resolve({ ok: true, json: async () => ({ bundle_summary: {} }) });
+      }
+      if (url === '/api/projects/proj-1/configuration') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            config: {
+              ui_sections: {
+                'main.analyze': false,
+                'project_data.batches': false,
+                'project_data.data_validation': false,
+              },
+            },
+          }),
+        });
+      }
+      if (String(url).startsWith('/interface-hierarchy.toml')) {
+        return Promise.resolve({ ok: false, text: async () => '' });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('hides project tabs and Project Data sections disabled by configuration', async () => {
+    render(<Project />);
+
+    await waitFor(() => expect(screen.getByText('Project configuration editor')).toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('tab', { name: 'Analyze' })).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Project Data' }));
+
+    expect(screen.queryByRole('tab', { name: 'Batches' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Data Validation' })).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Images to Parts' })).toBeInTheDocument();
+  });
+});

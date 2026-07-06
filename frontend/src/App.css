@@ -7731,6 +7731,36 @@ ul li:hover {
   margin-bottom: 0;
 }
 
+.configurable-ui-sections-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.configurable-ui-sections-header h3 {
+  margin-top: 0;
+}
+
+.configurable-ui-section-groups {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.configurable-ui-section-group {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.configurable-ui-section-group legend {
+  padding: 0 4px;
+  font-weight: 800;
+}
+
 .project-configuration-panel .configuration-action-bar {
   position: sticky;
   bottom: 12px;
@@ -8184,6 +8214,13 @@ ul li:hover {
   margin: 0 0 4px;
 }
 
+.auto-assign-switch-group {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px 14px;
+}
+
 .auto-assign-source-switch {
   display: inline-flex;
   align-items: center;
@@ -8266,6 +8303,33 @@ ul li:hover {
 }
 
 .auto-assign-token-option small {
+  color: #64748b;
+}
+
+.auto-assign-multi-level-editor {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.auto-assign-level-row {
+  display: grid;
+  grid-template-columns: auto minmax(110px, 0.5fr) auto minmax(140px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px 10px;
+}
+
+.auto-assign-level-row label {
+  color: #475569;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.auto-assign-multi-level-editor small {
   color: #64748b;
 }
 
