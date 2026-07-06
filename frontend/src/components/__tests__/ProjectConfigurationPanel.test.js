@@ -275,6 +275,7 @@ describe('ProjectConfigurationPanel', () => {
 
     render(<ProjectConfigurationPanel projectId="proj-1" />);
 
+    await openFilenameConventionSubtab();
     const preview = await screen.findByTestId('expected-filename-preview');
     expect(preview).toHaveTextContent('D001_L001_PN001_side_modality.type');
     expect(screen.getByLabelText('Expected filename preview')).toHaveTextContent('ID value: 001');
@@ -292,6 +293,7 @@ describe('ProjectConfigurationPanel', () => {
 
     render(<ProjectConfigurationPanel projectId="proj-1" />);
 
+    await openFilenameConventionSubtab();
     expect(await screen.findByTestId('expected-filename-preview')).toHaveTextContent(
       'D001_P001_L001_S001_R001_side_modality.type',
     );
@@ -301,6 +303,13 @@ describe('ProjectConfigurationPanel', () => {
     jest.clearAllMocks();
     jest.useRealTimers();
   });
+
+  async function openFilenameConventionSubtab() {
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Filename Convention' })).toBeInTheDocument());
+    expect(screen.queryByRole('heading', { name: 'Filename Convention' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Filename Convention' }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Filename Convention' })).toBeInTheDocument());
+  }
 
   test('loads copy source projects from the canonical trailing-slash endpoint', async () => {
     const config = makeConfig('PT1', 'basic');
@@ -313,12 +322,26 @@ describe('ProjectConfigurationPanel', () => {
     expect(global.fetch).not.toHaveBeenCalledWith('/api/projects');
   });
 
+  test('hides filename convention controls until users open the filename convention subtab', async () => {
+    const config = makeConfig('PT1', 'basic');
+    mockFetch(config, 'PT1');
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'General' })).toHaveAttribute('aria-selected', 'true'));
+    expect(screen.queryByRole('heading', { name: 'Filename Convention' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Level 1')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Filename Convention' }));
+    await waitFor(() => expect(screen.getByRole('tabpanel', { name: 'Filename Convention configuration' })).toBeInTheDocument());
+    expect(screen.getByRole('heading', { name: 'Filename Convention' })).toBeInTheDocument();
+  });
+
   test('renders file naming configuration defaults and supports hierarchy customization', async () => {
     const config = makeConfig('PT1', 'basic');
     mockFetch(config, 'PT1');
     render(<ProjectConfigurationPanel projectId="proj-1" />);
 
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Filename Convention' })).toBeInTheDocument());
+    await openFilenameConventionSubtab();
     expect(screen.getByLabelText('Level 1')).toBeInTheDocument();
     expect(screen.getByDisplayValue('D')).toBeInTheDocument();
 
@@ -337,7 +360,7 @@ describe('ProjectConfigurationPanel', () => {
     mockFetch(config, 'PT1');
     render(<ProjectConfigurationPanel projectId="proj-1" />);
 
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Filename Convention' })).toBeInTheDocument());
+    await openFilenameConventionSubtab();
     fireEvent.click(screen.getByText('Add Image Descriptor'));
     fireEvent.change(screen.getByLabelText('Descriptor 3'), { target: { value: 'version' } });
     expect(screen.getByDisplayValue('v')).toBeInTheDocument();
@@ -357,7 +380,8 @@ describe('ProjectConfigurationPanel', () => {
     mockFetch(config, 'PT1');
     render(<ProjectConfigurationPanel projectId="proj-1" />);
 
-    await waitFor(() => expect(screen.getByText('Add Hierarchy Level')).toBeInTheDocument());
+    await openFilenameConventionSubtab();
+    expect(screen.getByText('Add Hierarchy Level')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Add Hierarchy Level'));
     expect(screen.getByLabelText('Level 6')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Add Image Descriptor'));
@@ -375,7 +399,7 @@ describe('ProjectConfigurationPanel', () => {
     mockFetch(config, 'PT1');
     render(<ProjectConfigurationPanel projectId="proj-1" />);
 
-    await waitFor(() => expect(screen.getByLabelText('Image modality label 1')).toBeInTheDocument());
+    await openFilenameConventionSubtab();
 
     fireEvent.change(screen.getByLabelText('Image modality label 1'), { target: { value: 'Autosaved thermal' } });
     expect(screen.getByText('Unsaved changes will autosave shortly.')).toBeInTheDocument();
@@ -437,11 +461,18 @@ describe('ProjectConfigurationPanel', () => {
     fireEvent.change(screen.getByLabelText('Owner Email'), { target: { value: 'ada@example.com' } });
     fireEvent.change(screen.getByLabelText('Active Username'), { target: { value: 'manual-reviewer' } });
 
+    fireEvent.click(screen.getByRole('tab', { name: 'Filename Convention' }));
+    await waitFor(() => expect(screen.getByLabelText('Level 1')).toBeInTheDocument());
     fireEvent.change(screen.getByLabelText('Level 1'), { target: { value: 'batch' } });
     fireEvent.change(container.querySelector('#hierarchy-level-abbreviation-0'), { target: { value: 'BT' } });
     fireEvent.change(screen.getByLabelText('Descriptor 1'), { target: { value: 'operator' } });
     fireEvent.change(container.querySelector('#image-descriptor-abbreviation-0'), { target: { value: 'OP' } });
-
+    fireEvent.change(screen.getByLabelText('Image modality label 1'), { target: { value: 'Thermal image' } });
+    fireEvent.change(screen.getByLabelText('Image modality id 1'), { target: { value: 'thermal' } });
+    fireEvent.click(screen.getByLabelText('Image modality calibration required 1'));
+    fireEvent.click(screen.getByLabelText('Image modality example uploaded 1'));
+    fireEvent.click(screen.getByRole('tab', { name: 'General' }));
+    await waitFor(() => expect(screen.getByLabelText('Require disposition on submit')).toBeInTheDocument());
     fireEvent.click(screen.getByLabelText('Require disposition on submit'));
     fireEvent.click(screen.getByLabelText('Require measurement for critical defects'));
     fireEvent.click(screen.getByLabelText('Require second reviewer for rejects'));
@@ -459,11 +490,6 @@ describe('ProjectConfigurationPanel', () => {
 
     fireEvent.click(screen.getByLabelText('Manually choose current project phase'));
     fireEvent.change(screen.getByLabelText('Manual project phase'), { target: { value: 'reporting' } });
-
-    fireEvent.change(screen.getByLabelText('Image modality label 1'), { target: { value: 'Thermal image' } });
-    fireEvent.change(screen.getByLabelText('Image modality id 1'), { target: { value: 'thermal' } });
-    fireEvent.click(screen.getByLabelText('Image modality calibration required 1'));
-    fireEvent.click(screen.getByLabelText('Image modality example uploaded 1'));
 
     fireEvent.change(screen.getByLabelText('Defect type name 1'), { target: { value: 'Crack' } });
     fireEvent.change(screen.getByLabelText('Defect type color 1'), { target: { value: '#123abc' } });
@@ -726,7 +752,7 @@ describe('ProjectConfigurationPanel', () => {
 
         render(<ProjectConfigurationPanel projectId="proj-1" />);
 
-        await waitFor(() => expect(screen.getByLabelText('Image modality label 1')).toBeInTheDocument());
+        await openFilenameConventionSubtab();
 
         fireEvent.click(screen.getByRole('button', { name: 'Add Modality' }));
         fireEvent.change(screen.getByLabelText(`Image modality label ${config.image_modalities.length + 1}`), {
@@ -737,6 +763,8 @@ describe('ProjectConfigurationPanel', () => {
         });
         fireEvent.click(screen.getByLabelText(`Image modality calibration required ${config.image_modalities.length + 1}`));
         fireEvent.click(screen.getByLabelText(`Image modality example uploaded ${config.image_modalities.length + 1}`));
+        fireEvent.click(screen.getByRole('tab', { name: 'General' }));
+        await waitFor(() => expect(screen.getByLabelText('Part view required modalities 1')).toBeInTheDocument());
         fireEvent.change(screen.getByLabelText('Part view required modalities 1'), {
           target: { value: `${projectType.toLowerCase()}-${syntheticUser}-custom` },
         });
