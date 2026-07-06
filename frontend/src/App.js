@@ -3,6 +3,7 @@ import { Route, Routes, Link, useLocation } from 'react-router-dom';
 import './App.css';
 import Toast from './components/Toast';
 import lazyWithRetry from './utils/lazyWithRetry';
+import { DEFAULT_PROJECT_TYPE, PROJECT_TYPE_OPTIONS, getProjectTypeLabel } from './projectTypes';
 
 // Lazy load components
 const Project = lazyWithRetry(() => import('./Project'));
@@ -165,14 +166,14 @@ const CreateProjectModal = memo(function CreateProjectModal({ onClose, onSubmit,
               <select
                 id="project_type"
                 ref={projectTypeInputRef}
-                defaultValue="PT1"
+                defaultValue={DEFAULT_PROJECT_TYPE}
                 onFocus={() => handleFocus('projectType')}
                 onBlur={() => handleBlur('projectType')}
                 className="form-control"
               >
-                <option value="PT1">PT1 — External Multi-View</option>
-                <option value="PT2">PT2 — 3D Slice Review</option>
-                <option value="PT3">PT3 — Advanced 3D Slice Review</option>
+                {PROJECT_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
               </select>
               <small className="form-text">
                 Select the project workflow mode used by inspection workbench tools
@@ -204,12 +205,12 @@ const CreateProjectModal = memo(function CreateProjectModal({ onClose, onSubmit,
 const EditProjectModal = memo(function EditProjectModal({ project, onClose, onSubmit }) {
   const [name, setName] = useState(project?.name || '');
   const [description, setDescription] = useState(project?.description || '');
-  const [projectType, setProjectType] = useState(project?.project_type || 'PT1');
+  const [projectType, setProjectType] = useState(project?.project_type || DEFAULT_PROJECT_TYPE);
 
   useEffect(() => {
     setName(project?.name || '');
     setDescription(project?.description || '');
-    setProjectType(project?.project_type || 'PT1');
+    setProjectType(project?.project_type || DEFAULT_PROJECT_TYPE);
   }, [project]);
 
   const handleSubmit = (e) => {
@@ -261,9 +262,9 @@ const EditProjectModal = memo(function EditProjectModal({ project, onClose, onSu
                 value={projectType}
                 onChange={(e) => setProjectType(e.target.value)}
               >
-                <option value="PT1">PT1 — External Multi-View</option>
-                <option value="PT2">PT2 — 3D Slice Review</option>
-                <option value="PT3">PT3 — Advanced 3D Slice Review</option>
+                {PROJECT_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
               </select>
             </div>
           </form>
@@ -957,7 +958,7 @@ const DashboardSettingsModal = memo(function DashboardSettingsModal({ onClose, s
                       <div className="project-card-header">
                         <h3 className="project-card-title">{project.name}</h3>
                         <div className="project-card-meta">
-                          ID: {project.id} • Group: {project.meta_group_id} • Type: {project.project_type || 'PT1'}
+                          ID: {project.id} • Group: {project.meta_group_id} • Type: {getProjectTypeLabel(project.project_type, { short: true })}
                         </div>
                         <div className="project-card-meta">
                           Images: {project.image_count ?? 0} • Parts: {project.part_count ?? 0}
@@ -1089,7 +1090,7 @@ const ProjectItem = memo(function ProjectItem({ project, onEdit, onDelete, canDe
           style={{ textDecoration: 'none', color: 'inherit', display: 'block' }}
         >
           <div className="project-card-meta">
-            ID: {project.id} • Group: {project.meta_group_id} • Type: {project.project_type || 'PT1'}
+            ID: {project.id} • Group: {project.meta_group_id} • Type: {getProjectTypeLabel(project.project_type, { short: true })}
           </div>
           <div className="project-card-meta">
             Images: {project.image_count ?? 0} • Parts: {project.part_count ?? 0}
@@ -1272,7 +1273,7 @@ function App() {
       .then(data => {
         const normalized = {
           ...data,
-          project_type: data.project_type || projectData.project_type || 'PT1',
+          project_type: data.project_type || projectData.project_type || DEFAULT_PROJECT_TYPE,
         };
         console.log("Project created successfully:", data);
         // Add the new project to the projects list
