@@ -256,7 +256,7 @@ function mockFetch(config, projectType, mockOptions = {}) {
 
 describe('ProjectConfigurationPanel', () => {
 
-  test('shows expected filename preview as the primary file naming guide and updates from hierarchy abbreviations', async () => {
+  test('shows expected filename preview as the primary file naming guide', async () => {
     const config = {
       ...makeConfig('PT1', 'basic'),
       file_naming_scheme: {
@@ -280,11 +280,7 @@ describe('ProjectConfigurationPanel', () => {
     expect(preview).toHaveTextContent('D001_L001_PN001_side_modality.type');
     expect(screen.getByLabelText('Expected filename preview')).toHaveTextContent('ID value: 001');
 
-    fireEvent.change(screen.getByLabelText('Abbreviation', { selector: '#hierarchy-level-abbreviation-2' }), {
-      target: { value: 'PART' },
-    });
-
-    expect(screen.getByTestId('expected-filename-preview')).toHaveTextContent('D001_L001_PART001_side_modality.type');
+    expect(screen.queryByLabelText('Level 1')).not.toBeInTheDocument();
   });
 
   test('keeps view descriptors user-facing as side in the expected filename preview', async () => {
@@ -330,28 +326,22 @@ describe('ProjectConfigurationPanel', () => {
     await waitFor(() => expect(screen.getByRole('tab', { name: 'General' })).toHaveAttribute('aria-selected', 'true'));
     expect(screen.queryByRole('heading', { name: 'Filename Convention' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Level 1')).not.toBeInTheDocument();
+    expect(screen.queryByText('Add Hierarchy Level')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Filename Convention' }));
     await waitFor(() => expect(screen.getByRole('tabpanel', { name: 'Filename Convention configuration' })).toBeInTheDocument());
     expect(screen.getByRole('heading', { name: 'Filename Convention' })).toBeInTheDocument();
   });
 
-  test('renders file naming configuration defaults and supports hierarchy customization', async () => {
+  test('filename convention directs hierarchy assignment to Images to Parts', async () => {
     const config = makeConfig('PT1', 'basic');
     mockFetch(config, 'PT1');
     render(<ProjectConfigurationPanel projectId="proj-1" />);
 
     await openFilenameConventionSubtab();
-    expect(screen.getByLabelText('Level 1')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('D')).toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText('Level 1'), { target: { value: 'other' } });
-    expect(screen.getByLabelText('Custom Label')).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('Custom Label'), { target: { value: 'Workcell' } });
-    fireEvent.change(screen.getByLabelText('Abbreviation', { selector: '#hierarchy-level-abbreviation-0' }), {
-      target: { value: 'W' },
-    });
-    expect(screen.getByDisplayValue('W')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Level 1')).not.toBeInTheDocument();
+    expect(screen.queryByText('Add Hierarchy Level')).not.toBeInTheDocument();
+    expect(screen.getByText('Part hierarchy assignment is configured in Project Data → Images to Parts → Automatically Assign Images to Parts.')).toBeInTheDocument();
   });
 
 
@@ -375,21 +365,49 @@ describe('ProjectConfigurationPanel', () => {
     expect(screen.getByLabelText('Remove overlay specifier when matching base image')).toBeChecked();
   });
 
-  test('adds and removes hierarchy and image descriptor rows', async () => {
+  test('adds and removes image descriptor rows', async () => {
     const config = makeConfig('PT1', 'basic');
     mockFetch(config, 'PT1');
     render(<ProjectConfigurationPanel projectId="proj-1" />);
 
     await openFilenameConventionSubtab();
-    expect(screen.getByText('Add Hierarchy Level')).toBeInTheDocument();
-    fireEvent.click(screen.getByText('Add Hierarchy Level'));
-    expect(screen.getByLabelText('Level 6')).toBeInTheDocument();
+    expect(screen.queryByText('Add Hierarchy Level')).not.toBeInTheDocument();
     fireEvent.click(screen.getByText('Add Image Descriptor'));
     expect(screen.getByLabelText('Descriptor 3')).toBeInTheDocument();
 
     const removeButtons = screen.getAllByRole('button', { name: 'Remove' });
     fireEvent.click(removeButtons[removeButtons.length - 1]);
     expect(screen.queryByLabelText('Descriptor 3')).not.toBeInTheDocument();
+  });
+
+
+  test('advanced UI section controls hide optional project sections and persist choices', async () => {
+    const config = makeConfig('PT1', 'basic');
+    mockFetch(config, 'PT1');
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await waitFor(() => expect(screen.getByText('Available UI Sections')).toBeInTheDocument());
+    expect(screen.queryByText('Analyze tab')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+    expect(screen.getByLabelText('Analyze tab')).toBeChecked();
+    expect(screen.getByLabelText('Batches subtab')).toBeChecked();
+
+    fireEvent.click(screen.getByLabelText('Analyze tab'));
+    fireEvent.click(screen.getByLabelText('Batches subtab'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith(
+      '/api/projects/proj-1/configuration',
+      expect.objectContaining({ method: 'PUT' }),
+    ));
+    const putCall = global.fetch.mock.calls.find(
+      ([url, options = {}]) => url === '/api/projects/proj-1/configuration' && options.method === 'PUT',
+    );
+    const savedConfig = JSON.parse(putCall[1].body).config;
+    expect(savedConfig.ui_sections['main.analyze']).toBe(false);
+    expect(savedConfig.ui_sections['project_data.batches']).toBe(false);
+    expect(savedConfig.ui_sections['project_data.images_to_parts']).toBe(true);
   });
 
 
@@ -462,9 +480,8 @@ describe('ProjectConfigurationPanel', () => {
     fireEvent.change(screen.getByLabelText('Active Username'), { target: { value: 'manual-reviewer' } });
 
     fireEvent.click(screen.getByRole('tab', { name: 'Filename Convention' }));
-    await waitFor(() => expect(screen.getByLabelText('Level 1')).toBeInTheDocument());
-    fireEvent.change(screen.getByLabelText('Level 1'), { target: { value: 'batch' } });
-    fireEvent.change(container.querySelector('#hierarchy-level-abbreviation-0'), { target: { value: 'BT' } });
+    await waitFor(() => expect(screen.getByLabelText('Descriptor 1')).toBeInTheDocument());
+    expect(screen.queryByLabelText('Level 1')).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Descriptor 1'), { target: { value: 'operator' } });
     fireEvent.change(container.querySelector('#image-descriptor-abbreviation-0'), { target: { value: 'OP' } });
     fireEvent.change(screen.getByLabelText('Image modality label 1'), { target: { value: 'Thermal image' } });
@@ -548,7 +565,6 @@ describe('ProjectConfigurationPanel', () => {
         grayscale_base_image: false,
       },
     }));
-    expect(savedConfig.file_naming_scheme.hierarchy_levels[0]).toEqual({ id: 'batch', label: 'Batch', abbreviation: 'BT' });
     expect(savedConfig.file_naming_scheme.image_descriptors[0]).toEqual({ id: 'operator', label: 'Operator', abbreviation: 'OP' });
     expect(savedConfig.image_modalities[0]).toEqual({
       id: 'thermal',

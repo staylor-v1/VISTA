@@ -134,28 +134,51 @@ function normalizePartKey(value = '') {
   return String(value || '').replace(/[^A-Za-z0-9]+/g, '').trim();
 }
 
+function extractAutoAssignValueFromTokens(tokens, level, usedTokenIndexes = new Set()) {
+  const filenameKey = String(level?.filenameKey ?? '').trim();
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (usedTokenIndexes.has(index)) continue;
+    const partKey = normalizePartKey(extractPartKeyFromFilenameSegment(tokens[index], filenameKey));
+    if (!partKey) continue;
+    usedTokenIndexes.add(index);
+    return partKey;
+  }
+  return '';
+}
+
+function extractAutoAssignValues(image, levels, delimiter = '') {
+  const tokens = tokenizeFilename(image.filename, delimiter);
+  const usedTokenIndexes = new Set();
+  return levels.map((level) => {
+    const source = level?.source === 'metadata' ? 'metadata' : 'filename';
+    const metadataKey = String(level?.metadataKey ?? '').trim();
+    if (source === 'metadata') return normalizePartKey(getImageMetadata(image)[metadataKey]);
+    return extractAutoAssignValueFromTokens(tokens, level, usedTokenIndexes);
+  });
+}
+
 function buildAutoAssignPreview(images, selectedFilenameKey, delimiter = '', options = {}) {
   const groups = new Map();
-  const source = options.source === 'metadata' ? 'metadata' : 'filename';
-  const selectedMetadataKey = String(options.selectedMetadataKey || '').trim();
+  const levels = Array.isArray(options.levels) && options.levels.length > 0
+    ? options.levels
+    : [{
+      source: options.source === 'metadata' ? 'metadata' : 'filename',
+      filenameKey: selectedFilenameKey,
+      metadataKey: options.selectedMetadataKey || selectedFilenameKey,
+    }];
+  const hasIncompleteLevel = levels.some((level) => (
+    level?.source === 'metadata' && !String(level?.metadataKey || '').trim()
+  ));
+  if (hasIncompleteLevel) return [];
+  const activeLevels = levels.filter((level) => (level?.source === 'metadata' ? String(level?.metadataKey || '').trim() : true));
+  if (activeLevels.length === 0) return [];
 
   (Array.isArray(images) ? images : []).forEach((image) => {
-    if (source === 'metadata' && selectedMetadataKey) {
-      const metadataValue = getImageMetadata(image)[selectedMetadataKey];
-      const partKey = normalizePartKey(metadataValue);
-      if (partKey) {
-        if (!groups.has(partKey)) groups.set(partKey, []);
-        groups.get(partKey).push(image);
-        return;
-      }
-    }
-
-    tokenizeFilename(image.filename, delimiter).forEach((token) => {
-      const partKey = normalizePartKey(extractPartKeyFromFilenameSegment(token, selectedFilenameKey));
-      if (!partKey) return;
-      if (!groups.has(partKey)) groups.set(partKey, []);
-      groups.get(partKey).push(image);
-    });
+    const levelValues = extractAutoAssignValues(image, activeLevels, delimiter);
+    if (levelValues.some((value) => !value)) return;
+    const partKey = levelValues.join('-');
+    if (!groups.has(partKey)) groups.set(partKey, []);
+    groups.get(partKey).push(image);
   });
   return Array.from(groups.entries())
     .map(([partKey, groupedImages]) => ({ partKey, images: groupedImages }))
@@ -226,8 +249,11 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
   const [someFilter, setSomeFilter] = useState('');
   const [selectedFilenameKey, setSelectedFilenameKey] = useState('');
   const [autoAssignKeySource, setAutoAssignKeySource] = useState('filename');
+  const [autoAssignLevelMode, setAutoAssignLevelMode] = useState('single');
+  const [autoAssignLevels, setAutoAssignLevels] = useState([{ id: 1, source: 'filename', value: '' }]);
   const [autoAssigning, setAutoAssigning] = useState(false);
   const unassignedRef = useRef(null);
+  const nextAutoAssignLevelId = useRef(2);
 
   React.useEffect(() => {
     setLocalBuckets(initialBuckets);
@@ -443,12 +469,31 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
     () => autoAssignFieldOptions.find((option) => (autoAssignKeySource === 'metadata' ? option.metadataKey === selectedFilenameKey : option.filenameKey === selectedFilenameKey)) || null,
     [autoAssignFieldOptions, autoAssignKeySource, selectedFilenameKey]
   );
+  const normalizedAutoAssignLevels = useMemo(() => {
+    if (autoAssignLevelMode !== 'multi') {
+      return [{
+        source: autoAssignKeySource,
+        filenameKey: selectedAutoAssignOption?.filenameKey || selectedFilenameKey,
+        metadataKey: selectedAutoAssignOption?.metadataKey || selectedFilenameKey,
+      }];
+    }
+    return autoAssignLevels.map((level) => {
+      const selected = autoAssignFieldOptions.find((option) => (level.source === 'metadata' ? option.metadataKey === level.value : option.filenameKey === level.value)) || null;
+      return {
+        source: level.source === 'metadata' ? 'metadata' : 'filename',
+        filenameKey: selected?.filenameKey || level.value,
+        metadataKey: selected?.metadataKey || level.value,
+      };
+    });
+  }, [autoAssignLevelMode, autoAssignLevels, autoAssignFieldOptions, autoAssignKeySource, selectedAutoAssignOption, selectedFilenameKey]);
+
   const autoAssignPreview = useMemo(
     () => buildAutoAssignPreview(localBuckets.unassigned, selectedAutoAssignOption?.filenameKey || selectedFilenameKey, autoAssignDelimiter, {
       source: autoAssignKeySource,
       selectedMetadataKey: selectedAutoAssignOption?.metadataKey || selectedFilenameKey,
+      levels: normalizedAutoAssignLevels,
     }),
-    [localBuckets.unassigned, selectedFilenameKey, autoAssignDelimiter, autoAssignKeySource, selectedAutoAssignOption]
+    [localBuckets.unassigned, selectedFilenameKey, autoAssignDelimiter, autoAssignKeySource, selectedAutoAssignOption, normalizedAutoAssignLevels]
   );
 
   const findPartByKey = (partKey, buckets = localBuckets.partBuckets) => buckets.find((part) => normalizePartKey(part.serialNumber || part.displayName) === partKey);
@@ -457,6 +502,7 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
     const preview = buildAutoAssignPreview(localBuckets.unassigned, selectedAutoAssignOption?.filenameKey || selectedFilenameKey, autoAssignDelimiter, {
       source: autoAssignKeySource,
       selectedMetadataKey: selectedAutoAssignOption?.metadataKey || selectedFilenameKey,
+      levels: normalizedAutoAssignLevels,
     });
     if (preview.length === 0) return;
     setAutoAssigning(true);
@@ -536,35 +582,82 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
               <h3>Automatically Assign Images to Parts</h3>
               <p className="muted">Select whether autoassign should use filename elements or their mapped metadata labels. Use Blank key to match delimiter-separated numeric filename segments.</p>
             </div>
-            <label className="auto-assign-source-switch" htmlFor="auto-assign-key-source">
-              <span className={autoAssignKeySource === 'filename' ? 'active' : ''}>Filename</span>
-              <input
-                id="auto-assign-key-source"
-                type="checkbox"
-                checked={autoAssignKeySource === 'metadata'}
-                onChange={(event) => { setAutoAssignKeySource(event.target.checked ? 'metadata' : 'filename'); setSelectedFilenameKey(''); }}
-                aria-label="Use metadata labels for autoassign"
-              />
-              <span className="auto-assign-source-switch-track" aria-hidden="true"><span className="auto-assign-source-switch-thumb" /></span>
-              <span className={autoAssignKeySource === 'metadata' ? 'active' : ''}>Metadata</span>
-            </label>
+            <div className="auto-assign-switch-group">
+              <label className="auto-assign-source-switch" htmlFor="auto-assign-key-source">
+                <span className={autoAssignKeySource === 'filename' ? 'active' : ''}>Filename</span>
+                <input
+                  id="auto-assign-key-source"
+                  type="checkbox"
+                  checked={autoAssignKeySource === 'metadata'}
+                  onChange={(event) => { setAutoAssignKeySource(event.target.checked ? 'metadata' : 'filename'); setSelectedFilenameKey(''); }}
+                  aria-label="Use metadata labels for autoassign"
+                />
+                <span className="auto-assign-source-switch-track" aria-hidden="true"><span className="auto-assign-source-switch-thumb" /></span>
+                <span className={autoAssignKeySource === 'metadata' ? 'active' : ''}>Metadata</span>
+              </label>
+              <label className="auto-assign-source-switch" htmlFor="auto-assign-level-mode">
+                <span className={autoAssignLevelMode === 'single' ? 'active' : ''}>Single-level</span>
+                <input
+                  id="auto-assign-level-mode"
+                  type="checkbox"
+                  checked={autoAssignLevelMode === 'multi'}
+                  onChange={(event) => setAutoAssignLevelMode(event.target.checked ? 'multi' : 'single')}
+                  aria-label="Use multi-level autoassign"
+                />
+                <span className="auto-assign-source-switch-track" aria-hidden="true"><span className="auto-assign-source-switch-thumb" /></span>
+                <span className={autoAssignLevelMode === 'multi' ? 'active' : ''}>Multi-level</span>
+              </label>
+            </div>
           </div>
           <div className="auto-assign-token-list">
-            <label className="auto-assign-token-option" htmlFor="auto-assign-filename-key">
-              <span><strong>{autoAssignKeySource === 'metadata' ? 'Metadata label' : 'Filename key'}</strong><small>Delimiter: {autoAssignDelimiter || 'automatic non-alphanumeric split'}</small></span>
-              <select
-                id="auto-assign-filename-key"
-                value={selectedFilenameKey}
-                onChange={(event) => setSelectedFilenameKey(event.target.value)}
-                aria-label="Filename key for autoassign"
-              >
-                <option value="">Blank key (numeric segment)</option>
-                {Array.from(new Set(autoAssignFieldOptions
-                  .map((option) => (autoAssignKeySource === 'metadata' ? option.metadataKey : option.filenameKey))
-                  .filter(Boolean)))
-                  .map((value) => <option key={`${autoAssignKeySource}:${value}`} value={value}>{value}</option>)}
-              </select>
-            </label>
+            {autoAssignLevelMode === 'single' ? (
+              <label className="auto-assign-token-option" htmlFor="auto-assign-filename-key">
+                <span><strong>{autoAssignKeySource === 'metadata' ? 'Metadata label' : 'Filename key'}</strong><small>Delimiter: {autoAssignDelimiter || 'automatic non-alphanumeric split'}</small></span>
+                <select
+                  id="auto-assign-filename-key"
+                  value={selectedFilenameKey}
+                  onChange={(event) => setSelectedFilenameKey(event.target.value)}
+                  aria-label="Filename key for autoassign"
+                >
+                  {autoAssignKeySource === 'filename' ? <option value="">Blank key (numeric segment)</option> : <option value="">Select metadata label</option>}
+                  {Array.from(new Set(autoAssignFieldOptions
+                    .map((option) => (autoAssignKeySource === 'metadata' ? option.metadataKey : option.filenameKey))
+                    .filter(Boolean)))
+                    .map((value) => <option key={`${autoAssignKeySource}:${value}`} value={value}>{value}</option>)}
+                </select>
+              </label>
+            ) : (
+              <div className="auto-assign-multi-level-editor" aria-label="Multi-level autoassign levels">
+                {autoAssignLevels.map((level, index) => (
+                  <div className="auto-assign-level-row" key={level.id}>
+                    <label htmlFor={`auto-assign-level-source-${level.id}`}>Level {index + 1} source</label>
+                    <select
+                      id={`auto-assign-level-source-${level.id}`}
+                      value={level.source}
+                      onChange={(event) => setAutoAssignLevels((prev) => prev.map((item) => (item.id === level.id ? { ...item, source: event.target.value, value: '' } : item)))}
+                    >
+                      <option value="filename">Filename</option>
+                      <option value="metadata">Metadata</option>
+                    </select>
+                    <label htmlFor={`auto-assign-level-key-${level.id}`}>{level.source === 'metadata' ? 'Metadata label' : 'Filename key'}</label>
+                    <select
+                      id={`auto-assign-level-key-${level.id}`}
+                      value={level.value}
+                      onChange={(event) => setAutoAssignLevels((prev) => prev.map((item) => (item.id === level.id ? { ...item, value: event.target.value } : item)))}
+                    >
+                      {level.source === 'filename' ? <option value="">Blank key (numeric segment)</option> : <option value="">Select metadata label</option>}
+                      {Array.from(new Set(autoAssignFieldOptions
+                        .map((option) => (level.source === 'metadata' ? option.metadataKey : option.filenameKey))
+                        .filter(Boolean)))
+                        .map((value) => <option key={`${level.id}:${level.source}:${value}`} value={value}>{value}</option>)}
+                    </select>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => setAutoAssignLevels((prev) => prev.filter((item) => item.id !== level.id))} disabled={autoAssignLevels.length === 1}>Remove</button>
+                  </div>
+                ))}
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setAutoAssignLevels((prev) => [...prev, { id: nextAutoAssignLevelId.current++, source: 'filename', value: '' }])}>Add level</button>
+                <small>Each image must match every configured level; created part names join matched values in level order.</small>
+              </div>
+            )}
           </div>
           <div className="auto-assign-preview-row">
             <span>{autoAssignPreview.length} part{autoAssignPreview.length === 1 ? '' : 's'} will be updated from {autoAssignPreview.reduce((sum, group) => sum + group.images.length, 0)} image{autoAssignPreview.reduce((sum, group) => sum + group.images.length, 0) === 1 ? '' : 's'}.</span>

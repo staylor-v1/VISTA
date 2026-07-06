@@ -1,5 +1,6 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { PROJECT_PHASE_LABELS, PROJECT_PHASE_SEQUENCE } from '../utils/projectPhases';
+import { UI_SECTION_GROUPS, normalizeUiSections } from '../utils/uiSections';
 import { buildErrorWithServiceDiagnostics } from '../utils/serviceDiagnostics';
 import { metadataKeyFromFilenameEntry } from './FilenameMetadataExtractor';
 
@@ -275,6 +276,7 @@ const EMPTY_CONFIG = {
     username: '',
     sso_authenticated: false,
   },
+  ui_sections: normalizeUiSections(),
   file_naming_scheme: {
     hierarchy_levels: [
       { id: 'drawing_number', label: 'Drawing Number', abbreviation: 'D' },
@@ -463,6 +465,7 @@ function normalizeProjectConfiguration(config, projectType) {
     serial_number_scheme: normalizeSerialNumberScheme(incomingConfig),
     phase_settings: normalizePhaseSettings(incomingConfig),
     metadata_parsers: normalizeMetadataParsers(incomingConfig),
+    ui_sections: normalizeUiSections(incomingConfig),
     file_naming_scheme: normalizeFileNamingScheme(incomingConfig),
   };
 }
@@ -522,6 +525,7 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
   const [availableProjects, setAvailableProjects] = useState([]);
   const [currentProjectType, setCurrentProjectType] = useState('');
   const [copySourceProjectId, setCopySourceProjectId] = useState('');
+  const [showAdvancedUiSections, setShowAdvancedUiSections] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -1004,6 +1008,8 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
         ...clonedConfig,
         serial_number_scheme: normalizeSerialNumberScheme(clonedConfig),
         phase_settings: normalizePhaseSettings(clonedConfig),
+        metadata_parsers: normalizeMetadataParsers(clonedConfig),
+        ui_sections: normalizeUiSections(clonedConfig),
         file_naming_scheme: normalizeFileNamingScheme(clonedConfig),
       };
       lastSavedSignatureRef.current = getConfigurationSignature(nextClonedConfig);
@@ -1295,6 +1301,52 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
             </div>
           </section>
 
+          <section className="part-detail-panel configurable-ui-sections-panel" aria-label="Configurable UI sections">
+            <div className="configurable-ui-sections-header">
+              <div>
+                <h3>Available UI Sections</h3>
+                <p>Keep common tools visible and expose advanced or specialized UI only when this project needs it.</p>
+              </div>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                aria-expanded={showAdvancedUiSections}
+                aria-controls="advanced-ui-section-controls"
+                onClick={() => setShowAdvancedUiSections((previous) => !previous)}
+              >
+                {showAdvancedUiSections ? 'Hide Advanced' : 'Advanced'}
+              </button>
+            </div>
+            {showAdvancedUiSections && (
+              <div id="advanced-ui-section-controls" className="configurable-ui-section-groups">
+                {UI_SECTION_GROUPS.map((group) => (
+                  <fieldset key={group.id} className="configurable-ui-section-group">
+                    <legend>{group.label}</legend>
+                    <p className="muted">{group.description}</p>
+                    {group.sections.map((section) => (
+                      <label key={section.key}>
+                        <input
+                          type="checkbox"
+                          checked={normalizeUiSections(config)[section.key] !== false}
+                          onChange={(event) => {
+                            setConfig((previous) => ({
+                              ...previous,
+                              ui_sections: {
+                                ...normalizeUiSections(previous),
+                                [section.key]: event.target.checked,
+                              },
+                            }));
+                          }}
+                        />
+                        {section.label}
+                      </label>
+                    ))}
+                  </fieldset>
+                ))}
+              </div>
+            )}
+          </section>
+
           <section className="part-detail-panel" aria-label="Defect types">
             <h3>Defect Types</h3>
             <p>Define the defect taxonomy used in annotations and review workflows.</p>
@@ -1556,48 +1608,7 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
               <strong> 001 </strong> because these fields normally decode image or part identifiers from the filename.
             </p>
 
-            <h4>Hierarchy Levels</h4>
-            <div className="filename-option-grid">
-              {normalizedFileNamingScheme.hierarchy_levels.map((level, index) => {
-                const segment = filenameConvention.segments.find((item) => item.type === 'hierarchy' && item.index === index);
-                return (
-                  <div className="filename-option-card" style={{ '--segment-color': segment?.color }} key={`hierarchy-level-${index}`}>
-                    <div className="filename-option-card-header">
-                      <span>{segment?.token}</span>
-                      <button className="btn btn-secondary" type="button" onClick={() => removeFileNameEntry('hierarchy_levels', index)}>Remove</button>
-                    </div>
-                    <label htmlFor={`hierarchy-level-select-${index}`}>Level {index + 1}</label>
-                    <select
-                      id={`hierarchy-level-select-${index}`}
-                      value={level.id}
-                      onChange={(event) => {
-                        const selected = FILE_NAME_ELEMENT_OPTIONS.find((option) => option.id === event.target.value);
-                        updateFileNameEntry('hierarchy_levels', index, selected
-                          ? { id: selected.id, label: selected.label, abbreviation: selected.abbreviation }
-                          : { id: 'other', label: '', abbreviation: '' });
-                      }}
-                    >
-                      {FILE_NAME_ELEMENT_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-                      <option value="other">Other</option>
-                    </select>
-                    {level.id === 'other' && (
-                      <>
-                        <label htmlFor={`hierarchy-level-custom-label-${index}`}>Custom Label</label>
-                        <input id={`hierarchy-level-custom-label-${index}`} value={level.label} onChange={(event) => updateFileNameEntry('hierarchy_levels', index, { label: event.target.value })} />
-                      </>
-                    )}
-                    <small className="filename-metadata-key">Metadata key: {getFilenameEntryMetadataKey(level, `hierarchy_${index + 1}`)}</small>
-                    <label htmlFor={`hierarchy-level-abbreviation-${index}`}>Abbreviation</label>
-                    <input id={`hierarchy-level-abbreviation-${index}`} value={level.abbreviation} onChange={(event) => updateFileNameEntry('hierarchy_levels', index, { abbreviation: event.target.value })} />
-                  </div>
-                );
-              })}
-            </div>
-            <div className="workbench-controls-row">
-              <button className="btn btn-secondary" type="button" onClick={() => addFileNameEntry('hierarchy_levels')}>
-                Add Hierarchy Level
-              </button>
-            </div>
+            <p className="muted">Part hierarchy assignment is configured in Project Data → Images to Parts → Automatically Assign Images to Parts.</p>
 
             <h4>Image Descriptors</h4>
             <div className="filename-option-grid">

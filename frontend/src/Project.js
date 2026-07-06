@@ -21,6 +21,7 @@ import { resolveCurrentProjectPhase } from './utils/projectPhases';
 import { DEFAULT_INTERFACE_HIERARCHY, loadInterfaceHierarchy } from './utils/interfaceHierarchy';
 import { copyCurrentShareUrl } from './utils/shareLink';
 import { getProjectTypeLabel } from './projectTypes';
+import { isUiSectionEnabled } from './utils/uiSections';
 
 const MAIN_TAB_DEFINITIONS = {
   project_configuration: { label: 'Project Configuration' },
@@ -108,6 +109,18 @@ function Project({ currentUserGroups = [] }) {
   const validQueryProjectDataTab = Object.prototype.hasOwnProperty.call(PROJECT_DATA_TABS, queryProjectDataTab)
     ? queryProjectDataTab
     : null;
+
+  const visibleMainTabs = useMemo(() => (interfaceHierarchy.mainTabs || []).filter((tabKey) => {
+    if (tabKey === 'project_configuration' || tabKey === 'project_data') return true;
+    return isUiSectionEnabled(projectConfiguration, `main.${tabKey}`);
+  }), [interfaceHierarchy.mainTabs, projectConfiguration]);
+
+  const visibleProjectDataTabs = useMemo(() => Object.entries(PROJECT_DATA_TABS).filter(([tabKey]) => {
+    if (tabKey === 'load_images') return true;
+    return isUiSectionEnabled(projectConfiguration, `project_data.${tabKey}`);
+  }), [projectConfiguration]);
+
+  const visibleProjectDataTabKeys = useMemo(() => visibleProjectDataTabs.map(([tabKey]) => tabKey), [visibleProjectDataTabs]);
 
   const queryInspectionLaunchFilters = useMemo(() => {
     if (validQueryMainTab !== 'inspection') return null;
@@ -279,16 +292,24 @@ function Project({ currentUserGroups = [] }) {
 
 
   useEffect(() => {
-    if (validQueryMainTab && interfaceHierarchy.mainTabs.includes(validQueryMainTab)) {
+    if (validQueryMainTab && visibleMainTabs.includes(validQueryMainTab)) {
       setActiveMainTab(validQueryMainTab);
+      return;
     }
-  }, [interfaceHierarchy.mainTabs, validQueryMainTab]);
+    if (!visibleMainTabs.includes(activeMainTab)) {
+      setActiveMainTab(visibleMainTabs[0] || 'project_configuration');
+    }
+  }, [activeMainTab, validQueryMainTab, visibleMainTabs]);
 
   useEffect(() => {
-    if (validQueryProjectDataTab) {
+    if (validQueryProjectDataTab && visibleProjectDataTabKeys.includes(validQueryProjectDataTab)) {
       setActiveProjectDataTab(validQueryProjectDataTab);
+      return;
     }
-  }, [validQueryProjectDataTab]);
+    if (!visibleProjectDataTabKeys.includes(activeProjectDataTab)) {
+      setActiveProjectDataTab(visibleProjectDataTabKeys[0] || 'load_images');
+    }
+  }, [activeProjectDataTab, validQueryProjectDataTab, visibleProjectDataTabKeys]);
 
   useEffect(() => {
     if (validQueryMainTab === 'inspection') {
@@ -461,7 +482,7 @@ function Project({ currentUserGroups = [] }) {
       <ProjectDataSummaryTab counts={dataCounts} loading={countsLoading} />
 
       <div className="project-data-subtabs project-tabs" role="tablist" aria-label="Project data sections">
-        {Object.entries(PROJECT_DATA_TABS).map(([tabKey, definition]) => (
+        {visibleProjectDataTabs.map(([tabKey, definition]) => (
           <button
             key={tabKey}
             type="button"
@@ -500,6 +521,7 @@ function Project({ currentUserGroups = [] }) {
               </div>
             </div>
           )}
+          {isUiSectionEnabled(projectConfiguration, 'project_data.data_validation') && (
           <section className="workbench-panel project-data-action-panel" aria-label="Project data validation">
             <header className="workbench-header">
               <div>
@@ -527,6 +549,7 @@ function Project({ currentUserGroups = [] }) {
               </div>
             )}
           </section>
+          )}
         </div>
       )}
 
@@ -669,6 +692,7 @@ function Project({ currentUserGroups = [] }) {
     project?.name,
     project?.project_type,
     projectConfiguration,
+    visibleProjectDataTabs,
     refreshProjectCounts,
     refreshProjectMetadata,
     refreshRecentlyDeletedOverlays,
@@ -747,7 +771,7 @@ function Project({ currentUserGroups = [] }) {
 
   const renderMainTabs = (className = '') => (
     <div className={`project-tabs project-main-tabs ${className}`.trim()} role="tablist" aria-label="Project sections">
-      {interfaceHierarchy.mainTabs.map((tabKey) => (
+      {visibleMainTabs.map((tabKey) => (
         <button
           key={tabKey}
           type="button"

@@ -529,4 +529,124 @@ describe('ImagesToPartsTab', () => {
     })));
   });
 
+
+  test('multi-level autoassign creates compound parts from multiple filename levels', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (url, options = {}) => {
+      if (url === '/api/projects/proj-1/parts') {
+        const payload = JSON.parse(options.body);
+        return { ok: true, json: async () => ({ id: `part-${payload.serial_number}`, serial_number: payload.serial_number, display_name: payload.display_name }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(
+      <ImagesToPartsTab
+        projectId="proj-1"
+        parts={[]}
+        images={[
+          { id: 'img-1', filename: 'D1_SN1_front.png' },
+          { id: 'img-2', filename: 'D1_SN2_front.png' },
+          { id: 'img-3', filename: 'D2_SN1_front.png' },
+        ]}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Use multi-level autoassign' }));
+    fireEvent.change(screen.getByLabelText('Filename key', { selector: '#auto-assign-level-key-1' }), { target: { value: 'D' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add level' }));
+    const keySelects = screen.getAllByLabelText('Filename key');
+    fireEvent.change(keySelects[1], { target: { value: 'SN' } });
+
+    expect(screen.getByText('Part 1-1')).toBeInTheDocument();
+    expect(screen.getByText('Part 1-2')).toBeInTheDocument();
+    expect(screen.getByText('Part 2-1')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Assign Parts' }));
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith('/api/projects/proj-1/parts', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ serial_number: '1-1', display_name: '1-1' }),
+    })));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith('/api/projects/proj-1/parts/image-assignments', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ filename: 'D2_SN1_front.png', image_id: 'img-3', to_part_id: 'part-2-1' }),
+    })));
+  });
+
+  test('single-level metadata mode requires a metadata label instead of a blank filename key', () => {
+    render(
+      <ImagesToPartsTab
+        projectId="proj-1"
+        parts={[]}
+        images={[{ id: 'img-1', filename: '001_front.png', metadata: { serial_number: 'SN001' } }]}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Use metadata labels for autoassign' }));
+    const keySelect = screen.getByRole('combobox', { name: 'Filename key for autoassign' });
+    expect(within(keySelect).getByRole('option', { name: 'Select metadata label' })).toBeInTheDocument();
+    expect(within(keySelect).queryByRole('option', { name: 'Blank key (numeric segment)' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Assign Parts' })).toBeDisabled();
+  });
+
+  test('multi-level blank filename levels consume numeric filename segments in order', () => {
+    render(
+      <ImagesToPartsTab
+        projectId="proj-1"
+        parts={[]}
+        images={[{ id: 'img-1', filename: '001_002_front.png' }]}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Use multi-level autoassign' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add level' }));
+
+    expect(screen.getByText('Part 001-002')).toBeInTheDocument();
+    expect(screen.queryByText('Part 001-001')).not.toBeInTheDocument();
+  });
+
+  test('multi-level autoassign waits for metadata levels to select a label', () => {
+    render(
+      <ImagesToPartsTab
+        projectId="proj-1"
+        parts={[]}
+        images={[{ id: 'img-1', filename: 'D1_front.png', metadata: { serial_number: 'SN001' } }]}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Use multi-level autoassign' }));
+    fireEvent.change(screen.getByLabelText('Filename key', { selector: '#auto-assign-level-key-1' }), { target: { value: 'D' } });
+    expect(screen.getByText('Part 1')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add level' }));
+    fireEvent.change(screen.getByLabelText('Level 2 source'), { target: { value: 'metadata' } });
+
+    expect(screen.getByRole('option', { name: 'Select metadata label' })).toBeInTheDocument();
+    expect(screen.queryByText('Part 1')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Assign Parts' })).toBeDisabled();
+  });
+
+  test('multi-level autoassign can combine filename and metadata levels and skips incomplete images', () => {
+    render(
+      <ImagesToPartsTab
+        projectId="proj-1"
+        parts={[]}
+        images={[
+          { id: 'img-1', filename: 'D1_front.png', metadata: { serial_number: 'SN 001' } },
+          { id: 'img-2', filename: 'D1_back.png', metadata: {} },
+        ]}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Use multi-level autoassign' }));
+    fireEvent.change(screen.getByLabelText('Filename key', { selector: '#auto-assign-level-key-1' }), { target: { value: 'D' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add level' }));
+    fireEvent.change(screen.getByLabelText('Level 2 source'), { target: { value: 'metadata' } });
+    fireEvent.change(screen.getByLabelText('Metadata label'), { target: { value: 'serial_number' } });
+
+    expect(screen.getByText('Part 1-SN001')).toBeInTheDocument();
+    expect(screen.getAllByText('D1_front.png').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Part 1-')).not.toBeInTheDocument();
+  });
+
 });
