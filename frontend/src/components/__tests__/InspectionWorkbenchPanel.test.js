@@ -1158,6 +1158,21 @@ describe('InspectionWorkbenchPanel', () => {
     }
   });
 
+  test('does not activate PT3 internal overlay layers when selecting a part', async () => {
+    mockWorkbenchFetch(scenarioByUser[0]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+    fireEvent.click(screen.getByRole('button', { name: 'Part Selection' }));
+
+    const voidsOverlayToggle = await screen.findByRole('button', { name: /Voids/i });
+    await waitFor(() => expect(voidsOverlayToggle).toHaveAttribute('aria-pressed', 'false'));
+
+    fireEvent.click(screen.getByRole('button', { name: /Basic Part/i }));
+
+    expect(voidsOverlayToggle).toHaveAttribute('aria-pressed', 'false');
+  });
+
   test('keeps PT3 MPR quadrants constrained after clicking the 3D pane', async () => {
     mockWorkbenchFetch(scenarioByUser[2]);
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
@@ -1480,16 +1495,13 @@ describe('InspectionWorkbenchPanel', () => {
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
 
     await waitFor(() => expect(screen.getAllByText('Analyze Output Part').length).toBeGreaterThan(0));
-    const composite = screen.getByTestId('inspection-overlay-composite');
     const viewBoard = document.querySelector('.view-board');
     expect(screen.queryByLabelText('Image categories')).not.toBeInTheDocument();
     const layerControls = screen.getByLabelText('Analyze Output Part layer toggles');
     expect(within(layerControls).getByRole('button', { name: 'SOURCE' })).toHaveAttribute('aria-pressed', 'true');
     const analysisOverlayToggle = within(layerControls).getByRole('button', { name: 'ANALYSIS OVERLAYS' });
-    expect(analysisOverlayToggle).toHaveAttribute('aria-pressed', 'true');
-    fireEvent.click(analysisOverlayToggle);
-    expect(screen.queryByTestId('inspection-overlay-composite')).not.toBeInTheDocument();
     expect(analysisOverlayToggle).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.queryByTestId('inspection-overlay-composite')).not.toBeInTheDocument();
     fireEvent.click(analysisOverlayToggle);
     const restoredComposite = await screen.findByTestId('inspection-overlay-composite');
     expect(restoredComposite).toBeInTheDocument();
@@ -1573,9 +1585,14 @@ describe('InspectionWorkbenchPanel', () => {
 
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
 
-    await waitFor(() => expect(screen.getByText('Morphology Overlay :: Black-Hat Analysis')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Black Hat Overlay Part').length).toBeGreaterThan(0));
     const viewBoard = document.querySelector('.view-board');
-    expect(within(viewBoard).getAllByTestId('inspection-overlay-composite')).toHaveLength(1);
+    expect(within(viewBoard).queryByTestId('inspection-overlay-composite')).not.toBeInTheDocument();
+    const blackHatLayerControls = screen.getByLabelText('Black Hat Overlay Part layer toggles');
+    const blackHatOverlayToggle = within(blackHatLayerControls).getByRole('button', { name: 'ANALYSIS OVERLAYS' });
+    expect(blackHatOverlayToggle).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(blackHatOverlayToggle);
+    await waitFor(() => expect(within(viewBoard).getAllByTestId('inspection-overlay-composite')).toHaveLength(1));
     expect(within(viewBoard).queryByAltText('front view')).not.toBeInTheDocument();
     expect(within(viewBoard).getAllByAltText('front source')).toHaveLength(1);
     expect(within(viewBoard).getAllByAltText('front overlay')).toHaveLength(1);
@@ -2136,6 +2153,8 @@ describe('InspectionWorkbenchPanel', () => {
       hotkeys: { accept_classification: 'a', reject_classification: 'r', toggle_shortcut_help: 'h' },
     });
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+    await waitFor(() => expect(screen.getAllByText('5.00 mm').length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: 'ANALYSIS OVERLAYS' }));
     await waitFor(() => expect(screen.getAllByText('5.00 mm').length).toBeGreaterThan(1));
 
     fireEvent.click(screen.getByTestId('inspection-overlay-composite'));
@@ -2310,7 +2329,7 @@ describe('InspectionWorkbenchPanel', () => {
     });
   });
 
-  test('assigned overlays render with source images by default and hide only from inspection checkboxes', async () => {
+  test('assigned overlays stay hidden on PT1 part selection until toggled on', async () => {
     const views = ['front', 'back'];
     const parts = [1, 2, 3].map((partNumber) => {
       const sourceImages = views.flatMap((view) => {
@@ -2371,6 +2390,18 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByText('Overlay Part 2')).toBeInTheDocument();
     expect(screen.getByText('Overlay Part 3')).toBeInTheDocument();
 
+    expect(screen.queryByTestId('inspection-overlay-composite')).not.toBeInTheDocument();
+    expect(screen.getAllByAltText('front view')).toHaveLength(1);
+    expect(screen.getAllByAltText('back view')).toHaveLength(1);
+
+    expect(screen.queryByLabelText('Image categories')).not.toBeInTheDocument();
+    const layerControls = screen.getByLabelText('Overlay Part 1 layer toggles');
+    const sourceToggle = within(layerControls).getByRole('button', { name: 'SOURCE' });
+    const overlayToggle = within(layerControls).getByRole('button', { name: 'ANALYSIS OVERLAYS' });
+    expect(sourceToggle).toHaveAttribute('aria-pressed', 'true');
+    expect(overlayToggle).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(overlayToggle);
     await waitFor(() => expect(screen.getAllByTestId('inspection-overlay-composite')).toHaveLength(2));
     expect(screen.getAllByAltText('front source')).toHaveLength(1);
     expect(screen.getAllByAltText('front overlay')).toHaveLength(1);
@@ -2379,23 +2410,7 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getAllByAltText('back source')).toHaveLength(1);
     expect(screen.getAllByAltText('back overlay')).toHaveLength(1);
     expect(screen.queryByAltText('front view')).not.toBeInTheDocument();
-
-    expect(screen.queryByLabelText('Image categories')).not.toBeInTheDocument();
-    const layerControls = screen.getByLabelText('Overlay Part 1 layer toggles');
-    const sourceToggle = within(layerControls).getByRole('button', { name: 'SOURCE' });
-    const overlayToggle = within(layerControls).getByRole('button', { name: 'ANALYSIS OVERLAYS' });
-    expect(sourceToggle).toHaveAttribute('aria-pressed', 'true');
     expect(overlayToggle).toHaveAttribute('aria-pressed', 'true');
-
-    fireEvent.click(overlayToggle);
-    await waitFor(() => expect(screen.queryByTestId('inspection-overlay-composite')).not.toBeInTheDocument());
-    expect(screen.getAllByAltText('front view')).toHaveLength(1);
-    expect(screen.getAllByAltText('back view')).toHaveLength(1);
-    expect(sourceToggle).toHaveAttribute('aria-pressed', 'true');
-    expect(overlayToggle).toHaveAttribute('aria-pressed', 'false');
-
-    fireEvent.click(overlayToggle);
-    await waitFor(() => expect(screen.getAllByTestId('inspection-overlay-composite')).toHaveLength(2));
   });
 
   test('part summary modality buttons toggle matching images in the view window', async () => {
