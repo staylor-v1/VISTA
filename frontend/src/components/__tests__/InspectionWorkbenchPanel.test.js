@@ -628,6 +628,57 @@ function scenarioNameIncludesAdvanced(payload) {
 
 describe('InspectionWorkbenchPanel', () => {
 
+
+  test('does not reapply stale launch filters after a PT1 user selects another part', async () => {
+    const parts = [
+      {
+        id: 'part-overlay-1',
+        batch_id: 'batch-1',
+        serial_number: 'SN-OVERLAY-001',
+        display_name: 'Overlay Part 1',
+        review_state: 'unreviewed',
+        metadata: {
+          configured_views: ['front'],
+          modalities: ['visual'],
+          view_images: { front: 'overlay-part-1.png' },
+          source_images: [{ filename: 'overlay-part-1.png', image_id: 'img-overlay-1', side: 'front', modality: 'visual', overlay: false }],
+          annotations: [],
+        },
+      },
+      {
+        id: 'part-overlay-2',
+        batch_id: 'batch-1',
+        serial_number: 'SN-OVERLAY-002',
+        display_name: 'Overlay Part 2',
+        review_state: 'unreviewed',
+        metadata: {
+          configured_views: ['front'],
+          modalities: ['visual'],
+          view_images: { front: 'overlay-part-2.png' },
+          source_images: [{ filename: 'overlay-part-2.png', image_id: 'img-overlay-2', side: 'front', modality: 'visual', overlay: false }],
+          annotations: [],
+        },
+      },
+    ];
+    const launchFilters = { selected_part_id: 'part-overlay-1' };
+    mockWorkbenchFetch({
+      user: 'stale-launch-filter',
+      batches: [{ id: 'batch-1', name: 'Batch 1' }],
+      workspaceState: { selected_batch_id: 'batch-1', selected_part_id: 'part-overlay-1' },
+      parts,
+    });
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" launchFilters={launchFilters} />);
+
+    expect(await screen.findByRole('heading', { name: 'Overlay Part 1' })).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Overlay Part 2').closest('article'));
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Overlay Part 2' })).toBeInTheDocument());
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(screen.getByRole('heading', { name: 'Overlay Part 2' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Overlay Part 1' })).not.toBeInTheDocument();
+  });
+
   test('opens PT3 current-part metadata modal with .nsipro and other tabs', async () => {
     mockWorkbenchFetch({
       user: 'metadata-modal',
