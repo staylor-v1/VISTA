@@ -2419,7 +2419,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [enabledModalities, setEnabledModalities] = useState([]);
   const [selectedViewName, setSelectedViewName] = useState('');
   const [hiddenViewNames, setHiddenViewNames] = useState([]);
-  const [renderCategories, setRenderCategories] = useState(['source', 'overlay']);
+  const [renderCategories, setRenderCategories] = useState(['source']);
   const [tileColumnCount, setTileColumnCount] = useState(3);
   const [imageEnabled, setImageEnabled] = useState(true);
   const [measurementEntries, setMeasurementEntries] = useState([]);
@@ -3141,11 +3141,13 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         max: displayDomain.min + Math.min(1, fallbackContrast / 100) * fallbackRange,
       };
     setDisplayWindow(normalizeDisplayWindow(savedDisplayWindow, displayDomain, legacyFallback));
-    const defaultActive = getOverlayLayers(selectedPart)
-      .slice(0, 2)
-      .map((overlay) => overlay.id);
-    const savedOverlayIds = Array.isArray(savedMpr.active_overlay_ids) ? savedMpr.active_overlay_ids.map((entry) => String(entry)) : [];
-    setActiveOverlayIds(savedOverlayIds.length > 0 ? savedOverlayIds : defaultActive);
+    const stableOverlayIds = new Set(getOverlayLayers(selectedPart).map((overlay) => String(overlay.id)));
+    const savedOverlayIds = Array.isArray(savedMpr.active_overlay_ids)
+      ? savedMpr.active_overlay_ids
+        .map((entry) => String(entry))
+        .filter((entry) => stableOverlayIds.has(entry))
+      : [];
+    setActiveOverlayIds(savedOverlayIds);
     setCursorProbe({
       x: clampRange(savedProbe.x, 0, 100, 50),
       y: clampRange(savedProbe.y, 0, 100, 50),
@@ -4709,7 +4711,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         setSelectedPartId(part.id);
-                                        if (!(matchingImage?.overlay && (matchingImage.overlayBaseImageId || matchingImage.overlayBaseFilename))) {
+                                        if (matchingImage?.overlay) {
+                                          setRenderCategories((prev) => (prev.includes('overlay') ? prev : [...prev, 'overlay']));
+                                          if (!isEnabled) toggleModalityVisibility(normalizedModality);
+                                        } else {
                                           toggleModalityVisibility(normalizedModality);
                                         }
                                         if (matchingImage) {
