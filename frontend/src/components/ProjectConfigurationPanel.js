@@ -5,6 +5,56 @@ import { buildErrorWithServiceDiagnostics } from '../utils/serviceDiagnostics';
 import { metadataKeyFromFilenameEntry } from './FilenameMetadataExtractor';
 
 
+
+function ConfigurableUiSectionGroup({ group, config, setConfig, level = 0 }) {
+  return (
+    <details className="configurable-ui-section-group" open={level === 0}>
+      <summary>
+        <span>{group.label}</span>
+        {(group.sections || []).length > 0 && (
+          <span className="configurable-ui-section-count">{group.sections.length} section{group.sections.length === 1 ? '' : 's'}</span>
+        )}
+      </summary>
+      {group.description && <p className="muted">{group.description}</p>}
+      {(group.sections || []).length > 0 && (
+        <div className="configurable-ui-section-options">
+          {group.sections.map((section) => (
+            <label key={section.key}>
+              <input
+                type="checkbox"
+                checked={normalizeUiSections(config)[section.key] !== false}
+                onChange={(event) => {
+                  setConfig((previous) => ({
+                    ...previous,
+                    ui_sections: {
+                      ...normalizeUiSections(previous),
+                      [section.key]: event.target.checked,
+                    },
+                  }));
+                }}
+              />
+              {section.label}
+            </label>
+          ))}
+        </div>
+      )}
+      {(group.children || []).length > 0 && (
+        <div className="configurable-ui-section-children">
+          {group.children.map((childGroup) => (
+            <ConfigurableUiSectionGroup
+              key={childGroup.id}
+              group={childGroup}
+              config={config}
+              setConfig={setConfig}
+              level={level + 1}
+            />
+          ))}
+        </div>
+      )}
+    </details>
+  );
+}
+
 function isSingleAlphanumeric(value) {
   return /^[a-z0-9]$/i.test((value || '').trim());
 }
@@ -1320,28 +1370,12 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
             {showAdvancedUiSections && (
               <div id="advanced-ui-section-controls" className="configurable-ui-section-groups">
                 {UI_SECTION_GROUPS.map((group) => (
-                  <fieldset key={group.id} className="configurable-ui-section-group">
-                    <legend>{group.label}</legend>
-                    <p className="muted">{group.description}</p>
-                    {group.sections.map((section) => (
-                      <label key={section.key}>
-                        <input
-                          type="checkbox"
-                          checked={normalizeUiSections(config)[section.key] !== false}
-                          onChange={(event) => {
-                            setConfig((previous) => ({
-                              ...previous,
-                              ui_sections: {
-                                ...normalizeUiSections(previous),
-                                [section.key]: event.target.checked,
-                              },
-                            }));
-                          }}
-                        />
-                        {section.label}
-                      </label>
-                    ))}
-                  </fieldset>
+                  <ConfigurableUiSectionGroup
+                    key={group.id}
+                    group={group}
+                    config={config}
+                    setConfig={setConfig}
+                  />
                 ))}
               </div>
             )}

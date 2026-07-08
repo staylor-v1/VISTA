@@ -110,15 +110,13 @@ function Project({ currentUserGroups = [] }) {
     ? queryProjectDataTab
     : null;
 
-  const visibleMainTabs = useMemo(() => (interfaceHierarchy.mainTabs || []).filter((tabKey) => {
-    if (tabKey === 'project_configuration' || tabKey === 'project_data') return true;
-    return isUiSectionEnabled(projectConfiguration, `main.${tabKey}`);
-  }), [interfaceHierarchy.mainTabs, projectConfiguration]);
+  const visibleMainTabs = useMemo(() => (interfaceHierarchy.mainTabs || []).filter((tabKey) => (
+    isUiSectionEnabled(projectConfiguration, `main.${tabKey}`)
+  )), [interfaceHierarchy.mainTabs, projectConfiguration]);
 
-  const visibleProjectDataTabs = useMemo(() => Object.entries(PROJECT_DATA_TABS).filter(([tabKey]) => {
-    if (tabKey === 'load_images') return true;
-    return isUiSectionEnabled(projectConfiguration, `project_data.${tabKey}`);
-  }), [projectConfiguration]);
+  const visibleProjectDataTabs = useMemo(() => Object.entries(PROJECT_DATA_TABS).filter(([tabKey]) => (
+    isUiSectionEnabled(projectConfiguration, `project_data.${tabKey}`)
+  )), [projectConfiguration]);
 
   const visibleProjectDataTabKeys = useMemo(() => visibleProjectDataTabs.map(([tabKey]) => tabKey), [visibleProjectDataTabs]);
 
@@ -479,7 +477,9 @@ function Project({ currentUserGroups = [] }) {
 
   const projectDataContent = useMemo(() => (
     <>
-      <ProjectDataSummaryTab counts={dataCounts} loading={countsLoading} />
+      {isUiSectionEnabled(projectConfiguration, 'project_data.summary') && (
+        <ProjectDataSummaryTab counts={dataCounts} loading={countsLoading} />
+      )}
 
       <div className="project-data-subtabs project-tabs" role="tablist" aria-label="Project data sections">
         {visibleProjectDataTabs.map(([tabKey, definition]) => (
