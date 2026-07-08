@@ -1224,6 +1224,62 @@ describe('InspectionWorkbenchPanel', () => {
     expect(voidsOverlayToggle).toHaveAttribute('aria-pressed', 'false');
   });
 
+  test('exposes every axis slice for a 300 frame 300px 3D TIFF stack', async () => {
+    const tiffScenario = {
+      user: 'tiff-300',
+      batches: [{ id: 'batch-tiff-300', name: 'Batch TIFF 300' }],
+      workspaceState: { selected_batch_id: 'batch-tiff-300', selected_part_id: 'part-tiff-300' },
+      parts: [
+        {
+          id: 'part-tiff-300',
+          batch_id: 'batch-tiff-300',
+          serial_number: 'STACK-300',
+          display_name: '300 image 300px TIFF stack',
+          review_state: 'unreviewed',
+          metadata: {
+            volume_shape: { axial: 300, coronal: 300, sagittal: 300 },
+            source_images: [
+              {
+                filename: 'stack_300x300x300.tif',
+                image_id: 'img-tiff-300',
+                metadata: {
+                  tiff_dimensionality: '3d',
+                  load_mode: 'volume',
+                  frame_count: 300,
+                  volume_shape: { axial: 300, coronal: 300, sagittal: 300 },
+                },
+              },
+            ],
+          },
+        },
+      ],
+      projectImages: [
+        {
+          id: 'img-tiff-300',
+          filename: 'stack_300x300x300.tif',
+          metadata: { tiff_dimensionality: '3d', load_mode: 'volume', frame_count: 300, volume_shape: { axial: 300, coronal: 300, sagittal: 300 } },
+        },
+      ],
+    };
+    mockWorkbenchFetch(tiffScenario);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+
+    expect(document.querySelector('#mpr-slice-axial')).toHaveAttribute('max', '299');
+    expect(document.querySelector('#mpr-slice-coronal')).toHaveAttribute('max', '299');
+    expect(document.querySelector('#mpr-slice-sagittal')).toHaveAttribute('max', '299');
+    expect(screen.getByTestId('mpr-pane-3d')).toHaveTextContent('3D');
+
+    fireEvent.change(document.querySelector('#mpr-slice-axial'), { target: { value: '299' } });
+    fireEvent.change(document.querySelector('#mpr-slice-coronal'), { target: { value: '299' } });
+    fireEvent.change(document.querySelector('#mpr-slice-sagittal'), { target: { value: '299' } });
+
+    expect(screen.getByTestId('mpr-pane-axial')).toHaveTextContent(/299 \/ 299/);
+    expect(screen.getByTestId('mpr-pane-coronal')).toHaveTextContent(/299 \/ 299/);
+    expect(screen.getByTestId('mpr-pane-sagittal')).toHaveTextContent(/299 \/ 299/);
+  });
+
   test('keeps PT3 MPR quadrants constrained after clicking the 3D pane', async () => {
     mockWorkbenchFetch(scenarioByUser[2]);
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
