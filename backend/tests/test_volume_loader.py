@@ -112,6 +112,18 @@ def test_loads_multipage_tiff_volume(tmp_path):
     assert volume.shape == (3, 11, 9)
 
 
+def test_loads_300_slice_300px_multipage_tiff_volume(tmp_path):
+    tiff_path = tmp_path / "stack_300x300x300.tif"
+    frames = [Image.new("L", (300, 300), color=index % 256) for index in range(300)]
+    frames[0].save(tiff_path, save_all=True, append_images=frames[1:])
+
+    volume = load_volume(tiff_path)
+
+    assert volume.format == "multipage_tiff"
+    assert volume.shape == (300, 300, 300)
+    assert len(volume.source_files) == 1
+
+
 def test_tif_2d_vs_3d_classification_by_frame_count(tmp_path):
     single_slice_tif = tmp_path / "single_slice.tif"
     Image.new("L", (10, 12), color=90).save(single_slice_tif)

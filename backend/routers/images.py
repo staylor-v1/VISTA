@@ -245,7 +245,7 @@ def _image_intensity_metadata(file: UploadFile) -> Dict[str, Any]:
     return metadata
 
 
-def _tiff_dimensionality_metadata(file: UploadFile) -> Dict[str, str]:
+def _tiff_dimensionality_metadata(file: UploadFile) -> Dict[str, Any]:
     filename = (file.filename or "").lower()
     if not (filename.endswith(".tif") or filename.endswith(".tiff")):
         return {}
@@ -253,14 +253,23 @@ def _tiff_dimensionality_metadata(file: UploadFile) -> Dict[str, str]:
         file.file.seek(0)
         with Image.open(file.file) as image:
             frame_count = int(getattr(image, "n_frames", 1) or 1)
+            width, height = image.size
     except Exception:
         return {}
     finally:
         file.file.seek(0)
-    return {
+    metadata: Dict[str, Any] = {
         "tiff_dimensionality": "3d" if frame_count > 1 else "2d",
         "load_mode": "volume" if frame_count > 1 else "single_image",
+        "frame_count": frame_count,
     }
+    if frame_count > 1:
+        metadata["volume_shape"] = {
+            "axial": frame_count,
+            "coronal": int(height),
+            "sagittal": int(width),
+        }
+    return metadata
 
 
 def _validate_voxel_data(file: UploadFile) -> None:
