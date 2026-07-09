@@ -1217,12 +1217,11 @@ describe('InspectionWorkbenchPanel', () => {
     await screen.findByTestId('mpr-panel');
     fireEvent.click(screen.getByRole('button', { name: 'Part Selection' }));
 
-    const voidsOverlayToggle = await screen.findByRole('button', { name: /Voids/i });
-    await waitFor(() => expect(voidsOverlayToggle).toHaveAttribute('aria-pressed', 'false'));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Voids/i })).not.toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /Basic Part/i }));
 
-    expect(voidsOverlayToggle).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.queryByRole('button', { name: /Voids/i })).not.toBeInTheDocument();
   });
 
   test('exposes every axis slice for a 300 frame 300px 3D TIFF stack', async () => {
@@ -1607,7 +1606,7 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.queryByLabelText('Image categories')).not.toBeInTheDocument();
     const layerControls = screen.getByLabelText('Analyze Output Part layer toggles');
     expect(within(layerControls).getByRole('button', { name: 'SOURCE' })).toHaveAttribute('aria-pressed', 'true');
-    const analysisOverlayToggle = within(layerControls).getByRole('button', { name: 'ANALYSIS OVERLAYS' });
+    const analysisOverlayToggle = within(layerControls).getByRole('button', { name: 'OVERLAY' });
     expect(analysisOverlayToggle).toHaveAttribute('aria-pressed', 'false');
     expect(screen.queryByTestId('inspection-overlay-composite')).not.toBeInTheDocument();
     fireEvent.click(analysisOverlayToggle);
@@ -1697,7 +1696,7 @@ describe('InspectionWorkbenchPanel', () => {
     const viewBoard = document.querySelector('.view-board');
     expect(within(viewBoard).queryByTestId('inspection-overlay-composite')).not.toBeInTheDocument();
     const blackHatLayerControls = screen.getByLabelText('Black Hat Overlay Part layer toggles');
-    const blackHatOverlayToggle = within(blackHatLayerControls).getByRole('button', { name: 'ANALYSIS OVERLAYS' });
+    const blackHatOverlayToggle = within(blackHatLayerControls).getByRole('button', { name: 'OVERLAY' });
     expect(blackHatOverlayToggle).toHaveAttribute('aria-pressed', 'false');
     fireEvent.click(blackHatOverlayToggle);
     await waitFor(() => expect(within(viewBoard).getAllByTestId('inspection-overlay-composite')).toHaveLength(1));
@@ -2029,6 +2028,8 @@ describe('InspectionWorkbenchPanel', () => {
         ...scenarioByUser[0].parts[0],
         metadata: {
           ...scenarioByUser[0].parts[0].metadata,
+          modalities: ['optical'],
+          source_images: [{ filename: 'front-basic.png', image_id: 'part-basic-1-image-1', side: 'front', modality: 'optical', overlay: false }],
           annotations: [{
             id: 'box-crop-a',
             image_id: 'part-basic-1-image-1',
@@ -2064,6 +2065,7 @@ describe('InspectionWorkbenchPanel', () => {
         crop_annotation_id: 'box-crop-a',
         crop_title: 'Child of front-basic.png',
       }));
+      expect(uploadedMetadata.modality).toBe('optical');
       expect(uploadedMetadata.crop_bbox).toEqual(expect.objectContaining({ x: 25, y: 40, width: 80, height: 50 }));
       expect(global.fetch).toHaveBeenCalledWith('/api/projects/proj-1/parts/image-assignments', expect.objectContaining({
         method: 'POST',
@@ -2267,7 +2269,7 @@ describe('InspectionWorkbenchPanel', () => {
     });
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
     await waitFor(() => expect(screen.getAllByText('5.00 mm').length).toBeGreaterThan(0));
-    fireEvent.click(screen.getByRole('button', { name: 'ANALYSIS OVERLAYS' }));
+    fireEvent.click(screen.getByRole('button', { name: 'OVERLAY' }));
     await waitFor(() => expect(screen.getAllByText('5.00 mm').length).toBeGreaterThan(1));
 
     fireEvent.click(screen.getByTestId('inspection-overlay-composite'));
@@ -2510,7 +2512,7 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.queryByLabelText('Image categories')).not.toBeInTheDocument();
     const layerControls = screen.getByLabelText('Overlay Part 1 layer toggles');
     const sourceToggle = within(layerControls).getByRole('button', { name: 'SOURCE' });
-    const overlayToggle = within(layerControls).getByRole('button', { name: 'ANALYSIS OVERLAYS' });
+    const overlayToggle = within(layerControls).getByRole('button', { name: 'OVERLAY' });
     expect(sourceToggle).toHaveAttribute('aria-pressed', 'true');
     expect(overlayToggle).toHaveAttribute('aria-pressed', 'false');
 
