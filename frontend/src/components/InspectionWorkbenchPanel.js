@@ -2420,7 +2420,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [enabledModalities, setEnabledModalities] = useState([]);
   const [selectedViewName, setSelectedViewName] = useState('');
   const [hiddenViewNames, setHiddenViewNames] = useState([]);
-  const [renderCategories, setRenderCategories] = useState(['source']);
+  const [renderCategories, setRenderCategories] = useState(['source', 'annotation', 'crop']);
   const [tileColumnCount, setTileColumnCount] = useState(3);
   const [imageEnabled, setImageEnabled] = useState(true);
   const [measurementEntries, setMeasurementEntries] = useState([]);
@@ -2474,11 +2474,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const storedMprMeasurementLinesBySlice = useMemo(() => getMprMeasurementLinesBySlice(annotations), [annotations]);
   const storedMprBoxAnnotationsBySlice = useMemo(() => getMprBoxAnnotationsBySlice(annotations), [annotations]);
   const storedMprCubeAnnotations = useMemo(() => getMprCubeAnnotations(annotations), [annotations]);
-  const measurementLinesByImageId = annotationsVisible ? storedMeasurementLinesByImageId : {};
-  const boxAnnotationsByImageId = annotationsVisible ? storedBoxAnnotationsByImageId : {};
-  const mprMeasurementLinesBySlice = annotationsVisible ? storedMprMeasurementLinesBySlice : {};
-  const mprBoxAnnotationsBySlice = annotationsVisible ? storedMprBoxAnnotationsBySlice : {};
-  const mprCubeAnnotations = annotationsVisible ? storedMprCubeAnnotations : [];
+  const annotationLayerVisible = annotationsVisible && renderCategories.includes('annotation');
+  const measurementLinesByImageId = annotationLayerVisible ? storedMeasurementLinesByImageId : {};
+  const boxAnnotationsByImageId = annotationLayerVisible ? storedBoxAnnotationsByImageId : {};
+  const mprMeasurementLinesBySlice = annotationLayerVisible ? storedMprMeasurementLinesBySlice : {};
+  const mprBoxAnnotationsBySlice = annotationLayerVisible ? storedMprBoxAnnotationsBySlice : {};
+  const mprCubeAnnotations = annotationLayerVisible ? storedMprCubeAnnotations : [];
   const selectedSegmentationSegment = useMemo(() => (
     segmentationSegments.find((segment) => segment.id === selectedSegmentationSegmentId) || segmentationSegments[0] || null
   ), [selectedSegmentationSegmentId, segmentationSegments]);
@@ -2936,11 +2937,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     const hidden = new Set(hiddenViewNames.map((name) => String(name).toLowerCase()));
     const enabled = new Set(enabledModalities.map((name) => String(name).toLowerCase()));
     const categoryFiltered = selectedPartImageRefs.filter((entry) => {
-      const category = entry.overlay ? 'overlay' : 'source';
+      const category = entry.cropChild ? 'crop' : (entry.overlay ? 'overlay' : 'source');
       if (!renderCategories.includes(category)) return false;
       if (hidden.has(String(entry.viewName || '').toLowerCase())) return false;
       const modality = String(entry.modality || '').toLowerCase();
-      const modalityVisible = !modality || modality === 'analyze-overlay' || modality === 'overlay' || enabled.has(modality);
+      const modalityVisible = entry.cropChild || !modality || modality === 'analyze-overlay' || modality === 'overlay' || enabled.has(modality);
       if (!modalityVisible) return false;
       if (entry.overlay && (entry.overlayBaseImageId || entry.overlayBaseFilename)) return true;
       return true;
@@ -3997,23 +3998,18 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     });
   };
 
-  const setAllLayerVisibility = (overlayIds = [], visible, includeSource, includeAnalyzeOverlays) => {
+  const setAllLayerVisibility = (visible, layerAvailability = {}) => {
     setRenderCategories((prev) => {
       const next = new Set(prev);
-      ['source', 'overlay'].forEach((category) => {
-        if ((category === 'source' && includeSource) || (category === 'overlay' && includeAnalyzeOverlays)) {
-          if (visible) next.add(category); else next.delete(category);
-        }
+      ['source', 'overlay', 'annotation', 'crop'].forEach((category) => {
+        if (!layerAvailability[category]) return;
+        if (visible) next.add(category); else next.delete(category);
       });
       return Array.from(next);
     });
-    setActiveOverlayIds((prev) => {
-      const next = new Set(prev);
-      overlayIds.forEach((id) => {
-        if (visible) next.add(id); else next.delete(id);
-      });
-      return Array.from(next);
-    });
+    if (layerAvailability.annotation && visible) {
+      setAnnotationsVisible(true);
+    }
   };
 
   const toggleModalityVisibility = (modality) => {
@@ -4464,6 +4460,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     if (!selectedPart?.id || !parentImageId || !isFiniteAnnotationBox(cropBox)) return null;
     const parentImage = projectImageLookup[parentImageId] || {};
     const parentFilename = parentImage.filename || parentImageId || 'image';
+    const parentSourceRecord = (Array.isArray(selectedPart?.metadata?.source_images) ? selectedPart.metadata.source_images : [])
+      .find((record) => [record?.image_id, record?.filename]
+        .map((value) => String(value || '').trim())
+        .includes(String(parentImageId || '').trim())
+        || String(record?.filename || '').trim() === String(parentFilename || '').trim());
+    const parentModality = String(parentImage.modality || parentImage.metadata?.modality || parentSourceRecord?.modality || parentSourceRecord?.metadata?.modality || 'visual').trim().toLowerCase() || 'visual';
     const cropFilename = getCropUploadFilename(cropBox, parentFilename);
     const cropTitle = title || getCropImageTitle(cropBox, parentFilename);
     setError(null);
@@ -4506,7 +4508,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         },
         part_id: String(selectedPart.id),
         serial_number: selectedPart.serial_number || '',
-        modality: 'visual',
+        modality: parentModality,
         side: 'crop',
       };
       const formData = new FormData();
@@ -4528,7 +4530,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         filename: createdImage.filename || cropFilename,
         image_id: String(createdImage.id || ''),
         side: 'crop',
-        modality: 'visual',
+        modality: parentModality,
         overlay: false,
         crop_child_image: true,
         parent_image_id: String(parentImageId),
@@ -4555,6 +4557,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
           },
         };
       }));
+      setEnabledModalities((prev) => {
+        const normalized = prev.map((entry) => String(entry).toLowerCase());
+        return normalized.includes(parentModality) ? prev : [...prev, parentModality];
+      });
       setSelectedImageRef(sourceEntry.image_id || sourceEntry.filename);
       return sourceEntry;
     } catch (err) {
@@ -4708,19 +4714,23 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     const partImageRefs = getPartImageRefs(part)
                       .filter((entry) => isInspectionImageRefLoaded(entry, projectImageLookup));
                     const partModalities = getPartSummaryModalities(part, partImageRefs);
-                    const partOverlayLayers = getOverlayLayers(part);
                     const hasAnalyzeOverlays = partImageRefs.some((entry) => entry.overlay);
+                    const hasCropImages = partImageRefs.some((entry) => entry.cropChild);
+                    const hasAnnotations = (Array.isArray(part.metadata?.annotations) && part.metadata.annotations.length > 0) || (Array.isArray(annotations) && annotations.length > 0);
                     const isSourceCategoryVisible = renderCategories.includes('source');
                     const isOverlayCategoryVisible = renderCategories.includes('overlay');
+                    const isAnnotationCategoryVisible = annotationsVisible && renderCategories.includes('annotation');
+                    const isCropCategoryVisible = renderCategories.includes('crop');
                     const showViewsRow = isUiSectionEnabled(projectConfiguration, 'inspection.part_summary.views_row');
                     const showModalitiesRow = isUiSectionEnabled(projectConfiguration, 'inspection.part_summary.modalities_row');
                     const showLayersRow = isUiSectionEnabled(projectConfiguration, 'inspection.part_summary.layers_row');
                     const allViewsVisible = imageEntries.every(([viewName]) => !hiddenViewNames.includes(String(viewName).toLowerCase()));
                     const enabledModalityKeys = enabledModalities.map((entry) => String(entry).toLowerCase());
                     const allModalitiesVisible = partModalities.every((modality) => enabledModalityKeys.includes(String(modality).toLowerCase()));
-                    const allLayersVisible = (!partImageRefs.length || isSourceCategoryVisible)
+                    const allLayersVisible = (!partImageRefs.some((entry) => !entry.overlay && !entry.cropChild) || isSourceCategoryVisible)
                       && (!hasAnalyzeOverlays || isOverlayCategoryVisible)
-                      && partOverlayLayers.every((overlay) => activeOverlayIds.includes(overlay.id));
+                      && (!hasAnnotations || isAnnotationCategoryVisible)
+                      && (!hasCropImages || isCropCategoryVisible);
                     return (
                       <article
                         key={part.id}
@@ -4803,12 +4813,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                               </div>
                             </div>
                           )}
-                          {showLayersRow && (partImageRefs.length > 0 || hasAnalyzeOverlays || partOverlayLayers.length > 0) && (
+                          {showLayersRow && (partImageRefs.length > 0 || hasAnalyzeOverlays || hasAnnotations || hasCropImages) && (
                             <div className="part-summary-chip-group">
                               <span className="part-summary-chip-label">Layers</span>
                               <div className="part-summary-images part-summary-layers" aria-label={`${part.display_name || part.serial_number} layer toggles`}>
-                                <button type="button" className={`btn btn-secondary btn-sm part-summary-all-toggle ${allLayersVisible ? 'active' : 'muted-toggle'}`} aria-pressed={allLayersVisible} onClick={(event) => { event.stopPropagation(); setSelectedPartId(part.id); setAllLayerVisibility(partOverlayLayers.map((overlay) => overlay.id), !allLayersVisible, partImageRefs.length > 0, hasAnalyzeOverlays); }}>ALL</button>
-                                {partImageRefs.length > 0 && (
+                                <button type="button" className={`btn btn-secondary btn-sm part-summary-all-toggle ${allLayersVisible ? 'active' : 'muted-toggle'}`} aria-pressed={allLayersVisible} onClick={(event) => { event.stopPropagation(); setSelectedPartId(part.id); setAllLayerVisibility(!allLayersVisible, { source: partImageRefs.some((entry) => !entry.overlay && !entry.cropChild), overlay: hasAnalyzeOverlays, annotation: hasAnnotations, crop: hasCropImages }); }}>ALL</button>
+                                {partImageRefs.some((entry) => !entry.overlay && !entry.cropChild) && (
                                   <button
                                     type="button"
                                     className={`btn btn-secondary btn-sm ${isSourceCategoryVisible ? 'active' : 'muted-toggle'}`}
@@ -4833,28 +4843,40 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                                       toggleRenderCategory('overlay');
                                     }}
                                   >
-                                    ANALYSIS OVERLAYS
+                                    OVERLAY
                                   </button>
                                 )}
-                                {partOverlayLayers.map((overlay) => {
-                                  const isActiveOverlay = activeOverlayIds.includes(overlay.id);
-                                  return (
-                                    <button
-                                      type="button"
-                                      key={`${part.id}-overlay-${overlay.id}`}
-                                      className={`btn btn-secondary btn-sm ${isActiveOverlay ? 'active' : 'muted-toggle'}`}
-                                      aria-pressed={isActiveOverlay}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        setSelectedPartId(part.id);
-                                        toggleOverlay(overlay.id);
-                                      }}
-                                    >
-                                      <span className="overlay-swatch" style={{ backgroundColor: overlay.color }} />
-                                      {overlay.label}
-                                    </button>
-                                  );
-                                })}
+
+                                {hasAnnotations && (
+                                  <button
+                                    type="button"
+                                    className={`btn btn-secondary btn-sm ${isAnnotationCategoryVisible ? 'active' : 'muted-toggle'}`}
+                                    aria-pressed={isAnnotationCategoryVisible}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setSelectedPartId(part.id);
+                                      toggleRenderCategory('annotation');
+                                      setAnnotationsVisible(true);
+                                    }}
+                                  >
+                                    ANNOTATION
+                                  </button>
+                                )}
+                                {hasCropImages && (
+                                  <button
+                                    type="button"
+                                    className={`btn btn-secondary btn-sm ${isCropCategoryVisible ? 'active' : 'muted-toggle'}`}
+                                    aria-pressed={isCropCategoryVisible}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setSelectedPartId(part.id);
+                                      toggleRenderCategory('crop');
+                                    }}
+                                  >
+                                    CROP
+                                  </button>
+                                )}
+
                               </div>
                             </div>
                           )}
