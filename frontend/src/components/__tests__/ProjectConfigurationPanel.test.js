@@ -381,16 +381,18 @@ describe('ProjectConfigurationPanel', () => {
   });
 
 
-  test('advanced UI section controls hide optional project sections and persist choices', async () => {
+  test('UI Configuration subtab controls hide optional project sections and persist choices', async () => {
     const config = makeConfig('PT1', 'basic');
     mockFetch(config, 'PT1');
     render(<ProjectConfigurationPanel projectId="proj-1" />);
 
-    await waitFor(() => expect(screen.getByText('Available UI Sections')).toBeInTheDocument());
-    expect(screen.queryByText('Analyze tab')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'UI Configuration' })).toBeInTheDocument());
+    expect(screen.queryByText('Available UI Sections')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'UI Configuration' }));
+    expect(screen.getByText('Available UI Sections')).toBeInTheDocument();
     expect(screen.getByLabelText('Analyze tab')).toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: /Project Data/ }));
     expect(screen.getByLabelText('Batches subtab')).toBeChecked();
 
     fireEvent.click(screen.getByLabelText('Analyze tab'));

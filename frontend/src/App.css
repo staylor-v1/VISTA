@@ -5071,6 +5071,10 @@ ul li:hover {
   opacity: 0.55;
 }
 
+.part-summary-images .part-summary-all-toggle {
+  font-weight: 800;
+}
+
 .view-cell {
   cursor: pointer;
 }
@@ -8458,4 +8462,59 @@ ul li:hover {
   margin-top: 8px;
   padding-left: 12px;
   border-left: 2px solid #e2e8f0;
+}
+
+.configurable-ui-section-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  text-align: left;
+}
+
+.configurable-ui-section-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  color: #334155;
+  font-weight: 900;
+}
+
+.configurable-ui-section-body {
+  display: grid;
+  gap: 8px;
+}
+
+.configurable-ui-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.configurable-ui-search-row input[type="search"] {
+  flex: 1 1 280px;
+  min-width: 180px;
+}
+
+.configurable-ui-search-count {
+  color: #64748b;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.configurable-ui-section-group .search-highlight {
+  border-radius: 6px;
+  background: #fef3c7;
+  box-shadow: 0 0 0 2px #f59e0b inset;
 }

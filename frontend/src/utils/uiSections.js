@@ -19,6 +19,7 @@ export const UI_SECTION_GROUPS = [
           { key: 'project_configuration.general', label: 'General subtab' },
           { key: 'project_configuration.filename_convention', label: 'Filename Convention subtab' },
           { key: 'project_configuration.hotkeys', label: 'Hotkeys subtab' },
+          { key: 'project_configuration.ui_configuration', label: 'UI Configuration subtab' },
           { key: 'project_configuration.owner_section', label: 'Project Owner section' },
           { key: 'project_configuration.user_section', label: 'Current User section' },
           { key: 'project_configuration.process_settings', label: 'Process Settings section' },
@@ -65,6 +66,9 @@ export const UI_SECTION_GROUPS = [
         description: 'Control the inspection workspace panes and tabs.',
         sections: [
           { key: 'inspection.part_summary', label: 'Part Summary pane' },
+          { key: 'inspection.part_summary.views_row', label: 'Part Summary Views row' },
+          { key: 'inspection.part_summary.modalities_row', label: 'Part Summary Modalities row' },
+          { key: 'inspection.part_summary.layers_row', label: 'Part Summary Layers row' },
           { key: 'inspection.mpr', label: 'MPR tab' },
           { key: 'inspection.inspector', label: 'Inspection tab' },
           { key: 'inspection.image_metadata', label: 'Image Metadata tab' },
@@ -92,7 +96,7 @@ function flattenUiSections(groups = UI_SECTION_GROUPS) {
 }
 
 export const UI_SECTION_DEFAULTS = flattenUiSections()
-  .reduce((acc, section) => ({ ...acc, [section.key]: true }), {});
+  .reduce((acc, section) => ({ ...acc, [section.key]: section.key === 'inspection.part_summary.views_row' ? false : true }), {});
 
 export function normalizeUiSections(config = {}) {
   const source = config?.ui_sections && typeof config.ui_sections === 'object' ? config.ui_sections : {};
