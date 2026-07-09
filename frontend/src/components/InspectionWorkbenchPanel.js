@@ -6851,10 +6851,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	    setPendingMeasurePoint(null);
 	    pendingMeasurePointRef.current = null;
 	    setFullscreenAnnotationPreview(null);
-	    setFullscreenMeasureActive(false);
 	  };
 
   const handleFullscreenMeasurePointerDown = async (event) => {
+    if (event.button !== undefined && event.button !== 0) return;
     const position = getFullscreenImagePointerPosition(event);
     if (!position) return;
     if (fullscreenEditingEndpoint?.lineId) {
@@ -6903,18 +6903,43 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     }
     const { x, y, naturalWidth, naturalHeight } = position;
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const nextPoint = { x, y, imageWidth: naturalWidth, imageHeight: naturalHeight };
+    pendingMeasurePointRef.current = nextPoint;
+    setPendingMeasurePoint(nextPoint);
+    setFullscreenAnnotationPreview(null);
+  };
+
+  const handleFullscreenMeasurePointerUp = async (event) => {
+    if (!fullscreenMeasureActive) return;
     const firstPoint = pendingMeasurePointRef.current || pendingMeasurePoint;
-    if (!firstPoint) {
-	      const nextPoint = { x, y, imageWidth: naturalWidth, imageHeight: naturalHeight };
-	      pendingMeasurePointRef.current = nextPoint;
-	      setPendingMeasurePoint(nextPoint);
-	      setFullscreenAnnotationPreview(null);
-	      return;
+    if (!firstPoint) return;
+    const position = getFullscreenImagePointerPosition(event);
+    event.preventDefault();
+    event.stopPropagation();
+    if (!position) {
+      setPendingMeasurePoint(null);
+      pendingMeasurePointRef.current = null;
+      setFullscreenAnnotationPreview(null);
+      return;
     }
-    const line = { x1: firstPoint.x, y1: firstPoint.y, x2: x, y2: y, imageWidth: naturalWidth, imageHeight: naturalHeight };
-	    if (!isFiniteMeasurementLine(line)) return;
-	    await commitFullscreenMeasureLine(line);
-	  };
+    const line = {
+      x1: firstPoint.x,
+      y1: firstPoint.y,
+      x2: position.x,
+      y2: position.y,
+      imageWidth: position.naturalWidth,
+      imageHeight: position.naturalHeight,
+    };
+    if (!isFiniteMeasurementLine(line) || Math.hypot(line.x2 - line.x1, line.y2 - line.y1) < 2) {
+      setPendingMeasurePoint(null);
+      pendingMeasurePointRef.current = null;
+      setFullscreenAnnotationPreview(null);
+      return;
+    }
+    await commitFullscreenMeasureLine(line);
+  };
 
 	  const handleFullscreenBoxPointerDown = (event) => {
 	    if (!fullscreenBoxActive && !fullscreenCropActive) return;
@@ -7178,8 +7203,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
             <h3>{fullscreenImageModal.label}</h3>
             <div className="workbench-detail-actions">
 	              <button type="button" className={`btn btn-secondary ${fullscreenMeasureActive ? 'active' : ''}`} onClick={toggleFullscreenMeasure}>
-	                Measure
+	                {fullscreenMeasureActive ? 'Done Measuring' : 'Measure'}
 	              </button>
+                  <button type="button" className="btn btn-secondary" onClick={() => setFullscreenImageZoom({ scale: 1, originX: 50, originY: 50, panX: 0, panY: 0 })}>
+                    Reset zoom
+                  </button>
 	              <button type="button" className={`btn btn-secondary ${fullscreenBoxActive ? 'active' : ''}`} onClick={toggleFullscreenBox}>
 	                Draw box
 	              </button>
@@ -7204,7 +7232,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
             </div>
           )}
 	          <div className="inspection-fullscreen-stage">
-	            {fullscreenMeasureActive && <div className="workbench-notice">Click to set first point, click again to set second point.</div>}
+	            {fullscreenMeasureActive && <div className="workbench-notice">Click and drag to draw a measurement line.</div>}
 	            {fullscreenBoxActive && <div className="workbench-notice">Press and drag to draw a bounding box.</div>}
             {fullscreenCropActive && <div className="workbench-notice">Press and drag around the parent image feature to create a child crop.</div>}
 	            {(fullscreenEditingEndpoint || fullscreenEditingBoxCorner) && <div className="workbench-notice">Click the new endpoint or corner position to update the selected annotation.</div>}
@@ -7238,10 +7266,27 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     src={`/api/images/${encodeURIComponent(fullscreenImageModal.imageId)}/content`}
 	                    alt={`${fullscreenImageModal.label} fullscreen`}
 		                    className={`inspection-fullscreen-image ${fullscreenBaseImageId ? 'analysis-overlay-image' : ''} ${fullscreenMeasureActive || fullscreenBoxActive || fullscreenCropActive || fullscreenEditingEndpoint || fullscreenEditingBoxCorner ? 'measurement-active' : ''}`}
-		                    onMouseDown={handleFullscreenBoxPointerDown}
-		                    onMouseUp={handleFullscreenBoxPointerUp}
-		                    onMouseLeave={handleFullscreenBoxPointerCancel}
-		                    onClick={handleFullscreenMeasurePointerDown}
+		                    onMouseDown={(event) => {
+                          handleFullscreenMeasurePointerDown(event);
+                          handleFullscreenBoxPointerDown(event);
+                        }}
+		                    onMouseUp={(event) => {
+                          handleFullscreenMeasurePointerUp(event);
+                          handleFullscreenBoxPointerUp(event);
+                        }}
+		                    onMouseLeave={(event) => {
+                          handleFullscreenBoxPointerCancel(event);
+                          if (fullscreenMeasureActive && pendingMeasurePointRef.current) {
+                            setPendingMeasurePoint(null);
+                            pendingMeasurePointRef.current = null;
+                            setFullscreenAnnotationPreview(null);
+                          }
+                        }}
+		                    onClick={(event) => {
+                          if (fullscreenEditingEndpoint?.lineId || fullscreenEditingBoxCorner?.boxId) {
+                            handleFullscreenMeasurePointerDown(event);
+                          }
+                        }}
 		                  />
                   <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 1000 1000`} preserveAspectRatio="none" aria-label="fullscreen measurement overlay">
 	                    {[...fullscreenMeasurementLines, ...fullscreenPreviewLines].map((line) => {

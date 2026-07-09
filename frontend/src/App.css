@@ -5518,6 +5518,7 @@ ul li:hover {
 
 .inspection-fullscreen-image-frame {
   position: relative;
+  overflow: hidden;
   display: flex;
   align-self: stretch;
   justify-self: stretch;
