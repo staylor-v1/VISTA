@@ -301,8 +301,6 @@ export default function MeasurementTool({
           left: 0,
           width: containerSize.width,
           height: containerSize.height,
-          transform: `scale(${zoomLevel})`,
-          transformOrigin: 'top left',
           cursor,
           zIndex: 1000,
           pointerEvents: 'auto'

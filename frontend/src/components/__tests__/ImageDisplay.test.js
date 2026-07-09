@@ -70,16 +70,54 @@ describe('ImageDisplay', () => {
       expect(screen.getByText('Delete')).toBeInTheDocument();
     });
 
+    test('keeps image geometry unchanged when measure mode toggles', () => {
+      const setMeasurementActive = jest.fn();
+      const { rerender } = renderImageDisplay({
+        setMeasurementActive,
+        measurementActive: false,
+        calibration: { pixels_per_mm: 10, pixels_per_inch: 254, unit: 'mm' }
+      });
+
+      const inactiveImage = screen.getByAltText('test-image.jpg');
+      const inactiveLayer = screen.getByTestId('image-anchored-layer');
+      const inactiveImageStyle = inactiveImage.getAttribute('style') || '';
+      const inactiveLayerStyle = inactiveLayer.getAttribute('style') || '';
+      const imageDisplay = document.getElementById('image-display');
+      const inactiveDisplayClass = imageDisplay.getAttribute('class') || '';
+      const inactiveDisplayStyle = imageDisplay.getAttribute('style') || '';
+
+      rerender(
+        <ImageDisplay
+          imageId="img-1"
+          image={mockRegularImage}
+          isTransitioning={false}
+          projectId="test-project-id"
+          setImage={jest.fn()}
+          refreshProjectImages={jest.fn()}
+          setMeasurementActive={setMeasurementActive}
+          measurementActive={true}
+          calibration={{ pixels_per_mm: 10, pixels_per_inch: 254, unit: 'mm' }}
+        />
+      );
+
+      expect(screen.getByAltText('test-image.jpg').getAttribute('style') || '').toBe(inactiveImageStyle);
+      expect(screen.getByTestId('image-anchored-layer').getAttribute('style') || '').toBe(inactiveLayerStyle);
+      expect(document.getElementById('image-display').getAttribute('class') || '').toBe(inactiveDisplayClass);
+      expect(document.getElementById('image-display').getAttribute('style') || '').toBe(inactiveDisplayStyle);
+    });
+
     test('zoom reset functionality works correctly', () => {
       renderImageDisplay();
       
       const image = screen.getByAltText('test-image.jpg');
       
-      expect(image.style.transform).toBe('scale(1)');
+      expect(screen.getByTestId('image-anchored-layer').style.transform).toBe('scale(1)');
+      expect(image.style.transform).toBe('');
       
       const resetButton = screen.getByText('Reset');
       fireEvent.click(resetButton);
-      expect(image.style.transform).toBe('scale(1)');
+      expect(screen.getByTestId('image-anchored-layer').style.transform).toBe('scale(1)');
+      expect(image.style.transform).toBe('');
     });
   });
 
@@ -125,7 +163,8 @@ describe('ImageDisplay', () => {
 
       const image = screen.getByAltText('Deleted');
 
-      expect(image.style.transform).toBe('scale(1)');
+      expect(screen.getByTestId('image-anchored-layer').style.transform).toBe('scale(1)');
+      expect(image.style.transform).toBe('');
     });
   });
 
@@ -309,19 +348,23 @@ describe('ImageDisplay', () => {
       
       const image = screen.getByAltText('test-image.jpg');
       
-      expect(image.style.transform).toBe('scale(1)');
+      expect(screen.getByTestId('image-anchored-layer').style.transform).toBe('scale(1)');
+      expect(image.style.transform).toBe('');
       
       // Zoom in with + key
       fireEvent.keyDown(document, { key: '+' });
-      expect(image.style.transform).toBe('scale(1.25)');
+      expect(screen.getByTestId('image-anchored-layer').style.transform).toBe('scale(1.25)');
+      expect(image.style.transform).toBe('');
       
       // Reset with 0 key
       fireEvent.keyDown(document, { key: '0' });
-      expect(image.style.transform).toBe('scale(1)');
+      expect(screen.getByTestId('image-anchored-layer').style.transform).toBe('scale(1)');
+      expect(image.style.transform).toBe('');
       
       // Zoom out with - key
       fireEvent.keyDown(document, { key: '-' });
-      expect(image.style.transform).toBe('scale(0.75)');
+      expect(screen.getByTestId('image-anchored-layer').style.transform).toBe('scale(0.75)');
+      expect(image.style.transform).toBe('');
     });
   });
 });
