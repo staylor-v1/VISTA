@@ -1051,9 +1051,24 @@ describe('InspectionWorkbenchPanel', () => {
       }
 
       // Review action updates indicator, and Reset returns the part to unreviewed.
+      // Wait for the pass PATCH instead of only the summary text: some seeded
+      // scenarios already have one passed part, so `Passed: 1` can be true
+      // before the async save finishes and the Reset button is enabled again.
       fireEvent.click(screen.getByRole('button', { name: /^pass$/i }));
       await waitFor(() => {
-        expect(screen.getByText('Passed: 1')).toBeInTheDocument();
+        expect(global.fetch).toHaveBeenCalledWith(
+          expect.stringContaining(`/parts/${scenario.parts[0].id}`),
+          expect.objectContaining({
+            method: 'PATCH',
+            body: JSON.stringify({ review_state: 'pass' }),
+          }),
+        );
+      });
+      const expectedPassedAfterPass = scenario.parts.filter(
+        (part) => part.id === scenario.parts[0].id || (part.review_state || '').toLowerCase() === 'pass',
+      ).length;
+      await waitFor(() => {
+        expect(screen.getByText(`Passed: ${expectedPassedAfterPass}`)).toBeInTheDocument();
       });
       fireEvent.click(screen.getByRole('button', { name: /^reset$/i }));
       await waitFor(() => {
