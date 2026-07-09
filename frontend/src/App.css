@@ -5506,6 +5506,21 @@ ul li:hover {
   overflow: hidden;
 }
 
+.inspection-fullscreen-tool-notice {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.inspection-fullscreen-tool-notice .workbench-notice {
+  max-width: min(560px, calc(100% - 24px));
+  margin: 0;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.28);
+}
+
 .inspection-fullscreen-workspace {
   flex: 1;
   min-height: 0;
