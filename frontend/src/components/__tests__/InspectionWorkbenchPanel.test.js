@@ -376,6 +376,7 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
         ok: true,
         json: async () => ({
           config: {
+            ui_sections: { 'inspection.part_summary.views_row': true },
             process_settings: {
               configurable_hotkeys: hotkeys || {
                 accept_classification: 'a',

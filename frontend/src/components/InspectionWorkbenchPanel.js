@@ -3,6 +3,7 @@ import { Actions, Layout, Model } from 'flexlayout-react';
 import 'flexlayout-react/style/light.css';
 import CalibrationManager from './CalibrationManager';
 import { DEFAULT_INTERFACE_HIERARCHY } from '../utils/interfaceHierarchy';
+import { isUiSectionEnabled } from '../utils/uiSections';
 
 const VIEW_ORDER = ['front', 'back', 'left', 'right', 'top', 'bottom'];
 const MPR_AXES = ['axial', 'coronal', 'sagittal'];
@@ -3970,6 +3971,49 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       : [...prev, key]));
   };
 
+  const setAllViewVisibility = (viewNames = [], visible) => {
+    const keys = viewNames.map((name) => String(name || '').toLowerCase()).filter(Boolean);
+    if (keys.length === 0) return;
+    setHiddenViewNames((prev) => {
+      const next = new Set(prev.map((name) => String(name).toLowerCase()));
+      keys.forEach((key) => {
+        if (visible) next.delete(key); else next.add(key);
+      });
+      return Array.from(next);
+    });
+  };
+
+  const setAllModalityVisibility = (modalities = [], visible) => {
+    const keys = modalities.map((name) => String(name || '').toLowerCase()).filter(Boolean);
+    if (keys.length === 0) return;
+    setEnabledModalities((prev) => {
+      const next = new Set(prev.map((name) => String(name).toLowerCase()));
+      keys.forEach((key) => {
+        if (visible) next.add(key); else next.delete(key);
+      });
+      return Array.from(next);
+    });
+  };
+
+  const setAllLayerVisibility = (overlayIds = [], visible, includeSource, includeAnalyzeOverlays) => {
+    setRenderCategories((prev) => {
+      const next = new Set(prev);
+      ['source', 'overlay'].forEach((category) => {
+        if ((category === 'source' && includeSource) || (category === 'overlay' && includeAnalyzeOverlays)) {
+          if (visible) next.add(category); else next.delete(category);
+        }
+      });
+      return Array.from(next);
+    });
+    setActiveOverlayIds((prev) => {
+      const next = new Set(prev);
+      overlayIds.forEach((id) => {
+        if (visible) next.add(id); else next.delete(id);
+      });
+      return Array.from(next);
+    });
+  };
+
   const toggleModalityVisibility = (modality) => {
     const key = String(modality || '').toLowerCase();
     if (!key) return;
@@ -4666,6 +4710,15 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     const hasAnalyzeOverlays = partImageRefs.some((entry) => entry.overlay);
                     const isSourceCategoryVisible = renderCategories.includes('source');
                     const isOverlayCategoryVisible = renderCategories.includes('overlay');
+                    const showViewsRow = isUiSectionEnabled(projectConfiguration, 'inspection.part_summary.views_row');
+                    const showModalitiesRow = isUiSectionEnabled(projectConfiguration, 'inspection.part_summary.modalities_row');
+                    const showLayersRow = isUiSectionEnabled(projectConfiguration, 'inspection.part_summary.layers_row');
+                    const allViewsVisible = imageEntries.every(([viewName]) => !hiddenViewNames.includes(String(viewName).toLowerCase()));
+                    const enabledModalityKeys = enabledModalities.map((entry) => String(entry).toLowerCase());
+                    const allModalitiesVisible = partModalities.every((modality) => enabledModalityKeys.includes(String(modality).toLowerCase()));
+                    const allLayersVisible = (!partImageRefs.length || isSourceCategoryVisible)
+                      && (!hasAnalyzeOverlays || isOverlayCategoryVisible)
+                      && partOverlayLayers.every((overlay) => activeOverlayIds.includes(overlay.id));
                     return (
                       <article
                         key={part.id}
@@ -4684,10 +4737,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                           <div className="workbench-defect-count">
                             Defects: {defectCount} • Annotations: {annotationCount}
                           </div>
-                          {imageEntries.length > 0 && (
+                          {showViewsRow && imageEntries.length > 0 && (
                             <div className="part-summary-chip-group">
                               <span className="part-summary-chip-label">Views</span>
                               <div className="part-summary-images" aria-label={`${part.display_name || part.serial_number} view toggles`}>
+                                <button type="button" className={`btn btn-secondary btn-sm part-summary-all-toggle ${allViewsVisible ? 'active' : 'muted-toggle'}`} aria-pressed={allViewsVisible} onClick={(event) => { event.stopPropagation(); setSelectedPartId(part.id); setAllViewVisibility(imageEntries.map(([viewName]) => viewName), !allViewsVisible); }}>ALL</button>
                                 {imageEntries.map(([viewName, imageRef]) => {
                                   const normalizedViewName = String(viewName).toLowerCase();
                                   const isHidden = hiddenViewNames.includes(normalizedViewName);
@@ -4712,10 +4766,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                               </div>
                             </div>
                           )}
-                          {partModalities.length > 0 && (
+                          {showModalitiesRow && partModalities.length > 0 && (
                             <div className="part-summary-chip-group">
                               <span className="part-summary-chip-label">Modalities</span>
                               <div className="part-summary-images part-summary-modalities" aria-label={`${part.display_name || part.serial_number} modality toggles`}>
+                                <button type="button" className={`btn btn-secondary btn-sm part-summary-all-toggle ${allModalitiesVisible ? 'active' : 'muted-toggle'}`} aria-pressed={allModalitiesVisible} onClick={(event) => { event.stopPropagation(); setSelectedPartId(part.id); setAllModalityVisibility(partModalities, !allModalitiesVisible); }}>ALL</button>
                                 {partModalities.map((modality) => {
                                   const normalizedModality = String(modality).toLowerCase();
                                   const isEnabled = enabledModalities.map((entry) => String(entry).toLowerCase()).includes(normalizedModality);
@@ -4748,10 +4803,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                               </div>
                             </div>
                           )}
-                          {(partImageRefs.length > 0 || hasAnalyzeOverlays || partOverlayLayers.length > 0) && (
+                          {showLayersRow && (partImageRefs.length > 0 || hasAnalyzeOverlays || partOverlayLayers.length > 0) && (
                             <div className="part-summary-chip-group">
                               <span className="part-summary-chip-label">Layers</span>
                               <div className="part-summary-images part-summary-layers" aria-label={`${part.display_name || part.serial_number} layer toggles`}>
+                                <button type="button" className={`btn btn-secondary btn-sm part-summary-all-toggle ${allLayersVisible ? 'active' : 'muted-toggle'}`} aria-pressed={allLayersVisible} onClick={(event) => { event.stopPropagation(); setSelectedPartId(part.id); setAllLayerVisibility(partOverlayLayers.map((overlay) => overlay.id), !allLayersVisible, partImageRefs.length > 0, hasAnalyzeOverlays); }}>ALL</button>
                                 {partImageRefs.length > 0 && (
                                   <button
                                     type="button"

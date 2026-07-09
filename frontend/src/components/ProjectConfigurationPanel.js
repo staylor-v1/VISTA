@@ -6,52 +6,86 @@ import { metadataKeyFromFilenameEntry } from './FilenameMetadataExtractor';
 
 
 
-function ConfigurableUiSectionGroup({ group, config, setConfig, level = 0 }) {
+function collectUiSectionMatches(groups = UI_SECTION_GROUPS, query = '') {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return [];
+  const matches = [];
+  const visit = (group, path = []) => {
+    const nextPath = [...path, group.id];
+    if (group.label.toLowerCase().includes(normalizedQuery)) {
+      matches.push({ type: 'group', key: group.id, label: group.label, path: nextPath });
+    }
+    (group.sections || []).forEach((section) => {
+      if (section.label.toLowerCase().includes(normalizedQuery) || section.key.toLowerCase().includes(normalizedQuery)) {
+        matches.push({ type: 'section', key: section.key, label: section.label, path: nextPath });
+      }
+    });
+    (group.children || []).forEach((child) => visit(child, nextPath));
+  };
+  groups.forEach((group) => visit(group));
+  return matches;
+}
+
+function ConfigurableUiSectionGroup({ group, config, setConfig, expandedGroups, toggleGroup, highlightedKey, level = 0 }) {
+  const isExpanded = expandedGroups.includes(group.id);
   return (
-    <details className="configurable-ui-section-group" open={level === 0}>
-      <summary>
+    <div className="configurable-ui-section-group" data-depth={level}>
+      <button
+        type="button"
+        className={`configurable-ui-section-summary ${highlightedKey === group.id ? 'search-highlight' : ''}`}
+        aria-expanded={isExpanded}
+        onClick={() => toggleGroup(group.id)}
+      >
+        <span className="configurable-ui-section-icon" aria-hidden="true">{isExpanded ? '-' : '+'}</span>
         <span>{group.label}</span>
         {(group.sections || []).length > 0 && (
           <span className="configurable-ui-section-count">{group.sections.length} section{group.sections.length === 1 ? '' : 's'}</span>
         )}
-      </summary>
-      {group.description && <p className="muted">{group.description}</p>}
-      {(group.sections || []).length > 0 && (
-        <div className="configurable-ui-section-options">
-          {group.sections.map((section) => (
-            <label key={section.key}>
-              <input
-                type="checkbox"
-                checked={normalizeUiSections(config)[section.key] !== false}
-                onChange={(event) => {
-                  setConfig((previous) => ({
-                    ...previous,
-                    ui_sections: {
-                      ...normalizeUiSections(previous),
-                      [section.key]: event.target.checked,
-                    },
-                  }));
-                }}
-              />
-              {section.label}
-            </label>
-          ))}
+      </button>
+      {isExpanded && (
+        <div className="configurable-ui-section-body">
+          {group.description && <p className="muted">{group.description}</p>}
+          {(group.sections || []).length > 0 && (
+            <div className="configurable-ui-section-options">
+              {group.sections.map((section) => (
+                <label key={section.key} className={highlightedKey === section.key ? 'search-highlight' : ''}>
+                  <input
+                    type="checkbox"
+                    checked={normalizeUiSections(config)[section.key] !== false}
+                    onChange={(event) => {
+                      setConfig((previous) => ({
+                        ...previous,
+                        ui_sections: {
+                          ...normalizeUiSections(previous),
+                          [section.key]: event.target.checked,
+                        },
+                      }));
+                    }}
+                  />
+                  {section.label}
+                </label>
+              ))}
+            </div>
+          )}
+          {(group.children || []).length > 0 && (
+            <div className="configurable-ui-section-children">
+              {group.children.map((childGroup) => (
+                <ConfigurableUiSectionGroup
+                  key={childGroup.id}
+                  group={childGroup}
+                  config={config}
+                  setConfig={setConfig}
+                  expandedGroups={expandedGroups}
+                  toggleGroup={toggleGroup}
+                  highlightedKey={highlightedKey}
+                  level={level + 1}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
-      {(group.children || []).length > 0 && (
-        <div className="configurable-ui-section-children">
-          {group.children.map((childGroup) => (
-            <ConfigurableUiSectionGroup
-              key={childGroup.id}
-              group={childGroup}
-              config={config}
-              setConfig={setConfig}
-              level={level + 1}
-            />
-          ))}
-        </div>
-      )}
-    </details>
+    </div>
   );
 }
 
@@ -575,13 +609,15 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
   const [availableProjects, setAvailableProjects] = useState([]);
   const [currentProjectType, setCurrentProjectType] = useState('');
   const [copySourceProjectId, setCopySourceProjectId] = useState('');
-  const [showAdvancedUiSections, setShowAdvancedUiSections] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [statusMessage, setStatusMessage] = useState('');
   const [copyingConfiguration, setCopyingConfiguration] = useState(false);
   const [activeConfigurationSubtab, setActiveConfigurationSubtab] = useState('general');
+  const [uiSearchQuery, setUiSearchQuery] = useState('');
+  const [uiSearchIndex, setUiSearchIndex] = useState(0);
+  const [expandedUiGroups, setExpandedUiGroups] = useState(['main']);
   const configRef = useRef(config);
   const autosaveTimerRef = useRef(null);
   const loadCompleteRef = useRef(false);
@@ -629,6 +665,27 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
   const [primaryError, diagnosticError] = typeof error === 'string'
     ? error.split('\n\n', 2)
     : ['', ''];
+  const uiSectionSearchResults = useMemo(() => collectUiSectionMatches(UI_SECTION_GROUPS, uiSearchQuery), [uiSearchQuery]);
+  const selectedUiSectionSearchResult = uiSectionSearchResults[uiSearchIndex] || null;
+
+  useEffect(() => {
+    setUiSearchIndex(0);
+  }, [uiSearchQuery]);
+
+  useEffect(() => {
+    if (selectedUiSectionSearchResult) {
+      setExpandedUiGroups(selectedUiSectionSearchResult.path);
+    } else if (!uiSearchQuery.trim()) {
+      setExpandedUiGroups((previous) => (previous.length > 0 ? previous : ['main']));
+    }
+  }, [selectedUiSectionSearchResult, uiSearchQuery]);
+
+  const toggleUiGroup = useCallback((groupId) => {
+    setExpandedUiGroups((previous) => (previous.includes(groupId)
+      ? previous.filter((id) => id !== groupId)
+      : [...previous, groupId]));
+  }, []);
+
   const normalizedFileNamingScheme = normalizeFileNamingScheme(config);
   const filenameConvention = useMemo(
     () => getFilenameConventionSegments(normalizedFileNamingScheme),
@@ -1144,6 +1201,16 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
             >
               Hotkeys
             </button>
+            <button
+              type="button"
+              className={`project-tab ${activeConfigurationSubtab === 'uiConfiguration' ? 'active' : ''}`}
+              role="tab"
+              aria-selected={activeConfigurationSubtab === 'uiConfiguration'}
+              aria-controls="configuration-ui-panel"
+              onClick={() => setActiveConfigurationSubtab('uiConfiguration')}
+            >
+              UI Configuration
+            </button>
           </div>
 
           {activeConfigurationSubtab === 'general' && (
@@ -1349,36 +1416,6 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
                 ))}
               </select>
             </div>
-          </section>
-
-          <section className="part-detail-panel configurable-ui-sections-panel" aria-label="Configurable UI sections">
-            <div className="configurable-ui-sections-header">
-              <div>
-                <h3>Available UI Sections</h3>
-                <p>Keep common tools visible and expose advanced or specialized UI only when this project needs it.</p>
-              </div>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                aria-expanded={showAdvancedUiSections}
-                aria-controls="advanced-ui-section-controls"
-                onClick={() => setShowAdvancedUiSections((previous) => !previous)}
-              >
-                {showAdvancedUiSections ? 'Hide Advanced' : 'Advanced'}
-              </button>
-            </div>
-            {showAdvancedUiSections && (
-              <div id="advanced-ui-section-controls" className="configurable-ui-section-groups">
-                {UI_SECTION_GROUPS.map((group) => (
-                  <ConfigurableUiSectionGroup
-                    key={group.id}
-                    group={group}
-                    config={config}
-                    setConfig={setConfig}
-                  />
-                ))}
-              </div>
-            )}
           </section>
 
           <section className="part-detail-panel" aria-label="Defect types">
@@ -1599,6 +1636,52 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
               >
                 {copyingConfiguration ? 'Copying...' : 'Copy from Project'}
               </button>
+            </div>
+          </section>
+          </div>
+          )}
+
+
+          {activeConfigurationSubtab === 'uiConfiguration' && (
+          <div
+            id="configuration-ui-panel"
+            className="configuration-sections-grid configuration-ui-panel"
+            role="tabpanel"
+            aria-label="UI Configuration"
+          >
+          <section className="part-detail-panel configurable-ui-sections-panel" aria-label="Configurable UI sections">
+            <div className="configurable-ui-sections-header">
+              <div>
+                <h3>Available UI Sections</h3>
+                <p>Search, expand, and select the Vista interface elements that should be visible for this project.</p>
+              </div>
+            </div>
+            <div className="configurable-ui-search-row">
+              <input
+                type="search"
+                aria-label="Search UI configuration tree"
+                placeholder="Search UI elements…"
+                value={uiSearchQuery}
+                onChange={(event) => setUiSearchQuery(event.target.value)}
+              />
+              <span className="configurable-ui-search-count" aria-live="polite">
+                {uiSectionSearchResults.length > 0 ? `${uiSearchIndex + 1} of ${uiSectionSearchResults.length}` : 'No results'}
+              </span>
+              <button type="button" className="btn btn-secondary btn-sm" aria-label="Previous UI search result" disabled={uiSectionSearchResults.length === 0} onClick={() => setUiSearchIndex((previous) => (previous - 1 + uiSectionSearchResults.length) % uiSectionSearchResults.length)}>⌃</button>
+              <button type="button" className="btn btn-secondary btn-sm" aria-label="Next UI search result" disabled={uiSectionSearchResults.length === 0} onClick={() => setUiSearchIndex((previous) => (previous + 1) % uiSectionSearchResults.length)}>⌄</button>
+            </div>
+            <div id="advanced-ui-section-controls" className="configurable-ui-section-groups">
+              {UI_SECTION_GROUPS.map((group) => (
+                <ConfigurableUiSectionGroup
+                  key={group.id}
+                  group={group}
+                  config={config}
+                  setConfig={setConfig}
+                  expandedGroups={expandedUiGroups}
+                  toggleGroup={toggleUiGroup}
+                  highlightedKey={selectedUiSectionSearchResult?.key || ''}
+                />
+              ))}
             </div>
           </section>
           </div>
