@@ -2939,9 +2939,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       const category = entry.overlay ? 'overlay' : 'source';
       if (!renderCategories.includes(category)) return false;
       if (hidden.has(String(entry.viewName || '').toLowerCase())) return false;
-      if (entry.overlay && (entry.overlayBaseImageId || entry.overlayBaseFilename)) return true;
       const modality = String(entry.modality || '').toLowerCase();
-      return !modality || modality === 'analyze-overlay' || enabled.has(modality);
+      const modalityVisible = !modality || modality === 'analyze-overlay' || modality === 'overlay' || enabled.has(modality);
+      if (!modalityVisible) return false;
+      if (entry.overlay && (entry.overlayBaseImageId || entry.overlayBaseFilename)) return true;
+      return true;
     });
     if (!renderCategories.includes('overlay')) return categoryFiltered;
     const overlayBaseIdentities = new Set();
@@ -4784,12 +4786,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         setSelectedPartId(part.id);
-                                        if (matchingImage?.overlay) {
+                                        if (matchingImage?.overlay && !isEnabled) {
                                           setRenderCategories((prev) => (prev.includes('overlay') ? prev : [...prev, 'overlay']));
-                                          if (!isEnabled) toggleModalityVisibility(normalizedModality);
-                                        } else {
-                                          toggleModalityVisibility(normalizedModality);
                                         }
+                                        toggleModalityVisibility(normalizedModality);
                                         if (matchingImage) {
                                           setSelectedViewName(String(matchingImage.viewName || '').toLowerCase());
                                           setSelectedImageRef(String(matchingImage.imageRef || matchingImage.imageId || ''));
