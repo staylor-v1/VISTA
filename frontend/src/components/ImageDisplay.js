@@ -365,6 +365,14 @@ function ImageDisplay({
   const renderImageView = (showOverlays = true, containerStyle = {}, attachRef = true) => (
     <div style={{ position: 'relative', ...containerStyle }}>
       <div style={{ transform: `translate(${panOffset.x}px, ${panOffset.y}px)`, position: 'relative' }}>
+        <div
+          data-testid="image-anchored-layer"
+          style={{
+            position: 'relative',
+            transform: `scale(${zoomLevel})`,
+            transformOrigin: 'top left'
+          }}
+        >
       {!image ? (
         <div className="loading-container">
           <div className="loading"></div>
@@ -375,7 +383,6 @@ function ImageDisplay({
           src={DELETED_IMAGE_DISPLAY_SVG}
           alt="Deleted"
           className="view-image deleted-image"
-          style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'top left' }}
           ref={attachRef ? imgRef : null}
         />
       ) : (
@@ -383,7 +390,6 @@ function ImageDisplay({
           src={`/api/images/${imageId}/content`}
           alt={image.filename || ''}
           className="view-image"
-          style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'top left' }}
           onLoad={measure}
           onError={(e) => {
             console.error('Failed to load image with ID: %s', imageId, e);
@@ -402,7 +408,7 @@ function ImageDisplay({
           annotationCount: annotations.length
         });
         return (
-          <div style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'top left', position: 'absolute', top: 0, left: 0 }}>
+          <div style={{ position: 'absolute', top: 0, left: 0 }}>
             <BoundingBoxOverlay
               annotations={annotations}
               naturalSize={naturalSize}
@@ -413,7 +419,7 @@ function ImageDisplay({
         );
       })()}
       {showOverlays && image && overlayOptions?.showHeatmap && annotations?.length > 0 && displaySize.width > 0 && (
-        <div style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'top left', position: 'absolute', top: 0, left: 0 }}>
+        <div style={{ position: 'absolute', top: 0, left: 0 }}>
           <HeatmapOverlay
             annotations={annotations}
             containerSize={displaySize}
@@ -422,7 +428,7 @@ function ImageDisplay({
         </div>
       )}
       {showOverlays && image && measurements && measurements.length > 0 && displaySize.width > 0 && naturalSize.width > 0 && (
-        <div style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'top left', position: 'absolute', top: 0, left: 0 }}>
+        <div style={{ position: 'absolute', top: 0, left: 0 }}>
           <MeasurementOverlay
             measurements={measurements}
             naturalSize={naturalSize}
@@ -446,6 +452,7 @@ function ImageDisplay({
           leftClickEnabled={!!measurementActive}
         />
       )}
+        </div>
       </div>
     </div>
   );
@@ -507,11 +514,9 @@ function ImageDisplay({
             {measurementActive ? 'Done Measuring' : 'Measure'}
           </button>
         )}
-        {measurementActive && (
-          <span className="measure-hint">
-            Left-click to draw. Right-click also works.
-          </span>
-        )}
+        <span className="measure-hint" aria-hidden={!measurementActive} style={{ visibility: measurementActive ? 'visible' : 'hidden' }}>
+          Left-click to draw. Right-click also works.
+        </span>
         <button
           className="btn btn-success control-btn"
           onClick={handleDownload}
