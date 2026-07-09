@@ -1731,7 +1731,7 @@ describe('InspectionWorkbenchPanel', () => {
     await waitFor(() => expect(screen.getByAltText('front view')).toBeInTheDocument());
     fireEvent.click(screen.getByAltText('front view'));
     fireEvent.click(screen.getByRole('button', { name: 'Measure' }));
-    expect(screen.getByText(/Click to set first point, click again to set second point/i)).toBeInTheDocument();
+    expect(screen.getByText(/Click and drag to draw a measurement line/i)).toBeInTheDocument();
 
     const fullscreenImage = screen.getByAltText(/fullscreen$/i);
     Object.defineProperty(fullscreenImage, 'naturalWidth', { configurable: true, value: 1000 });
@@ -2091,11 +2091,16 @@ describe('InspectionWorkbenchPanel', () => {
     expect(zoomLayer.style.transform).toBe('translate(0px, 0px) scale(1.15)');
     expect(zoomLayer.style.transformOrigin).toBe('50% 50%');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Measure' }));
-    expect(screen.getByRole('button', { name: 'Measure' })).toHaveClass('active');
+    const measureButton = screen.getByRole('button', { name: 'Measure' });
+    fireEvent.click(measureButton);
+    expect(measureButton).toHaveClass('active');
+    expect(screen.getByText(/Click and drag to draw a measurement line/i).closest('.inspection-fullscreen-tool-notice')).toBeInTheDocument();
+    expect(document.querySelector('.inspection-fullscreen-stage')?.firstElementChild).toHaveClass('inspection-fullscreen-tool-notice');
+    expect(document.querySelector('.inspection-fullscreen-workspace')).toBeInTheDocument();
     expect(zoomLayer.style.transform).toBe('translate(0px, 0px) scale(1.15)');
-    fireEvent.click(screen.getByRole('button', { name: 'Measure' }));
-    expect(screen.getByRole('button', { name: 'Measure' })).not.toHaveClass('active');
+    fireEvent.click(measureButton);
+    expect(measureButton).not.toHaveClass('active');
+    expect(document.querySelector('.inspection-fullscreen-tool-notice')).not.toBeInTheDocument();
     expect(zoomLayer.style.transform).toBe('translate(0px, 0px) scale(1.15)');
 
     fireEvent.click(screen.getByRole('button', { name: 'Draw box' }));
