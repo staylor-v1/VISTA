@@ -412,6 +412,31 @@ describe('ProjectConfigurationPanel', () => {
     expect(savedConfig.ui_sections['project_data.images_to_parts']).toBe(true);
   });
 
+  test('renders UI configuration rows with expansion and checkbox controls on the same line', async () => {
+    const config = makeConfig('PT1', 'basic');
+    mockFetch(config, 'PT1');
+    const { container } = render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'UI Configuration' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'UI Configuration' }));
+
+    const workspaceRow = screen.getByRole('button', { name: 'Collapse Vista workspace' })
+      .closest('.configurable-ui-section-summary');
+    expect(workspaceRow).toContainElement(screen.getByLabelText('Vista workspace'));
+
+    const projectConfigurationRow = screen.getByRole('button', { name: 'Expand Project Configuration' })
+      .closest('.configurable-ui-section-summary');
+    expect(projectConfigurationRow).toContainElement(projectConfigurationRow.querySelector('input[type="checkbox"]'));
+    expect(projectConfigurationRow).toHaveTextContent('Project Configuration');
+
+    const projectConfigurationTabRow = screen.getByLabelText('Project Configuration tab')
+      .closest('.configurable-ui-section-leaf');
+    expect(projectConfigurationTabRow.querySelector('.configurable-ui-section-expander-spacer')).toBeInTheDocument();
+    expect(projectConfigurationTabRow).toContainElement(screen.getByLabelText('Project Configuration tab'));
+
+    expect(container.querySelectorAll('.configurable-ui-section-leaf .configurable-ui-section-expander-spacer').length).toBeGreaterThan(0);
+  });
+
 
   test('autosaves configuration changes after users edit fields', async () => {
     jest.useFakeTimers();

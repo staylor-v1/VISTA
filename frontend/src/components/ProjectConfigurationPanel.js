@@ -93,6 +93,7 @@ function ConfigurableUiSectionGroup({ group, config, setConfig, expandedGroups, 
             <div className="configurable-ui-section-options">
               {group.sections.map((section) => (
                 <label key={section.key} className={`configurable-ui-section-leaf ${highlightedKey === section.key ? 'search-highlight' : ''}`}>
+                  <span className="configurable-ui-section-expander-spacer" aria-hidden="true" />
                   <input
                     type="checkbox"
                     checked={normalizedSections[section.key] !== false}
