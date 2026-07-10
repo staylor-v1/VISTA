@@ -7764,16 +7764,16 @@ ul li:hover {
 
 .configurable-ui-section-groups {
   display: grid;
-  gap: 12px;
-  margin-top: 12px;
+  gap: 2px;
+  margin-top: 8px;
 }
 
 .configurable-ui-section-group {
   display: grid;
-  gap: 8px;
-  border: 1px solid #dbe3ef;
-  border-radius: 8px;
-  padding: 10px 12px;
+  gap: 2px;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
 }
 
 .configurable-ui-section-group legend {
@@ -8446,53 +8446,85 @@ ul li:hover {
 }
 
 .configurable-ui-section-count {
+  margin-left: auto;
   color: #64748b;
-  font-size: 0.85rem;
+  font-size: 0.72rem;
   font-weight: 600;
 }
 
 .configurable-ui-section-options {
   display: grid;
-  gap: 8px;
+  gap: 2px;
 }
 
 .configurable-ui-section-children {
   display: grid;
-  gap: 10px;
-  margin-top: 8px;
-  padding-left: 12px;
-  border-left: 2px solid #e2e8f0;
+  gap: 2px;
+  margin-top: 2px;
+  padding-left: 20px;
+  border-left: 0;
+}
+
+.configurable-ui-section-summary,
+.configurable-ui-section-leaf,
+.configurable-ui-section-check-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.configurable-ui-section-summary,
+.configurable-ui-section-leaf {
+  min-height: 22px;
+  width: 100%;
+  color: #111827;
+  font-size: 0.82rem;
+  line-height: 1.15;
 }
 
 .configurable-ui-section-summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  width: 100%;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  font: inherit;
-  font-weight: 800;
-  text-align: left;
+  font-weight: 700;
 }
 
-.configurable-ui-section-icon {
+.configurable-ui-section-check-label,
+.configurable-ui-section-leaf {
+  cursor: pointer;
+}
+
+.configurable-ui-section-check-label input,
+.configurable-ui-section-leaf input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+}
+
+.configurable-ui-section-expander {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.25rem;
-  height: 1.25rem;
-  border: 1px solid #cbd5e1;
-  border-radius: 999px;
-  color: #334155;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid #6b7280;
+  border-radius: 0;
+  background: #ffffff;
+  color: #111827;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
   font-weight: 900;
+  line-height: 1;
+}
+
+.configurable-ui-section-expander:focus-visible {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 1px;
 }
 
 .configurable-ui-section-body {
   display: grid;
-  gap: 8px;
+  gap: 2px;
+  padding-left: 20px;
 }
 
 .configurable-ui-search-row {

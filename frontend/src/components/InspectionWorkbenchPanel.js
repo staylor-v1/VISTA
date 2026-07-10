@@ -4753,7 +4753,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                             <div className="part-summary-chip-group">
                               <span className="part-summary-chip-label">Views</span>
                               <div className="part-summary-images" aria-label={`${part.display_name || part.serial_number} view toggles`}>
-                                <button type="button" className={`btn btn-secondary btn-sm part-summary-all-toggle ${allViewsVisible ? 'active' : 'muted-toggle'}`} aria-pressed={allViewsVisible} onClick={(event) => { event.stopPropagation(); setSelectedPartId(part.id); setAllViewVisibility(imageEntries.map(([viewName]) => viewName), !allViewsVisible); }}>ALL</button>
                                 {imageEntries.map(([viewName, imageRef]) => {
                                   const normalizedViewName = String(viewName).toLowerCase();
                                   const isHidden = hiddenViewNames.includes(normalizedViewName);
@@ -4775,6 +4774,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                                     </button>
                                   );
                                 })}
+                                <button type="button" className={`btn btn-secondary btn-sm part-summary-all-toggle ${allViewsVisible ? 'active' : 'muted-toggle'}`} aria-pressed={allViewsVisible} onClick={(event) => { event.stopPropagation(); setSelectedPartId(part.id); setAllViewVisibility(imageEntries.map(([viewName]) => viewName), !allViewsVisible); }}>ALL</button>
                               </div>
                             </div>
                           )}
@@ -4782,7 +4782,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                             <div className="part-summary-chip-group">
                               <span className="part-summary-chip-label">Modalities</span>
                               <div className="part-summary-images part-summary-modalities" aria-label={`${part.display_name || part.serial_number} modality toggles`}>
-                                <button type="button" className={`btn btn-secondary btn-sm part-summary-all-toggle ${allModalitiesVisible ? 'active' : 'muted-toggle'}`} aria-pressed={allModalitiesVisible} onClick={(event) => { event.stopPropagation(); setSelectedPartId(part.id); setAllModalityVisibility(partModalities, !allModalitiesVisible); }}>ALL</button>
                                 {partModalities.map((modality) => {
                                   const normalizedModality = String(modality).toLowerCase();
                                   const isEnabled = enabledModalities.map((entry) => String(entry).toLowerCase()).includes(normalizedModality);
@@ -4810,6 +4809,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                                     </button>
                                   );
                                 })}
+                                <button type="button" className={`btn btn-secondary btn-sm part-summary-all-toggle ${allModalitiesVisible ? 'active' : 'muted-toggle'}`} aria-pressed={allModalitiesVisible} onClick={(event) => { event.stopPropagation(); setSelectedPartId(part.id); setAllModalityVisibility(partModalities, !allModalitiesVisible); }}>ALL</button>
                               </div>
                             </div>
                           )}
@@ -4817,7 +4817,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                             <div className="part-summary-chip-group">
                               <span className="part-summary-chip-label">Layers</span>
                               <div className="part-summary-images part-summary-layers" aria-label={`${part.display_name || part.serial_number} layer toggles`}>
-                                <button type="button" className={`btn btn-secondary btn-sm part-summary-all-toggle ${allLayersVisible ? 'active' : 'muted-toggle'}`} aria-pressed={allLayersVisible} onClick={(event) => { event.stopPropagation(); setSelectedPartId(part.id); setAllLayerVisibility(!allLayersVisible, { source: partImageRefs.some((entry) => !entry.overlay && !entry.cropChild), overlay: hasAnalyzeOverlays, annotation: hasAnnotations, crop: hasCropImages }); }}>ALL</button>
                                 {partImageRefs.some((entry) => !entry.overlay && !entry.cropChild) && (
                                   <button
                                     type="button"
@@ -4876,6 +4875,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                                     CROP
                                   </button>
                                 )}
+                                <button type="button" className={`btn btn-secondary btn-sm part-summary-all-toggle ${allLayersVisible ? 'active' : 'muted-toggle'}`} aria-pressed={allLayersVisible} onClick={(event) => { event.stopPropagation(); setSelectedPartId(part.id); setAllLayerVisibility(!allLayersVisible, { source: partImageRefs.some((entry) => !entry.overlay && !entry.cropChild), overlay: hasAnalyzeOverlays, annotation: hasAnnotations, crop: hasCropImages }); }}>ALL</button>
 
                               </div>
                             </div>
