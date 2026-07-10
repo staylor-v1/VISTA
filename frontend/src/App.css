@@ -8475,6 +8475,7 @@ ul li:hover {
 
 .configurable-ui-section-summary,
 .configurable-ui-section-leaf {
+  flex-wrap: nowrap;
   min-height: 22px;
   width: 100%;
   color: #111827;
@@ -8488,7 +8489,13 @@ ul li:hover {
 
 .configurable-ui-section-check-label,
 .configurable-ui-section-leaf {
+  min-width: 0;
   cursor: pointer;
+}
+
+.configurable-ui-section-check-label span,
+.configurable-ui-section-leaf span:last-child {
+  min-width: 0;
 }
 
 .configurable-ui-section-check-label input,
@@ -8514,6 +8521,12 @@ ul li:hover {
   font-size: 0.85rem;
   font-weight: 900;
   line-height: 1;
+}
+
+.configurable-ui-section-expander-spacer {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
 }
 
 .configurable-ui-section-expander:focus-visible {
