@@ -26,32 +26,76 @@ function collectUiSectionMatches(groups = UI_SECTION_GROUPS, query = '') {
   return matches;
 }
 
+function collectUiSectionKeys(group) {
+  return [
+    ...(group.sections || []).map((section) => section.key),
+    ...(group.children || []).flatMap((childGroup) => collectUiSectionKeys(childGroup)),
+  ];
+}
+
 function ConfigurableUiSectionGroup({ group, config, setConfig, expandedGroups, toggleGroup, highlightedKey, level = 0 }) {
   const isExpanded = expandedGroups.includes(group.id);
+  const normalizedSections = normalizeUiSections(config);
+  const groupSectionKeys = collectUiSectionKeys(group);
+  const enabledSectionCount = groupSectionKeys.filter((key) => normalizedSections[key] !== false).length;
+  const allGroupSectionsEnabled = groupSectionKeys.length === 0 || enabledSectionCount === groupSectionKeys.length;
+  const someGroupSectionsEnabled = enabledSectionCount > 0 && enabledSectionCount < groupSectionKeys.length;
+  const groupCheckboxRef = useRef(null);
+
+  useEffect(() => {
+    if (groupCheckboxRef.current) {
+      groupCheckboxRef.current.indeterminate = someGroupSectionsEnabled;
+    }
+  }, [someGroupSectionsEnabled]);
+
+  const setGroupEnabled = (checked) => {
+    setConfig((previous) => {
+      const nextUiSections = { ...normalizeUiSections(previous) };
+      groupSectionKeys.forEach((sectionKey) => {
+        nextUiSections[sectionKey] = checked;
+      });
+      return {
+        ...previous,
+        ui_sections: nextUiSections,
+      };
+    });
+  };
+
   return (
     <div className="configurable-ui-section-group" data-depth={level}>
-      <button
-        type="button"
-        className={`configurable-ui-section-summary ${highlightedKey === group.id ? 'search-highlight' : ''}`}
-        aria-expanded={isExpanded}
-        onClick={() => toggleGroup(group.id)}
-      >
-        <span className="configurable-ui-section-icon" aria-hidden="true">{isExpanded ? '-' : '+'}</span>
-        <span>{group.label}</span>
+      <div className={`configurable-ui-section-summary ${highlightedKey === group.id ? 'search-highlight' : ''}`}>
+        <button
+          type="button"
+          className="configurable-ui-section-expander"
+          aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${group.label}`}
+          aria-expanded={isExpanded}
+          onClick={() => toggleGroup(group.id)}
+        >
+          {isExpanded ? '-' : '+'}
+        </button>
+        <label className="configurable-ui-section-check-label">
+          <input
+            ref={groupCheckboxRef}
+            type="checkbox"
+            checked={allGroupSectionsEnabled}
+            onChange={(event) => setGroupEnabled(event.target.checked)}
+          />
+          <span>{group.label}</span>
+        </label>
         {(group.sections || []).length > 0 && (
           <span className="configurable-ui-section-count">{group.sections.length} section{group.sections.length === 1 ? '' : 's'}</span>
         )}
-      </button>
+      </div>
       {isExpanded && (
         <div className="configurable-ui-section-body">
           {group.description && <p className="muted">{group.description}</p>}
           {(group.sections || []).length > 0 && (
             <div className="configurable-ui-section-options">
               {group.sections.map((section) => (
-                <label key={section.key} className={highlightedKey === section.key ? 'search-highlight' : ''}>
+                <label key={section.key} className={`configurable-ui-section-leaf ${highlightedKey === section.key ? 'search-highlight' : ''}`}>
                   <input
                     type="checkbox"
-                    checked={normalizeUiSections(config)[section.key] !== false}
+                    checked={normalizedSections[section.key] !== false}
                     onChange={(event) => {
                       setConfig((previous) => ({
                         ...previous,
@@ -62,7 +106,7 @@ function ConfigurableUiSectionGroup({ group, config, setConfig, expandedGroups, 
                       }));
                     }}
                   />
-                  {section.label}
+                  <span>{section.label}</span>
                 </label>
               ))}
             </div>
