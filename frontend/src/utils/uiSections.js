@@ -3,17 +3,12 @@ export const UI_SECTION_GROUPS = [
     id: 'main',
     label: 'Vista workspace',
     description: 'Show or hide top-level Vista workspace tabs in the order they appear across the project header.',
-    sections: [
-      { key: 'main.project_configuration', label: 'Project Configuration tab' },
-      { key: 'main.project_data', label: 'Project Data tab' },
-      { key: 'main.analyze', label: 'Analyze tab' },
-      { key: 'main.inspection', label: 'Inspection tab' },
-      { key: 'main.report', label: 'Report tab' },
-    ],
+    sections: [],
     children: [
       {
         id: 'project_configuration',
         label: 'Project Configuration',
+        primarySectionKey: 'main.project_configuration',
         description: 'Configure the project settings editor sections.',
         sections: [
           { key: 'project_configuration.general', label: 'General subtab' },
@@ -37,6 +32,7 @@ export const UI_SECTION_GROUPS = [
       {
         id: 'project_data',
         label: 'Project Data',
+        primarySectionKey: 'main.project_data',
         description: 'Expose data-management subtabs and panels in the order they appear in Project Data.',
         sections: [
           { key: 'project_data.summary', label: 'Project Data Summary panel' },
@@ -53,6 +49,7 @@ export const UI_SECTION_GROUPS = [
       {
         id: 'analyze',
         label: 'Analyze',
+        primarySectionKey: 'main.analyze',
         description: 'Control the main Analyze workspace regions.',
         sections: [
           { key: 'analyze.toolbox', label: 'Analyze Toolbox panel' },
@@ -63,6 +60,7 @@ export const UI_SECTION_GROUPS = [
       {
         id: 'inspection',
         label: 'Inspection',
+        primarySectionKey: 'main.inspection',
         description: 'Control the inspection workspace panes and tabs.',
         sections: [
           { key: 'inspection.part_summary', label: 'Part Summary pane' },
@@ -79,6 +77,7 @@ export const UI_SECTION_GROUPS = [
       {
         id: 'report',
         label: 'Report',
+        primarySectionKey: 'main.report',
         description: 'Control reporting workspace sections.',
         sections: [
           { key: 'report.project_report', label: 'Project Report tab' },
@@ -90,6 +89,7 @@ export const UI_SECTION_GROUPS = [
 
 function flattenUiSections(groups = UI_SECTION_GROUPS) {
   return groups.flatMap((group) => [
+    ...(group.primarySectionKey ? [{ key: group.primarySectionKey, label: `${group.label} tab` }] : []),
     ...(group.sections || []),
     ...flattenUiSections(group.children || []),
   ]);

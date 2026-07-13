@@ -28,6 +28,7 @@ function collectUiSectionMatches(groups = UI_SECTION_GROUPS, query = '') {
 
 function collectUiSectionKeys(group) {
   return [
+    ...(group.primarySectionKey ? [group.primarySectionKey] : []),
     ...(group.sections || []).map((section) => section.key),
     ...(group.children || []).flatMap((childGroup) => collectUiSectionKeys(childGroup)),
   ];
