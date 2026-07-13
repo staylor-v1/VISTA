@@ -391,11 +391,12 @@ describe('ProjectConfigurationPanel', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: 'UI Configuration' }));
     expect(screen.getByText('Available UI Sections')).toBeInTheDocument();
-    expect(screen.getByLabelText('Analyze tab')).toBeChecked();
+    expect(screen.getByLabelText('Analyze')).toBeChecked();
     fireEvent.click(screen.getByRole('button', { name: /Project Data/ }));
     expect(screen.getByLabelText('Batches subtab')).toBeChecked();
 
-    fireEvent.click(screen.getByLabelText('Analyze tab'));
+    fireEvent.click(screen.getByLabelText('Analyze'));
+    expect(screen.queryByLabelText('Analyze tab')).not.toBeInTheDocument();
     fireEvent.click(screen.getByLabelText('Batches subtab'));
     fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
 
@@ -408,8 +409,35 @@ describe('ProjectConfigurationPanel', () => {
     );
     const savedConfig = JSON.parse(putCall[1].body).config;
     expect(savedConfig.ui_sections['main.analyze']).toBe(false);
+    expect(savedConfig.ui_sections['analyze.toolbox']).toBe(false);
     expect(savedConfig.ui_sections['project_data.batches']).toBe(false);
     expect(savedConfig.ui_sections['project_data.images_to_parts']).toBe(true);
+  });
+
+  test('top-level workspace rows toggle their matching main tabs without duplicate checkbox-only rows', async () => {
+    const config = makeConfig('PT1', 'basic');
+    mockFetch(config, 'PT1');
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'UI Configuration' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'UI Configuration' }));
+
+    expect(screen.getByLabelText('Report')).toBeChecked();
+    expect(screen.queryByLabelText('Report tab')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('Report'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith(
+      '/api/projects/proj-1/configuration',
+      expect.objectContaining({ method: 'PUT' }),
+    ));
+    const putCall = global.fetch.mock.calls.find(
+      ([url, options = {}]) => url === '/api/projects/proj-1/configuration' && options.method === 'PUT',
+    );
+    const savedConfig = JSON.parse(putCall[1].body).config;
+    expect(savedConfig.ui_sections['main.report']).toBe(false);
+    expect(savedConfig.ui_sections['report.project_report']).toBe(false);
   });
 
   test('renders UI configuration rows with expansion and checkbox controls on the same line', async () => {
@@ -429,10 +457,12 @@ describe('ProjectConfigurationPanel', () => {
     expect(projectConfigurationRow).toContainElement(projectConfigurationRow.querySelector('input[type="checkbox"]'));
     expect(projectConfigurationRow).toHaveTextContent('Project Configuration');
 
-    const projectConfigurationTabRow = screen.getByLabelText('Project Configuration tab')
-      .closest('.configurable-ui-section-leaf');
-    expect(projectConfigurationTabRow.querySelector('.configurable-ui-section-expander-spacer')).toBeInTheDocument();
-    expect(projectConfigurationTabRow).toContainElement(screen.getByLabelText('Project Configuration tab'));
+    expect(screen.queryByLabelText('Project Configuration tab')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Project Data' }));
+    const batchesRow = screen.getByLabelText('Batches subtab').closest('.configurable-ui-section-leaf');
+    expect(batchesRow.querySelector('.configurable-ui-section-expander-spacer')).toBeInTheDocument();
+    expect(batchesRow).toContainElement(screen.getByLabelText('Batches subtab'));
 
     expect(container.querySelectorAll('.configurable-ui-section-leaf .configurable-ui-section-expander-spacer').length).toBeGreaterThan(0);
   });

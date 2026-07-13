@@ -412,6 +412,7 @@ describe('Project configurable UI sections', () => {
             config: {
               ui_sections: {
                 'main.analyze': false,
+                'main.report': false,
                 'project_data.batches': false,
                 'project_data.data_validation': false,
               },
@@ -435,6 +436,7 @@ describe('Project configurable UI sections', () => {
 
     await waitFor(() => expect(screen.getByText('Project configuration editor')).toBeInTheDocument());
     await waitFor(() => expect(screen.queryByRole('tab', { name: 'Analyze' })).not.toBeInTheDocument());
+    expect(screen.queryByRole('tab', { name: 'Report' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Project Data' }));
 
