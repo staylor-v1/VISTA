@@ -2904,6 +2904,15 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getAllByRole('img', { name: /Volume reconstruction slice/ }).length).toBeGreaterThan(0);
     expect(screen.getAllByRole('img', { name: /Volume reconstruction slice/ })[0]).toHaveAttribute('draggable', 'false');
 
+    expect(screen.queryByTestId('pt3-gaussian-splat-viewer')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'splat' } });
+    expect(screen.getByLabelText('3D view')).toHaveValue('splat');
+    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toBeInTheDocument();
+    expect(screen.getByLabelText('Gaussian splat preview')).toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: /Volume reconstruction slice/ })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'orientation' } });
+    expect(screen.queryByTestId('pt3-gaussian-splat-viewer')).not.toBeInTheDocument();
+
     const coronalPreview = screen.getByTestId('mpr-preview-coronal');
     const initialCoronalCrosshairY = coronalPreview.style.getPropertyValue('--crosshair-y');
     expect(coronalPreview.style.getPropertyValue('--crosshair-h-color')).toBe('#3b82f6');
