@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Actions, Layout, Model } from 'flexlayout-react';
 import 'flexlayout-react/style/light.css';
 import CalibrationManager from './CalibrationManager';
+import Pt3GaussianSplatViewer from './Pt3GaussianSplatViewer';
 import { DEFAULT_INTERFACE_HIERARCHY } from '../utils/interfaceHierarchy';
 import { isUiSectionEnabled } from '../utils/uiSections';
 
@@ -39,6 +40,7 @@ const MPR_RECONSTRUCTION_MODES = {
   orientation: 'orientation',
   stack: 'stack',
   shell: 'shell',
+  splat: 'splat',
 };
 const DEFAULT_MPR_PROJECTION_MIRROR = { axial: false, coronal: false, sagittal: false };
 const MPR_VOLUME_CACHE_LIMIT = 4;
@@ -3072,15 +3074,20 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 
   const canShowStackReconstruction = volumePreviewLayers.length > 0;
   const canShowShellReconstruction = shellImageLayers.length > 0;
+  const canShowGaussianSplatPreview = Boolean(selectedPart);
   const effectiveMprReconstructionMode = (
-    mprReconstructionMode === MPR_RECONSTRUCTION_MODES.stack && canShowStackReconstruction
+    mprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat && canShowGaussianSplatPreview
   )
-    ? MPR_RECONSTRUCTION_MODES.stack
+    ? MPR_RECONSTRUCTION_MODES.splat
     : (
-      mprReconstructionMode === MPR_RECONSTRUCTION_MODES.shell && canShowShellReconstruction
+      mprReconstructionMode === MPR_RECONSTRUCTION_MODES.stack && canShowStackReconstruction
     )
-      ? MPR_RECONSTRUCTION_MODES.shell
-      : MPR_RECONSTRUCTION_MODES.orientation;
+      ? MPR_RECONSTRUCTION_MODES.stack
+      : (
+        mprReconstructionMode === MPR_RECONSTRUCTION_MODES.shell && canShowShellReconstruction
+      )
+        ? MPR_RECONSTRUCTION_MODES.shell
+        : MPR_RECONSTRUCTION_MODES.orientation;
 
   useEffect(() => {
     if (mprReconstructionMode !== effectiveMprReconstructionMode) {
@@ -4940,6 +4947,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 <option value={MPR_RECONSTRUCTION_MODES.shell} disabled={!canShowShellReconstruction}>
                   Reference shell
                 </option>
+                <option value={MPR_RECONSTRUCTION_MODES.splat} disabled={!canShowGaussianSplatPreview}>
+                  Gaussian splat preview
+                </option>
               </select>
             </label>
             <span className="mpr-probe-readout">Probe {tooltipValues.base}</span>
@@ -5121,6 +5131,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 onDragStart={preventMprNativeDrag}
               >
                 <canvas className="mpr-volume-overlay" ref={mprOverlayCanvasRef} aria-hidden="true" />
+                {effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat && (
+                  <Pt3GaussianSplatViewer part={selectedPart} />
+                )}
                 <div
                   className={`mpr-volume-model reconstruction-${effectiveMprReconstructionMode}`}
                   style={{
