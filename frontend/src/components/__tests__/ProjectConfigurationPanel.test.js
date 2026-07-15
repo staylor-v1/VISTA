@@ -438,6 +438,114 @@ describe('ProjectConfigurationPanel', () => {
     expect(savedConfig.ui_sections['project_data.images_to_parts']).toBe(true);
   });
 
+
+  test('defaults missing Project Configuration visibility keys to visible subtabs', async () => {
+    const config = { ...makeConfig('PT1', 'basic'), ui_sections: {} };
+    mockFetch(config, 'PT1');
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'General' })).toBeInTheDocument());
+    expect(screen.getByRole('tab', { name: 'Filename Convention' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Hotkeys' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'UI Configuration' })).toBeInTheDocument();
+  });
+
+  test('hides Filename Convention subtab and panel when disabled in ui_sections', async () => {
+    const config = {
+      ...makeConfig('PT1', 'basic'),
+      ui_sections: { 'project_configuration.filename_convention': false },
+    };
+    mockFetch(config, 'PT1');
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'General' })).toBeInTheDocument());
+    expect(screen.queryByRole('tab', { name: 'Filename Convention' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tabpanel', { name: 'Filename Convention configuration' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Filename Convention' })).not.toBeInTheDocument();
+  });
+
+  test('falls back to the first visible subtab when General is disabled', async () => {
+    const config = {
+      ...makeConfig('PT1', 'basic'),
+      ui_sections: { 'project_configuration.general': false },
+    };
+    mockFetch(config, 'PT1');
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await waitFor(() => expect(screen.queryByRole('tab', { name: 'General' })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Filename Convention' })).toHaveAttribute('aria-selected', 'true'));
+    expect(screen.getByRole('tabpanel', { name: 'Filename Convention configuration' })).toBeInTheDocument();
+  });
+
+  test('keeps Filename Convention hidden after saving UI Configuration and reloading', async () => {
+    const config = makeConfig('PT1', 'basic');
+    mockFetch(config, 'PT1');
+    const { unmount } = render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'UI Configuration' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'UI Configuration' }));
+    fireEvent.click(screen.getByRole('button', { name: /Project Configuration/ }));
+    fireEvent.click(screen.getByLabelText('Filename Convention subtab'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith(
+      '/api/projects/proj-1/configuration',
+      expect.objectContaining({ method: 'PUT' }),
+    ));
+    const putCall = global.fetch.mock.calls.find(
+      ([url, options = {}]) => url === '/api/projects/proj-1/configuration' && options.method === 'PUT',
+    );
+    const savedConfig = JSON.parse(putCall[1].body).config;
+    expect(savedConfig.ui_sections['project_configuration.filename_convention']).toBe(false);
+
+    unmount();
+    jest.clearAllMocks();
+    mockFetch(savedConfig, 'PT1');
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'General' })).toBeInTheDocument());
+    expect(screen.queryByRole('tab', { name: 'Filename Convention' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Filename Convention' })).not.toBeInTheDocument();
+  });
+
+  test('hides disabled General child sections and Available UI Sections without blank panels', async () => {
+    const config = {
+      ...makeConfig('PT1', 'basic'),
+      ui_sections: {
+        'project_configuration.owner_section': false,
+        'project_configuration.available_ui_sections': false,
+      },
+    };
+    mockFetch(config, 'PT1');
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'General' })).toHaveAttribute('aria-selected', 'true'));
+    expect(screen.queryByRole('heading', { name: 'Project Owner' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Current User' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'UI Configuration' }));
+    expect(screen.queryByRole('heading', { name: 'Available UI Sections' })).not.toBeInTheDocument();
+    expect(screen.getByText('No UI Configuration sections are enabled.')).toBeInTheDocument();
+  });
+
+  test('shows an empty state when all Project Configuration subtabs are disabled', async () => {
+    const config = {
+      ...makeConfig('PT1', 'basic'),
+      ui_sections: {
+        'project_configuration.general': false,
+        'project_configuration.filename_convention': false,
+        'project_configuration.hotkeys': false,
+        'project_configuration.ui_configuration': false,
+      },
+    };
+    mockFetch(config, 'PT1');
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await waitFor(() => expect(screen.getByText(/No Project Configuration sections are enabled/)).toBeInTheDocument());
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+    expect(screen.queryByRole('tabpanel')).not.toBeInTheDocument();
+  });
+
   test('top-level workspace rows toggle their matching main tabs without duplicate checkbox-only rows', async () => {
     const config = makeConfig('PT1', 'basic');
     mockFetch(config, 'PT1');

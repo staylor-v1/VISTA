@@ -1,6 +1,6 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { PROJECT_PHASE_LABELS, PROJECT_PHASE_SEQUENCE } from '../utils/projectPhases';
-import { UI_SECTION_GROUPS, normalizeUiSections } from '../utils/uiSections';
+import { UI_SECTION_GROUPS, isUiSectionEnabled, normalizeUiSections } from '../utils/uiSections';
 import { buildErrorWithServiceDiagnostics } from '../utils/serviceDiagnostics';
 import { metadataKeyFromFilenameEntry } from './FilenameMetadataExtractor';
 
@@ -643,6 +643,25 @@ function normalizeFileNamingScheme(config) {
 
 const AUTOSAVE_DELAY_MS = 500;
 
+const CONFIGURATION_SUBTABS = [
+  { id: 'general', label: 'General', sectionKey: 'project_configuration.general', panelId: 'configuration-general-panel' },
+  { id: 'filenameConvention', label: 'Filename Convention', sectionKey: 'project_configuration.filename_convention', panelId: 'configuration-filename-convention-panel' },
+  { id: 'hotkeys', label: 'Hotkeys', sectionKey: 'project_configuration.hotkeys', panelId: 'configuration-hotkeys-panel' },
+  { id: 'uiConfiguration', label: 'UI Configuration', sectionKey: 'project_configuration.ui_configuration', panelId: 'configuration-ui-panel' },
+];
+
+const GENERAL_CONFIGURATION_SECTIONS = [
+  'project_configuration.owner_section',
+  'project_configuration.user_section',
+  'project_configuration.process_settings',
+  'project_configuration.serial_scheme',
+  'project_configuration.project_phase_settings',
+  'project_configuration.defect_types',
+  'project_configuration.view_options',
+  'project_configuration.display_options',
+  'project_configuration.copy_configuration',
+];
+
 const getConfigurationSignature = (configuration) => JSON.stringify(configuration || {});
 
 const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel({
@@ -715,6 +734,26 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
     : ['', ''];
   const uiSectionSearchResults = useMemo(() => collectUiSectionMatches(UI_SECTION_GROUPS, uiSearchQuery), [uiSearchQuery]);
   const selectedUiSectionSearchResult = uiSectionSearchResults[uiSearchIndex] || null;
+  const visibleConfigurationSubtabs = useMemo(
+    () => CONFIGURATION_SUBTABS.filter((subtab) => isUiSectionEnabled(config, subtab.sectionKey)),
+    [config],
+  );
+  const visibleConfigurationSubtabIds = useMemo(
+    () => new Set(visibleConfigurationSubtabs.map((subtab) => subtab.id)),
+    [visibleConfigurationSubtabs],
+  );
+  const visibleGeneralSectionCount = useMemo(
+    () => GENERAL_CONFIGURATION_SECTIONS.filter((sectionKey) => isUiSectionEnabled(config, sectionKey)).length,
+    [config],
+  );
+
+
+  useEffect(() => {
+    if (visibleConfigurationSubtabs.length === 0 || visibleConfigurationSubtabIds.has(activeConfigurationSubtab)) {
+      return;
+    }
+    setActiveConfigurationSubtab(visibleConfigurationSubtabs[0].id);
+  }, [activeConfigurationSubtab, visibleConfigurationSubtabIds, visibleConfigurationSubtabs]);
 
   useEffect(() => {
     setUiSearchIndex(0);
@@ -1218,50 +1257,29 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
             </article>
           </div>
 
-          <div className="configuration-subtabs project-tabs" role="tablist" aria-label="Configuration sections">
-            <button
-              type="button"
-              className={`project-tab ${activeConfigurationSubtab === 'general' ? 'active' : ''}`}
-              role="tab"
-              aria-selected={activeConfigurationSubtab === 'general'}
-              aria-controls="configuration-general-panel"
-              onClick={() => setActiveConfigurationSubtab('general')}
-            >
-              General
-            </button>
-            <button
-              type="button"
-              className={`project-tab ${activeConfigurationSubtab === 'filenameConvention' ? 'active' : ''}`}
-              role="tab"
-              aria-selected={activeConfigurationSubtab === 'filenameConvention'}
-              aria-controls="configuration-filename-convention-panel"
-              onClick={() => setActiveConfigurationSubtab('filenameConvention')}
-            >
-              Filename Convention
-            </button>
-            <button
-              type="button"
-              className={`project-tab ${activeConfigurationSubtab === 'hotkeys' ? 'active' : ''}`}
-              role="tab"
-              aria-selected={activeConfigurationSubtab === 'hotkeys'}
-              aria-controls="configuration-hotkeys-panel"
-              onClick={() => setActiveConfigurationSubtab('hotkeys')}
-            >
-              Hotkeys
-            </button>
-            <button
-              type="button"
-              className={`project-tab ${activeConfigurationSubtab === 'uiConfiguration' ? 'active' : ''}`}
-              role="tab"
-              aria-selected={activeConfigurationSubtab === 'uiConfiguration'}
-              aria-controls="configuration-ui-panel"
-              onClick={() => setActiveConfigurationSubtab('uiConfiguration')}
-            >
-              UI Configuration
-            </button>
-          </div>
+          {visibleConfigurationSubtabs.length > 0 ? (
+            <div className="configuration-subtabs project-tabs" role="tablist" aria-label="Configuration sections">
+              {visibleConfigurationSubtabs.map((subtab) => (
+                <button
+                  key={subtab.id}
+                  type="button"
+                  className={`project-tab ${activeConfigurationSubtab === subtab.id ? 'active' : ''}`}
+                  role="tab"
+                  aria-selected={activeConfigurationSubtab === subtab.id}
+                  aria-controls={subtab.panelId}
+                  onClick={() => setActiveConfigurationSubtab(subtab.id)}
+                >
+                  {subtab.label}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <section className="part-detail-panel" aria-live="polite">
+              <p className="muted">No Project Configuration sections are enabled. Re-enable sections from a project default or administrator configuration.</p>
+            </section>
+          )}
 
-          {activeConfigurationSubtab === 'general' && (
+          {visibleConfigurationSubtabIds.has('general') && activeConfigurationSubtab === 'general' && (
           <div
             id="configuration-general-panel"
             className="configuration-sections-grid"
@@ -1269,7 +1287,13 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
             role="tabpanel"
             aria-label="General configuration"
           >
-            <section className="part-detail-panel" aria-label="Project owner">
+            {visibleGeneralSectionCount === 0 && (
+              <section className="part-detail-panel" aria-live="polite">
+                <p className="muted">No General configuration sections are enabled.</p>
+              </section>
+            )}
+            {isUiSectionEnabled(config, 'project_configuration.owner_section') && (
+          <section className="part-detail-panel" aria-label="Project owner">
             <h3>Project Owner</h3>
             <div className="workbench-controls-row">
               <label htmlFor="project-owner-name">Owner Name</label>
@@ -1278,7 +1302,9 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
               <input id="project-owner-email" className="form-control" value={config.project_owner?.email || ''} onChange={(event) => setConfig((previous) => ({ ...previous, project_owner: { ...(previous.project_owner || {}), email: event.target.value } }))} />
             </div>
           </section>
+          )}
           
+          {isUiSectionEnabled(config, 'project_configuration.user_section') && (
           <section className="part-detail-panel" aria-label="Current user">
             <h3>Current User</h3>
             <div className="workbench-controls-row">
@@ -1289,7 +1315,9 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
               </p>
             </div>
           </section>
+          )}
 
+          {isUiSectionEnabled(config, 'project_configuration.process_settings') && (
           <section className="part-detail-panel" aria-label="Process settings">
             <h3>Process Settings</h3>
             <label>
@@ -1343,7 +1371,9 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
               Require second reviewer for rejects
             </label>
           </section>
+          )}
 
+          {isUiSectionEnabled(config, 'project_configuration.serial_scheme') && (
           <section className="part-detail-panel" aria-label="Serial number scheme">
             <h3>Serial Number Scheme</h3>
             <p>Choose whether serial numbers are tracked at batch, sub-batch, and part levels.</p>
@@ -1417,7 +1447,9 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
               Track serial number at part level
             </label>
           </section>
+          )}
 
+          {isUiSectionEnabled(config, 'project_configuration.project_phase_settings') && (
           <section className="part-detail-panel" aria-label="Project phase settings">
             <h3>Project Phase Settings</h3>
             <p>
@@ -1465,7 +1497,9 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
               </select>
             </div>
           </section>
+          )}
 
+          {isUiSectionEnabled(config, 'project_configuration.defect_types') && (
           <section className="part-detail-panel" aria-label="Defect types">
             <h3>Defect Types</h3>
             <p>Define the defect taxonomy used in annotations and review workflows.</p>
@@ -1516,7 +1550,9 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
               ))
             )}
           </section>
+          )}
 
+          {isUiSectionEnabled(config, 'project_configuration.view_options') && (
           <section className="part-detail-panel" aria-label="Part views">
             <h3>Part Views</h3>
             <p>Configure external/internal views and required modalities for each view.</p>
@@ -1584,7 +1620,9 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
               ))
             )}
           </section>
+          )}
 
+          {isUiSectionEnabled(config, 'project_configuration.display_options') && (
           <section className="part-detail-panel" aria-label="Display settings">
             <h3>Display Settings</h3>
             <label htmlFor="default-colormap">Default colormap</label>
@@ -1644,7 +1682,9 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
               Use grayscale base image
             </label>
           </section>
+          )}
 
+          {isUiSectionEnabled(config, 'project_configuration.copy_configuration') && (
           <section className="part-detail-panel" aria-label="Copy configuration">
             <h3>Copy Configuration</h3>
             <p>
@@ -1686,17 +1726,19 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
               </button>
             </div>
           </section>
+          )}
           </div>
           )}
 
 
-          {activeConfigurationSubtab === 'uiConfiguration' && (
+          {visibleConfigurationSubtabIds.has('uiConfiguration') && activeConfigurationSubtab === 'uiConfiguration' && (
           <div
             id="configuration-ui-panel"
             className="configuration-sections-grid configuration-ui-panel"
             role="tabpanel"
             aria-label="UI Configuration"
           >
+          {isUiSectionEnabled(config, 'project_configuration.available_ui_sections') ? (
           <section className="part-detail-panel configurable-ui-sections-panel" aria-label="Configurable UI sections">
             <div className="configurable-ui-sections-header">
               <div>
@@ -1732,10 +1774,15 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
               ))}
             </div>
           </section>
+          ) : (
+            <section className="part-detail-panel" aria-live="polite">
+              <p className="muted">No UI Configuration sections are enabled.</p>
+            </section>
+          )}
           </div>
           )}
 
-          {activeConfigurationSubtab === 'filenameConvention' && (
+          {visibleConfigurationSubtabIds.has('filenameConvention') && activeConfigurationSubtab === 'filenameConvention' && (
             <div
               id="configuration-filename-convention-panel"
               className="configuration-filename-convention-panel"
@@ -1964,7 +2011,7 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
           )}
 
 
-          {activeConfigurationSubtab === 'hotkeys' && (
+          {visibleConfigurationSubtabIds.has('hotkeys') && activeConfigurationSubtab === 'hotkeys' && (
             <div
               id="configuration-hotkeys-panel"
               className="configuration-hotkeys-panel"
