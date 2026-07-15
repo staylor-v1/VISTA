@@ -4,6 +4,7 @@ import mimetypes
 import re
 import base64
 import sys
+import httpx
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -21,7 +22,7 @@ from utils.dependencies import get_current_user
 import utils.crud as crud
 from core.config import settings
 from core.project_types import DEFAULT_PROJECT_TYPE, normalize_project_type
-from utils.boto3_client import upload_file_to_s3
+from utils.boto3_client import get_presigned_download_url, upload_file_to_s3
 from utils.cache_manager import get_cache
 from utils.volume_loader import load_slice_stack, load_volume
 from utils.gaussian_splat_converter import (
@@ -1545,6 +1546,77 @@ async def update_inspection_part_metadata_sources(
     return _serialize_inspection_part(updated)
 
 
+def _safe_stack_filename(record: dict, index: int) -> str:
+    raw_name = str(record.get("filename") or f"slice-{index:04d}.png").strip()
+    name = Path(raw_name).name or f"slice-{index:04d}.png"
+    return f"{index:04d}-{name}"
+
+
+async def _write_image_record_to_stack_dir(image: models.DataInstance, destination: Path) -> None:
+    inline_data = None
+    metadata = image.metadata_json if isinstance(image.metadata_json, dict) else {}
+    encoded = metadata.get("analysis_inline_image_base64")
+    if isinstance(encoded, str) and encoded:
+        try:
+            inline_data = base64.b64decode(encoded)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Inline image data for {image.filename} is invalid") from exc
+    if inline_data is not None:
+        destination.write_bytes(inline_data)
+        return
+
+    presigned_url = get_presigned_download_url(bucket_name=settings.S3_BUCKET, object_name=image.object_storage_key)
+    if not presigned_url:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not read image stack slice {image.filename} from object storage")
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(presigned_url)
+            response.raise_for_status()
+            destination.write_bytes(await response.aread())
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not materialize image stack slice {image.filename}") from exc
+
+
+async def _materialize_part_volume_stack(
+    *,
+    project_id: uuid.UUID,
+    part: models.InspectionPart,
+    db: AsyncSession,
+) -> tuple[str, list[str]]:
+    metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+    source_images = [record for record in metadata.get("source_images") or [] if isinstance(record, dict)]
+    stack_records = [record for record in source_images if record.get("image_id") and str(record.get("overlay") or "").lower() != "true"]
+    if not stack_records:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No image stack slices are attached to this part for Gaussian splat generation")
+
+    def sort_key(item: dict):
+        raw_index = item.get("slice_index")
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            index = 10**9
+        return (index, str(item.get("filename") or ""))
+
+    stack_records = sorted(stack_records, key=sort_key)
+    stack_dir = Path(".cache") / "pt3_volume_stacks" / str(project_id) / str(part.id)
+    stack_dir.mkdir(parents=True, exist_ok=True)
+    for existing in stack_dir.iterdir():
+        if existing.is_file():
+            existing.unlink()
+
+    source_image_ids: list[str] = []
+    for index, record in enumerate(stack_records):
+        image_id = uuid.UUID(str(record.get("image_id")))
+        image = await _get_active_project_image_by_id(db=db, project_id=project_id, image_id=image_id)
+        if not image:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Image stack slice {record.get('image_id')} was not found")
+        source_image_ids.append(str(image.id))
+        await _write_image_record_to_stack_dir(image, stack_dir / _safe_stack_filename(record, index))
+    return str(stack_dir), source_image_ids
+
+
 def _splat_status_from_metadata(part_id: uuid.UUID, metadata: object, *, volume_stack_id: Optional[str] = None) -> schemas.PT3SplatGenerationStatus:
     safe_metadata = metadata if isinstance(metadata, dict) else {}
     asset = safe_metadata.get("pt3_splat_asset") if isinstance(safe_metadata.get("pt3_splat_asset"), dict) else {}
@@ -1611,6 +1683,7 @@ async def _run_pt3_splat_generation_job(
             "asset_url": asset_url,
             "output_format": asset.output_format,
             "splat_count": asset.splat_count,
+            "conversion_parameters": payload.model_dump(mode="json"),
         }
     except Exception as exc:  # background job must persist failure for clients to poll
         asset_metadata = {
@@ -1649,13 +1722,23 @@ async def create_pt3_volume_splat_asset(
     if not part:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
 
+    source_path = payload.source_path
+    source_image_ids = list(payload.source_image_ids or [])
+    if not source_path:
+        source_path, inferred_source_image_ids = await _materialize_part_volume_stack(project_id=project_id, part=part, db=db)
+        if not source_image_ids:
+            source_image_ids = inferred_source_image_ids
+
     volume_stack_id = payload.volume_stack_id or (part.metadata_json or {}).get("volume_stack_id") or str(part.id)
+    conversion_parameters = payload.model_dump(mode="json")
+    conversion_parameters["source_path"] = source_path
+    conversion_parameters["source_image_ids"] = source_image_ids
     pending_metadata = {
         "status": "pending",
         "volume_stack_id": str(volume_stack_id),
-        "source_image_ids": payload.source_image_ids,
+        "source_image_ids": source_image_ids,
         "requested_at": datetime.now(timezone.utc).isoformat(),
-        "conversion_parameters": payload.model_dump(mode="json"),
+        "conversion_parameters": conversion_parameters,
     }
     await crud.update_inspection_part_metadata(
         db=db,
@@ -1668,8 +1751,8 @@ async def create_pt3_volume_splat_asset(
         _run_pt3_splat_generation_job,
         project_id=project_id,
         part_id=part_id,
-        source_path_text=payload.source_path,
-        payload_data=payload.model_dump(mode="json"),
+        source_path_text=source_path,
+        payload_data=conversion_parameters,
         requested_by=current_user.email,
         job_db=db,
     )

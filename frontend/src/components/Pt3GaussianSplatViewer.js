@@ -138,11 +138,12 @@ function createProgram(gl) {
   return program;
 }
 
-export default function Pt3GaussianSplatViewer({ part, projectId, splatParameters, onFallbackMode }) {
+export default function Pt3GaussianSplatViewer({ part, projectId, splatParameters }) {
   const canvasRef = useRef(null);
   const [status, setStatus] = useState('initializing');
   const [statusDetail, setStatusDetail] = useState(null);
   const [pointData, setPointData] = useState(null);
+  const generationRequestedRef = useRef(null);
   const asset = useMemo(() => getPt3GaussianSplatAsset(part), [part]);
 
   useEffect(() => {
@@ -168,6 +169,48 @@ export default function Pt3GaussianSplatViewer({ part, projectId, splatParameter
               setPointData(null);
               return;
             }
+            if (payload.status === 'ready' && payload.asset_url) {
+              setPointData(makePreviewPoints(payload.asset_url));
+              setStatus('ready');
+              return;
+            }
+          } catch (error) {
+            if (cancelled) return;
+            setStatusDetail({ error: error.message });
+            setStatus('failed');
+            setPointData(null);
+            return;
+          }
+        }
+        const requestKey = `${projectId || ''}:${part?.id || ''}`;
+        if (projectId && part?.id && generationRequestedRef.current !== requestKey) {
+          generationRequestedRef.current = requestKey;
+          setStatus('generating');
+          try {
+            const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/parts/${encodeURIComponent(part.id)}/volume-splat-assets`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                source_image_ids: [],
+                transfer_function: {
+                  threshold: Number(splatParameters?.threshold) || 1,
+                  intensity_min: Number(splatParameters?.intensityMin) || 0,
+                  intensity_max: Number(splatParameters?.intensityMax) || 255,
+                  opacity_min: Number(splatParameters?.opacityMin) || 0.05,
+                  opacity_max: Number(splatParameters?.opacityMax) || 1,
+                  color_map: 'grayscale',
+                },
+                downsample: Number(splatParameters?.downsample) || 1,
+                max_splats: Number(splatParameters?.maxSplats) || 100000,
+                output_format: splatParameters?.outputFormat || 'json',
+              }),
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const payload = await response.json();
+            if (cancelled) return;
+            setStatusDetail(payload);
+            setStatus(payload.status === 'pending' ? 'pending' : payload.status || 'pending');
+            return;
           } catch (error) {
             if (cancelled) return;
             setStatusDetail({ error: error.message });
@@ -178,7 +221,6 @@ export default function Pt3GaussianSplatViewer({ part, projectId, splatParameter
         }
         setStatus('missing');
         setPointData(null);
-        if (typeof onFallbackMode === 'function') onFallbackMode();
         return;
       }
       setStatus('loading');
@@ -198,7 +240,7 @@ export default function Pt3GaussianSplatViewer({ part, projectId, splatParameter
     }
     loadAsset();
     return () => { cancelled = true; };
-  }, [asset, onFallbackMode, part?.id, projectId]);
+  }, [asset, part?.id, projectId, splatParameters]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -260,12 +302,14 @@ export default function Pt3GaussianSplatViewer({ part, projectId, splatParameter
     ? `Gaussian splat loaded from ${asset?.label || 'metadata'}${thresholdLabel}`
     : status === 'pending'
       ? `Gaussian splat preprocessing is still running${thresholdLabel}`
-      : status === 'loading'
+      : status === 'generating'
+        ? `Creating Gaussian splat preview from image stack${thresholdLabel}`
+        : status === 'loading'
         ? `Loading Gaussian splat preview${thresholdLabel}`
         : status === 'failed'
           ? `Gaussian splat preview unavailable${statusDetail?.error ? `: ${statusDetail.error}` : ''}${thresholdLabel}`
           : status === 'missing'
-            ? `No Gaussian splat asset is available; using fallback 3D view${thresholdLabel}`
+            ? `No Gaussian splat asset is available${thresholdLabel}`
             : status === 'webgl-unavailable'
               ? `WebGL unavailable for Gaussian splat preview${thresholdLabel}`
               : `Loading Gaussian splat preview${thresholdLabel}`;

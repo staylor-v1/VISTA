@@ -183,7 +183,7 @@ class PT3SplatTransferFunction(BaseModel):
 
 
 class PT3SplatConversionRequest(BaseModel):
-    source_path: str = Field(..., min_length=1, max_length=2048)
+    source_path: Optional[str] = Field(default=None, min_length=1, max_length=2048)
     volume_stack_id: Optional[str] = Field(default=None, max_length=255)
     source_image_ids: List[str] = Field(default_factory=list, max_length=1000)
     transfer_function: PT3SplatTransferFunction = Field(default_factory=PT3SplatTransferFunction)

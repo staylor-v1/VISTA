@@ -3154,9 +3154,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const canShowStackReconstruction = volumePreviewLayers.length > 0;
   const canShowShellReconstruction = shellImageLayers.length > 0;
   const canShowGaussianSplatPreview = Boolean(selectedPart);
-  const fallbackFromUnavailableSplat = useCallback(() => {
-    setMprReconstructionMode(canShowStackReconstruction ? MPR_RECONSTRUCTION_MODES.stack : MPR_RECONSTRUCTION_MODES.orientation);
-  }, [canShowStackReconstruction]);
   const effectiveMprReconstructionMode = (
     mprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat && canShowGaussianSplatPreview
   )
@@ -5343,7 +5340,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     part={selectedPart}
                     projectId={projectId}
                     splatParameters={splatParameters}
-                    onFallbackMode={fallbackFromUnavailableSplat}
                   />
                 )}
                 <div
