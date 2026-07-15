@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import FilenameMetadataExtractor, { applyOverlayIndicatorMetadata, buildConfiguredFilenameFields, extractValues, stripConfiguredAbbreviation, stripExtension } from './FilenameMetadataExtractor';
+import FilenameMetadataExtractor, { applyOverlayIndicatorMetadata, buildConfiguredFilenameFields, extractValues, isFilenameConventionEnabled, stripConfiguredAbbreviation, stripExtension } from './FilenameMetadataExtractor';
 import { getConfiguredNsiproParserId, parseNsiproText } from '../metadata/nsiproParsers';
 
 const CONCURRENT_UPLOADS = 6;
@@ -522,9 +522,10 @@ export function buildInspectionPartIngestPayload(uploadedRecords) {
 
 function buildSavedFilenameExtractorConfig(projectConfiguration) {
   const scheme = projectConfiguration?.file_naming_scheme || {};
+  const conventionEnabled = isFilenameConventionEnabled(scheme);
   const extractor = scheme.metadata_extractor || {};
   const mode = extractor.mode === 'advanced' ? 'advanced' : 'simple';
-  const pattern = String(extractor.pattern || extractor.delimiter || scheme.delimiter || '');
+  const pattern = String(extractor.pattern || extractor.delimiter || (conventionEnabled ? scheme.delimiter : '') || '');
   const keys = Array.isArray(extractor.keys) ? extractor.keys.filter(Boolean) : [];
   const configuredFields = buildConfiguredFilenameFields(scheme);
   const isValid = pattern.length === 0 || keys.length > 0;
@@ -1301,9 +1302,9 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
               fileNamingScheme={projectConfiguration?.file_naming_scheme}
               initialConfig={projectConfiguration?.file_naming_scheme?.metadata_extractor || {
                 mode: 'simple',
-                pattern: projectConfiguration?.file_naming_scheme
-                  ? (projectConfiguration.file_naming_scheme.delimiter || '')
-                  : '_',
+                pattern: isFilenameConventionEnabled(projectConfiguration?.file_naming_scheme)
+                  ? (projectConfiguration?.file_naming_scheme?.delimiter || (projectConfiguration?.file_naming_scheme ? '' : '_'))
+                  : '',
                 keys: [],
               }}
               title="Filename Regex & Delimiter Decoder"

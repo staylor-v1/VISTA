@@ -1053,6 +1053,7 @@ def test_project_configuration_file_naming_scheme_survives_save_and_reload(clien
     payload = {
         **initial_config,
         "file_naming_scheme": {
+            "use_filename_convention": False,
             "hierarchy_levels": [
                 {"id": "drawing_number", "label": "Drawing", "abbreviation": "DWG"},
                 {"id": "lot_number", "label": "Lot", "abbreviation": "LT"},
