@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -22,7 +23,12 @@ from core.config import settings
 from core.project_types import DEFAULT_PROJECT_TYPE, normalize_project_type
 from utils.boto3_client import upload_file_to_s3
 from utils.cache_manager import get_cache
-from utils.volume_loader import load_slice_stack
+from utils.volume_loader import load_slice_stack, load_volume
+from utils.gaussian_splat_converter import (
+    SplatConversionParams,
+    TransferFunction,
+    convert_volume_to_splat_asset,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -1538,6 +1544,99 @@ async def update_inspection_part_metadata_sources(
     return _serialize_inspection_part(updated)
 
 
+@router.post(
+    "/projects/{project_id}/parts/{part_id}/volume-splat-assets",
+    response_model=schemas.PT3SplatConversionResponse,
+)
+async def create_pt3_volume_splat_asset(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    payload: schemas.PT3SplatConversionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    project = await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    if project.project_type != "PT3":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Volume splat assets are only supported for PT3 projects")
+
+    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+
+    source_path = Path(payload.source_path).expanduser().resolve()
+    try:
+        volume_info = load_volume(source_path)
+        params = SplatConversionParams(
+            transfer_function=TransferFunction(**payload.transfer_function.model_dump()),
+            downsample=payload.downsample,
+            max_splats=payload.max_splats,
+            output_format=payload.output_format,
+        )
+        volume_stack_id = payload.volume_stack_id or (part.metadata_json or {}).get("volume_stack_id") or str(part.id)
+        output_dir = Path(".cache") / "pt3_splat_assets" / str(project_id) / str(part_id)
+        asset = convert_volume_to_splat_asset(
+            volume_info,
+            volume_stack_id=str(volume_stack_id),
+            source_image_ids=payload.source_image_ids,
+            params=params,
+            output_dir=output_dir,
+        )
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    asset_url = f"/api/projects/{project_id}/parts/{part_id}/volume-splat-assets/{asset.cache_key}"
+    metadata_patch = {
+        "pt3_splat_asset": {
+            **asset.metadata,
+            "asset_path": asset.path,
+            "asset_url": asset_url,
+            "output_format": asset.output_format,
+            "splat_count": asset.splat_count,
+        }
+    }
+    updated = await crud.update_inspection_part_metadata(
+        db=db,
+        project_id=project_id,
+        part_id=part_id,
+        metadata_patch=metadata_patch,
+        updated_by=current_user.email,
+    )
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+
+    return schemas.PT3SplatConversionResponse(
+        asset_path=asset.path,
+        asset_url=asset_url,
+        cache_key=asset.cache_key,
+        output_format=asset.output_format,
+        splat_count=asset.splat_count,
+        metadata=metadata_patch["pt3_splat_asset"],
+    )
+
+
+@router.get("/projects/{project_id}/parts/{part_id}/volume-splat-assets/{cache_key}")
+async def get_pt3_volume_splat_asset(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    cache_key: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+    metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+    asset = metadata.get("pt3_splat_asset") if isinstance(metadata.get("pt3_splat_asset"), dict) else {}
+    if asset.get("cache_key") != cache_key or not asset.get("asset_path"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Volume splat asset not found")
+    asset_path = Path(str(asset["asset_path"])).resolve()
+    if not asset_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Volume splat asset file not found")
+    media_type = "application/json" if asset_path.suffix == ".json" else "application/octet-stream"
+    return FileResponse(asset_path, media_type=media_type, filename=asset_path.name)
+
+
 @router.patch("/projects/{project_id}/parts/{part_id}", response_model=schemas.InspectionPart)
 async def update_inspection_part_review_state(
     project_id: uuid.UUID,
@@ -2027,7 +2126,7 @@ async def segment_inspection_slice(
 
     try:
         result = execute_image_workflow(workflow, [image_input])
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Slice segmentation failed: {exc}") from exc

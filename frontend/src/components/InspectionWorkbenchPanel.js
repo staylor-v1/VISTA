@@ -1131,6 +1131,62 @@ function getPartDisplayValueDomain(part, projectImageLookup = {}) {
   return DEFAULT_DISPLAY_VALUE_DOMAIN;
 }
 
+
+function getNumericHistogramThreshold(metadata, domain) {
+  const histogram = metadata?.histogram || metadata?.pixel_histogram || metadata?.intensity_histogram;
+  const bins = Array.isArray(histogram?.bins) ? histogram.bins : Array.isArray(histogram?.bucket_edges) ? histogram.bucket_edges : null;
+  const counts = Array.isArray(histogram?.counts) ? histogram.counts : Array.isArray(histogram?.buckets) ? histogram.buckets : null;
+  if (!bins || !counts || counts.length === 0) return null;
+  const numericCounts = counts.map(Number).filter((value) => Number.isFinite(value) && value >= 0);
+  const total = numericCounts.reduce((sum, value) => sum + value, 0);
+  if (total <= 0) return null;
+  const target = total * 0.75;
+  let cumulative = 0;
+  for (let index = 0; index < numericCounts.length; index += 1) {
+    cumulative += numericCounts[index];
+    if (cumulative >= target) {
+      const candidate = Number(bins[Math.min(index, bins.length - 1)]);
+      if (Number.isFinite(candidate)) return clampRange(candidate, domain.min, domain.max, candidate);
+    }
+  }
+  return null;
+}
+
+function getSplatDefaultThreshold(part, displayDomain) {
+  const domain = getNormalizedDisplayDomain(displayDomain);
+  const metadataCandidates = [part?.metadata];
+  const sourceImages = Array.isArray(part?.metadata?.source_images) ? part.metadata.source_images : [];
+  sourceImages.forEach((source) => metadataCandidates.push(source?.metadata, source));
+  for (const metadata of metadataCandidates) {
+    const threshold = getNumericHistogramThreshold(metadata, domain);
+    if (threshold !== null) return threshold;
+  }
+  return domain.min + ((domain.max - domain.min) * 0.65);
+}
+
+function getDefaultSplatParameters(part, displayDomain) {
+  const domain = getNormalizedDisplayDomain(displayDomain);
+  const dimensions = getMprDimensions(part);
+  const voxelCount = Math.max(1, Number(dimensions.axial || 1) * Number(dimensions.coronal || 1) * Number(dimensions.sagittal || 1));
+  const targetMaxSplats = Math.min(250000, Math.max(50000, Math.round(voxelCount * 0.08)));
+  return {
+    threshold: Math.round(getSplatDefaultThreshold(part, domain) / domain.step) * domain.step,
+    intensityMin: domain.min,
+    intensityMax: domain.max,
+    opacityMin: 0.08,
+    opacityMax: 0.95,
+    downsample: Math.max(1, Math.ceil(Math.cbrt(voxelCount / targetMaxSplats))),
+    maxSplats: targetMaxSplats,
+    outputFormat: 'ply',
+  };
+}
+
+function getSplatParametersForPart(part, displayDomain, overridesByPart) {
+  const defaults = getDefaultSplatParameters(part, displayDomain);
+  const overrides = part?.id ? overridesByPart?.[part.id] : null;
+  return { ...defaults, ...(overrides || {}) };
+}
+
 function getNormalizedDisplayDomain(domain) {
   const min = Number(domain?.min);
   const max = Number(domain?.max);
@@ -2391,6 +2447,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [activeMprPane, setActiveMprPane] = useState('axial');
   const [mprRotation, setMprRotation] = useState({ x: -22, y: 32 });
   const [mprReconstructionMode, setMprReconstructionMode] = useState(MPR_RECONSTRUCTION_MODES.orientation);
+  const [splatConfigModalOpen, setSplatConfigModalOpen] = useState(false);
+  const [splatParameterOverridesByPart, setSplatParameterOverridesByPart] = useState({});
   const [mprProjectionMirror, setMprProjectionMirror] = useState(DEFAULT_MPR_PROJECTION_MIRROR);
   const [activeWorkbenchModal, setActiveWorkbenchModal] = useState(null);
   const [activeMetadataTab, setActiveMetadataTab] = useState('nsipro');
@@ -2853,6 +2911,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const displayValueDomain = useMemo(
     () => getPartDisplayValueDomain(selectedPart, projectImageLookup),
     [projectImageLookup, selectedPart],
+  );
+  const splatParameters = useMemo(
+    () => getSplatParametersForPart(selectedPart, displayValueDomain, splatParameterOverridesByPart),
+    [displayValueDomain, selectedPart, splatParameterOverridesByPart],
   );
 
   useEffect(() => {
@@ -4903,6 +4965,121 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     </section>
   );
 
+  const renderSplatConfigurationModal = () => {
+    if (!splatConfigModalOpen || !selectedPart) return null;
+    const defaults = getDefaultSplatParameters(selectedPart, displayValueDomain);
+    const domain = getNormalizedDisplayDomain(displayValueDomain);
+    const draft = splatParameters;
+    const updateDraft = (patch) => {
+      setSplatParameterOverridesByPart((previous) => ({
+        ...previous,
+        [selectedPart.id]: {
+          ...(previous[selectedPart.id] || {}),
+          ...patch,
+        },
+      }));
+    };
+    const resetDefaults = () => {
+      setSplatParameterOverridesByPart((previous) => {
+        const next = { ...previous };
+        delete next[selectedPart.id];
+        return next;
+      });
+    };
+    return (
+      <div className="modal-backdrop" role="presentation">
+        <div className="modal-content splat-config-modal" role="dialog" aria-modal="true" aria-labelledby="splat-config-title">
+          <div className="modal-header">
+            <h3 id="splat-config-title">Gaussian splat configuration</h3>
+            <button type="button" className="modal-close" aria-label="Close splat configuration" onClick={() => setSplatConfigModalOpen(false)}>×</button>
+          </div>
+          <p className="muted">
+            Defaults are derived from loaded PT3 image metadata: {formatWindowValue(domain.min)}-{formatWindowValue(domain.max)} {domain.label}, with a histogram-aware threshold when available.
+          </p>
+          <div className="splat-config-grid">
+            <label htmlFor="splat-threshold">
+              Intensity threshold
+              <input
+                id="splat-threshold"
+                type="number"
+                min={domain.min}
+                max={domain.max}
+                step={domain.step}
+                value={draft.threshold}
+                onChange={(event) => updateDraft({ threshold: Number(event.target.value) })}
+              />
+            </label>
+            <label htmlFor="splat-downsample">
+              Downsample stride
+              <input
+                id="splat-downsample"
+                type="number"
+                min="1"
+                step="1"
+                value={draft.downsample}
+                onChange={(event) => updateDraft({ downsample: Math.max(1, Number(event.target.value) || 1) })}
+              />
+            </label>
+            <label htmlFor="splat-max-count">
+              Maximum splats
+              <input
+                id="splat-max-count"
+                type="number"
+                min="1"
+                step="1000"
+                value={draft.maxSplats}
+                onChange={(event) => updateDraft({ maxSplats: Math.max(1, Number(event.target.value) || defaults.maxSplats) })}
+              />
+            </label>
+            <label htmlFor="splat-output-format">
+              Output format
+              <select
+                id="splat-output-format"
+                value={draft.outputFormat}
+                onChange={(event) => updateDraft({ outputFormat: event.target.value })}
+              >
+                <option value="ply">PLY</option>
+                <option value="splat">SPLAT JSON</option>
+                <option value="json">Metadata JSON</option>
+              </select>
+            </label>
+            <label htmlFor="splat-opacity-min">
+              Min opacity
+              <input
+                id="splat-opacity-min"
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                value={draft.opacityMin}
+                onChange={(event) => updateDraft({ opacityMin: clampRange(Number(event.target.value), 0, 1, defaults.opacityMin) })}
+              />
+            </label>
+            <label htmlFor="splat-opacity-max">
+              Max opacity
+              <input
+                id="splat-opacity-max"
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                value={draft.opacityMax}
+                onChange={(event) => updateDraft({ opacityMax: clampRange(Number(event.target.value), 0, 1, defaults.opacityMax) })}
+              />
+            </label>
+          </div>
+          <div className="splat-config-summary" data-testid="splat-config-summary">
+            Using threshold {formatWindowValue(draft.threshold)}, stride {draft.downsample}, max {draft.maxSplats.toLocaleString()} splats. Defaults: threshold {formatWindowValue(defaults.threshold)}, stride {defaults.downsample}.
+          </div>
+          <div className="modal-actions">
+            <button type="button" className="btn btn-secondary" onClick={resetDefaults}>Reset intelligent defaults</button>
+            <button type="button" className="btn btn-primary" onClick={() => setSplatConfigModalOpen(false)}>Apply splat parameters</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderMprPane = () => (
     <section className="mpr-shell" data-testid="mpr-panel" aria-label="Multi-Planar Reconstruction">
       {!selectedPart ? (
@@ -4952,6 +5129,16 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 </option>
               </select>
             </label>
+            {effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat && (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                data-testid="splat-config-button"
+                onClick={() => setSplatConfigModalOpen(true)}
+              >
+                Splat configuration
+              </button>
+            )}
             <span className="mpr-probe-readout">Probe {tooltipValues.base}</span>
             <div className="mpr-ml-actions">
               <button
@@ -5132,7 +5319,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
               >
                 <canvas className="mpr-volume-overlay" ref={mprOverlayCanvasRef} aria-hidden="true" />
                 {effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat && (
-                  <Pt3GaussianSplatViewer part={selectedPart} />
+                  <Pt3GaussianSplatViewer part={selectedPart} splatParameters={splatParameters} />
                 )}
                 <div
                   className={`mpr-volume-model reconstruction-${effectiveMprReconstructionMode}`}
@@ -5212,6 +5399,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
               {measurementRun && <p>Measurements: {measurementRun.status || 'complete'}</p>}
             </div>
           )}
+          {renderSplatConfigurationModal()}
         </>
       )}
     </section>

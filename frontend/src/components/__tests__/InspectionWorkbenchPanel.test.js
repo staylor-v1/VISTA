@@ -2874,6 +2874,72 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByLabelText('Display window maximum')).toHaveValue(editValue);
   });
 
+  test('opens PT3 splat configuration with histogram-aware defaults scoped to the 3D quadrant', async () => {
+    mockWorkbenchFetch({
+      user: 'pt3-splat-config',
+      batches: [{ id: 'batch-splat-config', name: 'Batch Splat Config' }],
+      parts: [
+        {
+          id: 'part-splat-config-1',
+          batch_id: 'batch-splat-config',
+          serial_number: 'SN-SPLAT-CONFIG-1',
+          display_name: 'Histogram Splat Part',
+          review_state: 'in_review',
+          metadata: {
+            volume_shape: { axial: 2, coronal: 2, sagittal: 2 },
+            source_images: [
+              {
+                filename: 'histogram-slice-0.png',
+                image_id: 'histogram-slice-0-id',
+                metadata: {
+                  slice_index: 0,
+                  bit_depth: 8,
+                  pixel_value_range: { min: 0, max: 200 },
+                  pixel_histogram: { bins: [0, 50, 100, 150], counts: [10, 20, 30, 40] },
+                },
+              },
+              {
+                filename: 'histogram-slice-1.png',
+                image_id: 'histogram-slice-1-id',
+                metadata: {
+                  slice_index: 1,
+                  bit_depth: 8,
+                  pixel_value_range: { min: 0, max: 200 },
+                },
+              },
+            ],
+          },
+        },
+      ],
+      workspaceState: { selected_part_id: 'part-splat-config-1' },
+      hotkeys: { accept_classification: 'a', reject_classification: 'r', toggle_shortcut_help: 'h' },
+    });
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await waitFor(() => expect(screen.getByTestId('mpr-panel')).toBeInTheDocument());
+    expect(screen.queryByTestId('splat-config-button')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'splat' } });
+
+    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toBeInTheDocument();
+    expect(screen.getAllByTestId('mpr-preview-axial')[0].querySelector('.mpr-slice-canvas')).toBeInTheDocument();
+    expect(screen.getAllByTestId('mpr-preview-coronal')[0].querySelector('.mpr-slice-canvas')).toBeInTheDocument();
+    expect(screen.getAllByTestId('mpr-preview-sagittal')[0].querySelector('.mpr-slice-canvas')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('splat-config-button'));
+    const modal = screen.getByRole('dialog', { name: 'Gaussian splat configuration' });
+    expect(within(modal).getByLabelText('Intensity threshold')).toHaveValue(150);
+    expect(within(modal).getByText(/0-200 loaded image range/)).toBeInTheDocument();
+    expect(within(modal).getByTestId('splat-config-summary')).toHaveTextContent('threshold 150');
+
+    fireEvent.change(within(modal).getByLabelText('Downsample stride'), { target: { value: '3' } });
+    fireEvent.click(within(modal).getByRole('button', { name: 'Apply splat parameters' }));
+    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('threshold 150');
+    expect(screen.getByTestId('mpr-pane-axial')).not.toHaveTextContent('Gaussian splat');
+    expect(screen.getByTestId('mpr-pane-coronal')).not.toHaveTextContent('Gaussian splat');
+    expect(screen.getByTestId('mpr-pane-sagittal')).not.toHaveTextContent('Gaussian splat');
+  });
+
   test('defaults PT3 to focused four-quadrant MPR with modal access and wheel controls', async () => {
     mockWorkbenchFetch(scenarioByUser[2]);
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
