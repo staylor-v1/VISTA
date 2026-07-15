@@ -534,6 +534,43 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
         }),
       });
     }
+    if (url.includes('/volume-splat-assets/status') && (!options.method || options.method === 'GET')) {
+      const segments = url.split('/');
+      const partId = segments[segments.indexOf('parts') + 1] || mutableParts[0]?.id || 'part';
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          status: 'missing',
+          part_id: partId,
+          volume_stack_id: null,
+          asset_url: null,
+          cache_key: null,
+          output_format: null,
+          splat_count: null,
+          error: null,
+          metadata: {},
+        }),
+      });
+    }
+    if (url.includes('/volume-splat-assets') && options.method === 'POST') {
+      const segments = url.split('/');
+      const partId = segments[segments.indexOf('parts') + 1] || mutableParts[0]?.id || 'part';
+      const payload = JSON.parse(options.body || '{}');
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          status: 'pending',
+          part_id: partId,
+          volume_stack_id: payload.volume_stack_id || null,
+          asset_url: null,
+          cache_key: null,
+          output_format: payload.output_format || 'json',
+          splat_count: null,
+          error: null,
+          metadata: { conversion_parameters: payload },
+        }),
+      });
+    }
     if (url.includes('/annotations') && options.method === 'POST') {
       const segments = url.split('/');
       const partId = segments[segments.length - 2];
@@ -2976,6 +3013,12 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toBeInTheDocument();
     expect(screen.getByLabelText('Gaussian splat preview')).toBeInTheDocument();
     expect(screen.queryByRole('img', { name: /Volume reconstruction slice/ })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('Gaussian splat preprocessing is still running'));
+    const splatPostCall = global.fetch.mock.calls.find((call) => call[0].includes('/volume-splat-assets') && call[1]?.method === 'POST');
+    expect(splatPostCall).toBeTruthy();
+    expect(JSON.parse(splatPostCall[1].body).source_path).toBeUndefined();
+    expect(screen.getByLabelText('3D view')).toHaveValue('splat');
+    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'orientation' } });
     expect(screen.queryByTestId('pt3-gaussian-splat-viewer')).not.toBeInTheDocument();
 

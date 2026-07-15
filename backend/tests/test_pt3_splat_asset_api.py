@@ -90,3 +90,60 @@ def test_pt3_part_volume_splat_status_reports_missing_and_failed(client):
     )
     assert failed.status_code == 200
     assert failed.json()["status"] == "failed"
+
+def test_pt3_splat_creation_infers_source_path_from_part_image_stack(client):
+    import base64
+    import io
+
+    headers = {"X-User-Id": "pt3-splat-stack@example.com", "X-User-Groups": '["pt3-splat-stack-group"]'}
+    project = client.post(
+        "/api/projects",
+        headers=headers,
+        json={"name": "PT3 inferred splat", "description": "", "meta_group_id": "pt3-splat-stack-group", "project_type": "PT3"},
+    ).json()
+
+    buffer = io.BytesIO()
+    image = Image.new("L", (2, 2), color=0)
+    image.putpixel((1, 1), 255)
+    image.save(buffer, format="PNG")
+    image_bytes = buffer.getvalue()
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    upload = client.post(
+        f"/api/projects/{project['id']}/images",
+        headers=headers,
+        files={"file": ("stack-z000.png", io.BytesIO(image_bytes), "image/png")},
+        data={"metadata": json.dumps({"volume_stack_id": "stack-inferred", "slice_index": 0, "analysis_inline_image_base64": encoded})},
+    )
+    assert upload.status_code == 201, upload.text
+    image_record = upload.json()
+
+    part = client.post(
+        f"/api/projects/{project['id']}/parts",
+        headers=headers,
+        json={
+            "serial_number": "PT3-SPLAT-INFERRED-001",
+            "metadata": {
+                "volume_stack_id": "stack-inferred",
+                "source_images": [{"filename": "stack-z000.png", "image_id": image_record["id"], "slice_index": 0}],
+            },
+        },
+    ).json()
+
+    response = client.post(
+        f"/api/projects/{project['id']}/parts/{part['id']}/volume-splat-assets",
+        headers=headers,
+        json={"transfer_function": {"threshold": 200}, "output_format": "json"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "pending"
+    status_response = client.get(
+        f"/api/projects/{project['id']}/parts/{part['id']}/volume-splat-assets/status",
+        headers=headers,
+    )
+    assert status_response.status_code == 200
+    payload = status_response.json()
+    assert payload["status"] == "ready"
+    assert payload["splat_count"] == 1
+    assert payload["metadata"]["source_image_ids"] == [image_record["id"]]
+    assert "pt3_volume_stacks" in payload["metadata"]["conversion_parameters"]["source_path"]
