@@ -3122,6 +3122,23 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     return selectedImageRef || (volumeImageStack[0]?.id || volumeImageStack[0]?.imageId || null);
   }, [selectedImageRef, slicePosition.axial, volumeImageStack]);
 
+  const getMprAnnotationSliceContext = useCallback((axis, explicitSliceIndex = slicePosition[axis]) => {
+    const safeAxis = MPR_AXES.includes(axis) ? axis : 'axial';
+    const sliceIndex = Number(explicitSliceIndex ?? slicePosition[safeAxis] ?? 0) || 0;
+    const slicePositionForCanvas = { ...slicePosition, [safeAxis]: sliceIndex };
+    const cachedCanvas = getCachedMprSliceCanvas(safeAxis, slicePositionForCanvas, mprDimensions, volumeCacheState.cache);
+    const fallbackDimensions = getMprAxisImageDimensions(safeAxis, mprDimensions);
+    return {
+      axis: safeAxis,
+      sliceIndex,
+      sliceKey: getMprSliceKey(safeAxis, sliceIndex),
+      imageId: getMprAnnotationImage(safeAxis),
+      canvas: cachedCanvas,
+      imageWidth: Number(cachedCanvas?.width) || fallbackDimensions.width,
+      imageHeight: Number(cachedCanvas?.height) || fallbackDimensions.height,
+    };
+  }, [getMprAnnotationImage, mprDimensions, slicePosition, volumeCacheState.cache]);
+
   const openMprAnnotationTool = useCallback((axis, mode) => {
     const imageId = getMprAnnotationImage(axis);
     if (!imageId) return;
@@ -6688,6 +6705,19 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     };
   };
 
+  const getMprAnnotationPointerPosition = (event, axis, explicitSliceIndex) => {
+    const context = getMprAnnotationSliceContext(axis, explicitSliceIndex);
+    const surface = event.currentTarget;
+    const rect = surface.getBoundingClientRect();
+    if (!rect.width || !rect.height || !context.imageWidth || !context.imageHeight) return null;
+    const displayX = Math.min(rect.width, Math.max(0, event.clientX - rect.left));
+    const displayY = Math.min(rect.height, Math.max(0, event.clientY - rect.top));
+    const x = (displayX / rect.width) * context.imageWidth;
+    const y = (displayY / rect.height) * context.imageHeight;
+    if (![x, y, context.imageWidth, context.imageHeight].every(Number.isFinite)) return null;
+    return { x, y, imageWidth: context.imageWidth, imageHeight: context.imageHeight, axis: context.axis, sliceIndex: context.sliceIndex, sliceKey: context.sliceKey, imageId: context.imageId };
+  };
+
 	  const handleTileAnnotationPointerDown = (event, imageId) => {
 	    if (!annotationToolMode) return false;
 	    event.preventDefault();
@@ -6827,9 +6857,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     event.preventDefault();
     event.stopPropagation();
     setActiveMprPane(axis);
-    const position = getAnnotationSurfacePointerPosition(event);
-    if (!position) return true;
     const sliceIndex = Number(slicePosition[axis] || 0);
+    const position = getMprAnnotationPointerPosition(event, axis, sliceIndex);
+    if (!position) return true;
     if (annotationToolMode === 'measure') {
       const firstPoint = mprAnnotationDraft?.mode === 'measure' && mprAnnotationDraft.axis === axis
         ? mprAnnotationDraft
@@ -6848,10 +6878,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         axis,
         slice_index: firstPoint.sliceIndex,
       };
-      const key = getMprSliceKey(axis, firstPoint.sliceIndex);
+      const key = firstPoint.sliceKey || getMprSliceKey(axis, firstPoint.sliceIndex);
       const existingLineCount = (storedMprMeasurementLinesBySlice[key] || []).length;
       createMeasurementAnnotation({
-        imageId: null,
+        imageId: firstPoint.imageId || getMprAnnotationImage(axis),
         line,
         name: nextMeasurementName(classifyMeasurementLine(line)),
         color: MEASUREMENT_COLORS[existingLineCount % MEASUREMENT_COLORS.length],
@@ -6875,13 +6905,13 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 
   const handleMprAnnotationPointerMove = (event, axis) => {
     if (!['measure', 'box', 'cube'].includes(annotationToolMode)) return;
-    const position = getAnnotationSurfacePointerPosition(event);
-    if (!position) return;
     const sliceIndex = Number(slicePosition[axis] || 0);
+    const position = getMprAnnotationPointerPosition(event, axis, annotationToolMode === 'measure' ? mprAnnotationDraft?.sliceIndex : sliceIndex);
+    if (!position) return;
     if (annotationToolMode === 'measure' && mprAnnotationDraft?.mode === 'measure' && mprAnnotationDraft.axis === axis) {
       const line = {
         id: 'mpr-measure-preview',
-        imageId: getMprSliceKey(axis, mprAnnotationDraft.sliceIndex),
+        imageId: mprAnnotationDraft.sliceKey || getMprSliceKey(axis, mprAnnotationDraft.sliceIndex),
         x1: mprAnnotationDraft.x,
         y1: mprAnnotationDraft.y,
         x2: position.x,
@@ -6902,7 +6932,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       const box = {
         ...makeBoxFromPoints(firstPoint, position),
         id: `mpr-${annotationToolMode}-preview`,
-        imageId: getMprSliceKey(axis, sliceIndex),
+        imageId: position.sliceKey || getMprSliceKey(axis, sliceIndex),
         color: DEFAULT_ANNOTATION_COLOR,
         fillOpacity: DEFAULT_ANNOTATION_FILL_OPACITY,
         axis,
@@ -6917,8 +6947,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     event.preventDefault();
     event.stopPropagation();
     const firstPoint = mprAnnotationDraftRef.current;
-    const position = getAnnotationSurfacePointerPosition(event);
     const sliceIndex = Number(slicePosition[axis] || 0);
+    const position = getMprAnnotationPointerPosition(event, axis, sliceIndex);
     if (firstPoint && position && firstPoint.axis === axis) {
       const box = {
         ...makeBoxFromPoints(firstPoint, position),
@@ -6927,10 +6957,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       };
       if (isFiniteAnnotationBox(box)) {
         if (annotationToolMode === 'box') {
-          const key = getMprSliceKey(axis, sliceIndex);
+          const key = position.sliceKey || getMprSliceKey(axis, sliceIndex);
           const existingBoxCount = (storedMprBoxAnnotationsBySlice[key] || []).length;
           createBoxAnnotation({
-            imageId: null,
+            imageId: position.imageId || getMprAnnotationImage(axis),
             box,
             name: 'Drawn MPR bounding box',
             color: MEASUREMENT_COLORS[existingBoxCount % MEASUREMENT_COLORS.length],
