@@ -408,6 +408,7 @@ const EMPTY_CONFIG = {
   },
   ui_sections: normalizeUiSections(),
   file_naming_scheme: {
+    use_filename_convention: true,
     hierarchy_levels: [
       { id: 'drawing_number', label: 'Drawing Number', abbreviation: 'D' },
       { id: 'part_number', label: 'Part Number', abbreviation: 'P' },
@@ -629,6 +630,7 @@ function normalizeFileNamingScheme(config) {
     ? source.image_descriptors.map(normalizeEntry)
     : defaultScheme.image_descriptors;
   return {
+    use_filename_convention: source.use_filename_convention !== false,
     hierarchy_levels: hierarchyLevels,
     image_descriptors: imageDescriptors,
     delimiter: String(source.delimiter || '_'),
@@ -1772,6 +1774,27 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
             </p>
 
             <p className="muted">Part hierarchy assignment is configured in Project Data → Images to Parts → Automatically Assign Images to Parts.</p>
+
+            <label className="filename-convention-toggle">
+              <input
+                type="checkbox"
+                aria-label="Use filename convention"
+                checked={normalizedFileNamingScheme.use_filename_convention !== false}
+                onChange={(event) => setConfig((previous) => ({
+                  ...previous,
+                  file_naming_scheme: {
+                    ...normalizeFileNamingScheme(previous),
+                    use_filename_convention: event.target.checked,
+                  },
+                }))}
+              />
+              Use filename convention for automatic metadata and part-assignment assumptions
+            </label>
+            {normalizedFileNamingScheme.use_filename_convention === false && (
+              <p className="muted">
+                Filename convention assumptions are disabled. VISTA will only use metadata explicitly supplied through regex/delimiter loading tools, associated metadata, or manual user assignments after loading.
+              </p>
+            )}
 
             <h4>Image Descriptors</h4>
             <div className="filename-option-grid">

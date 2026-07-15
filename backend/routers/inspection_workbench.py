@@ -335,6 +335,7 @@ def _default_project_configuration(project_type: Optional[str] = DEFAULT_PROJECT
             "default_model": None,
         },
         "file_naming_scheme": {
+            "use_filename_convention": True,
             "hierarchy_levels": [
                 {"id": "drawing_number", "label": "Drawing Number", "abbreviation": "D"},
                 {"id": "part_number", "label": "Part Number", "abbreviation": "P"},

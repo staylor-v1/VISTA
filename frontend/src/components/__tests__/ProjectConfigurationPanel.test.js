@@ -283,6 +283,30 @@ describe('ProjectConfigurationPanel', () => {
     expect(screen.queryByLabelText('Level 1')).not.toBeInTheDocument();
   });
 
+  test('saves disabled filename convention switch', async () => {
+    const config = makeConfig('PT1', 'basic');
+    mockFetch(config, 'PT1');
+
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await openFilenameConventionSubtab();
+    fireEvent.click(await screen.findByLabelText('Use filename convention'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/projects/proj-1/configuration',
+        expect.objectContaining({ method: 'PUT' }),
+      );
+    });
+    const putCall = global.fetch.mock.calls.find(
+      ([url, options = {}]) => url === '/api/projects/proj-1/configuration' && options.method === 'PUT',
+    );
+    const savedConfig = JSON.parse(putCall[1].body).config;
+    expect(savedConfig.file_naming_scheme.use_filename_convention).toBe(false);
+    expect(screen.getByText(/Filename convention assumptions are disabled/)).toBeInTheDocument();
+  });
+
   test('keeps view descriptors user-facing as side in the expected filename preview', async () => {
     const config = makeConfig('PT1', 'basic');
     mockFetch(config, 'PT1');

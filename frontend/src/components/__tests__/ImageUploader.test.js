@@ -659,6 +659,36 @@ describe('ImageUploader', () => {
       });
     });
 
+    test('does not infer upload metadata from filename when filename convention is disabled', async () => {
+      const projectConfiguration = {
+        file_naming_scheme: {
+          use_filename_convention: false,
+          hierarchy_levels: [
+            { id: 'drawing_number', label: 'Drawing', abbreviation: 'D' },
+            { id: 'lot_number', label: 'Lot', abbreviation: 'L' },
+            { id: 'part_number', label: 'Part', abbreviation: 'P' },
+            { id: 'serial_number', label: 'Serial', abbreviation: 'S' },
+          ],
+          image_descriptors: [
+            { id: 'view', label: 'View', abbreviation: 'V' },
+            { id: 'modality', label: 'Modality', abbreviation: 'M' },
+          ],
+        },
+      };
+      const fetchSpy = jest.spyOn(global, 'fetch')
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'img-ignored', filename: 'D200_L03_P55_S888_Vfront_Mvisual_false.jpg' }) });
+
+      renderUploader({ projectConfiguration });
+      selectFiles([makeFile('D200_L03_P55_S888_Vfront_Mvisual_false.jpg')]);
+
+      await waitFor(() => expect(screen.getByLabelText('Delimiter')).toHaveValue(''));
+      expect(screen.queryByLabelText('Keys (comma-separated)')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /upload images/i }));
+
+      await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+      expect(fetchSpy.mock.calls[0][1].body.get('metadata')).toBeNull();
+    });
+
     test('supports hyphen-delimited batch naming convention from saved filename hierarchy', async () => {
       const projectConfiguration = {
         file_naming_scheme: {

@@ -422,6 +422,7 @@ class InspectionProjectFileNamingEntryConfig(BaseModel):
 
 
 class InspectionProjectFileNamingSchemeConfig(BaseModel):
+    use_filename_convention: bool = True
     hierarchy_levels: List[InspectionProjectFileNamingEntryConfig] = Field(default_factory=list)
     image_descriptors: List[InspectionProjectFileNamingEntryConfig] = Field(default_factory=list)
 

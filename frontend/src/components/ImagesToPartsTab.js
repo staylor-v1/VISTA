@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { buildConfiguredFilenameFields } from './FilenameMetadataExtractor';
+import { buildConfiguredFilenameFields, isFilenameConventionEnabled } from './FilenameMetadataExtractor';
 
 function tagDuplicateFilename(filename = '', occurrence = 0) {
   const safeFilename = String(filename || 'image').trim() || 'image';
@@ -48,7 +48,8 @@ function getAutoAssignDelimiter(projectConfiguration = null) {
   const scheme = projectConfiguration?.file_naming_scheme || {};
   const extractor = scheme.metadata_extractor || {};
   if (extractor.mode === 'advanced') return '';
-  return String(extractor.pattern || extractor.delimiter || scheme.delimiter || '_');
+  if (!isFilenameConventionEnabled(scheme) && !extractor.pattern && !extractor.delimiter) return '';
+  return String(extractor.pattern || extractor.delimiter || (isFilenameConventionEnabled(scheme) ? scheme.delimiter : '') || '');
 }
 
 function escapeRegExp(value = '') {
@@ -86,6 +87,7 @@ function getImageMetadata(image) {
 }
 
 function buildAutoAssignFieldOptions(images, projectConfiguration = null, delimiter = '') {
+  const conventionEnabled = isFilenameConventionEnabled(projectConfiguration?.file_naming_scheme || null);
   const configuredFields = buildConfiguredFilenameFields(projectConfiguration?.file_naming_scheme || null);
   const configuredOptions = configuredFields
     .map((field) => ({
@@ -94,10 +96,10 @@ function buildAutoAssignFieldOptions(images, projectConfiguration = null, delimi
     }))
     .filter((option) => option.filenameKey && option.metadataKey);
 
-  const inferredFilenameOptions = buildFilenameKeyOptions(images, delimiter).map((key) => ({
+  const inferredFilenameOptions = conventionEnabled ? buildFilenameKeyOptions(images, delimiter).map((key) => ({
     filenameKey: key,
     metadataKey: '',
-  }));
+  })) : [];
 
   const metadataKeys = new Set();
   (Array.isArray(images) ? images : []).forEach((image) => {
