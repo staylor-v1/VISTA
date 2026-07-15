@@ -8595,3 +8595,41 @@ ul li:hover {
   line-height: 1.2;
   pointer-events: none;
 }
+
+.splat-config-modal {
+  max-width: 640px;
+}
+
+.splat-config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+
+.splat-config-grid label {
+  display: grid;
+  gap: 6px;
+  color: #334155;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.splat-config-grid input,
+.splat-config-grid select {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font: inherit;
+}
+
+.splat-config-summary {
+  margin: 8px 0 14px;
+  padding: 10px 12px;
+  border: 1px solid #bae6fd;
+  border-radius: 8px;
+  background: #f0f9ff;
+  color: #0f172a;
+  font-size: 0.88rem;
+}

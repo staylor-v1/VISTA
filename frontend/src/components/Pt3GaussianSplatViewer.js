@@ -140,7 +140,7 @@ function createProgram(gl) {
   return program;
 }
 
-export default function Pt3GaussianSplatViewer({ part }) {
+export default function Pt3GaussianSplatViewer({ part, splatParameters }) {
   const canvasRef = useRef(null);
   const [status, setStatus] = useState('initializing');
   const [pointData, setPointData] = useState(null);
@@ -225,13 +225,16 @@ export default function Pt3GaussianSplatViewer({ part }) {
     };
   }, [pointData]);
 
+  const thresholdLabel = Number.isFinite(Number(splatParameters?.threshold))
+    ? ` • threshold ${splatParameters.threshold}`
+    : '';
   const statusText = status === 'ready'
-    ? `Gaussian splat loaded from ${asset?.label || 'metadata'}`
+    ? `Gaussian splat loaded from ${asset?.label || 'metadata'}${thresholdLabel}`
     : status === 'loading'
-      ? 'Loading Gaussian splat preview'
+      ? `Loading Gaussian splat preview${thresholdLabel}`
       : status === 'webgl-unavailable'
-        ? 'WebGL unavailable for Gaussian splat preview'
-        : 'Gaussian splat preview using generated point sample';
+        ? `WebGL unavailable for Gaussian splat preview${thresholdLabel}`
+        : `Gaussian splat preview using generated point sample${thresholdLabel}`;
 
   return (
     <div className="pt3-gaussian-splat-viewer" data-testid="pt3-gaussian-splat-viewer">
