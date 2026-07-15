@@ -201,6 +201,18 @@ class PT3SplatConversionResponse(BaseModel):
     metadata: Dict[str, Any]
 
 
+class PT3SplatGenerationStatus(BaseModel):
+    status: str = Field(..., pattern=r"^(missing|pending|ready|failed)$")
+    part_id: Optional[uuid.UUID] = None
+    volume_stack_id: Optional[str] = None
+    asset_url: Optional[str] = None
+    cache_key: Optional[str] = None
+    output_format: Optional[str] = None
+    splat_count: Optional[int] = None
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class InspectionPartSourceImageUpdateRequest(BaseModel):
     crop_subtitle: Optional[str] = Field(default=None, max_length=255)
 

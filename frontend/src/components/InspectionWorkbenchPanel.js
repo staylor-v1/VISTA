@@ -3154,6 +3154,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const canShowStackReconstruction = volumePreviewLayers.length > 0;
   const canShowShellReconstruction = shellImageLayers.length > 0;
   const canShowGaussianSplatPreview = Boolean(selectedPart);
+  const fallbackFromUnavailableSplat = useCallback(() => {
+    setMprReconstructionMode(canShowStackReconstruction ? MPR_RECONSTRUCTION_MODES.stack : MPR_RECONSTRUCTION_MODES.orientation);
+  }, [canShowStackReconstruction]);
   const effectiveMprReconstructionMode = (
     mprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat && canShowGaussianSplatPreview
   )
@@ -5336,7 +5339,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
               >
                 <canvas className="mpr-volume-overlay" ref={mprOverlayCanvasRef} aria-hidden="true" />
                 {effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat && (
-                  <Pt3GaussianSplatViewer part={selectedPart} splatParameters={splatParameters} />
+                  <Pt3GaussianSplatViewer
+                    part={selectedPart}
+                    projectId={projectId}
+                    splatParameters={splatParameters}
+                    onFallbackMode={fallbackFromUnavailableSplat}
+                  />
                 )}
                 <div
                   className={`mpr-volume-model reconstruction-${effectiveMprReconstructionMode}`}

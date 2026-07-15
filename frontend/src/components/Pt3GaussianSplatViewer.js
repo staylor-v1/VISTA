@@ -30,6 +30,11 @@ function getNestedSplatUrl(metadata) {
 
 export function getPt3GaussianSplatAsset(part) {
   const metadata = isPlainObject(part?.metadata) ? part.metadata : {};
+  const generatedAsset = isPlainObject(metadata.pt3_splat_asset) ? metadata.pt3_splat_asset : null;
+  if (generatedAsset?.status === 'ready') {
+    const generatedUrl = firstString(generatedAsset.asset_url, generatedAsset.url);
+    if (generatedUrl) return { url: generatedUrl, label: 'preprocessed splat asset' };
+  }
   const directUrl = firstString(...SPLAT_METADATA_KEYS.map((key) => metadata[key]), getNestedSplatUrl(metadata));
   if (directUrl) return { url: directUrl, label: 'part metadata' };
 
@@ -56,13 +61,6 @@ export function getPt3GaussianSplatAsset(part) {
     }
   }
 
-  const volumeStackId = firstString(metadata.volume_stack_id, metadata.mpr?.volume_stack_id);
-  if (volumeStackId) {
-    return {
-      url: `/api/volume-stacks/${encodeURIComponent(volumeStackId)}/gaussian-splat`,
-      label: `volume stack ${volumeStackId}`,
-    };
-  }
   return null;
 }
 
@@ -140,18 +138,47 @@ function createProgram(gl) {
   return program;
 }
 
-export default function Pt3GaussianSplatViewer({ part, splatParameters }) {
+export default function Pt3GaussianSplatViewer({ part, projectId, splatParameters, onFallbackMode }) {
   const canvasRef = useRef(null);
   const [status, setStatus] = useState('initializing');
+  const [statusDetail, setStatusDetail] = useState(null);
   const [pointData, setPointData] = useState(null);
   const asset = useMemo(() => getPt3GaussianSplatAsset(part), [part]);
 
   useEffect(() => {
     let cancelled = false;
     async function loadAsset() {
+      setStatusDetail(null);
       if (!asset?.url) {
-        setPointData(makePreviewPoints(part?.id || 'missing-splat'));
-        setStatus('preview');
+        if (projectId && part?.id) {
+          setStatus('loading');
+          try {
+            const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/parts/${encodeURIComponent(part.id)}/volume-splat-assets/status`);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const payload = await response.json();
+            if (cancelled) return;
+            setStatusDetail(payload);
+            if (payload.status === 'pending') {
+              setStatus('pending');
+              setPointData(null);
+              return;
+            }
+            if (payload.status === 'failed') {
+              setStatus('failed');
+              setPointData(null);
+              return;
+            }
+          } catch (error) {
+            if (cancelled) return;
+            setStatusDetail({ error: error.message });
+            setStatus('failed');
+            setPointData(null);
+            return;
+          }
+        }
+        setStatus('missing');
+        setPointData(null);
+        if (typeof onFallbackMode === 'function') onFallbackMode();
         return;
       }
       setStatus('loading');
@@ -164,13 +191,14 @@ export default function Pt3GaussianSplatViewer({ part, splatParameters }) {
         setStatus('ready');
       } catch (error) {
         if (cancelled) return;
-        setPointData(makePreviewPoints(asset.url));
-        setStatus('preview');
+        setStatusDetail({ error: error.message });
+        setPointData(null);
+        setStatus('failed');
       }
     }
     loadAsset();
     return () => { cancelled = true; };
-  }, [asset, part?.id]);
+  }, [asset, onFallbackMode, part?.id, projectId]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -230,11 +258,17 @@ export default function Pt3GaussianSplatViewer({ part, splatParameters }) {
     : '';
   const statusText = status === 'ready'
     ? `Gaussian splat loaded from ${asset?.label || 'metadata'}${thresholdLabel}`
-    : status === 'loading'
-      ? `Loading Gaussian splat preview${thresholdLabel}`
-      : status === 'webgl-unavailable'
-        ? `WebGL unavailable for Gaussian splat preview${thresholdLabel}`
-        : `Gaussian splat preview using generated point sample${thresholdLabel}`;
+    : status === 'pending'
+      ? `Gaussian splat preprocessing is still running${thresholdLabel}`
+      : status === 'loading'
+        ? `Loading Gaussian splat preview${thresholdLabel}`
+        : status === 'failed'
+          ? `Gaussian splat preview unavailable${statusDetail?.error ? `: ${statusDetail.error}` : ''}${thresholdLabel}`
+          : status === 'missing'
+            ? `No Gaussian splat asset is available; using fallback 3D view${thresholdLabel}`
+            : status === 'webgl-unavailable'
+              ? `WebGL unavailable for Gaussian splat preview${thresholdLabel}`
+              : `Loading Gaussian splat preview${thresholdLabel}`;
 
   return (
     <div className="pt3-gaussian-splat-viewer" data-testid="pt3-gaussian-splat-viewer">
