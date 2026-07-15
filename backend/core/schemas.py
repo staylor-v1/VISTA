@@ -173,6 +173,34 @@ class InspectionPartMetadataSourcesUpdateRequest(BaseModel):
         return normalized
 
 
+class PT3SplatTransferFunction(BaseModel):
+    threshold: float = Field(default=1.0)
+    intensity_min: float = Field(default=0.0)
+    intensity_max: float = Field(default=255.0)
+    opacity_min: float = Field(default=0.05, ge=0.0, le=1.0)
+    opacity_max: float = Field(default=1.0, ge=0.0, le=1.0)
+    color_map: str = Field(default="grayscale", pattern=r"^(grayscale|hot)$")
+
+
+class PT3SplatConversionRequest(BaseModel):
+    source_path: str = Field(..., min_length=1, max_length=2048)
+    volume_stack_id: Optional[str] = Field(default=None, max_length=255)
+    source_image_ids: List[str] = Field(default_factory=list, max_length=1000)
+    transfer_function: PT3SplatTransferFunction = Field(default_factory=PT3SplatTransferFunction)
+    downsample: int = Field(default=1, ge=1)
+    max_splats: Optional[int] = Field(default=100_000, ge=1)
+    output_format: str = Field(default="ply", pattern=r"^(ply|splat|json)$")
+
+
+class PT3SplatConversionResponse(BaseModel):
+    asset_path: str
+    asset_url: str
+    cache_key: str
+    output_format: str
+    splat_count: int
+    metadata: Dict[str, Any]
+
+
 class InspectionPartSourceImageUpdateRequest(BaseModel):
     crop_subtitle: Optional[str] = Field(default=None, max_length=255)
 
