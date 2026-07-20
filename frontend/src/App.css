@@ -8575,10 +8575,21 @@ ul li:hover {
   pointer-events: none;
 }
 
+.pt3-gaussian-splat-webgl,
 .pt3-gaussian-splat-canvas {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   display: block;
+}
+
+.pt3-gaussian-splat-webgl {
+  opacity: 0.38;
+}
+
+.pt3-gaussian-splat-canvas {
+  z-index: 1;
 }
 
 .pt3-gaussian-splat-status {

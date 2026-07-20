@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { CT_TRANSFER_PRESETS, generateTransferFunctionLut } from './pt3TransferFunctions';
-import { getPhysicalBounds, normalizeVolumeMetadata, pointInsideCropBox } from './pt3VolumeGeometry';
+import { generateTransferFunctionLut } from './pt3TransferFunctions';
+import { getPhysicalBounds, pointInsideCropBox } from './pt3VolumeGeometry';
+import { createThreeMechanicalRenderer } from './pt3ThreeRenderer';
+import { MECHANICAL_TRANSFER_PRESETS, getMechanicalCropBox, getMechanicalVolumeMetadata, makeMechanicalFallbackSplats } from './pt3MechanicalVisualization';
 
 const SPLAT_METADATA_KEYS = ['gaussian_splat_url', 'gaussian_splat_asset_url', 'splat_url', 'splat_asset_url', 'point_cloud_url'];
 const VIEWER_MODES = { volume: 'volume', splat: 'splat', hybrid: 'hybrid' };
@@ -42,39 +44,14 @@ export function getPt3GaussianSplatAsset(part) {
 function createSplatWorker() {
   const source = `
     function parsePly(text){const lines=text.split(/\\r?\\n/);const end=lines.findIndex((line)=>line.trim()==='end_header');const countLine=lines.find((line)=>line.startsWith('element vertex '));const count=Number((countLine||'').split(/\\s+/).pop()||0);const positions=[];const colors=[];for(let index=end+1;index<lines.length&&positions.length/3<count;index+=1){const values=lines[index].trim().split(/\\s+/).map(Number);if(values.length>=8&&values.slice(0,8).every(Number.isFinite)){positions.push(values[0],values[1],values[2]);colors.push(values[5]/255,values[6]/255,values[7]/255,Math.max(0,Math.min(1,values[4])));}}return {positions:new Float32Array(positions),colors:new Float32Array(colors),layers:[{id:'baked',label:'Baked splats',count:positions.length/3,visible:true,opacity:1}]};}
-    function parseJson(text){const payload=JSON.parse(text);const splats=Array.isArray(payload.splats)?payload.splats:[];const positions=new Float32Array(splats.length*3);const colors=new Float32Array(splats.length*4);const layerCounts=new Map();splats.forEach((splat,index)=>{positions.set([Number(splat.x)||0,Number(splat.y)||0,Number(splat.z)||0],index*3);colors.set([(Number(splat.red)||0)/255,(Number(splat.green)||0)/255,(Number(splat.blue)||0)/255,Number(splat.opacity)||0.5],index*4);const layer=String(splat.layer||(Number(splat.intensity)>180?'bone':Number(splat.intensity)<80?'lung':'soft'));layerCounts.set(layer,(layerCounts.get(layer)||0)+1);});return {positions,colors,layers:[...layerCounts].map(([id,count])=>({id,label:id,count,visible:true,opacity:1})),metadata:payload.metadata||{}};}
+    function parseJson(text){const payload=JSON.parse(text);const splats=Array.isArray(payload.splats)?payload.splats:[];const positions=new Float32Array(splats.length*3);const colors=new Float32Array(splats.length*4);const layerCounts=new Map();splats.forEach((splat,index)=>{positions.set([Number(splat.x)||0,Number(splat.y)||0,Number(splat.z)||0],index*3);colors.set([(Number(splat.red)||0)/255,(Number(splat.green)||0)/255,(Number(splat.blue)||0)/255,Number(splat.opacity)||0.5],index*4);const layer=String(splat.layer||(Number(splat.intensity)>180?'surface':Number(splat.intensity)<80?'void':'core'));layerCounts.set(layer,(layerCounts.get(layer)||0)+1);});return {positions,colors,layers:[...layerCounts].map(([id,count])=>({id,label:id,count,visible:true,opacity:1})),metadata:payload.metadata||{}};}
     self.onmessage=async(event)=>{const {id,url}=event.data||{};try{const response=await fetch(url);if(!response.ok)throw new Error('HTTP '+response.status);const text=await response.text();const parsed=text.trim().startsWith('{')?parseJson(text):parsePly(text);self.postMessage({id,ok:true,...parsed},[parsed.positions.buffer,parsed.colors.buffer]);}catch(error){self.postMessage({id,ok:false,error:error.message||'Failed to parse splat asset'});}};
   `;
   return new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })));
 }
 
 function buildMetadata(part) {
-  const shape = part?.metadata?.volume_shape || part?.metadata?.mpr?.volume_shape;
-  return normalizeVolumeMetadata({
-    dimensions: [shape?.sagittal || 128, shape?.coronal || 96, shape?.axial || 64],
-    spacing: part?.metadata?.spacing || [1, 1, 1.5],
-    origin: part?.metadata?.origin || [0, 0, 0],
-    direction: part?.metadata?.direction,
-    scalarRange: part?.metadata?.scalar_range || [0, 255],
-    sourceId: part?.id || 'pt3-local',
-  });
-}
-
-function makeSyntheticSplats(metadata) {
-  const meta = normalizeVolumeMetadata(metadata);
-  const count = 384;
-  const positions = new Float32Array(count * 3);
-  const colors = new Float32Array(count * 4);
-  const bounds = getPhysicalBounds(meta);
-  for (let i = 0; i < count; i += 1) {
-    const t = i / count;
-    const angle = t * Math.PI * 16;
-    const layer = i % 3;
-    const radius = (layer === 0 ? 0.24 : layer === 1 ? 0.34 : 0.43) * Math.max(...bounds.size, 1);
-    positions.set([bounds.min[0] + bounds.size[0] / 2 + Math.cos(angle) * radius, bounds.min[1] + bounds.size[1] / 2 + Math.sin(angle) * radius, bounds.min[2] + bounds.size[2] * t], i * 3);
-    colors.set(layer === 0 ? [0.93, 0.97, 1, 0.82] : layer === 1 ? [0.96, 0.58, 0.44, 0.46] : [0.25, 0.72, 0.95, 0.35], i * 4);
-  }
-  return { positions, colors, layers: [{ id: 'bone', label: 'Bone', count: 128, visible: true, opacity: 1 }, { id: 'soft', label: 'Soft tissue', count: 128, visible: true, opacity: 0.8 }, { id: 'lung', label: 'Low density', count: 128, visible: true, opacity: 0.7 }] };
+  return getMechanicalVolumeMetadata(part);
 }
 
 function renderPreview(ctx, { mode, metadata, splats, rotation, zoom, preset, crop, volumeOpacity, splatOpacity, statsRef }) {
@@ -122,14 +99,17 @@ function renderPreview(ctx, { mode, metadata, splats, rotation, zoom, preset, cr
 
 export default function Pt3GaussianSplatViewer({ part, projectId, splatParameters, initialMode = VIEWER_MODES.hybrid }) {
   const canvasRef = useRef(null);
+  const webglCanvasRef = useRef(null);
+  const threeRendererRef = useRef(null);
   const workerRef = useRef(null);
   const statsRef = useRef({ frames: 0, fps: 0, renderedSplats: 0 });
   const [mode, setMode] = useState(initialMode);
   useEffect(() => { setMode(initialMode); }, [initialMode]);
-  const [presetKey, setPresetKey] = useState('bone');
+  const [presetKey, setPresetKey] = useState('machinedMetal');
   const [quality, setQuality] = useState('balanced');
   const [status, setStatus] = useState('initializing');
   const [statusDetail, setStatusDetail] = useState(null);
+  const [rendererType, setRendererType] = useState('canvas2d-fallback');
   const [splats, setSplats] = useState(null);
   const [rotation, setRotation] = useState({ x: -18, y: 32 });
   const [zoom, setZoom] = useState(1);
@@ -152,16 +132,16 @@ export default function Pt3GaussianSplatViewer({ part, projectId, splatParameter
             setStatusDetail(payload);
             if (payload.status === 'pending') { setStatus('pending'); return; }
             if (payload.status === 'failed') { setStatus('failed'); return; }
-            if (payload.status === 'ready' && payload.asset_url) { setSplats(makeSyntheticSplats(metadata)); setStatus('ready'); return; }
+            if (payload.status === 'ready' && payload.asset_url) { setSplats(makeMechanicalFallbackSplats(metadata)); setStatus('ready'); return; }
             return fetch(`/api/projects/${encodeURIComponent(projectId)}/parts/${encodeURIComponent(part.id)}/volume-splat-assets`, {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ source_image_ids: [], transfer_function: { threshold: Number(splatParameters?.threshold) || 1, intensity_min: Number(splatParameters?.intensityMin) || 0, intensity_max: Number(splatParameters?.intensityMax) || 255, opacity_min: Number(splatParameters?.opacityMin) || 0.05, opacity_max: Number(splatParameters?.opacityMax) || 1, color_map: 'grayscale' }, downsample: Number(splatParameters?.downsample) || 1, max_splats: Number(splatParameters?.maxSplats) || 100000, output_format: splatParameters?.outputFormat || 'json' }),
             }).then((response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); }).then((payload2) => { if (!cancelled) { setStatusDetail(payload2); setStatus(payload2.status === 'pending' ? 'pending' : payload2.status || 'pending'); } });
           })
-          .catch((error) => { if (!cancelled) { setSplats(makeSyntheticSplats(metadata)); setStatus('ready'); setStatusDetail({ note: `Using deterministic synthetic local splats: ${error.message}` }); } });
+          .catch((error) => { if (!cancelled) { setSplats(makeMechanicalFallbackSplats(metadata)); setStatus('ready'); setStatusDetail({ note: `Using deterministic mechanical fallback splats: ${error.message}` }); } });
         return () => { cancelled = true; };
       }
-      setSplats(makeSyntheticSplats(metadata)); setStatus('ready'); setStatusDetail({ note: 'Using deterministic synthetic local splats until a PT3 asset is generated.' }); return undefined;
+      setSplats(makeMechanicalFallbackSplats(metadata)); setStatus('ready'); setStatusDetail({ note: 'Using deterministic mechanical part fallback splats until a PT3 asset is generated.' }); return undefined;
     }
     workerRef.current?.terminate();
     const worker = createSplatWorker();
@@ -174,7 +154,37 @@ export default function Pt3GaussianSplatViewer({ part, projectId, splatParameter
     worker.onerror = (event) => { if (!cancelled) { setStatus('failed'); setStatusDetail({ error: event.message }); } };
     worker.postMessage({ id: requestId, url: asset.url });
     return () => { cancelled = true; worker.terminate(); };
-  }, [asset, metadata]);
+  }, [asset, metadata, part?.id, projectId, splatParameters?.downsample, splatParameters?.intensityMax, splatParameters?.intensityMin, splatParameters?.maxSplats, splatParameters?.opacityMax, splatParameters?.opacityMin, splatParameters?.outputFormat, splatParameters?.threshold]);
+
+
+  useEffect(() => {
+    const canvas = webglCanvasRef.current;
+    let cancelled = false;
+    if (!canvas || mode === VIEWER_MODES.splat) {
+      threeRendererRef.current?.dispose?.();
+      threeRendererRef.current = null;
+      setRendererType('canvas2d-fallback');
+      return undefined;
+    }
+    createThreeMechanicalRenderer(canvas, { metadata, mode })
+      .then((renderer) => {
+        if (cancelled || !renderer) {
+          renderer?.dispose?.();
+          return;
+        }
+        threeRendererRef.current?.dispose?.();
+        threeRendererRef.current = renderer;
+        setRendererType(renderer.rendererType || 'three-webgl');
+      })
+      .catch(() => {
+        if (!cancelled) setRendererType('canvas2d-fallback');
+      });
+    return () => {
+      cancelled = true;
+      threeRendererRef.current?.dispose?.();
+      threeRendererRef.current = null;
+    };
+  }, [metadata, mode]);
 
   useEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return undefined;
@@ -183,8 +193,9 @@ export default function Pt3GaussianSplatViewer({ part, projectId, splatParameter
       const ratio = window.devicePixelRatio || 1; const profile = QUALITY_PROFILES[quality];
       const width = Math.max(1, Math.floor(canvas.clientWidth * ratio * profile.scale)); const height = Math.max(1, Math.floor(canvas.clientHeight * ratio * profile.scale));
       if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+      threeRendererRef.current?.render?.({ width, height, rotation, zoom });
       const ctx = canvas.getContext('2d');
-      renderPreview(ctx, { mode, metadata, splats, rotation, zoom, preset: CT_TRANSFER_PRESETS[presetKey], crop: { enabled: cropEnabled, min: getPhysicalBounds(metadata).min, max: getPhysicalBounds(metadata).max.map((v, i) => cropEnabled && i === 0 ? v - getPhysicalBounds(metadata).size[i] * 0.35 : v) }, volumeOpacity, splatOpacity, statsRef });
+      renderPreview(ctx, { mode, metadata, splats, rotation, zoom, preset: MECHANICAL_TRANSFER_PRESETS[presetKey], crop: getMechanicalCropBox(metadata, cropEnabled), volumeOpacity, splatOpacity, statsRef });
       frames += 1; if (time - last > 500) { statsRef.current.fps = Math.round((frames * 1000) / (time - last)); frames = 0; last = time; }
       frameId = window.requestAnimationFrame(render);
     };
@@ -193,10 +204,11 @@ export default function Pt3GaussianSplatViewer({ part, projectId, splatParameter
 
   const stats = statsRef.current; const bounds = getPhysicalBounds(metadata);
   return <div className="pt3-gaussian-splat-viewer" data-testid="pt3-gaussian-splat-viewer">
-    <canvas ref={canvasRef} className="pt3-gaussian-splat-canvas" aria-label="Gaussian splat preview" />
+    <canvas ref={webglCanvasRef} className="pt3-gaussian-splat-webgl" aria-label="Three.js mechanical volume renderer" />
+    <canvas ref={canvasRef} className="pt3-gaussian-splat-canvas" aria-label="Mechanical 3DGS preview" />
     <div className="pt3-viewer-toolbar">
       <label>Mode <select aria-label="3D viewer mode" value={mode} onChange={(e) => setMode(e.target.value)}><option value="volume">Volume</option><option value="splat">3DGS</option><option value="hybrid">Hybrid</option></select></label>
-      <label>Preset <select aria-label="Transfer function preset" value={presetKey} onChange={(e) => setPresetKey(e.target.value)}>{Object.entries(CT_TRANSFER_PRESETS).map(([key, preset]) => <option key={key} value={key}>{preset.label}</option>)}</select></label>
+      <label>Preset <select aria-label="Transfer function preset" value={presetKey} onChange={(e) => setPresetKey(e.target.value)}>{Object.entries(MECHANICAL_TRANSFER_PRESETS).map(([key, preset]) => <option key={key} value={key}>{preset.label}</option>)}</select></label>
       <label>Quality <select aria-label="Quality profile" value={quality} onChange={(e) => setQuality(e.target.value)}><option value="performance">Performance</option><option value="balanced">Balanced</option><option value="quality">Quality</option></select></label>
       <button type="button" onClick={() => { setRotation({ x: -18, y: 32 }); setZoom(1); }}>Reset view</button>
       <button type="button" onClick={() => setZoom((value) => Math.min(2.5, value + 0.15))}>Zoom +</button>
@@ -209,7 +221,7 @@ export default function Pt3GaussianSplatViewer({ part, projectId, splatParameter
       <label>Orbit X <input type="range" min="-80" max="80" value={rotation.x} onChange={(e) => setRotation((prev) => ({ ...prev, x: Number(e.target.value) }))} /></label>
       <label>Orbit Y <input type="range" min="-180" max="180" value={rotation.y} onChange={(e) => setRotation((prev) => ({ ...prev, y: Number(e.target.value) }))} /></label>
     </div>
-    <span className="pt3-gaussian-splat-status">{status === 'ready' ? `${mode.toUpperCase()} ready • threshold ${splatParameters?.threshold ?? 'n/a'} • ${metadata.dimensions.join('×')} voxels • ${bounds.size.map((v) => v.toFixed(1)).join('×')} mm • FPS ${stats.fps || '…'} • splats ${stats.renderedSplats || splats?.positions?.length / 3 || 0}` : status === 'pending' ? `Gaussian splat preprocessing is still running • threshold ${splatParameters?.threshold ?? 'n/a'}` : `3D viewer ${status} • threshold ${splatParameters?.threshold ?? 'n/a'}${statusDetail?.error ? `: ${statusDetail.error}` : ''}`}</span>
+    <span className="pt3-gaussian-splat-status">{status === 'ready' ? `${mode.toUpperCase()} ready • threshold ${splatParameters?.threshold ?? 'n/a'} • ${metadata.dimensions.join('×')} voxels • ${bounds.size.map((v) => v.toFixed(1)).join('×')} mm • ${rendererType} • FPS ${stats.fps || '…'} • splats ${stats.renderedSplats || splats?.positions?.length / 3 || 0}` : status === 'pending' ? `Mechanical 3DGS preprocessing is still running • threshold ${splatParameters?.threshold ?? 'n/a'}` : `Mechanical 3D viewer ${status} • threshold ${splatParameters?.threshold ?? 'n/a'}${statusDetail?.error ? `: ${statusDetail.error}` : ''}`}</span>
     {statusDetail?.note && <span className="pt3-viewer-note">{statusDetail.note}</span>}
   </div>;
 }
