@@ -1332,7 +1332,7 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('mpr-pane-sagittal')).toHaveTextContent(/299 \/ 299/);
   });
 
-  test('keeps PT3 MPR quadrants constrained after clicking the 3D pane', async () => {
+  test('opens the 3D pane as an accessible fullscreen view without mounting a duplicate scene', async () => {
     mockWorkbenchFetch(scenarioByUser[2]);
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
 
@@ -1349,13 +1349,141 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getByTestId(testId)).not.toHaveClass('mpr-pane-hidden');
     });
 
+    expect(screen.getByRole('button', { name: 'Open 3D part view fullscreen' })).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('mpr-pane-3d'));
+
+    const fullscreen = screen.getByRole('dialog', { name: '3D reconstruction' });
+    expect(fullscreen).toHaveAttribute('aria-modal', 'true');
+    expect(within(fullscreen).getByRole('application', { name: 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.' })).toBeInTheDocument();
+    expect(document.querySelectorAll('.mpr-volume-scene')).toHaveLength(1);
+    expect(within(fullscreen).getByRole('button', { name: 'Close fullscreen 3D view' })).toHaveFocus();
 
     expect(mprGrid).toHaveClass('mpr-grid-four');
     expect(mprGrid).not.toHaveClass('mpr-grid-single');
     quadrantPaneIds.forEach((testId) => {
       expect(screen.getByTestId(testId)).not.toHaveClass('mpr-pane-hidden');
     });
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: '3D reconstruction' })).not.toBeInTheDocument();
+    expect(document.querySelectorAll('.mpr-volume-scene')).toHaveLength(1);
+  });
+
+  test('keeps every 3D reconstruction mode in the single fullscreen scene without floating settings', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+    fireEvent.click(screen.getByRole('button', { name: 'Open 3D part view fullscreen' }));
+
+    const modeSelect = screen.getByLabelText('3D view');
+    const cases = [
+      ['orientation', 'Orientation only'],
+      ['stack', 'Stack reconstruction'],
+      ['shell', 'Reference shell'],
+      ['volume3d', 'Ray-marched volume'],
+      ['splat', 'Mechanical 3DGS'],
+      ['hybrid3d', 'Hybrid part view'],
+    ];
+
+    cases.forEach(([value, label]) => {
+      fireEvent.change(modeSelect, { target: { value } });
+      expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toHaveTextContent(label);
+      expect(document.querySelectorAll('.mpr-volume-scene')).toHaveLength(1);
+      expect(screen.queryAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(
+        ['volume3d', 'splat', 'hybrid3d'].includes(value) ? 1 : 0,
+      );
+    });
+
+    expect(screen.getAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(1);
+    expect(screen.queryByLabelText('3D viewer mode')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Quality profile')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Orbit X')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Orbit Y')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('3DGS opacity')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Volume opacity')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Transfer function preset')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Clip/crop')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reset view' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Zoom +' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Zoom -' })).not.toBeInTheDocument();
+  });
+
+  test('red team: orbit drag does not open fullscreen and repeated keyboard and backdrop cycles remain operable at narrow width', async () => {
+    const originalWidth = window.innerWidth;
+    window.innerWidth = 375;
+    fireEvent(window, new Event('resize'));
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+    const scene = screen.getByRole('button', { name: 'Open 3D part view fullscreen' });
+    const dispatchPointer = (type, { pointerId, ...init }) => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, ...init });
+      Object.defineProperty(event, 'pointerId', { value: pointerId });
+      fireEvent(scene, event);
+    };
+
+    dispatchPointer('pointerdown', { pointerId: 17, button: 0, clientX: 40, clientY: 40 });
+    dispatchPointer('pointermove', { pointerId: 17, clientX: 85, clientY: 65 });
+    dispatchPointer('pointerup', { pointerId: 17, button: 0, clientX: 85, clientY: 65 });
+    fireEvent.click(scene);
+    expect(screen.queryByRole('dialog', { name: '3D reconstruction' })).not.toBeInTheDocument();
+
+    scene.focus();
+    fireEvent.keyDown(scene, { key: 'Enter' });
+    let closeButton = screen.getByRole('button', { name: 'Close fullscreen 3D view' });
+    expect(closeButton).toHaveFocus();
+    expect(screen.getByTestId('mpr-pane-3d')).toHaveClass('mpr-pane-volume-fullscreen');
+    fireEvent.keyDown(document, { key: 'Tab' });
+    const fullscreenScene = screen.getByRole('application', { name: 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.' });
+    expect(fullscreenScene).toHaveFocus();
+    const patchCallsBeforeHotkey = global.fetch.mock.calls.filter((call) => call[1]?.method === 'PATCH').length;
+    fireEvent.keyDown(document, { key: 'a' });
+    expect(global.fetch.mock.calls.filter((call) => call[1]?.method === 'PATCH')).toHaveLength(patchCallsBeforeHotkey);
+    const zoomBeforeKeyboard = screen.getByTestId('mpr-pane-3d').textContent;
+    fireEvent.keyDown(fullscreenScene, { key: '+' });
+    expect(screen.getByTestId('mpr-pane-3d').textContent).not.toBe(zoomBeforeKeyboard);
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(closeButton).toHaveFocus();
+    fireEvent.click(closeButton);
+    await waitFor(() => expect(scene).toHaveFocus());
+
+    fireEvent.keyDown(scene, { key: ' ' });
+    expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toBeInTheDocument();
+    fireEvent.click(document.querySelector('.mpr-3d-fullscreen-backdrop'));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '3D reconstruction' })).not.toBeInTheDocument());
+    await waitFor(() => expect(scene).toHaveFocus());
+
+    fireEvent.click(scene);
+    closeButton = screen.getByRole('button', { name: 'Close fullscreen 3D view' });
+    expect(closeButton).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '3D reconstruction' })).not.toBeInTheDocument());
+    await waitFor(() => expect(scene).toHaveFocus());
+
+    window.innerWidth = originalWidth;
+    fireEvent(window, new Event('resize'));
+  });
+
+  test('red team: a canceled orbit gesture does not consume the next intentional fullscreen click', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+    const scene = screen.getByRole('button', { name: 'Open 3D part view fullscreen' });
+    const dispatchPointer = (type, { pointerId, ...init }) => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, ...init });
+      Object.defineProperty(event, 'pointerId', { value: pointerId });
+      fireEvent(scene, event);
+    };
+
+    dispatchPointer('pointerdown', { pointerId: 23, button: 0, clientX: 30, clientY: 30 });
+    dispatchPointer('pointermove', { pointerId: 23, clientX: 80, clientY: 70 });
+    dispatchPointer('pointercancel', { pointerId: 23, clientX: 80, clientY: 70 });
+    fireEvent.click(scene);
+
+    expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toBeInTheDocument();
   });
 
   test('creates PT3 cube annotations from boxes on two MPR slices', async () => {

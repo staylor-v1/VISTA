@@ -97,25 +97,29 @@ function renderPreview(ctx, { mode, metadata, splats, rotation, zoom, preset, cr
   ctx.fillStyle = '#bae6fd'; ctx.fillText('R', width - 24, cy); ctx.fillText('S', cx, 18); ctx.fillText('A', cx + 22, cy + 24);
 }
 
-export default function Pt3GaussianSplatViewer({ part, projectId, volumeImageStack = [], splatParameters, initialMode = VIEWER_MODES.hybrid }) {
+export default function Pt3GaussianSplatViewer({
+  part,
+  projectId,
+  volumeImageStack = [],
+  splatParameters,
+  mode = VIEWER_MODES.hybrid,
+  rotation = { x: -18, y: 32 },
+  zoom = 1,
+}) {
   const canvasRef = useRef(null);
   const webglCanvasRef = useRef(null);
   const threeRendererRef = useRef(null);
   const workerRef = useRef(null);
   const statsRef = useRef({ frames: 0, fps: 0, renderedSplats: 0 });
-  const [mode, setMode] = useState(initialMode);
-  useEffect(() => { setMode(initialMode); }, [initialMode]);
-  const [presetKey, setPresetKey] = useState('machinedMetal');
-  const [quality, setQuality] = useState('balanced');
+  const presetKey = 'machinedMetal';
+  const quality = 'balanced';
   const [status, setStatus] = useState('initializing');
   const [statusDetail, setStatusDetail] = useState(null);
   const [rendererType, setRendererType] = useState('canvas2d-fallback');
   const [splats, setSplats] = useState(null);
-  const [rotation, setRotation] = useState({ x: -18, y: 32 });
-  const [zoom, setZoom] = useState(1);
-  const [cropEnabled, setCropEnabled] = useState(false);
-  const [volumeOpacity, setVolumeOpacity] = useState(0.68);
-  const [splatOpacity, setSplatOpacity] = useState(0.9);
+  const cropEnabled = false;
+  const volumeOpacity = 0.68;
+  const splatOpacity = 0.9;
   const metadata = useMemo(() => buildMetadata(part), [part]);
   const asset = useMemo(() => getPt3GaussianSplatAsset(part), [part]);
 
@@ -230,21 +234,6 @@ export default function Pt3GaussianSplatViewer({ part, projectId, volumeImageSta
   return <div className="pt3-gaussian-splat-viewer" data-testid="pt3-gaussian-splat-viewer">
     <canvas ref={webglCanvasRef} className="pt3-gaussian-splat-webgl" aria-label="Three.js mechanical volume renderer" />
     <canvas ref={canvasRef} className="pt3-gaussian-splat-canvas" aria-label="Mechanical 3DGS preview" />
-    <div className="pt3-viewer-toolbar">
-      <label>Mode <select aria-label="3D viewer mode" value={mode} onChange={(e) => setMode(e.target.value)}><option value="volume">Volume</option><option value="splat">3DGS</option><option value="hybrid">Hybrid</option></select></label>
-      {mode !== VIEWER_MODES.splat && <label>Preset <select aria-label="Transfer function preset" value={presetKey} onChange={(e) => setPresetKey(e.target.value)}>{Object.entries(MECHANICAL_TRANSFER_PRESETS).map(([key, preset]) => <option key={key} value={key}>{preset.label}</option>)}</select></label>}
-      <label>Quality <select aria-label="Quality profile" value={quality} onChange={(e) => setQuality(e.target.value)}><option value="performance">Performance</option><option value="balanced">Balanced</option><option value="quality">Quality</option></select></label>
-      <button type="button" onClick={() => { setRotation({ x: -18, y: 32 }); setZoom(1); }}>Reset view</button>
-      <button type="button" onClick={() => setZoom((value) => Math.min(2.5, value + 0.15))}>Zoom +</button>
-      <button type="button" onClick={() => setZoom((value) => Math.max(0.35, value - 0.15))}>Zoom -</button>
-      {mode !== VIEWER_MODES.volume && <label><input type="checkbox" checked={cropEnabled} onChange={(e) => setCropEnabled(e.target.checked)} /> Clip/crop</label>}
-    </div>
-    <div className="pt3-viewer-settings">
-      {mode !== VIEWER_MODES.splat && <label>Volume opacity <input type="range" min="0" max="1" step="0.05" value={volumeOpacity} onChange={(e) => setVolumeOpacity(Number(e.target.value))} /></label>}
-      {mode !== VIEWER_MODES.volume && <label>3DGS opacity <input type="range" min="0" max="1" step="0.05" value={splatOpacity} onChange={(e) => setSplatOpacity(Number(e.target.value))} /></label>}
-      <label>Orbit X <input type="range" min="-80" max="80" value={rotation.x} onChange={(e) => setRotation((prev) => ({ ...prev, x: Number(e.target.value) }))} /></label>
-      <label>Orbit Y <input type="range" min="-180" max="180" value={rotation.y} onChange={(e) => setRotation((prev) => ({ ...prev, y: Number(e.target.value) }))} /></label>
-    </div>
     <span className="pt3-gaussian-splat-status">{status === 'ready' ? `${mode.toUpperCase()} ready${mode === VIEWER_MODES.volume ? '' : ` • threshold ${splatParameters?.threshold ?? 'n/a'}`} • ${metadata.dimensions.join('×')} voxels • ${bounds.size.map((v) => v.toFixed(1)).join('×')} mm • ${rendererType} • FPS ${stats.fps || '…'}${mode === VIEWER_MODES.volume ? ` • slices ${volumeImageStack.length}` : ` • splats ${stats.renderedSplats || splats?.positions?.length / 3 || 0}`}` : status === 'pending' ? `Mechanical 3DGS preprocessing is still running • threshold ${splatParameters?.threshold ?? 'n/a'}` : `Mechanical 3D viewer ${status}${mode === VIEWER_MODES.volume ? '' : ` • threshold ${splatParameters?.threshold ?? 'n/a'}`}${statusDetail?.error ? `: ${statusDetail.error}` : ''}`}</span>
     {statusDetail?.note && <span className="pt3-viewer-note">{statusDetail.note}</span>}
   </div>;

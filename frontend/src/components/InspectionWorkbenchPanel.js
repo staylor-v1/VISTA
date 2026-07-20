@@ -44,6 +44,14 @@ const MPR_RECONSTRUCTION_MODES = {
   volume3d: 'volume3d',
   hybrid3d: 'hybrid3d',
 };
+const MPR_RECONSTRUCTION_LABELS = {
+  [MPR_RECONSTRUCTION_MODES.orientation]: 'Orientation only',
+  [MPR_RECONSTRUCTION_MODES.stack]: 'Stack reconstruction',
+  [MPR_RECONSTRUCTION_MODES.shell]: 'Reference shell',
+  [MPR_RECONSTRUCTION_MODES.splat]: 'Mechanical 3DGS',
+  [MPR_RECONSTRUCTION_MODES.volume3d]: 'Ray-marched volume',
+  [MPR_RECONSTRUCTION_MODES.hybrid3d]: 'Hybrid part view',
+};
 const DEFAULT_MPR_PROJECTION_MIRROR = { axial: false, coronal: false, sagittal: false };
 const MPR_VOLUME_CACHE_LIMIT = 4;
 const MPR_SLICE_CANVAS_CACHE_LIMIT = 96;
@@ -2479,6 +2487,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [activeMprPane, setActiveMprPane] = useState('axial');
   const [mprRotation, setMprRotation] = useState({ x: -22, y: 32 });
   const [mprReconstructionMode, setMprReconstructionMode] = useState(MPR_RECONSTRUCTION_MODES.orientation);
+  const [mprFullscreenOpen, setMprFullscreenOpen] = useState(false);
   const [splatConfigModalOpen, setSplatConfigModalOpen] = useState(false);
   const [splatParameterOverridesByPart, setSplatParameterOverridesByPart] = useState({});
   const [mprProjectionMirror, setMprProjectionMirror] = useState(DEFAULT_MPR_PROJECTION_MIRROR);
@@ -2591,6 +2600,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const workbenchDetailsRef = useRef(null);
   const inspectionResizeSaveTimerRef = useRef(null);
   const mprDragRef = useRef(null);
+  const suppressNextMprSceneClickRef = useRef(false);
+  const mprFullscreenCloseRef = useRef(null);
+  const mprFullscreenSceneRef = useRef(null);
+  const mprFullscreenOpenerRef = useRef(null);
   const tileAnnotationDraftRef = useRef(null);
   const mprAnnotationDraftRef = useRef(null);
   const segmentationDraftRef = useRef(null);
@@ -3014,7 +3027,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         ctx.stroke();
       }
     });
-  }, [activeMprPane, mprDimensions, mprRotation, slicePosition, viewportTransform.zoom]);
+  }, [activeMprPane, mprDimensions, mprFullscreenOpen, mprRotation, slicePosition, viewportTransform.zoom]);
 
   const modalityOptions = useMemo(() => getModalities(selectedPart), [selectedPart]);
   const activeViewName = useMemo(() => {
@@ -3205,6 +3218,31 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       setMprReconstructionMode(effectiveMprReconstructionMode);
     }
   }, [effectiveMprReconstructionMode, mprReconstructionMode]);
+
+  useEffect(() => {
+    if (!mprFullscreenOpen) return undefined;
+    mprFullscreenCloseRef.current?.focus();
+    const handleKeyDown = (event) => {
+      if (event.key === 'Tab') {
+        event.preventDefault();
+        const closeButton = mprFullscreenCloseRef.current;
+        const scene = mprFullscreenSceneRef.current;
+        if (event.shiftKey) {
+          (document.activeElement === scene ? closeButton : scene)?.focus();
+        } else {
+          (document.activeElement === closeButton ? scene : closeButton)?.focus();
+        }
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setMprFullscreenOpen(false);
+        window.requestAnimationFrame(() => mprFullscreenOpenerRef.current?.focus());
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [mprFullscreenOpen]);
 
   const tooltipValues = useMemo(() => {
     const domain = getNormalizedDisplayDomain(displayValueDomain);
@@ -3510,6 +3548,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   useEffect(() => {
     if (!selectedPart?.id) return undefined;
     const handleInspectorHotkeys = (event) => {
+      if (mprFullscreenOpen) return;
       const focusedTag = event.target?.tagName?.toLowerCase();
       if (focusedTag === 'input' || focusedTag === 'textarea' || focusedTag === 'select' || event.defaultPrevented) {
         return;
@@ -3531,7 +3570,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     };
     document.addEventListener('keydown', handleInspectorHotkeys);
     return () => document.removeEventListener('keydown', handleInspectorHotkeys);
-  }, [inspectorHotkeys, savingPartId, selectedPart, updatePartReviewState]);
+  }, [inspectorHotkeys, mprFullscreenOpen, savingPartId, selectedPart, updatePartReviewState]);
 
   const reviewSummary = useMemo(() => {
     return parts.reduce(
@@ -3579,6 +3618,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       startX: event.clientX,
       startY: event.clientY,
       rotation: mprRotation,
+      moved: false,
     };
     event.currentTarget.setPointerCapture?.(event.pointerId);
   };
@@ -3589,6 +3629,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     event.preventDefault();
     const dx = event.clientX - drag.startX;
     const dy = event.clientY - drag.startY;
+    if (Math.abs(dx) > 4 || Math.abs(dy) > 4) drag.moved = true;
     setMprRotation({
       x: Math.min(72, Math.max(-72, drag.rotation.x - dy * 0.35)),
       y: drag.rotation.y + dx * 0.35,
@@ -3599,9 +3640,35 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     const drag = mprDragRef.current;
     if (drag?.pointerId === event.pointerId) {
       event.preventDefault();
+      suppressNextMprSceneClickRef.current = drag.moved;
       mprDragRef.current = null;
       event.currentTarget.releasePointerCapture?.(event.pointerId);
     }
+  };
+
+  const handleMprVolumePointerCancel = (event) => {
+    const drag = mprDragRef.current;
+    if (drag?.pointerId !== event.pointerId) return;
+    mprDragRef.current = null;
+    suppressNextMprSceneClickRef.current = false;
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    }
+  };
+
+  const openMprFullscreen = (event) => {
+    if (suppressNextMprSceneClickRef.current) {
+      suppressNextMprSceneClickRef.current = false;
+      return;
+    }
+    mprFullscreenOpenerRef.current = event.currentTarget.querySelector?.('[role="button"]') || event.currentTarget;
+    setActiveMprPane('volume');
+    setMprFullscreenOpen(true);
+  };
+
+  const closeMprFullscreen = () => {
+    setMprFullscreenOpen(false);
+    window.requestAnimationFrame(() => mprFullscreenOpenerRef.current?.focus());
   };
 
   const preventMprNativeDrag = (event) => {
@@ -5350,27 +5417,73 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 </article>
               );
             })}
+            {mprFullscreenOpen && <div className="mpr-3d-fullscreen-backdrop" aria-hidden="true" onClick={closeMprFullscreen} />}
             <article
-              className={`mpr-pane mpr-pane-volume ${activeMprPane === 'volume' ? 'active-pane' : ''}`}
+              className={`mpr-pane mpr-pane-volume ${activeMprPane === 'volume' ? 'active-pane' : ''} ${mprFullscreenOpen ? 'mpr-pane-volume-fullscreen' : ''}`}
               data-testid="mpr-pane-3d"
-              onClick={() => {
+              role={mprFullscreenOpen ? 'dialog' : undefined}
+              aria-modal={mprFullscreenOpen ? 'true' : undefined}
+              aria-labelledby={mprFullscreenOpen ? 'mpr-3d-fullscreen-title' : undefined}
+              aria-describedby={mprFullscreenOpen ? 'mpr-3d-fullscreen-mode' : undefined}
+              onClick={(event) => {
                 setActiveMprPane('volume');
+                if (!mprFullscreenOpen && !event.target.closest('button, input, select, label')) {
+                  openMprFullscreen(event);
+                }
               }}
               onWheel={handleMprVolumeWheel}
             >
               <header className="mpr-pane-header">
-                <strong>3D</strong>
-                <span>Zoom {viewportTransform.zoom.toFixed(2)}x</span>
+                <strong id={mprFullscreenOpen ? 'mpr-3d-fullscreen-title' : undefined}>{mprFullscreenOpen ? '3D reconstruction' : '3D'}</strong>
+                <span id={mprFullscreenOpen ? 'mpr-3d-fullscreen-mode' : undefined}>
+                  {mprFullscreenOpen ? `${MPR_RECONSTRUCTION_LABELS[effectiveMprReconstructionMode]} • ` : ''}Zoom {viewportTransform.zoom.toFixed(2)}x
+                </span>
+                {mprFullscreenOpen && (
+                  <button
+                    type="button"
+                    className="modal-close-btn mpr-3d-fullscreen-close"
+                    aria-label="Close fullscreen 3D view"
+                    ref={mprFullscreenCloseRef}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      closeMprFullscreen();
+                    }}
+                  >
+                    &times;
+                  </button>
+                )}
               </header>
               <div
                 className="mpr-volume-scene"
-                role="img"
-                aria-label="3D part view with colored slicing plane reticle"
+                role={mprFullscreenOpen ? 'application' : 'button'}
+                tabIndex={0}
+                ref={mprFullscreenSceneRef}
+                aria-label={mprFullscreenOpen ? 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.' : 'Open 3D part view fullscreen'}
                 onPointerDown={handleMprVolumePointerDown}
                 onPointerMove={handleMprVolumePointerMove}
                 onPointerUp={handleMprVolumePointerUp}
-                onPointerCancel={handleMprVolumePointerUp}
+                onPointerCancel={handleMprVolumePointerCancel}
                 onDragStart={preventMprNativeDrag}
+                onKeyDown={(event) => {
+                  if (!mprFullscreenOpen && ['Enter', ' '].includes(event.key)) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openMprFullscreen(event);
+                    return;
+                  }
+                  if (!mprFullscreenOpen) return;
+                  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', '+', '=', '-', '_', '0'].includes(event.key)) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }
+                  if (event.key === 'ArrowLeft') setMprRotation((prev) => ({ ...prev, y: prev.y - 5 }));
+                  else if (event.key === 'ArrowRight') setMprRotation((prev) => ({ ...prev, y: prev.y + 5 }));
+                  else if (event.key === 'ArrowUp') setMprRotation((prev) => ({ ...prev, x: Math.max(-72, prev.x - 5) }));
+                  else if (event.key === 'ArrowDown') setMprRotation((prev) => ({ ...prev, x: Math.min(72, prev.x + 5) }));
+                  else if (['+', '='].includes(event.key)) adjustZoom(0.12);
+                  else if (['-', '_'].includes(event.key)) adjustZoom(-0.12);
+                  else if (event.key === '0') resetViewport();
+                }}
               >
                 <canvas className="mpr-volume-overlay" ref={mprOverlayCanvasRef} aria-hidden="true" />
                 {[MPR_RECONSTRUCTION_MODES.splat, MPR_RECONSTRUCTION_MODES.volume3d, MPR_RECONSTRUCTION_MODES.hybrid3d].includes(effectiveMprReconstructionMode) && (
@@ -5379,7 +5492,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     projectId={projectId}
                     volumeImageStack={volumeImageStack}
                     splatParameters={splatParameters}
-                    initialMode={effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.volume3d ? 'volume' : effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat ? 'splat' : 'hybrid'}
+                    mode={effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.volume3d ? 'volume' : effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat ? 'splat' : 'hybrid'}
+                    rotation={mprRotation}
+                    zoom={viewportTransform.zoom}
                   />
                 )}
                 <div
@@ -5387,7 +5502,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   style={{
                     '--volume-rotate-x': `${mprRotation.x}deg`,
                     '--volume-rotate-y': `${mprRotation.y}deg`,
-                    '--volume-zoom': viewportTransform.zoom,
+                    '--volume-zoom': mprFullscreenOpen
+                      && [MPR_RECONSTRUCTION_MODES.orientation, MPR_RECONSTRUCTION_MODES.stack, MPR_RECONSTRUCTION_MODES.shell].includes(effectiveMprReconstructionMode)
+                      ? Math.min(3.4, Math.max(3, viewportTransform.zoom * 1.8))
+                      : viewportTransform.zoom,
                     '--slice-axial-depth': `${(getFraction(slicePosition.axial, mprDimensions.axial - 1) - 0.5) * 108}px`,
                     '--slice-coronal-y': `${(getFraction(slicePosition.coronal, mprDimensions.coronal - 1) - 0.5) * 138}px`,
                     '--slice-sagittal-x': `${(getFraction(slicePosition.sagittal, mprDimensions.sagittal - 1) - 0.5) * 190}px`,
