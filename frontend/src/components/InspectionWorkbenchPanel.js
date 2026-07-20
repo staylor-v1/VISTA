@@ -1474,11 +1474,12 @@ function getScaledIndex(value, sourceMaxValue, targetLength) {
   return clampRange(Math.round(getFraction(value, sourceMaxValue) * upper), 0, upper, 0);
 }
 
-function getMprVolumeCacheKey(imageStack) {
+function getMprVolumeCacheKey(imageStack, dimensions = {}) {
   if (!Array.isArray(imageStack) || imageStack.length === 0) return '';
-  return imageStack
+  const dimensionKey = MPR_AXES.map((axis) => `${axis}:${dimensions?.[axis] || 0}`).join(',');
+  return `${dimensionKey}|${imageStack
     .map((entry) => `${entry.id}:${entry.sliceIndex}:${entry.url}`)
-    .join('|');
+    .join('|')}`;
 }
 
 function rememberMprVolumeCache(key, cache) {
@@ -1512,10 +1513,12 @@ function loadMprImage(source) {
 
 async function buildMprVolumeCache(cacheKey, imageStack, dimensions) {
   const images = await Promise.all(imageStack.map(loadMprImage));
-  const validImages = images.filter(Boolean);
-  if (validImages.length === 0) return null;
+  const loadedEntries = images
+    .map((image, index) => ({ image, source: imageStack[index], index }))
+    .filter((entry) => entry.image);
+  if (loadedEntries.length === 0) return null;
 
-  const first = validImages[0];
+  const first = loadedEntries[0].image;
   const width = first.naturalWidth || first.width || Math.max(1, dimensions.sagittal || 1);
   const height = first.naturalHeight || first.height || Math.max(1, dimensions.coronal || 1);
   const scratch = document.createElement('canvas');
@@ -1525,10 +1528,32 @@ async function buildMprVolumeCache(cacheKey, imageStack, dimensions) {
   scratch.width = width;
   scratch.height = height;
 
-  const slices = validImages.map((image) => {
+  const maxDeclaredSliceIndex = imageStack.reduce((max, source, index) => {
+    const sliceIndex = Number(source?.sliceIndex);
+    return Math.max(max, Number.isFinite(sliceIndex) ? Math.floor(sliceIndex) : index);
+  }, 0);
+  const depth = Math.max(
+    1,
+    Math.floor(Number(dimensions?.axial) || 0),
+    maxDeclaredSliceIndex + 1,
+    imageStack.length,
+  );
+  const slices = Array.from({ length: depth }, () => ({
+    image: null,
+    imageData: scratchContext.createImageData(width, height),
+  }));
+
+  loadedEntries.forEach(({ image, source, index }) => {
+    const declaredSliceIndex = Number(source?.sliceIndex);
+    const sliceIndex = clampRange(
+      Number.isFinite(declaredSliceIndex) ? Math.floor(declaredSliceIndex) : index,
+      0,
+      depth - 1,
+      index,
+    );
     scratchContext.clearRect(0, 0, width, height);
     scratchContext.drawImage(image, 0, 0, width, height);
-    return {
+    slices[sliceIndex] = {
       image,
       imageData: scratchContext.getImageData(0, 0, width, height),
     };
@@ -1538,7 +1563,7 @@ async function buildMprVolumeCache(cacheKey, imageStack, dimensions) {
     key: cacheKey,
     width,
     height,
-    depth: slices.length,
+    depth,
     slices,
     sliceCanvases: new Map(),
   };
@@ -1568,7 +1593,9 @@ function getCachedMprSliceCanvas(axis, slicePosition, dimensions, volumeCache) {
     const slice = volumeCache.slices[cacheIndexByAxis.axial] || volumeCache.slices[0];
     output.width = volumeCache.width;
     output.height = volumeCache.height;
-    outputContext.drawImage(slice.image, 0, 0, output.width, output.height);
+    if (slice?.imageData) {
+      outputContext.putImageData(slice.imageData, 0, 0);
+    }
     rememberSliceCanvas(volumeCache, sliceKey, output);
     return output;
   }
@@ -1852,7 +1879,7 @@ function projectMprPointToOverlay(vx, vy, vz, dims, rotation, zoom, width, heigh
 }
 
 function useMprVolumeCache(imageStack, dimensions) {
-  const cacheKey = useMemo(() => getMprVolumeCacheKey(imageStack), [imageStack]);
+  const cacheKey = useMemo(() => getMprVolumeCacheKey(imageStack, dimensions), [dimensions, imageStack]);
   const [cacheState, setCacheState] = useState({ key: '', status: 'idle', cache: null });
 
   useEffect(() => {
@@ -1892,7 +1919,10 @@ function useMprVolumeCache(imageStack, dimensions) {
 }
 
 function useMprVolumeCaches(imageStacks, dimensions) {
-  const cacheKeys = useMemo(() => (Array.isArray(imageStacks) ? imageStacks : []).map((stack) => getMprVolumeCacheKey(stack.stack || stack)), [imageStacks]);
+  const cacheKeys = useMemo(
+    () => (Array.isArray(imageStacks) ? imageStacks : []).map((stack) => getMprVolumeCacheKey(stack.stack || stack, dimensions)),
+    [dimensions, imageStacks],
+  );
   const [cacheStates, setCacheStates] = useState([]);
 
   useEffect(() => {
