@@ -5009,11 +5009,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       <div className="modal-backdrop" role="presentation">
         <div className="modal-content splat-config-modal" role="dialog" aria-modal="true" aria-labelledby="splat-config-title">
           <div className="modal-header">
-            <h3 id="splat-config-title">Gaussian splat configuration</h3>
+            <h3 id="splat-config-title">Mechanical 3DGS configuration</h3>
             <button type="button" className="modal-close" aria-label="Close splat configuration" onClick={() => setSplatConfigModalOpen(false)}>×</button>
           </div>
           <p className="muted">
-            Defaults are derived from loaded PT3 image metadata: {formatWindowValue(domain.min)}-{formatWindowValue(domain.max)} {domain.label}, with a histogram-aware threshold when available.
+            Defaults are derived from loaded mechanical-part image metadata: {formatWindowValue(domain.min)}-{formatWindowValue(domain.max)} {domain.label}, with a histogram-aware threshold when available.
           </p>
           <div className="splat-config-grid">
             <label htmlFor="splat-threshold">
@@ -5144,13 +5144,13 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   Reference shell
                 </option>
                 <option value={MPR_RECONSTRUCTION_MODES.volume3d} disabled={!canShowGaussianSplatPreview}>
-                  GPU volume renderer
+                  Ray-marched volume
                 </option>
                 <option value={MPR_RECONSTRUCTION_MODES.splat} disabled={!canShowGaussianSplatPreview}>
-                  3DGS renderer
+                  Mechanical 3DGS
                 </option>
                 <option value={MPR_RECONSTRUCTION_MODES.hybrid3d} disabled={!canShowGaussianSplatPreview}>
-                  Hybrid volume + 3DGS
+                  Hybrid part view
                 </option>
               </select>
             </label>
@@ -5161,7 +5161,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 data-testid="splat-config-button"
                 onClick={() => setSplatConfigModalOpen(true)}
               >
-                Splat configuration
+                3DGS configuration
               </button>
             )}
             <span className="mpr-probe-readout">Probe {tooltipValues.base}</span>
