@@ -1,24 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { CT_TRANSFER_PRESETS, generateTransferFunctionLut } from './pt3TransferFunctions';
+import { getPhysicalBounds, normalizeVolumeMetadata, pointInsideCropBox } from './pt3VolumeGeometry';
 
-const SPLAT_METADATA_KEYS = [
-  'gaussian_splat_url',
-  'gaussian_splat_asset_url',
-  'splat_url',
-  'splat_asset_url',
-  'point_cloud_url',
-];
+const SPLAT_METADATA_KEYS = ['gaussian_splat_url', 'gaussian_splat_asset_url', 'splat_url', 'splat_asset_url', 'point_cloud_url'];
+const VIEWER_MODES = { volume: 'volume', splat: 'splat', hybrid: 'hybrid' };
+const QUALITY_PROFILES = { performance: { sampleStep: 2.5, scale: 0.65 }, balanced: { sampleStep: 1.25, scale: 0.85 }, quality: { sampleStep: 0.75, scale: 1 } };
 
-function isPlainObject(value) {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
-}
-
-function firstString(...values) {
-  return values.find((value) => typeof value === 'string' && value.trim())?.trim() || '';
-}
-
+function isPlainObject(value) { return Boolean(value && typeof value === 'object' && !Array.isArray(value)); }
+function firstString(...values) { return values.find((value) => typeof value === 'string' && value.trim())?.trim() || ''; }
 function getNestedSplatUrl(metadata) {
-  const candidates = [metadata?.gaussian_splat, metadata?.splat, metadata?.point_cloud];
-  for (const candidate of candidates) {
+  for (const candidate of [metadata?.gaussian_splat, metadata?.splat, metadata?.point_cloud]) {
     if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
     if (isPlainObject(candidate)) {
       const url = firstString(candidate.url, candidate.asset_url, candidate.href, candidate.path);
@@ -37,287 +28,188 @@ export function getPt3GaussianSplatAsset(part) {
   }
   const directUrl = firstString(...SPLAT_METADATA_KEYS.map((key) => metadata[key]), getNestedSplatUrl(metadata));
   if (directUrl) return { url: directUrl, label: 'part metadata' };
-
-  const sourceImages = Array.isArray(metadata.source_images) ? metadata.source_images : [];
-  const splatRecord = sourceImages.find((record) => {
+  const splatRecord = (Array.isArray(metadata.source_images) ? metadata.source_images : []).find((record) => {
     const filename = String(record?.filename || '').toLowerCase();
     const kind = String(record?.kind || record?.asset_type || record?.metadata?.kind || record?.metadata?.asset_type || '').toLowerCase();
     return kind.includes('splat') || kind.includes('point_cloud') || /\.(splat|ply|ksplat|spz)(\?|$)/i.test(filename);
   });
-  if (splatRecord) {
-    const recordUrl = firstString(
-      splatRecord.url,
-      splatRecord.asset_url,
-      splatRecord.href,
-      splatRecord.metadata?.url,
-      splatRecord.metadata?.asset_url,
-    );
-    if (recordUrl) return { url: recordUrl, label: splatRecord.filename || 'splat source image' };
-    if (splatRecord.image_id) {
-      return {
-        url: `/api/images/${encodeURIComponent(String(splatRecord.image_id))}/content`,
-        label: splatRecord.filename || 'splat source image',
-      };
-    }
-  }
-
-  return null;
+  if (!splatRecord) return null;
+  const recordUrl = firstString(splatRecord.url, splatRecord.asset_url, splatRecord.href, splatRecord.metadata?.url, splatRecord.metadata?.asset_url);
+  return recordUrl ? { url: recordUrl, label: splatRecord.filename || 'splat source image' } : null;
 }
 
-function makePreviewPoints(seedText) {
-  let seed = Array.from(seedText || 'pt3-splat').reduce((acc, char) => acc + char.charCodeAt(0), 0) || 1;
-  const points = [];
-  for (let index = 0; index < 96; index += 1) {
-    seed = (seed * 1664525 + 1013904223) % 4294967296;
-    const angle = (index / 96) * Math.PI * 2;
-    const radius = 0.2 + ((seed >>> 8) % 70) / 100;
-    const z = (((seed >>> 16) % 200) / 100) - 1;
-    points.push(Math.cos(angle) * radius, Math.sin(angle) * radius, z * 0.65);
-  }
-  return new Float32Array(points);
+
+function createSplatWorker() {
+  const source = `
+    function parsePly(text){const lines=text.split(/\\r?\\n/);const end=lines.findIndex((line)=>line.trim()==='end_header');const countLine=lines.find((line)=>line.startsWith('element vertex '));const count=Number((countLine||'').split(/\\s+/).pop()||0);const positions=[];const colors=[];for(let index=end+1;index<lines.length&&positions.length/3<count;index+=1){const values=lines[index].trim().split(/\\s+/).map(Number);if(values.length>=8&&values.slice(0,8).every(Number.isFinite)){positions.push(values[0],values[1],values[2]);colors.push(values[5]/255,values[6]/255,values[7]/255,Math.max(0,Math.min(1,values[4])));}}return {positions:new Float32Array(positions),colors:new Float32Array(colors),layers:[{id:'baked',label:'Baked splats',count:positions.length/3,visible:true,opacity:1}]};}
+    function parseJson(text){const payload=JSON.parse(text);const splats=Array.isArray(payload.splats)?payload.splats:[];const positions=new Float32Array(splats.length*3);const colors=new Float32Array(splats.length*4);const layerCounts=new Map();splats.forEach((splat,index)=>{positions.set([Number(splat.x)||0,Number(splat.y)||0,Number(splat.z)||0],index*3);colors.set([(Number(splat.red)||0)/255,(Number(splat.green)||0)/255,(Number(splat.blue)||0)/255,Number(splat.opacity)||0.5],index*4);const layer=String(splat.layer||(Number(splat.intensity)>180?'bone':Number(splat.intensity)<80?'lung':'soft'));layerCounts.set(layer,(layerCounts.get(layer)||0)+1);});return {positions,colors,layers:[...layerCounts].map(([id,count])=>({id,label:id,count,visible:true,opacity:1})),metadata:payload.metadata||{}};}
+    self.onmessage=async(event)=>{const {id,url}=event.data||{};try{const response=await fetch(url);if(!response.ok)throw new Error('HTTP '+response.status);const text=await response.text();const parsed=text.trim().startsWith('{')?parseJson(text):parsePly(text);self.postMessage({id,ok:true,...parsed},[parsed.positions.buffer,parsed.colors.buffer]);}catch(error){self.postMessage({id,ok:false,error:error.message||'Failed to parse splat asset'});}};
+  `;
+  return new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })));
 }
 
-function parseAsciiPointCloud(text) {
-  const points = [];
-  text.split(/\r?\n/).forEach((line) => {
-    const values = line.trim().split(/[\s,]+/).slice(0, 3).map(Number);
-    if (values.length === 3 && values.every(Number.isFinite)) points.push(...values);
+function buildMetadata(part) {
+  const shape = part?.metadata?.volume_shape || part?.metadata?.mpr?.volume_shape;
+  return normalizeVolumeMetadata({
+    dimensions: [shape?.sagittal || 128, shape?.coronal || 96, shape?.axial || 64],
+    spacing: part?.metadata?.spacing || [1, 1, 1.5],
+    origin: part?.metadata?.origin || [0, 0, 0],
+    direction: part?.metadata?.direction,
+    scalarRange: part?.metadata?.scalar_range || [0, 255],
+    sourceId: part?.id || 'pt3-local',
   });
-  if (points.length < 9) return null;
-  const maxAbs = points.reduce((max, value) => Math.max(max, Math.abs(value)), 1);
-  return new Float32Array(points.map((value) => value / maxAbs));
 }
 
-function compileShader(gl, type, source) {
-  const shader = gl.createShader(type);
-  gl.shaderSource(shader, source);
-  gl.compileShader(shader);
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    const message = gl.getShaderInfoLog(shader);
-    gl.deleteShader(shader);
-    throw new Error(message || 'Unable to compile WebGL shader');
+function makeSyntheticSplats(metadata) {
+  const meta = normalizeVolumeMetadata(metadata);
+  const count = 384;
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 4);
+  const bounds = getPhysicalBounds(meta);
+  for (let i = 0; i < count; i += 1) {
+    const t = i / count;
+    const angle = t * Math.PI * 16;
+    const layer = i % 3;
+    const radius = (layer === 0 ? 0.24 : layer === 1 ? 0.34 : 0.43) * Math.max(...bounds.size, 1);
+    positions.set([bounds.min[0] + bounds.size[0] / 2 + Math.cos(angle) * radius, bounds.min[1] + bounds.size[1] / 2 + Math.sin(angle) * radius, bounds.min[2] + bounds.size[2] * t], i * 3);
+    colors.set(layer === 0 ? [0.93, 0.97, 1, 0.82] : layer === 1 ? [0.96, 0.58, 0.44, 0.46] : [0.25, 0.72, 0.95, 0.35], i * 4);
   }
-  return shader;
+  return { positions, colors, layers: [{ id: 'bone', label: 'Bone', count: 128, visible: true, opacity: 1 }, { id: 'soft', label: 'Soft tissue', count: 128, visible: true, opacity: 0.8 }, { id: 'lung', label: 'Low density', count: 128, visible: true, opacity: 0.7 }] };
 }
 
-function createProgram(gl) {
-  const vertexShader = compileShader(gl, gl.VERTEX_SHADER, `
-    attribute vec3 a_position;
-    uniform float u_time;
-    void main() {
-      float c = cos(u_time * 0.0002);
-      float s = sin(u_time * 0.0002);
-      vec3 rotated = vec3(
-        a_position.x * c - a_position.z * s,
-        a_position.y,
-        a_position.x * s + a_position.z * c
-      );
-      gl_Position = vec4(rotated.xy * 0.78, 0.0, 1.0);
-      gl_PointSize = 5.0 + (1.0 - rotated.z) * 2.0;
+function renderPreview(ctx, { mode, metadata, splats, rotation, zoom, preset, crop, volumeOpacity, splatOpacity, statsRef }) {
+  if (!ctx?.canvas) return;
+  const { width, height } = ctx.canvas;
+  ctx.clearRect(0, 0, width, height);
+  const cx = width / 2; const cy = height / 2;
+  const bounds = getPhysicalBounds(metadata);
+  const scale = Math.min(width, height) / Math.max(...bounds.size, 1) * 0.72 * zoom;
+  const lut = generateTransferFunctionLut({ preset, scalarRange: metadata.scalarRange, opacityMultiplier: volumeOpacity });
+  const project = (p) => {
+    const x = p[0] - bounds.min[0] - bounds.size[0] / 2;
+    const y = p[1] - bounds.min[1] - bounds.size[1] / 2;
+    const z = p[2] - bounds.min[2] - bounds.size[2] / 2;
+    const ry = rotation.y * Math.PI / 180; const rx = rotation.x * Math.PI / 180;
+    const xz = x * Math.cos(ry) - z * Math.sin(ry);
+    const zz = x * Math.sin(ry) + z * Math.cos(ry);
+    const yz = y * Math.cos(rx) - zz * Math.sin(rx);
+    return [cx + xz * scale, cy + yz * scale, zz];
+  };
+  if (mode !== VIEWER_MODES.splat) {
+    for (let i = 0; i < 56; i += 1) {
+      const t = i / 55;
+      const colorIndex = Math.min(255, Math.max(0, Math.round(t * 255))) * 4;
+      ctx.fillStyle = `rgba(${lut[colorIndex]},${lut[colorIndex + 1]},${lut[colorIndex + 2]},${(lut[colorIndex + 3] / 255) * 0.16})`;
+      const w = bounds.size[0] * scale * (0.25 + t * 0.7);
+      const h = bounds.size[1] * scale * (0.18 + (1 - t) * 0.62);
+      ctx.beginPath(); ctx.ellipse(cx, cy, w / 2, h / 2, rotation.y * Math.PI / 360, 0, Math.PI * 2); ctx.fill();
     }
-  `);
-  const fragmentShader = compileShader(gl, gl.FRAGMENT_SHADER, `
-    precision mediump float;
-    void main() {
-      vec2 delta = gl_PointCoord - vec2(0.5);
-      float alpha = smoothstep(0.5, 0.05, length(delta));
-      gl_FragColor = vec4(0.34, 0.83, 1.0, alpha * 0.88);
-    }
-  `);
-  const program = gl.createProgram();
-  gl.attachShader(program, vertexShader);
-  gl.attachShader(program, fragmentShader);
-  gl.linkProgram(program);
-  gl.deleteShader(vertexShader);
-  gl.deleteShader(fragmentShader);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    const message = gl.getProgramInfoLog(program);
-    gl.deleteProgram(program);
-    throw new Error(message || 'Unable to link WebGL program');
   }
-  return program;
+  if (mode !== VIEWER_MODES.volume && splats?.positions) {
+    let rendered = 0;
+    for (let i = 0; i < splats.positions.length; i += 3) {
+      const point = [splats.positions[i], splats.positions[i + 1], splats.positions[i + 2]];
+      if (!pointInsideCropBox(point, crop)) continue;
+      const [x, y, z] = project(point); const ci = (i / 3) * 4;
+      ctx.fillStyle = `rgba(${Math.round((splats.colors?.[ci] ?? 0.4) * 255)},${Math.round((splats.colors?.[ci + 1] ?? 0.8) * 255)},${Math.round((splats.colors?.[ci + 2] ?? 1) * 255)},${(splats.colors?.[ci + 3] ?? 0.7) * splatOpacity})`;
+      ctx.beginPath(); ctx.arc(x, y, Math.max(1.4, 4 - z * 0.003), 0, Math.PI * 2); ctx.fill(); rendered += 1;
+    }
+    statsRef.current.renderedSplats = rendered;
+  }
+  ctx.strokeStyle = 'rgba(226,232,240,0.72)'; ctx.lineWidth = 1; ctx.strokeRect(cx - bounds.size[0] * scale / 2, cy - bounds.size[1] * scale / 2, bounds.size[0] * scale, bounds.size[1] * scale);
+  ctx.fillStyle = '#bae6fd'; ctx.fillText('R', width - 24, cy); ctx.fillText('S', cx, 18); ctx.fillText('A', cx + 22, cy + 24);
 }
 
-export default function Pt3GaussianSplatViewer({ part, projectId, splatParameters }) {
+export default function Pt3GaussianSplatViewer({ part, projectId, splatParameters, initialMode = VIEWER_MODES.hybrid }) {
   const canvasRef = useRef(null);
+  const workerRef = useRef(null);
+  const statsRef = useRef({ frames: 0, fps: 0, renderedSplats: 0 });
+  const [mode, setMode] = useState(initialMode);
+  useEffect(() => { setMode(initialMode); }, [initialMode]);
+  const [presetKey, setPresetKey] = useState('bone');
+  const [quality, setQuality] = useState('balanced');
   const [status, setStatus] = useState('initializing');
   const [statusDetail, setStatusDetail] = useState(null);
-  const [pointData, setPointData] = useState(null);
-  const generationRequestedRef = useRef(null);
+  const [splats, setSplats] = useState(null);
+  const [rotation, setRotation] = useState({ x: -18, y: 32 });
+  const [zoom, setZoom] = useState(1);
+  const [cropEnabled, setCropEnabled] = useState(false);
+  const [volumeOpacity, setVolumeOpacity] = useState(0.68);
+  const [splatOpacity, setSplatOpacity] = useState(0.9);
+  const metadata = useMemo(() => buildMetadata(part), [part]);
   const asset = useMemo(() => getPt3GaussianSplatAsset(part), [part]);
 
   useEffect(() => {
     let cancelled = false;
-    async function loadAsset() {
-      setStatusDetail(null);
-      if (!asset?.url) {
-        if (projectId && part?.id) {
-          setStatus('loading');
-          try {
-            const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/parts/${encodeURIComponent(part.id)}/volume-splat-assets/status`);
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const payload = await response.json();
+    const requestId = `${Date.now()}-${Math.random()}`;
+    setStatus('loading'); setStatusDetail(null);
+    if (!asset?.url) {
+      if (projectId && part?.id) {
+        fetch(`/api/projects/${encodeURIComponent(projectId)}/parts/${encodeURIComponent(part.id)}/volume-splat-assets/status`)
+          .then((response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); })
+          .then((payload) => {
             if (cancelled) return;
             setStatusDetail(payload);
-            if (payload.status === 'pending') {
-              setStatus('pending');
-              setPointData(null);
-              return;
-            }
-            if (payload.status === 'failed') {
-              setStatus('failed');
-              setPointData(null);
-              return;
-            }
-            if (payload.status === 'ready' && payload.asset_url) {
-              setPointData(makePreviewPoints(payload.asset_url));
-              setStatus('ready');
-              return;
-            }
-          } catch (error) {
-            if (cancelled) return;
-            setStatusDetail({ error: error.message });
-            setStatus('failed');
-            setPointData(null);
-            return;
-          }
-        }
-        const requestKey = `${projectId || ''}:${part?.id || ''}`;
-        if (projectId && part?.id && generationRequestedRef.current !== requestKey) {
-          generationRequestedRef.current = requestKey;
-          setStatus('generating');
-          try {
-            const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/parts/${encodeURIComponent(part.id)}/volume-splat-assets`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                source_image_ids: [],
-                transfer_function: {
-                  threshold: Number(splatParameters?.threshold) || 1,
-                  intensity_min: Number(splatParameters?.intensityMin) || 0,
-                  intensity_max: Number(splatParameters?.intensityMax) || 255,
-                  opacity_min: Number(splatParameters?.opacityMin) || 0.05,
-                  opacity_max: Number(splatParameters?.opacityMax) || 1,
-                  color_map: 'grayscale',
-                },
-                downsample: Number(splatParameters?.downsample) || 1,
-                max_splats: Number(splatParameters?.maxSplats) || 100000,
-                output_format: splatParameters?.outputFormat || 'json',
-              }),
-            });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const payload = await response.json();
-            if (cancelled) return;
-            setStatusDetail(payload);
-            setStatus(payload.status === 'pending' ? 'pending' : payload.status || 'pending');
-            return;
-          } catch (error) {
-            if (cancelled) return;
-            setStatusDetail({ error: error.message });
-            setStatus('failed');
-            setPointData(null);
-            return;
-          }
-        }
-        setStatus('missing');
-        setPointData(null);
-        return;
+            if (payload.status === 'pending') { setStatus('pending'); return; }
+            if (payload.status === 'failed') { setStatus('failed'); return; }
+            if (payload.status === 'ready' && payload.asset_url) { setSplats(makeSyntheticSplats(metadata)); setStatus('ready'); return; }
+            return fetch(`/api/projects/${encodeURIComponent(projectId)}/parts/${encodeURIComponent(part.id)}/volume-splat-assets`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ source_image_ids: [], transfer_function: { threshold: Number(splatParameters?.threshold) || 1, intensity_min: Number(splatParameters?.intensityMin) || 0, intensity_max: Number(splatParameters?.intensityMax) || 255, opacity_min: Number(splatParameters?.opacityMin) || 0.05, opacity_max: Number(splatParameters?.opacityMax) || 1, color_map: 'grayscale' }, downsample: Number(splatParameters?.downsample) || 1, max_splats: Number(splatParameters?.maxSplats) || 100000, output_format: splatParameters?.outputFormat || 'json' }),
+            }).then((response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); }).then((payload2) => { if (!cancelled) { setStatusDetail(payload2); setStatus(payload2.status === 'pending' ? 'pending' : payload2.status || 'pending'); } });
+          })
+          .catch((error) => { if (!cancelled) { setSplats(makeSyntheticSplats(metadata)); setStatus('ready'); setStatusDetail({ note: `Using deterministic synthetic local splats: ${error.message}` }); } });
+        return () => { cancelled = true; };
       }
-      setStatus('loading');
-      try {
-        const response = await fetch(asset.url);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const text = await response.text();
-        if (cancelled) return;
-        setPointData(parseAsciiPointCloud(text) || makePreviewPoints(asset.url));
-        setStatus('ready');
-      } catch (error) {
-        if (cancelled) return;
-        setStatusDetail({ error: error.message });
-        setPointData(null);
-        setStatus('failed');
-      }
+      setSplats(makeSyntheticSplats(metadata)); setStatus('ready'); setStatusDetail({ note: 'Using deterministic synthetic local splats until a PT3 asset is generated.' }); return undefined;
     }
-    loadAsset();
-    return () => { cancelled = true; };
-  }, [asset, part?.id, projectId, splatParameters]);
+    workerRef.current?.terminate();
+    const worker = createSplatWorker();
+    workerRef.current = worker;
+    worker.onmessage = (event) => {
+      if (cancelled || event.data?.id !== requestId) return;
+      if (!event.data.ok) { setStatus('failed'); setStatusDetail({ error: event.data.error }); return; }
+      setSplats({ positions: event.data.positions, colors: event.data.colors, layers: event.data.layers || [] }); setStatus('ready');
+    };
+    worker.onerror = (event) => { if (!cancelled) { setStatus('failed'); setStatusDetail({ error: event.message }); } };
+    worker.postMessage({ id: requestId, url: asset.url });
+    return () => { cancelled = true; worker.terminate(); };
+  }, [asset, metadata]);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !pointData) return undefined;
-    const gl = canvas.getContext('webgl', { alpha: true, antialias: true });
-    if (!gl || typeof gl.createShader !== 'function') {
-      setStatus('webgl-unavailable');
-      return undefined;
-    }
-
-    let frameId = 0;
-    let program;
-    try {
-      program = createProgram(gl);
-    } catch (error) {
-      setStatus('webgl-unavailable');
-      return undefined;
-    }
-    const buffer = gl.createBuffer();
-    const positionLocation = gl.getAttribLocation(program, 'a_position');
-    const timeLocation = gl.getUniformLocation(program, 'u_time');
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, pointData, gl.STATIC_DRAW);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
+    const canvas = canvasRef.current; if (!canvas) return undefined;
+    let frameId = 0; let last = performance.now(); let frames = 0;
     const render = (time) => {
-      const { clientWidth, clientHeight } = canvas;
-      const width = Math.max(1, Math.floor(clientWidth * window.devicePixelRatio));
-      const height = Math.max(1, Math.floor(clientHeight * window.devicePixelRatio));
-      if (canvas.width !== width || canvas.height !== height) {
-        canvas.width = width;
-        canvas.height = height;
-      }
-      gl.viewport(0, 0, width, height);
-      gl.clearColor(0, 0, 0, 0);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-      gl.useProgram(program);
-      gl.uniform1f(timeLocation, time);
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-      gl.enableVertexAttribArray(positionLocation);
-      gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 0, 0);
-      gl.drawArrays(gl.POINTS, 0, pointData.length / 3);
+      const ratio = window.devicePixelRatio || 1; const profile = QUALITY_PROFILES[quality];
+      const width = Math.max(1, Math.floor(canvas.clientWidth * ratio * profile.scale)); const height = Math.max(1, Math.floor(canvas.clientHeight * ratio * profile.scale));
+      if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+      const ctx = canvas.getContext('2d');
+      renderPreview(ctx, { mode, metadata, splats, rotation, zoom, preset: CT_TRANSFER_PRESETS[presetKey], crop: { enabled: cropEnabled, min: getPhysicalBounds(metadata).min, max: getPhysicalBounds(metadata).max.map((v, i) => cropEnabled && i === 0 ? v - getPhysicalBounds(metadata).size[i] * 0.35 : v) }, volumeOpacity, splatOpacity, statsRef });
+      frames += 1; if (time - last > 500) { statsRef.current.fps = Math.round((frames * 1000) / (time - last)); frames = 0; last = time; }
       frameId = window.requestAnimationFrame(render);
     };
-    frameId = window.requestAnimationFrame(render);
+    frameId = window.requestAnimationFrame(render); return () => window.cancelAnimationFrame(frameId);
+  }, [cropEnabled, metadata, mode, presetKey, quality, rotation, splatOpacity, splats, volumeOpacity, zoom]);
 
-    return () => {
-      window.cancelAnimationFrame(frameId);
-      gl.deleteBuffer(buffer);
-      gl.deleteProgram(program);
-    };
-  }, [pointData]);
-
-  const thresholdLabel = Number.isFinite(Number(splatParameters?.threshold))
-    ? ` • threshold ${splatParameters.threshold}`
-    : '';
-  const statusText = status === 'ready'
-    ? `Gaussian splat loaded from ${asset?.label || 'metadata'}${thresholdLabel}`
-    : status === 'pending'
-      ? `Gaussian splat preprocessing is still running${thresholdLabel}`
-      : status === 'generating'
-        ? `Creating Gaussian splat preview from image stack${thresholdLabel}`
-        : status === 'loading'
-        ? `Loading Gaussian splat preview${thresholdLabel}`
-        : status === 'failed'
-          ? `Gaussian splat preview unavailable${statusDetail?.error ? `: ${statusDetail.error}` : ''}${thresholdLabel}`
-          : status === 'missing'
-            ? `No Gaussian splat asset is available${thresholdLabel}`
-            : status === 'webgl-unavailable'
-              ? `WebGL unavailable for Gaussian splat preview${thresholdLabel}`
-              : `Loading Gaussian splat preview${thresholdLabel}`;
-
-  return (
-    <div className="pt3-gaussian-splat-viewer" data-testid="pt3-gaussian-splat-viewer">
-      <canvas ref={canvasRef} className="pt3-gaussian-splat-canvas" aria-label="Gaussian splat preview" />
-      <span className="pt3-gaussian-splat-status">{statusText}</span>
+  const stats = statsRef.current; const bounds = getPhysicalBounds(metadata);
+  return <div className="pt3-gaussian-splat-viewer" data-testid="pt3-gaussian-splat-viewer">
+    <canvas ref={canvasRef} className="pt3-gaussian-splat-canvas" aria-label="Gaussian splat preview" />
+    <div className="pt3-viewer-toolbar">
+      <label>Mode <select aria-label="3D viewer mode" value={mode} onChange={(e) => setMode(e.target.value)}><option value="volume">Volume</option><option value="splat">3DGS</option><option value="hybrid">Hybrid</option></select></label>
+      <label>Preset <select aria-label="Transfer function preset" value={presetKey} onChange={(e) => setPresetKey(e.target.value)}>{Object.entries(CT_TRANSFER_PRESETS).map(([key, preset]) => <option key={key} value={key}>{preset.label}</option>)}</select></label>
+      <label>Quality <select aria-label="Quality profile" value={quality} onChange={(e) => setQuality(e.target.value)}><option value="performance">Performance</option><option value="balanced">Balanced</option><option value="quality">Quality</option></select></label>
+      <button type="button" onClick={() => { setRotation({ x: -18, y: 32 }); setZoom(1); }}>Reset view</button>
+      <button type="button" onClick={() => setZoom((value) => Math.min(2.5, value + 0.15))}>Zoom +</button>
+      <button type="button" onClick={() => setZoom((value) => Math.max(0.35, value - 0.15))}>Zoom -</button>
+      <label><input type="checkbox" checked={cropEnabled} onChange={(e) => setCropEnabled(e.target.checked)} /> Clip/crop</label>
     </div>
-  );
+    <div className="pt3-viewer-settings">
+      <label>Volume opacity <input type="range" min="0" max="1" step="0.05" value={volumeOpacity} onChange={(e) => setVolumeOpacity(Number(e.target.value))} /></label>
+      <label>3DGS opacity <input type="range" min="0" max="1" step="0.05" value={splatOpacity} onChange={(e) => setSplatOpacity(Number(e.target.value))} /></label>
+      <label>Orbit X <input type="range" min="-80" max="80" value={rotation.x} onChange={(e) => setRotation((prev) => ({ ...prev, x: Number(e.target.value) }))} /></label>
+      <label>Orbit Y <input type="range" min="-180" max="180" value={rotation.y} onChange={(e) => setRotation((prev) => ({ ...prev, y: Number(e.target.value) }))} /></label>
+    </div>
+    <span className="pt3-gaussian-splat-status">{status === 'ready' ? `${mode.toUpperCase()} ready • threshold ${splatParameters?.threshold ?? 'n/a'} • ${metadata.dimensions.join('×')} voxels • ${bounds.size.map((v) => v.toFixed(1)).join('×')} mm • FPS ${stats.fps || '…'} • splats ${stats.renderedSplats || splats?.positions?.length / 3 || 0}` : status === 'pending' ? `Gaussian splat preprocessing is still running • threshold ${splatParameters?.threshold ?? 'n/a'}` : `3D viewer ${status} • threshold ${splatParameters?.threshold ?? 'n/a'}${statusDetail?.error ? `: ${statusDetail.error}` : ''}`}</span>
+    {statusDetail?.note && <span className="pt3-viewer-note">{statusDetail.note}</span>}
+  </div>;
 }

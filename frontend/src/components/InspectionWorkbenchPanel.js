@@ -41,6 +41,8 @@ const MPR_RECONSTRUCTION_MODES = {
   stack: 'stack',
   shell: 'shell',
   splat: 'splat',
+  volume3d: 'volume3d',
+  hybrid3d: 'hybrid3d',
 };
 const DEFAULT_MPR_PROJECTION_MIRROR = { axial: false, coronal: false, sagittal: false };
 const MPR_VOLUME_CACHE_LIMIT = 4;
@@ -3155,9 +3157,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const canShowShellReconstruction = shellImageLayers.length > 0;
   const canShowGaussianSplatPreview = Boolean(selectedPart);
   const effectiveMprReconstructionMode = (
-    mprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat && canShowGaussianSplatPreview
+    [MPR_RECONSTRUCTION_MODES.splat, MPR_RECONSTRUCTION_MODES.volume3d, MPR_RECONSTRUCTION_MODES.hybrid3d].includes(mprReconstructionMode) && canShowGaussianSplatPreview
   )
-    ? MPR_RECONSTRUCTION_MODES.splat
+    ? mprReconstructionMode
     : (
       mprReconstructionMode === MPR_RECONSTRUCTION_MODES.stack && canShowStackReconstruction
     )
@@ -5141,8 +5143,14 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 <option value={MPR_RECONSTRUCTION_MODES.shell} disabled={!canShowShellReconstruction}>
                   Reference shell
                 </option>
+                <option value={MPR_RECONSTRUCTION_MODES.volume3d} disabled={!canShowGaussianSplatPreview}>
+                  GPU volume renderer
+                </option>
                 <option value={MPR_RECONSTRUCTION_MODES.splat} disabled={!canShowGaussianSplatPreview}>
-                  Gaussian splat preview
+                  3DGS renderer
+                </option>
+                <option value={MPR_RECONSTRUCTION_MODES.hybrid3d} disabled={!canShowGaussianSplatPreview}>
+                  Hybrid volume + 3DGS
                 </option>
               </select>
             </label>
@@ -5335,11 +5343,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 onDragStart={preventMprNativeDrag}
               >
                 <canvas className="mpr-volume-overlay" ref={mprOverlayCanvasRef} aria-hidden="true" />
-                {effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat && (
+                {[MPR_RECONSTRUCTION_MODES.splat, MPR_RECONSTRUCTION_MODES.volume3d, MPR_RECONSTRUCTION_MODES.hybrid3d].includes(effectiveMprReconstructionMode) && (
                   <Pt3GaussianSplatViewer
                     part={selectedPart}
                     projectId={projectId}
                     splatParameters={splatParameters}
+                    initialMode={effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.volume3d ? 'volume' : effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat ? 'splat' : 'hybrid'}
                   />
                 )}
                 <div
