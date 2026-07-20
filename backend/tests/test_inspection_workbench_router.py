@@ -1653,6 +1653,7 @@ def test_pt3_load_test_data_survives_fixture_image_upload_failure(client):
     images = images_resp.json()
     assert len(images) == 128
     assert images[0]["metadata"]["storage_status"] == "metadata_only"
+    assert images[0]["metadata"]["builtin_fixture_filename"] == images[0]["filename"]
     slice_16 = next(image for image in images if image["filename"] == "PT3_GEOMETRIC_DUAL_LABEL_Z016.png")
     assert slice_16["metadata"]["slice_index"] == 16
     overlay_16 = next(image for image in images if image["filename"] == "PT3_GEOMETRIC_DUAL_LABEL_Z016_overlay.png")

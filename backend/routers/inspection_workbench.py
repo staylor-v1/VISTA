@@ -3,7 +3,9 @@ import json
 import mimetypes
 import re
 import base64
+import os
 import sys
+import tempfile
 import httpx
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,6 +94,25 @@ SLICE_SEGMENTATION_METHOD_IDS = {
     "segmentation.sam.placeholder",
     "segmentation.opencv.placeholder",
 }
+
+
+def _pt3_cache_root() -> Path:
+    """Return the configured writable cache root, with a stable repo fallback."""
+    configured = os.getenv("CACHE_DIR", "").strip()
+    root = Path(configured).expanduser() if configured else REPO_ROOT / ".cache"
+    if not root.is_absolute():
+        root = REPO_ROOT / root
+    root = root.resolve()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        probe = root / ".pt3-write-probe"
+        probe.touch(exist_ok=True)
+        probe.unlink(missing_ok=True)
+        return root
+    except OSError:
+        fallback = Path(tempfile.gettempdir()) / "vista-pt3-cache"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback.resolve()
 
 
 async def _get_project_with_access_check(
@@ -1565,6 +1586,25 @@ async def _write_image_record_to_stack_dir(image: models.DataInstance, destinati
         destination.write_bytes(inline_data)
         return
 
+    # Built-in PT3 fixtures may intentionally be metadata-only when object storage is
+    # unavailable. Resolve only a basename inside the repository-owned fixture root;
+    # never accept an arbitrary path from persisted metadata.
+    if metadata.get("source") == "vista-test-data" and metadata.get("project_type") == "PT3":
+        raw_fixture_name = str(metadata.get("builtin_fixture_filename") or image.filename)
+        fixture_name = Path(raw_fixture_name).name
+        fixture_path = (PT3_TEST_STACK_ROOT / fixture_name).resolve()
+        fixture_root = PT3_TEST_STACK_ROOT.resolve()
+        expected_storage_key = f"{image.project_id}/test-data/{fixture_name}"
+        if (
+            raw_fixture_name == fixture_name
+            and image.filename == fixture_name
+            and image.object_storage_key == expected_storage_key
+            and fixture_path.parent == fixture_root
+            and fixture_path.is_file()
+        ):
+            destination.write_bytes(fixture_path.read_bytes())
+            return
+
     presigned_url = get_presigned_download_url(bucket_name=settings.S3_BUCKET, object_name=image.object_storage_key)
     if not presigned_url:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not read image stack slice {image.filename} from object storage")
@@ -1600,7 +1640,7 @@ async def _materialize_part_volume_stack(
         return (index, str(item.get("filename") or ""))
 
     stack_records = sorted(stack_records, key=sort_key)
-    stack_dir = Path(".cache") / "pt3_volume_stacks" / str(project_id) / str(part.id)
+    stack_dir = _pt3_cache_root() / "pt3_volume_stacks" / str(project_id) / str(part.id)
     stack_dir.mkdir(parents=True, exist_ok=True)
     for existing in stack_dir.iterdir():
         if existing.is_file():
@@ -1667,7 +1707,7 @@ async def _run_pt3_splat_generation_job(
             output_format=payload.output_format,
         )
         volume_stack_id = payload.volume_stack_id or (part.metadata_json or {}).get("volume_stack_id") or str(part.id)
-        output_dir = Path(".cache") / "pt3_splat_assets" / str(project_id) / str(part_id)
+        output_dir = _pt3_cache_root() / "pt3_splat_assets" / str(project_id) / str(part_id)
         asset = convert_volume_to_splat_asset(
             volume_info,
             volume_stack_id=str(volume_stack_id),
@@ -2848,6 +2888,7 @@ async def load_project_test_data(
             metadata = {
                 "source": "vista-test-data",
                 "project_type": "PT3",
+                "builtin_fixture_filename": file_path.name,
                 "volume_stack_id": "PT3_SYNTH_MPR_001",
                 "slice_index": index,
                 "slice_axis": "Z",

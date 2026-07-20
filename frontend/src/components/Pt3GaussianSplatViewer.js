@@ -97,7 +97,7 @@ function renderPreview(ctx, { mode, metadata, splats, rotation, zoom, preset, cr
   ctx.fillStyle = '#bae6fd'; ctx.fillText('R', width - 24, cy); ctx.fillText('S', cx, 18); ctx.fillText('A', cx + 22, cy + 24);
 }
 
-export default function Pt3GaussianSplatViewer({ part, projectId, splatParameters, initialMode = VIEWER_MODES.hybrid }) {
+export default function Pt3GaussianSplatViewer({ part, projectId, volumeImageStack = [], splatParameters, initialMode = VIEWER_MODES.hybrid }) {
   const canvasRef = useRef(null);
   const webglCanvasRef = useRef(null);
   const threeRendererRef = useRef(null);
@@ -121,40 +121,54 @@ export default function Pt3GaussianSplatViewer({ part, projectId, splatParameter
 
   useEffect(() => {
     let cancelled = false;
+    let pollTimer = null;
+    if (mode === VIEWER_MODES.volume) {
+      workerRef.current?.terminate();
+      workerRef.current = null;
+      setSplats(null);
+      setStatus(volumeImageStack.length > 0 ? 'loading' : 'failed');
+      setStatusDetail(volumeImageStack.length > 0 ? null : { error: 'No volume stack images are attached to this part' });
+      return () => { cancelled = true; };
+    }
     const requestId = `${Date.now()}-${Math.random()}`;
+    const loadSplatAsset = (url) => {
+      workerRef.current?.terminate();
+      const worker = createSplatWorker();
+      workerRef.current = worker;
+      worker.onmessage = (event) => {
+        if (cancelled || event.data?.id !== requestId) return;
+        if (!event.data.ok) { setStatus('failed'); setStatusDetail({ error: event.data.error }); return; }
+        setSplats({ positions: event.data.positions, colors: event.data.colors, layers: event.data.layers || [] }); setStatus('ready'); setStatusDetail(null);
+      };
+      worker.onerror = (event) => { if (!cancelled) { setStatus('failed'); setStatusDetail({ error: event.message }); } };
+      worker.postMessage({ id: requestId, url: new URL(url, window.location.origin).href });
+    };
     setStatus('loading'); setStatusDetail(null);
     if (!asset?.url) {
       if (projectId && part?.id) {
-        fetch(`/api/projects/${encodeURIComponent(projectId)}/parts/${encodeURIComponent(part.id)}/volume-splat-assets/status`)
+        const statusUrl = `/api/projects/${encodeURIComponent(projectId)}/parts/${encodeURIComponent(part.id)}/volume-splat-assets/status`;
+        const pollStatus = () => fetch(statusUrl)
           .then((response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); })
           .then((payload) => {
             if (cancelled) return;
             setStatusDetail(payload);
-            if (payload.status === 'pending') { setStatus('pending'); return; }
+            if (payload.status === 'pending') { setStatus('pending'); pollTimer = window.setTimeout(pollStatus, 750); return; }
             if (payload.status === 'failed') { setStatus('failed'); return; }
-            if (payload.status === 'ready' && payload.asset_url) { setSplats(makeMechanicalFallbackSplats(metadata)); setStatus('ready'); return; }
+            if (payload.status === 'ready' && payload.asset_url) { loadSplatAsset(payload.asset_url); return; }
             return fetch(`/api/projects/${encodeURIComponent(projectId)}/parts/${encodeURIComponent(part.id)}/volume-splat-assets`, {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ source_image_ids: [], transfer_function: { threshold: Number(splatParameters?.threshold) || 1, intensity_min: Number(splatParameters?.intensityMin) || 0, intensity_max: Number(splatParameters?.intensityMax) || 255, opacity_min: Number(splatParameters?.opacityMin) || 0.05, opacity_max: Number(splatParameters?.opacityMax) || 1, color_map: 'grayscale' }, downsample: Number(splatParameters?.downsample) || 1, max_splats: Number(splatParameters?.maxSplats) || 100000, output_format: splatParameters?.outputFormat || 'json' }),
-            }).then((response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); }).then((payload2) => { if (!cancelled) { setStatusDetail(payload2); setStatus(payload2.status === 'pending' ? 'pending' : payload2.status || 'pending'); } });
+            }).then((response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); }).then((payload2) => { if (!cancelled) { setStatusDetail(payload2); setStatus(payload2.status === 'pending' ? 'pending' : payload2.status || 'pending'); pollTimer = window.setTimeout(pollStatus, 750); } });
           })
           .catch((error) => { if (!cancelled) { setSplats(makeMechanicalFallbackSplats(metadata)); setStatus('ready'); setStatusDetail({ note: `Using deterministic mechanical fallback splats: ${error.message}` }); } });
-        return () => { cancelled = true; };
+        pollStatus();
+        return () => { cancelled = true; if (pollTimer) window.clearTimeout(pollTimer); workerRef.current?.terminate(); };
       }
       setSplats(makeMechanicalFallbackSplats(metadata)); setStatus('ready'); setStatusDetail({ note: 'Using deterministic mechanical part fallback splats until a PT3 asset is generated.' }); return undefined;
     }
-    workerRef.current?.terminate();
-    const worker = createSplatWorker();
-    workerRef.current = worker;
-    worker.onmessage = (event) => {
-      if (cancelled || event.data?.id !== requestId) return;
-      if (!event.data.ok) { setStatus('failed'); setStatusDetail({ error: event.data.error }); return; }
-      setSplats({ positions: event.data.positions, colors: event.data.colors, layers: event.data.layers || [] }); setStatus('ready');
-    };
-    worker.onerror = (event) => { if (!cancelled) { setStatus('failed'); setStatusDetail({ error: event.message }); } };
-    worker.postMessage({ id: requestId, url: asset.url });
-    return () => { cancelled = true; worker.terminate(); };
-  }, [asset, metadata, part?.id, projectId, splatParameters?.downsample, splatParameters?.intensityMax, splatParameters?.intensityMin, splatParameters?.maxSplats, splatParameters?.opacityMax, splatParameters?.opacityMin, splatParameters?.outputFormat, splatParameters?.threshold]);
+    loadSplatAsset(asset.url);
+    return () => { cancelled = true; workerRef.current?.terminate(); };
+  }, [asset, metadata, mode, part?.id, projectId, splatParameters?.downsample, splatParameters?.intensityMax, splatParameters?.intensityMin, splatParameters?.maxSplats, splatParameters?.opacityMax, splatParameters?.opacityMin, splatParameters?.outputFormat, splatParameters?.threshold, volumeImageStack.length]);
 
 
   useEffect(() => {
@@ -166,7 +180,7 @@ export default function Pt3GaussianSplatViewer({ part, projectId, splatParameter
       setRendererType('canvas2d-fallback');
       return undefined;
     }
-    createThreeMechanicalRenderer(canvas, { metadata, mode })
+    createThreeMechanicalRenderer(canvas, { metadata, mode, volumeImageStack })
       .then((renderer) => {
         if (cancelled || !renderer) {
           renderer?.dispose?.();
@@ -175,16 +189,23 @@ export default function Pt3GaussianSplatViewer({ part, projectId, splatParameter
         threeRendererRef.current?.dispose?.();
         threeRendererRef.current = renderer;
         setRendererType(renderer.rendererType || 'three-webgl');
+        if (mode === VIEWER_MODES.volume) setStatus('ready');
       })
-      .catch(() => {
-        if (!cancelled) setRendererType('canvas2d-fallback');
+      .catch((error) => {
+        if (!cancelled) {
+          setRendererType('canvas2d-fallback');
+          if (mode === VIEWER_MODES.volume) {
+            setStatus('failed');
+            setStatusDetail({ error: error.message || 'Could not initialize ray-marched volume' });
+          }
+        }
       });
     return () => {
       cancelled = true;
       threeRendererRef.current?.dispose?.();
       threeRendererRef.current = null;
     };
-  }, [metadata, mode]);
+  }, [metadata, mode, volumeImageStack]);
 
   useEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return undefined;
@@ -193,14 +214,17 @@ export default function Pt3GaussianSplatViewer({ part, projectId, splatParameter
       const ratio = window.devicePixelRatio || 1; const profile = QUALITY_PROFILES[quality];
       const width = Math.max(1, Math.floor(canvas.clientWidth * ratio * profile.scale)); const height = Math.max(1, Math.floor(canvas.clientHeight * ratio * profile.scale));
       if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
-      threeRendererRef.current?.render?.({ width, height, rotation, zoom });
+      threeRendererRef.current?.render?.({ width, height, rotation, zoom, volumeOpacity, presetKey });
       const ctx = canvas.getContext('2d');
-      renderPreview(ctx, { mode, metadata, splats, rotation, zoom, preset: MECHANICAL_TRANSFER_PRESETS[presetKey], crop: getMechanicalCropBox(metadata, cropEnabled), volumeOpacity, splatOpacity, statsRef });
+      ctx.clearRect(0, 0, width, height);
+      if (rendererType === 'canvas2d-fallback' || mode !== VIEWER_MODES.volume) {
+        renderPreview(ctx, { mode: rendererType !== 'canvas2d-fallback' && mode === VIEWER_MODES.hybrid ? VIEWER_MODES.splat : mode, metadata, splats, rotation, zoom, preset: MECHANICAL_TRANSFER_PRESETS[presetKey], crop: getMechanicalCropBox(metadata, cropEnabled), volumeOpacity, splatOpacity, statsRef });
+      }
       frames += 1; if (time - last > 500) { statsRef.current.fps = Math.round((frames * 1000) / (time - last)); frames = 0; last = time; }
       frameId = window.requestAnimationFrame(render);
     };
     frameId = window.requestAnimationFrame(render); return () => window.cancelAnimationFrame(frameId);
-  }, [cropEnabled, metadata, mode, presetKey, quality, rotation, splatOpacity, splats, volumeOpacity, zoom]);
+  }, [cropEnabled, metadata, mode, presetKey, quality, rendererType, rotation, splatOpacity, splats, volumeOpacity, zoom]);
 
   const stats = statsRef.current; const bounds = getPhysicalBounds(metadata);
   return <div className="pt3-gaussian-splat-viewer" data-testid="pt3-gaussian-splat-viewer">
@@ -208,20 +232,20 @@ export default function Pt3GaussianSplatViewer({ part, projectId, splatParameter
     <canvas ref={canvasRef} className="pt3-gaussian-splat-canvas" aria-label="Mechanical 3DGS preview" />
     <div className="pt3-viewer-toolbar">
       <label>Mode <select aria-label="3D viewer mode" value={mode} onChange={(e) => setMode(e.target.value)}><option value="volume">Volume</option><option value="splat">3DGS</option><option value="hybrid">Hybrid</option></select></label>
-      <label>Preset <select aria-label="Transfer function preset" value={presetKey} onChange={(e) => setPresetKey(e.target.value)}>{Object.entries(MECHANICAL_TRANSFER_PRESETS).map(([key, preset]) => <option key={key} value={key}>{preset.label}</option>)}</select></label>
+      {mode !== VIEWER_MODES.splat && <label>Preset <select aria-label="Transfer function preset" value={presetKey} onChange={(e) => setPresetKey(e.target.value)}>{Object.entries(MECHANICAL_TRANSFER_PRESETS).map(([key, preset]) => <option key={key} value={key}>{preset.label}</option>)}</select></label>}
       <label>Quality <select aria-label="Quality profile" value={quality} onChange={(e) => setQuality(e.target.value)}><option value="performance">Performance</option><option value="balanced">Balanced</option><option value="quality">Quality</option></select></label>
       <button type="button" onClick={() => { setRotation({ x: -18, y: 32 }); setZoom(1); }}>Reset view</button>
       <button type="button" onClick={() => setZoom((value) => Math.min(2.5, value + 0.15))}>Zoom +</button>
       <button type="button" onClick={() => setZoom((value) => Math.max(0.35, value - 0.15))}>Zoom -</button>
-      <label><input type="checkbox" checked={cropEnabled} onChange={(e) => setCropEnabled(e.target.checked)} /> Clip/crop</label>
+      {mode !== VIEWER_MODES.volume && <label><input type="checkbox" checked={cropEnabled} onChange={(e) => setCropEnabled(e.target.checked)} /> Clip/crop</label>}
     </div>
     <div className="pt3-viewer-settings">
-      <label>Volume opacity <input type="range" min="0" max="1" step="0.05" value={volumeOpacity} onChange={(e) => setVolumeOpacity(Number(e.target.value))} /></label>
-      <label>3DGS opacity <input type="range" min="0" max="1" step="0.05" value={splatOpacity} onChange={(e) => setSplatOpacity(Number(e.target.value))} /></label>
+      {mode !== VIEWER_MODES.splat && <label>Volume opacity <input type="range" min="0" max="1" step="0.05" value={volumeOpacity} onChange={(e) => setVolumeOpacity(Number(e.target.value))} /></label>}
+      {mode !== VIEWER_MODES.volume && <label>3DGS opacity <input type="range" min="0" max="1" step="0.05" value={splatOpacity} onChange={(e) => setSplatOpacity(Number(e.target.value))} /></label>}
       <label>Orbit X <input type="range" min="-80" max="80" value={rotation.x} onChange={(e) => setRotation((prev) => ({ ...prev, x: Number(e.target.value) }))} /></label>
       <label>Orbit Y <input type="range" min="-180" max="180" value={rotation.y} onChange={(e) => setRotation((prev) => ({ ...prev, y: Number(e.target.value) }))} /></label>
     </div>
-    <span className="pt3-gaussian-splat-status">{status === 'ready' ? `${mode.toUpperCase()} ready • threshold ${splatParameters?.threshold ?? 'n/a'} • ${metadata.dimensions.join('×')} voxels • ${bounds.size.map((v) => v.toFixed(1)).join('×')} mm • ${rendererType} • FPS ${stats.fps || '…'} • splats ${stats.renderedSplats || splats?.positions?.length / 3 || 0}` : status === 'pending' ? `Mechanical 3DGS preprocessing is still running • threshold ${splatParameters?.threshold ?? 'n/a'}` : `Mechanical 3D viewer ${status} • threshold ${splatParameters?.threshold ?? 'n/a'}${statusDetail?.error ? `: ${statusDetail.error}` : ''}`}</span>
+    <span className="pt3-gaussian-splat-status">{status === 'ready' ? `${mode.toUpperCase()} ready${mode === VIEWER_MODES.volume ? '' : ` • threshold ${splatParameters?.threshold ?? 'n/a'}`} • ${metadata.dimensions.join('×')} voxels • ${bounds.size.map((v) => v.toFixed(1)).join('×')} mm • ${rendererType} • FPS ${stats.fps || '…'}${mode === VIEWER_MODES.volume ? ` • slices ${volumeImageStack.length}` : ` • splats ${stats.renderedSplats || splats?.positions?.length / 3 || 0}`}` : status === 'pending' ? `Mechanical 3DGS preprocessing is still running • threshold ${splatParameters?.threshold ?? 'n/a'}` : `Mechanical 3D viewer ${status}${mode === VIEWER_MODES.volume ? '' : ` • threshold ${splatParameters?.threshold ?? 'n/a'}`}${statusDetail?.error ? `: ${statusDetail.error}` : ''}`}</span>
     {statusDetail?.note && <span className="pt3-viewer-note">{statusDetail.note}</span>}
   </div>;
 }

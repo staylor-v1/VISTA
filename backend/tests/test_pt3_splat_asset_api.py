@@ -3,6 +3,15 @@ from pathlib import Path
 
 from PIL import Image
 
+from routers import inspection_workbench
+
+
+def test_pt3_cache_root_honors_configured_cache_dir(monkeypatch, tmp_path):
+    configured_root = tmp_path / "writable-cache"
+    monkeypatch.setenv("CACHE_DIR", str(configured_root))
+
+    assert inspection_workbench._pt3_cache_root() == configured_root.resolve()
+
 
 def test_pt3_part_volume_splat_asset_route_updates_metadata(client, tmp_path):
     headers = {"X-User-Id": "pt3-splat@example.com", "X-User-Groups": '["pt3-splat-group"]'}

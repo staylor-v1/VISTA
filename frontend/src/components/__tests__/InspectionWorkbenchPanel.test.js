@@ -3008,6 +3008,11 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getAllByRole('img', { name: /Volume reconstruction slice/ })[0]).toHaveAttribute('draggable', 'false');
 
     expect(screen.queryByTestId('pt3-gaussian-splat-viewer')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'volume3d' } });
+    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('Mechanical 3D viewer loading');
+    expect(screen.queryByLabelText('3DGS opacity')).not.toBeInTheDocument();
+    expect(global.fetch.mock.calls.some((call) => call[0].includes('/volume-splat-assets'))).toBe(false);
+
     fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'splat' } });
     expect(screen.getByLabelText('3D view')).toHaveValue('splat');
     expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toBeInTheDocument();

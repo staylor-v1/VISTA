@@ -5377,6 +5377,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   <Pt3GaussianSplatViewer
                     part={selectedPart}
                     projectId={projectId}
+                    volumeImageStack={volumeImageStack}
                     splatParameters={splatParameters}
                     initialMode={effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.volume3d ? 'volume' : effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat ? 'splat' : 'hybrid'}
                   />
