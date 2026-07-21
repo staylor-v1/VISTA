@@ -11,6 +11,22 @@ export const DEFAULT_VOLUME_METADATA = Object.freeze({
   sourceId: 'synthetic-local-preview',
 });
 
+export function normalizeAxisMirrorScale(candidate = {}) {
+  return {
+    x: Number(candidate?.x) < 0 ? -1 : 1,
+    y: Number(candidate?.y) < 0 ? -1 : 1,
+    z: Number(candidate?.z) < 0 ? -1 : 1,
+  };
+}
+
+export function getMprAxisMirrorScale(projectionMirror = {}) {
+  return {
+    x: projectionMirror?.sagittal === true ? -1 : 1,
+    y: projectionMirror?.coronal === true ? -1 : 1,
+    z: projectionMirror?.axial === true ? -1 : 1,
+  };
+}
+
 export function normalizeVolumeMetadata(candidate = {}) {
   const dimensions = normalizeVec3(candidate.dimensions || candidate.shape || DEFAULT_VOLUME_METADATA.dimensions, DEFAULT_VOLUME_METADATA.dimensions, true);
   const spacing = normalizeVec3(candidate.spacing || DEFAULT_VOLUME_METADATA.spacing, DEFAULT_VOLUME_METADATA.spacing);

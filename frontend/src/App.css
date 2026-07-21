@@ -6964,7 +6964,7 @@ ul li:hover {
   width: 190px;
   height: 138px;
   transform-style: preserve-3d;
-  transform: scale(var(--volume-zoom, 1)) rotateX(var(--volume-rotate-x, -22deg)) rotateY(var(--volume-rotate-y, 32deg));
+  transform: scale(var(--volume-zoom, 1)) rotateX(var(--volume-rotate-x, -22deg)) rotateY(var(--volume-rotate-y, 32deg)) scale3d(var(--volume-mirror-x, 1), var(--volume-mirror-y, 1), var(--volume-mirror-z, 1));
   transition: transform 90ms linear;
 }
 

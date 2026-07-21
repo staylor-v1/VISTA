@@ -3,6 +3,7 @@ import { Actions, Layout, Model } from 'flexlayout-react';
 import 'flexlayout-react/style/light.css';
 import CalibrationManager from './CalibrationManager';
 import Pt3GaussianSplatViewer, { DEFAULT_RAY_MARCH_SETTINGS, DEFAULT_SPLAT_VIEW_SETTINGS } from './Pt3GaussianSplatViewer';
+import { getMprAxisMirrorScale } from './pt3VolumeGeometry';
 import { DEFAULT_INTERFACE_HIERARCHY } from '../utils/interfaceHierarchy';
 import { isUiSectionEnabled } from '../utils/uiSections';
 
@@ -1877,15 +1878,15 @@ function getPlaneFocusRange(position, maxDimension) {
   return [Math.max(0, lo), hi];
 }
 
-function projectMprPointToOverlay(vx, vy, vz, dims, rotation, zoom, width, height) {
+function projectMprPointToOverlay(vx, vy, vz, dims, rotation, zoom, width, height, mirrorScale) {
   const rx = (rotation.x * Math.PI) / 180;
   const ry = (rotation.y * Math.PI) / 180;
   const cosRx = Math.cos(rx), sinRx = Math.sin(rx);
   const cosRy = Math.cos(ry), sinRy = Math.sin(ry);
   const maxDim = Math.max(dims.sagittal, dims.coronal, dims.axial);
-  let px = vx - dims.sagittal / 2;
-  let py = vy - dims.coronal / 2;
-  let pz = vz - dims.axial / 2;
+  let px = (vx - dims.sagittal / 2) * (mirrorScale?.x ?? 1);
+  let py = (vy - dims.coronal / 2) * (mirrorScale?.y ?? 1);
+  let pz = (vz - dims.axial / 2) * (mirrorScale?.z ?? 1);
   let t = px * cosRy - pz * sinRy; pz = px * sinRy + pz * cosRy; px = t;
   t = py * cosRx + pz * sinRx; pz = -py * sinRx + pz * cosRx; py = t;
   return { x: (px * zoom / maxDim + 0.5) * width, y: (py * zoom / maxDim + 0.5) * height, z: pz };
@@ -2991,6 +2992,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     () => getSplatParametersForPart(selectedPart, displayValueDomain, splatParameterOverridesByPart),
     [displayValueDomain, selectedPart, splatParameterOverridesByPart],
   );
+  const mprAxisMirrorScale = useMemo(
+    () => getMprAxisMirrorScale(mprProjectionMirror),
+    [mprProjectionMirror],
+  );
 
   useEffect(() => {
     const canvas = mprOverlayCanvasRef.current;
@@ -3030,7 +3035,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     const drawOrder = MPR_AXES;
     drawOrder.forEach((axis) => {
       const color = MPR_AXIS_CONFIG[axis].color;
-      const line = full[axis].map(([x, y, z]) => projectMprPointToOverlay(x, y, z, dims, mprRotation, viewportTransform.zoom, canvas.width, canvas.height));
+      const line = full[axis].map(([x, y, z]) => projectMprPointToOverlay(x, y, z, dims, mprRotation, viewportTransform.zoom, canvas.width, canvas.height, mprAxisMirrorScale));
       ctx.beginPath();
       ctx.moveTo(line[0].x, line[0].y);
       line.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
@@ -3043,7 +3048,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       ctx.setLineDash([]);
       const active = activeMprPane === axis ? axis : null;
       if (active) {
-        const quad = focus[axis].map(([x, y, z]) => projectMprPointToOverlay(x, y, z, dims, mprRotation, viewportTransform.zoom, canvas.width, canvas.height));
+        const quad = focus[axis].map(([x, y, z]) => projectMprPointToOverlay(x, y, z, dims, mprRotation, viewportTransform.zoom, canvas.width, canvas.height, mprAxisMirrorScale));
         ctx.beginPath();
         ctx.moveTo(quad[0].x, quad[0].y);
         quad.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
@@ -3057,7 +3062,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         ctx.stroke();
       }
     });
-  }, [activeMprPane, mprDimensions, mprFullscreenOpen, mprReconstructionMode, mprRotation, slicePosition, viewportTransform.zoom]);
+  }, [activeMprPane, mprAxisMirrorScale, mprDimensions, mprFullscreenOpen, mprReconstructionMode, mprRotation, slicePosition, viewportTransform.zoom]);
 
   const modalityOptions = useMemo(() => getModalities(selectedPart), [selectedPart]);
   const activeViewName = useMemo(() => {
@@ -5528,6 +5533,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
               </header>
               <div
                 className="mpr-volume-scene"
+                data-mirror-x={mprAxisMirrorScale.x}
+                data-mirror-y={mprAxisMirrorScale.y}
+                data-mirror-z={mprAxisMirrorScale.z}
                 role={mprFullscreenOpen ? 'application' : 'button'}
                 tabIndex={0}
                 ref={mprFullscreenSceneRef}
@@ -5570,6 +5578,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     mode={effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.volume3d ? 'volume' : effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat ? 'splat' : 'hybrid'}
                     rotation={mprRotation}
                     zoom={viewportTransform.zoom}
+                    mirrorScale={mprAxisMirrorScale}
                     slicePosition={slicePosition}
                     rayMarchSettings={rayMarchSettings}
                     splatViewSettings={splatViewSettings}
@@ -5587,6 +5596,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   style={{
                     '--volume-rotate-x': `${mprRotation.x}deg`,
                     '--volume-rotate-y': `${mprRotation.y}deg`,
+                    '--volume-mirror-x': mprAxisMirrorScale.x,
+                    '--volume-mirror-y': mprAxisMirrorScale.y,
+                    '--volume-mirror-z': mprAxisMirrorScale.z,
                     '--volume-zoom': mprFullscreenOpen
                       && [MPR_RECONSTRUCTION_MODES.orientation, MPR_RECONSTRUCTION_MODES.stack, MPR_RECONSTRUCTION_MODES.shell].includes(effectiveMprReconstructionMode)
                       ? Math.min(3.4, Math.max(3, viewportTransform.zoom * 1.8))

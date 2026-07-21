@@ -1,4 +1,14 @@
-import { applyRescale, getPhysicalBounds, mapWindowLevel, opacityCorrection, physicalToVoxel, pointInsideCropBox, voxelToPhysical } from '../pt3VolumeGeometry';
+import {
+  applyRescale,
+  getMprAxisMirrorScale,
+  getPhysicalBounds,
+  mapWindowLevel,
+  normalizeAxisMirrorScale,
+  opacityCorrection,
+  physicalToVoxel,
+  pointInsideCropBox,
+  voxelToPhysical,
+} from '../pt3VolumeGeometry';
 import { CT_TRANSFER_PRESETS, generateTransferFunctionLut } from '../pt3TransferFunctions';
 
 test('voxel to physical preserves anisotropic spacing and origin', () => {
@@ -28,4 +38,18 @@ test('transfer function LUT encodes CT presets with opacity', () => {
   const lut = generateTransferFunctionLut({ preset: CT_TRANSFER_PRESETS.bone, scalarRange: [-1024, 3071], opacityMultiplier: 1 });
   expect(lut).toHaveLength(1024);
   expect(lut[1023]).toBeGreaterThan(0);
+});
+
+test('maps MPR projection mirrors onto the matching physical 3D axes', () => {
+  expect(getMprAxisMirrorScale()).toEqual({ x: 1, y: 1, z: 1 });
+  expect(getMprAxisMirrorScale({ sagittal: true })).toEqual({ x: -1, y: 1, z: 1 });
+  expect(getMprAxisMirrorScale({ coronal: true })).toEqual({ x: 1, y: -1, z: 1 });
+  expect(getMprAxisMirrorScale({ axial: true })).toEqual({ x: 1, y: 1, z: -1 });
+  expect(getMprAxisMirrorScale({ axial: true, coronal: true, sagittal: true })).toEqual({ x: -1, y: -1, z: -1 });
+});
+
+test('normalizes renderer mirror scales to stable positive or negative unit signs', () => {
+  expect(normalizeAxisMirrorScale()).toEqual({ x: 1, y: 1, z: 1 });
+  expect(normalizeAxisMirrorScale({ x: -12, y: '-1', z: 0 })).toEqual({ x: -1, y: -1, z: 1 });
+  expect(normalizeAxisMirrorScale({ x: 2, y: Number.NaN, z: undefined })).toEqual({ x: 1, y: 1, z: 1 });
 });

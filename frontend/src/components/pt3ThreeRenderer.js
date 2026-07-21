@@ -1,3 +1,5 @@
+import { normalizeAxisMirrorScale } from './pt3VolumeGeometry';
+
 let threeModulePromise = null;
 
 export function loadThree() {
@@ -148,7 +150,7 @@ export async function createThreeMechanicalRenderer(canvas, { metadata, mode, vo
 
   return {
     rendererType: 'three-webgl-raymarch',
-    render({ width, height, rotation, zoom, volumeOpacity, presetKey, intensityThreshold, sampleStep, slicePosition, showSliceGuides }) {
+    render({ width, height, rotation, zoom, mirrorScale, volumeOpacity, presetKey, intensityThreshold, sampleStep, slicePosition, showSliceGuides }) {
       const safeWidth = Math.max(1, width || canvas.clientWidth || 1);
       const safeHeight = Math.max(1, height || canvas.clientHeight || 1);
       renderer.setSize(safeWidth, safeHeight, false);
@@ -157,6 +159,8 @@ export async function createThreeMechanicalRenderer(canvas, { metadata, mode, vo
       camera.updateProjectionMatrix();
       volumeGroup.rotation.x = (rotation?.x || 0) * Math.PI / 180;
       volumeGroup.rotation.y = (rotation?.y || 0) * Math.PI / 180;
+      const activeMirrorScale = normalizeAxisMirrorScale(mirrorScale);
+      volumeGroup.scale.set(activeMirrorScale.x, activeMirrorScale.y, activeMirrorScale.z);
       // Keep the camera outside the rotated volume at every zoom level. Three's
       // optical zoom changes framing without dollying through the volume.
       camera.position.z = Math.max(...size, 1) * 2.2;

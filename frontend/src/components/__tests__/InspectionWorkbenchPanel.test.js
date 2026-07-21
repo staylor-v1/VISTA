@@ -1624,6 +1624,77 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.queryByRole('dialog', { name: '3D reconstruction' })).not.toBeInTheDocument();
   });
 
+  test('applies each MPR axis mirror to the single CSS and PT3 3D scene', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+    const scene = screen.getByRole('button', { name: 'Open 3D part view fullscreen' });
+    const modeSelect = screen.getByLabelText('3D view');
+    const sagittalMirror = screen.getByLabelText('Mirror', { selector: '#mpr-mirror-sagittal' });
+    const coronalMirror = screen.getByLabelText('Mirror', { selector: '#mpr-mirror-coronal' });
+    const axialMirror = screen.getByLabelText('Mirror', { selector: '#mpr-mirror-axial' });
+
+    const expectMirrorAttributes = (element, { x, y, z }) => {
+      expect(element).toHaveAttribute('data-mirror-x', String(x));
+      expect(element).toHaveAttribute('data-mirror-y', String(y));
+      expect(element).toHaveAttribute('data-mirror-z', String(z));
+    };
+    const expectCssMirror = ({ x, y, z }) => {
+      const model = document.querySelector('.mpr-volume-model');
+      expect(model).toBeInTheDocument();
+      expect(model.style.getPropertyValue('--volume-mirror-x')).toBe(String(x));
+      expect(model.style.getPropertyValue('--volume-mirror-y')).toBe(String(y));
+      expect(model.style.getPropertyValue('--volume-mirror-z')).toBe(String(z));
+    };
+    const expectSingleStableScene = () => {
+      expect(document.querySelectorAll('.mpr-volume-scene')).toHaveLength(1);
+      expect(screen.getByRole('button', { name: 'Open 3D part view fullscreen' })).toBe(scene);
+    };
+
+    expectMirrorAttributes(scene, { x: 1, y: 1, z: 1 });
+    expectCssMirror({ x: 1, y: 1, z: 1 });
+
+    fireEvent.click(sagittalMirror);
+    expectMirrorAttributes(scene, { x: -1, y: 1, z: 1 });
+    expectCssMirror({ x: -1, y: 1, z: 1 });
+    expectSingleStableScene();
+
+    fireEvent.click(coronalMirror);
+    expectMirrorAttributes(scene, { x: -1, y: -1, z: 1 });
+    expectCssMirror({ x: -1, y: -1, z: 1 });
+    expectSingleStableScene();
+
+    fireEvent.click(axialMirror);
+    expectMirrorAttributes(scene, { x: -1, y: -1, z: -1 });
+    expectCssMirror({ x: -1, y: -1, z: -1 });
+    expectSingleStableScene();
+
+    fireEvent.change(modeSelect, { target: { value: 'volume3d' } });
+    const pt3Viewer = screen.getByTestId('pt3-gaussian-splat-viewer');
+    expectMirrorAttributes(pt3Viewer, { x: -1, y: -1, z: -1 });
+    expect(screen.getAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(1);
+    expectSingleStableScene();
+
+    fireEvent.click(sagittalMirror);
+    expectMirrorAttributes(pt3Viewer, { x: 1, y: -1, z: -1 });
+    fireEvent.click(coronalMirror);
+    expectMirrorAttributes(pt3Viewer, { x: 1, y: 1, z: -1 });
+    fireEvent.click(axialMirror);
+    expectMirrorAttributes(pt3Viewer, { x: 1, y: 1, z: 1 });
+    expectSingleStableScene();
+
+    fireEvent.click(axialMirror);
+    expectMirrorAttributes(pt3Viewer, { x: 1, y: 1, z: -1 });
+    expect(screen.getAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(1);
+    expectSingleStableScene();
+
+    fireEvent.change(modeSelect, { target: { value: 'orientation' } });
+    expect(screen.queryByTestId('pt3-gaussian-splat-viewer')).not.toBeInTheDocument();
+    expectCssMirror({ x: 1, y: 1, z: -1 });
+    expectSingleStableScene();
+  });
+
   test('keeps a deterministic spatial fallback visible when ray marching has no volume stack', async () => {
     mockWorkbenchFetch(scenarioByUser[0]);
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);

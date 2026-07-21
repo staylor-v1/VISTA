@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { generateTransferFunctionLut } from './pt3TransferFunctions';
-import { getPhysicalBounds, pointInsideCropBox } from './pt3VolumeGeometry';
+import { getPhysicalBounds, normalizeAxisMirrorScale, pointInsideCropBox } from './pt3VolumeGeometry';
 import { createThreeMechanicalRenderer } from './pt3ThreeRenderer';
 import { MECHANICAL_TRANSFER_PRESETS, getMechanicalCropBox, getMechanicalVolumeMetadata, makeMechanicalFallbackSplats } from './pt3MechanicalVisualization';
 import { DEFAULT_SPLAT_VIEW_SETTINGS, getCanvasSplatStride, prepareSplatAssetForRendering } from './pt3SplatRendering';
@@ -11,6 +11,7 @@ const SPLAT_METADATA_KEYS = ['gaussian_splat_url', 'gaussian_splat_asset_url', '
 const VIEWER_MODES = { volume: 'volume', splat: 'splat', hybrid: 'hybrid' };
 const QUALITY_PROFILES = { performance: { sampleStep: 2.5, scale: 0.65 }, balanced: { sampleStep: 1.25, scale: 0.85 }, quality: { sampleStep: 0.75, scale: 1 } };
 const SPLAT_FALLBACK_NOTE = 'Generated 3DGS asset unavailable. Showing deterministic mechanical fallback splats.';
+const DEFAULT_AXIS_MIRROR_SCALE = Object.freeze({ x: 1, y: 1, z: 1 });
 export const DEFAULT_RAY_MARCH_SETTINGS = Object.freeze({
   presetKey: 'machinedMetal',
   volumeOpacity: 1.25,
@@ -89,6 +90,7 @@ function renderPreview(ctx, {
   splats,
   rotation,
   zoom,
+  mirrorScale,
   preset,
   crop,
   volumeOpacity,
@@ -116,9 +118,9 @@ function renderPreview(ctx, {
   const sinRx = Math.sin(rx);
   const tuneColor = (value, fallback) => Math.round(Math.max(0, Math.min(1, ((value ?? fallback) - 0.5) * splatContrast + 0.5)) * 255);
   const project = (p) => {
-    const x = p[0] - bounds.min[0] - bounds.size[0] / 2;
-    const y = p[1] - bounds.min[1] - bounds.size[1] / 2;
-    const z = p[2] - bounds.min[2] - bounds.size[2] / 2;
+    const x = (p[0] - bounds.min[0] - bounds.size[0] / 2) * mirrorScale.x;
+    const y = (p[1] - bounds.min[1] - bounds.size[1] / 2) * mirrorScale.y;
+    const z = (p[2] - bounds.min[2] - bounds.size[2] / 2) * mirrorScale.z;
     // Match Three.js' positive Y-axis rotation so hybrid splats and the
     // ray-marched volume remain locked together while orbiting.
     const xz = x * cosRy + z * sinRy;
@@ -204,6 +206,7 @@ export default function Pt3GaussianSplatViewer({
   mode = VIEWER_MODES.hybrid,
   rotation = { x: -18, y: 32 },
   zoom = 1,
+  mirrorScale = DEFAULT_AXIS_MIRROR_SCALE,
   slicePosition = { axial: 0, coronal: 0, sagittal: 0 },
   rayMarchSettings = DEFAULT_RAY_MARCH_SETTINGS,
   splatViewSettings = DEFAULT_SPLAT_VIEW_SETTINGS,
@@ -220,6 +223,10 @@ export default function Pt3GaussianSplatViewer({
   const threeRendererRef = useRef(null);
   const workerRef = useRef(null);
   const statsRef = useRef({ frames: 0, fps: 0, renderedSplats: 0 });
+  const activeMirrorScale = useMemo(
+    () => normalizeAxisMirrorScale(mirrorScale),
+    [mirrorScale],
+  );
   const activeRayMarchSettings = { ...DEFAULT_RAY_MARCH_SETTINGS, ...(rayMarchSettings || {}) };
   const { presetKey, quality, volumeOpacity, intensityThreshold, showSliceGuides } = activeRayMarchSettings;
   const activeSplatViewSettings = { ...DEFAULT_SPLAT_VIEW_SETTINGS, ...(splatViewSettings || {}) };
@@ -378,6 +385,7 @@ export default function Pt3GaussianSplatViewer({
         height,
         rotation,
         zoom,
+        mirrorScale: activeMirrorScale,
         volumeOpacity,
         presetKey,
         intensityThreshold,
@@ -394,6 +402,7 @@ export default function Pt3GaussianSplatViewer({
           splats,
           rotation,
           zoom,
+          mirrorScale: activeMirrorScale,
           preset: MECHANICAL_TRANSFER_PRESETS[presetKey],
           crop: getMechanicalCropBox(metadata, cropEnabled),
           volumeOpacity,
@@ -410,7 +419,7 @@ export default function Pt3GaussianSplatViewer({
       frameId = window.requestAnimationFrame(render);
     };
     frameId = window.requestAnimationFrame(render); return () => window.cancelAnimationFrame(frameId);
-  }, [cropEnabled, intensityThreshold, metadata, mode, presetKey, quality, rendererType, rotation, showSliceGuides, slicePosition, splatContrast, splatGuidesVisible, splatOpacity, splatPointSize, splats, volumeOpacity, zoom]);
+  }, [activeMirrorScale, cropEnabled, intensityThreshold, metadata, mode, presetKey, quality, rendererType, rotation, showSliceGuides, slicePosition, splatContrast, splatGuidesVisible, splatOpacity, splatPointSize, splats, volumeOpacity, zoom]);
 
   const updateRayMarchSetting = (key, value) => {
     onRayMarchSettingsChange?.({ ...activeRayMarchSettings, [key]: value });
@@ -421,7 +430,13 @@ export default function Pt3GaussianSplatViewer({
   };
 
   const stats = statsRef.current; const bounds = getPhysicalBounds(metadata);
-  return <div className="pt3-gaussian-splat-viewer" data-testid="pt3-gaussian-splat-viewer">
+  return <div
+    className="pt3-gaussian-splat-viewer"
+    data-testid="pt3-gaussian-splat-viewer"
+    data-mirror-x={activeMirrorScale.x}
+    data-mirror-y={activeMirrorScale.y}
+    data-mirror-z={activeMirrorScale.z}
+  >
     <canvas
       ref={webglCanvasRef}
       className="pt3-gaussian-splat-webgl"
