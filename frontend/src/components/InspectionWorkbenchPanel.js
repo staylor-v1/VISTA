@@ -1519,17 +1519,34 @@ function rememberSliceCanvas(volumeCache, key, canvas) {
   }
 }
 
-function loadMprImage(source) {
+function loadMprImage(source, onSettled) {
   return new Promise((resolve) => {
     const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => resolve(null);
+    const settle = (loadedImage) => {
+      onSettled?.();
+      resolve(loadedImage);
+    };
+    image.onload = () => settle(image);
+    image.onerror = () => settle(null);
     image.src = source.url;
   });
 }
 
-async function buildMprVolumeCache(cacheKey, imageStack, dimensions) {
-  const images = await Promise.all(imageStack.map(loadMprImage));
+function getMprSliceCachingMessage(progress = {}) {
+  const loaded = Math.max(0, Number(progress.loadedSlices) || 0);
+  const total = Math.max(0, Number(progress.totalSlices) || 0);
+  if (total > 0) return `Caching MPR slices ${Math.min(loaded, total)}/${total}`;
+  return 'Caching MPR slices';
+}
+
+async function buildMprVolumeCache(cacheKey, imageStack, dimensions, onProgress) {
+  const totalSlices = Array.isArray(imageStack) ? imageStack.length : 0;
+  let loadedSlices = 0;
+  const reportProgress = () => {
+    loadedSlices += 1;
+    onProgress?.({ loadedSlices, totalSlices });
+  };
+  const images = await Promise.all(imageStack.map((source) => loadMprImage(source, reportProgress)));
   const loadedEntries = images
     .map((image, index) => ({ image, source: imageStack[index], index }))
     .filter((entry) => entry.image);
@@ -1902,34 +1919,36 @@ function projectMprPointToOverlay(vx, vy, vz, dims, rotation, zoom, width, heigh
 
 function useMprVolumeCache(imageStack, dimensions) {
   const cacheKey = useMemo(() => getMprVolumeCacheKey(imageStack, dimensions), [dimensions, imageStack]);
-  const [cacheState, setCacheState] = useState({ key: '', status: 'idle', cache: null });
+  const [cacheState, setCacheState] = useState({ key: '', status: 'idle', cache: null, progress: { loadedSlices: 0, totalSlices: 0 } });
 
   useEffect(() => {
     if (!cacheKey || imageStack.length === 0) {
-      setCacheState({ key: '', status: 'idle', cache: null });
+      setCacheState({ key: '', status: 'idle', cache: null, progress: { loadedSlices: 0, totalSlices: 0 } });
       return undefined;
     }
     if (typeof window !== 'undefined' && /jsdom/i.test(window.navigator?.userAgent || '')) {
-      setCacheState({ key: cacheKey, status: 'idle', cache: null });
+      setCacheState({ key: cacheKey, status: 'idle', cache: null, progress: { loadedSlices: 0, totalSlices: imageStack.length } });
       return undefined;
     }
 
     const cached = mprVolumeCacheStore.get(cacheKey);
     if (cached) {
-      setCacheState({ key: cacheKey, status: 'ready', cache: cached });
+      setCacheState({ key: cacheKey, status: 'ready', cache: cached, progress: { loadedSlices: imageStack.length, totalSlices: imageStack.length } });
       return undefined;
     }
 
     let cancelled = false;
-    setCacheState({ key: cacheKey, status: 'loading', cache: null });
-    buildMprVolumeCache(cacheKey, imageStack, dimensions).then((cache) => {
+    setCacheState({ key: cacheKey, status: 'loading', cache: null, progress: { loadedSlices: 0, totalSlices: imageStack.length } });
+    buildMprVolumeCache(cacheKey, imageStack, dimensions, (progress) => {
+      if (!cancelled) setCacheState((previous) => ({ ...previous, status: 'loading', progress }));
+    }).then((cache) => {
       if (cancelled) return;
       if (!cache) {
-        setCacheState({ key: cacheKey, status: 'error', cache: null });
+        setCacheState({ key: cacheKey, status: 'error', cache: null, progress: { loadedSlices: 0, totalSlices: imageStack.length } });
         return;
       }
       rememberMprVolumeCache(cacheKey, cache);
-      setCacheState({ key: cacheKey, status: 'ready', cache });
+      setCacheState({ key: cacheKey, status: 'ready', cache, progress: { loadedSlices: imageStack.length, totalSlices: imageStack.length } });
     });
 
     return () => {
@@ -5389,6 +5408,13 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
             </div>
           </div>
           <div className="mpr-grid mpr-grid-four" data-testid="mpr-grid">
+            {volumeCacheState.status === 'loading' && volumeImageStack.length > 0 && (
+              <div className="mpr-grid-loading" role="status" aria-live="polite">
+                <strong>Preparing MPR slices…</strong>
+                <span>{getMprSliceCachingMessage(volumeCacheState.progress)}</span>
+                <small>VISTA is loading the volume stack. Slice views will appear when caching completes.</small>
+              </div>
+            )}
             {MPR_AXES.map((axis) => {
               const upper = Math.max(0, (mprDimensions[axis] || 1) - 1);
               const config = MPR_AXIS_CONFIG[axis];
@@ -8255,5 +8281,5 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 }
 
 export { getVolumeSourceImages, getVolumeOverlayStacks };
-export { MPR_AXES, MPR_AXIS_CONFIG, MprSliceCanvas, getMprAxisImageDimensions, useMprVolumeCache };
+export { MPR_AXES, MPR_AXIS_CONFIG, MprSliceCanvas, getMprAxisImageDimensions, getMprSliceCachingMessage, useMprVolumeCache };
 export default InspectionWorkbenchPanel;

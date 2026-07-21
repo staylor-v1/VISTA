@@ -1,6 +1,6 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import InspectionWorkbenchPanel from '../InspectionWorkbenchPanel';
+import InspectionWorkbenchPanel, { getMprSliceCachingMessage } from '../InspectionWorkbenchPanel';
 import ImagesToPartsTab from '../ImagesToPartsTab';
 
 jest.setTimeout(90000);
@@ -666,6 +666,10 @@ function scenarioNameIncludesAdvanced(payload) {
 
 describe('InspectionWorkbenchPanel', () => {
 
+  test('formats MPR loading progress while volume slices are expected', () => {
+    expect(getMprSliceCachingMessage({ loadedSlices: 1, totalSlices: 3 })).toBe('Caching MPR slices 1/3');
+    expect(getMprSliceCachingMessage({ loadedSlices: 0, totalSlices: 0 })).toBe('Caching MPR slices');
+  });
 
   test('does not reapply stale launch filters after a PT1 user selects another part', async () => {
     const parts = [
