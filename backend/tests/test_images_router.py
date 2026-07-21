@@ -719,3 +719,50 @@ def test_import_project_s3_files_rejects_key_outside_prefix(client):
 
     assert response.status_code == 400
     assert "outside the requested S3 URL prefix" in response.json()["detail"]
+
+def test_numpy_volume_metadata_and_axis_slice_endpoints(client, monkeypatch):
+    pid = _create_project(client, name="volume-slice-endpoints")
+    volume = np.arange(2 * 3 * 4, dtype=np.uint16).reshape((2, 3, 4))
+    payload = io.BytesIO()
+    np.save(payload, volume)
+    payload.seek(0)
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("volume.npy", payload, "application/octet-stream")},
+    )
+    assert upload.status_code == 201
+    image_id = upload.json()["id"]
+    raw_payload = payload.getvalue()
+
+    class Resp:
+        def raise_for_status(self):
+            return None
+
+        async def aread(self):
+            return raw_payload
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            return Resp()
+
+    monkeypatch.setattr("routers.images.httpx.AsyncClient", Client)
+    meta = client.get(f"/api/images/{image_id}/volume-metadata")
+    assert meta.status_code == 200
+    assert meta.json()["dimensions"] == {"axial": 2, "coronal": 3, "sagittal": 4}
+    assert meta.json()["interpretation"] == "voxel_array"
+    assert meta.json()["bit_depth"] == 16
+
+    sliced = client.get(f"/api/images/{image_id}/volume-slice?axis=coronal&index=1")
+    assert sliced.status_code == 200
+    assert sliced.headers["content-type"].startswith("image/png")
+    with Image.open(io.BytesIO(sliced.content)) as image:
+        assert image.size == (4, 2)
+
+    out_of_range = client.get(f"/api/images/{image_id}/volume-slice?axis=sagittal&index=99")
+    assert out_of_range.status_code == 400

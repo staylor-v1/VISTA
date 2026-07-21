@@ -8255,4 +8255,5 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 }
 
 export { getVolumeSourceImages, getVolumeOverlayStacks };
+export { MPR_AXES, MPR_AXIS_CONFIG, MprSliceCanvas, getMprAxisImageDimensions, useMprVolumeCache };
 export default InspectionWorkbenchPanel;
