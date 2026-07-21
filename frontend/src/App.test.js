@@ -109,6 +109,51 @@ test('stops loading and shows an error when projects request fails', async () =>
 
 });
 
+
+test('dashboard debug mode surfaces detailed persistent project load errors', async () => {
+  jest.useFakeTimers();
+  window.localStorage.setItem('vista.dashboard.debugMode', 'true');
+  global.fetch = jest.fn((input) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.endsWith('/api/users/me')) {
+      return Promise.resolve({ ok: false, status: 401, json: async () => ({ detail: 'Unauthorized' }) });
+    }
+    if (url.endsWith('/api/users/me/groups')) {
+      return Promise.resolve({ ok: true, status: 200, json: async () => [] });
+    }
+    if (url.endsWith('/api/projects/')) {
+      return Promise.resolve({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        headers: { get: () => 'application/json' },
+        json: async () => ({ detail: 'database relation "projects" does not exist', trace_id: 'trace-500' }),
+      });
+    }
+    return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+  });
+
+  render(
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
+  );
+
+  expect(await screen.findByText(/database relation "projects" does not exist/i)).toBeInTheDocument();
+  expect(screen.getByText(/Debug details: GET \/api\/projects\/ failed with HTTP 500 Internal Server Error/i)).toBeInTheDocument();
+  expect(screen.getByText(/trace-500/i)).toBeInTheDocument();
+
+  act(() => {
+    jest.advanceTimersByTime(6000);
+  });
+  expect(screen.getByText(/database relation "projects" does not exist/i)).toBeInTheDocument();
+
+  await userEvent.setup({ advanceTimers: jest.advanceTimersByTime }).click(screen.getByRole('button', { name: 'Close notification' }));
+  expect(screen.queryByText(/database relation "projects" does not exist/i)).not.toBeInTheDocument();
+  jest.useRealTimers();
+  window.localStorage.removeItem('vista.dashboard.debugMode');
+});
+
 describe('project type UI exposure', () => {
   const projectTypes = ['PT1', 'PT2', 'PT3'];
   const simulatedUsers = [
@@ -249,13 +294,20 @@ describe('project type UI exposure', () => {
     await user.click(screen.getByRole('button', { name: 'Open dashboard settings' }));
 
     const settingsModal = screen.getByRole('dialog', { name: 'Dashboard Settings' });
-    expect(await within(settingsModal).findByText('Change Postgres')).toBeInTheDocument();
-    expect(within(settingsModal).getByText('postgresql+asyncpg://old:secret@localhost:5432/vista')).toBeInTheDocument();
+    expect(await within(settingsModal).findByText('Debug Mode')).toBeInTheDocument();
+    const debugToggle = within(settingsModal).getByLabelText('Enable dashboard debug mode');
+    expect(debugToggle).not.toBeChecked();
+    await user.click(debugToggle);
+    expect(window.localStorage.getItem('vista.dashboard.debugMode')).toBe('true');
+    expect(screen.getByText('Dashboard debug mode enabled.')).toBeInTheDocument();
+    expect(await screen.findByText('Change Postgres')).toBeInTheDocument();
+    const refreshedSettingsModal = screen.getByRole('dialog', { name: 'Dashboard Settings' });
+    expect(within(refreshedSettingsModal).getByText('postgresql+asyncpg://old:secret@localhost:5432/vista')).toBeInTheDocument();
 
-    const urlInput = within(settingsModal).getByLabelText('New Postgres URL');
+    const urlInput = within(refreshedSettingsModal).getByLabelText('New Postgres URL');
     await user.clear(urlInput);
     await user.type(urlInput, 'postgresql+asyncpg://new:secret@localhost:5432/vista');
-    await user.click(within(settingsModal).getByRole('button', { name: 'Preview' }));
+    await user.click(within(refreshedSettingsModal).getByRole('button', { name: 'Preview' }));
 
     const previewModal = await screen.findByRole('dialog', { name: 'Dashboard Preview' });
     expect(within(previewModal).getByText('Preview Project')).toBeInTheDocument();

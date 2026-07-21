@@ -13,6 +13,49 @@ const ProjectReport = lazyWithRetry(() => import('./components/ProjectReport'));
 const GroupGalleryView = lazyWithRetry(() => import('./components/GroupGalleryView'));
 
 const DEFAULT_DASHBOARD_FETCH_TIMEOUT_MS = 10000;
+const DASHBOARD_DEBUG_MODE_STORAGE_KEY = 'vista.dashboard.debugMode';
+
+function isDashboardDebugModeStored() {
+  if (typeof window === 'undefined') return false;
+  return window.localStorage?.getItem(DASHBOARD_DEBUG_MODE_STORAGE_KEY) === 'true';
+}
+
+function setDashboardDebugModeStored(enabled) {
+  if (typeof window === 'undefined') return;
+  window.localStorage?.setItem(DASHBOARD_DEBUG_MODE_STORAGE_KEY, enabled ? 'true' : 'false');
+}
+
+async function buildDetailedErrorMessage(response, context = {}) {
+  const { method = 'GET', url = '' } = context;
+  const contentType = response.headers?.get?.('content-type') || '';
+  const base = `${method} ${url || response.url || 'request'} failed with HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`;
+  let payloadText = '';
+  let detail = '';
+
+  try {
+    if (contentType.includes('application/json')) {
+      const payload = await response.json();
+      if (typeof payload?.detail === 'string') {
+        detail = payload.detail;
+      } else if (payload?.detail) {
+        detail = JSON.stringify(payload.detail);
+      } else if (payload?.message) {
+        detail = String(payload.message);
+      }
+      payloadText = JSON.stringify(payload);
+    } else {
+      payloadText = await response.text();
+      detail = payloadText;
+    }
+  } catch (error) {
+    payloadText = `Unable to parse error response: ${error.message}`;
+  }
+
+  const parts = [detail || base];
+  parts.push(`Debug details: ${base}`);
+  if (payloadText) parts.push(`Response body: ${payloadText.slice(0, 2000)}`);
+  return parts.join('\n');
+}
 
 function getDashboardFetchTimeoutMs() {
   if (typeof window !== 'undefined' && Number.isFinite(Number(window.__VISTA_DASHBOARD_FETCH_TIMEOUT_MS))) {
@@ -762,7 +805,7 @@ const DashboardBackupPanel = memo(function DashboardBackupPanel({ onImportComple
 });
 
 
-const DashboardSettingsModal = memo(function DashboardSettingsModal({ onClose, showToast, onImportComplete, onDatabaseAccepted }) {
+const DashboardSettingsModal = memo(function DashboardSettingsModal({ onClose, showToast, onImportComplete, onDatabaseAccepted, debugMode, onDebugModeChange }) {
   const [currentDatabaseUrl, setCurrentDatabaseUrl] = useState('');
   const [databaseUrl, setDatabaseUrl] = useState('');
   const [loadingCurrentUrl, setLoadingCurrentUrl] = useState(true);
@@ -862,6 +905,21 @@ const DashboardSettingsModal = memo(function DashboardSettingsModal({ onClose, s
         <div className="modal-body dashboard-settings-body">
           <section className="settings-section" aria-labelledby="dashboard-backup-settings-title">
             <DashboardBackupPanel showToast={showToast} onImportComplete={onImportComplete} compact />
+          </section>
+
+          <section className="settings-section" aria-labelledby="dashboard-debug-title">
+            <div className="settings-section-header">
+              <h2 id="dashboard-debug-title">Debug Mode</h2>
+              <p>Show detailed request diagnostics in dashboard errors and keep error popups visible until closed.</p>
+            </div>
+            <label className="dashboard-debug-toggle">
+              <input
+                type="checkbox"
+                checked={debugMode}
+                onChange={(event) => onDebugModeChange(event.target.checked)}
+              />
+              <span>Enable dashboard debug mode</span>
+            </label>
           </section>
 
           <section className="settings-section change-postgres-section" aria-labelledby="change-postgres-title">
@@ -1134,8 +1192,10 @@ function App() {
   const [currentUserGroups, setCurrentUserGroups] = useState([]);
   const projectsRef = useRef(projects);
   const currentUserGroupsRef = useRef(currentUserGroups);
+  const dashboardDebugModeRef = useRef(isDashboardDebugModeStored());
   const [showArchived, setShowArchived] = useState(false);
   const [showDashboardSettings, setShowDashboardSettings] = useState(false);
+  const [dashboardDebugMode, setDashboardDebugMode] = useState(() => isDashboardDebugModeStored());
   // const [newProject, setNewProject] = useState({  // Commented out - not currently used
   //   name: '',
   //   description: '',
@@ -1143,9 +1203,16 @@ function App() {
   // });
   
   // Function to show a toast notification
-  const showToast = (message, type = 'error') => {
-    setToast({ message, type });
+  const showToast = (message, type = 'error', options = {}) => {
+    setToast({ message, type, persist: Boolean(options.persist) });
   };
+
+  const handleDashboardDebugModeChange = useCallback((enabled) => {
+    setDashboardDebugMode(enabled);
+    dashboardDebugModeRef.current = enabled;
+    setDashboardDebugModeStored(enabled);
+    showToast(`Dashboard debug mode ${enabled ? 'enabled' : 'disabled'}.`, 'info');
+  }, []);
   
   // Function to hide the toast
   const hideToast = () => {
@@ -1155,8 +1222,11 @@ function App() {
   const loadProjects = useCallback((includeArchived = showArchived, isCurrent = () => true) => {
     const url = includeArchived ? '/api/projects/?include_archived=true' : '/api/projects/';
     return fetchWithTimeout(url)
-      .then(response => {
+      .then(async response => {
         if (!response.ok) {
+          if (isDashboardDebugModeStored()) {
+            throw new Error(await buildDetailedErrorMessage(response, { method: 'GET', url }));
+          }
           throw new Error(`HTTP error! status: ${response.status}`);
         }
         return response.json();
@@ -1234,14 +1304,14 @@ function App() {
       .catch(err => {
         console.error("Failed to fetch projects:", err);
         if (isCurrent) {
-          showToast(`Failed to fetch projects: ${err.message}`, 'error');
+          showToast(`Failed to fetch projects: ${err.message}`, 'error', { persist: dashboardDebugModeRef.current });
           setLoading(false);
         }
       });
     return () => {
       isCurrent = false;
     };
-  }, [loadProjects]); // Refresh when archived toggle changes.
+  }, [loadProjects, showArchived]); // Refresh when archived toggle changes.
 
   // Log component renders for debugging
   console.log("App render count:", ++renderCount);
@@ -1419,7 +1489,7 @@ function App() {
             message={toast.message}
             type={toast.type}
             onClose={hideToast}
-            duration={5000}
+            duration={toast.persist ? null : 5000}
           />
         )}
         
@@ -1527,6 +1597,8 @@ function App() {
           showToast={showToast}
           onImportComplete={() => loadProjects()}
           onDatabaseAccepted={() => loadProjects()}
+          debugMode={dashboardDebugMode}
+          onDebugModeChange={handleDashboardDebugModeChange}
         />
       )}
       {deletingProject && (
