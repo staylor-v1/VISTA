@@ -1478,7 +1478,8 @@ describe('InspectionWorkbenchPanel', () => {
       ['stack', 'Stack reconstruction'],
       ['shell', 'Reference shell'],
       ['volume3d', 'Ray-marched volume'],
-      ['splat', 'Mechanical 3DGS'],
+      ['splat', 'Simplified 3DGS'],
+      ['real_splat', 'Real 3DGS'],
       ['hybrid3d', 'Hybrid part view'],
     ];
 
@@ -1487,10 +1488,10 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toHaveTextContent(label);
       expect(document.querySelectorAll('.mpr-volume-scene')).toHaveLength(1);
       expect(screen.queryAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(
-        ['volume3d', 'splat', 'hybrid3d'].includes(value) ? 1 : 0,
+        ['volume3d', 'splat', 'real_splat', 'hybrid3d'].includes(value) ? 1 : 0,
       );
       expect(screen.queryByRole('group', { name: 'Ray-march controls' }) !== null).toBe(value === 'volume3d');
-      expect(screen.queryByRole('group', { name: '3DGS controls' }) !== null).toBe(value === 'splat');
+      expect(screen.queryByRole('group', { name: '3DGS controls' }) !== null).toBe(['splat', 'real_splat'].includes(value));
     });
 
     expect(screen.getAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(1);
@@ -1729,7 +1730,7 @@ describe('InspectionWorkbenchPanel', () => {
 
     const viewer = screen.getByTestId('pt3-gaussian-splat-viewer');
     await waitFor(() => expect(viewer).toHaveTextContent('Generated 3DGS asset unavailable'));
-    expect(viewer).toHaveTextContent('SPLAT ready');
+    expect(viewer).toHaveTextContent('Simplified 3DGS ready');
     expect(viewer).not.toHaveTextContent('HTTP 500');
   });
 
@@ -3459,10 +3460,13 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getAllByTestId('mpr-preview-sagittal')[0].querySelector('.mpr-slice-canvas')).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('splat-config-button'));
-    const modal = screen.getByRole('dialog', { name: 'Mechanical 3DGS configuration' });
+    const modal = screen.getByRole('dialog', { name: 'Simplified 3DGS configuration' });
     expect(within(modal).getByLabelText('Intensity threshold')).toHaveValue(150);
     expect(within(modal).getByText(/0-200 loaded image range/)).toBeInTheDocument();
     expect(within(modal).getByTestId('splat-config-summary')).toHaveTextContent('threshold 150');
+    expect(within(modal).getByLabelText('Maximum splats')).toHaveAttribute('max', '100000');
+    fireEvent.change(within(modal).getByLabelText('Maximum splats'), { target: { value: '250000' } });
+    expect(within(modal).getByLabelText('Maximum splats')).toHaveValue(100000);
 
     fireEvent.change(within(modal).getByLabelText('Downsample stride'), { target: { value: '3' } });
     fireEvent.click(within(modal).getByRole('button', { name: 'Apply splat parameters' }));
@@ -3504,7 +3508,7 @@ describe('InspectionWorkbenchPanel', () => {
 
     expect(screen.queryByTestId('pt3-gaussian-splat-viewer')).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'volume3d' } });
-    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('Mechanical 3D viewer loading');
+    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('Ray march loading');
     expect(screen.queryByLabelText('3DGS opacity')).not.toBeInTheDocument();
     expect(global.fetch.mock.calls.some((call) => call[0].includes('/volume-splat-assets'))).toBe(false);
 
@@ -3513,7 +3517,7 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toBeInTheDocument();
     expect(screen.getByLabelText('Mechanical 3DGS preview')).toBeInTheDocument();
     expect(screen.queryByRole('img', { name: /Volume reconstruction slice/ })).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('Mechanical 3DGS preprocessing is still running'));
+    await waitFor(() => expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('Simplified 3DGS preprocessing is still running'));
     const splatPostCall = global.fetch.mock.calls.find((call) => call[0].includes('/volume-splat-assets') && call[1]?.method === 'POST');
     expect(splatPostCall).toBeTruthy();
     expect(JSON.parse(splatPostCall[1].body).source_path).toBeUndefined();

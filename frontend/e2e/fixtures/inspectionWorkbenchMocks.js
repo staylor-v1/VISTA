@@ -181,7 +181,14 @@ function createMockData(scenario = 'advanced') {
   return scenarioByUser[scenario] || scenarioByUser.advanced;
 }
 
-async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'advanced', images = [], mockParts = null, mockBatches = null } = {}) {
+async function mockInspectionWorkbenchRoutes(page, {
+  type = 'PT1',
+  scenario = 'advanced',
+  images = [],
+  mockParts = null,
+  mockBatches = null,
+  realSplatSegmentIds = null,
+} = {}) {
   const { batches, parts, workspaceState } = createMockData(scenario);
   const metadataNormalizationByScenario = {
     basic: {},
@@ -237,6 +244,24 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
   const exportBundleArchiveRequests = [];
   const ingestValidationRequests = [];
   const savedConfigurations = [];
+  const realSplatRequests = [];
+  let realSplatJob = { status: 'missing', polls: 0 };
+  const canonicalRealSplatAsset = {
+    contract_version: 'pt3_real_3dgs/v1',
+    representation: 'real_3dgs',
+    optimization_method: 'voxel_direct_moment_fit',
+    optimization_domain: 'voxel_field',
+    camera_model: 'none',
+    coordinate_space: 'physical',
+    sh_degree: 0,
+    means: [[1.7, 2.8, 4], [3.4, 3.8, 7], [4.9, 4.6, 10], [3, 5.5, 12]],
+    scales: [[0.8, 0.3, 0.5], [0.7, 0.5, 0.4], [0.6, 0.3, 0.8], [0.5, 0.7, 0.4]],
+    rotations: [[1, 0, 0, 0], [0.966, 0, 0, 0.259], [0.924, 0, 0.383, 0], [0.985, 0.174, 0, 0]],
+    opacities: [0.82, 0.76, 0.88, 0.7],
+    sh_coefficients: [[1.25, 0.35, 1.5], [0.45, 1.2, 1.55], [1.45, 0.7, 0.28], [0.25, 1.4, 0.8]],
+    scalar_values: [192, 168, 224, 148],
+    segment_ids: Array.isArray(realSplatSegmentIds) ? realSplatSegmentIds : [null, null, null, null],
+  };
 
   await page.route('**/api/**', async (route) => {
     const url = route.request().url();
@@ -532,6 +557,68 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
       });
       return;
     }
+    if (url.endsWith('/real-gaussian-splat-assets/status') && method === 'GET') {
+      if (realSplatJob.status === 'pending') {
+        realSplatJob.polls += 1;
+        if (realSplatJob.polls === 1) {
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              status: 'pending',
+              stage: 'Fitting contiguous voxel groups',
+              progress_percent: 37,
+              metadata: { fit_mode: 'voxel_direct', voxel_direct_available: true },
+            }),
+          });
+          return;
+        }
+        realSplatJob = { status: 'ready', polls: realSplatJob.polls };
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(realSplatJob.status === 'ready'
+          ? {
+            status: 'ready',
+            stage: 'Ready',
+            progress_percent: 100,
+            asset_url: `/api/projects/${projectId}/parts/part-adv-001/real-gaussian-splat-assets/mock-voxel-direct.json`,
+            splat_count: canonicalRealSplatAsset.means.length,
+            metadata: { fit_mode: 'voxel_direct', optimization_domain: 'voxel_field' },
+          }
+          : {
+            status: 'missing',
+            progress_percent: 0,
+            metadata: { voxel_direct_available: true, provider_configured: false },
+          }),
+      });
+      return;
+    }
+    if (url.endsWith('/real-gaussian-splat-assets/mock-voxel-direct.json') && method === 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(canonicalRealSplatAsset),
+      });
+      return;
+    }
+    if (url.endsWith('/real-gaussian-splat-assets') && method === 'POST') {
+      const payload = route.request().postDataJSON() || {};
+      realSplatRequests.push(payload);
+      realSplatJob = { status: 'pending', polls: 0 };
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'pending',
+          stage: 'Queued voxel-native fit',
+          progress_percent: 0,
+          metadata: { fit_mode: payload.fit_mode || 'voxel_direct' },
+        }),
+      });
+      return;
+    }
     if (url.includes(`/api/projects/${projectId}/parts`)) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(mutableParts) });
       return;
@@ -547,6 +634,7 @@ async function mockInspectionWorkbenchRoutes(page, { type = 'PT1', scenario = 'a
     getExportBundleArchiveRequests: () => exportBundleArchiveRequests,
     getIngestValidationRequests: () => ingestValidationRequests,
     getSavedConfigurations: () => savedConfigurations,
+    getRealSplatRequests: () => realSplatRequests,
   };
 }
 

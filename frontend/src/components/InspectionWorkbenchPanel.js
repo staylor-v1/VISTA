@@ -42,6 +42,7 @@ const MPR_RECONSTRUCTION_MODES = {
   stack: 'stack',
   shell: 'shell',
   splat: 'splat',
+  realSplat: 'real_splat',
   volume3d: 'volume3d',
   hybrid3d: 'hybrid3d',
 };
@@ -49,13 +50,15 @@ const MPR_RECONSTRUCTION_LABELS = {
   [MPR_RECONSTRUCTION_MODES.orientation]: 'Orientation only',
   [MPR_RECONSTRUCTION_MODES.stack]: 'Stack reconstruction',
   [MPR_RECONSTRUCTION_MODES.shell]: 'Reference shell',
-  [MPR_RECONSTRUCTION_MODES.splat]: 'Mechanical 3DGS',
+  [MPR_RECONSTRUCTION_MODES.splat]: 'Simplified 3DGS',
+  [MPR_RECONSTRUCTION_MODES.realSplat]: 'Real 3DGS',
   [MPR_RECONSTRUCTION_MODES.volume3d]: 'Ray-marched volume',
   [MPR_RECONSTRUCTION_MODES.hybrid3d]: 'Hybrid part view',
 };
 const PT3_RENDERER_RECONSTRUCTION_MODES = [
   MPR_RECONSTRUCTION_MODES.volume3d,
   MPR_RECONSTRUCTION_MODES.splat,
+  MPR_RECONSTRUCTION_MODES.realSplat,
   MPR_RECONSTRUCTION_MODES.hybrid3d,
 ];
 const DEFAULT_MPR_PROJECTION_MIRROR = { axial: false, coronal: false, sagittal: false };
@@ -1184,7 +1187,7 @@ function getDefaultSplatParameters(part, displayDomain) {
   const domain = getNormalizedDisplayDomain(displayDomain);
   const dimensions = getMprDimensions(part);
   const voxelCount = Math.max(1, Number(dimensions.axial || 1) * Number(dimensions.coronal || 1) * Number(dimensions.sagittal || 1));
-  const targetMaxSplats = Math.min(250000, Math.max(50000, Math.round(voxelCount * 0.08)));
+  const targetMaxSplats = Math.min(100000, Math.max(50000, Math.round(voxelCount * 0.08)));
   return {
     threshold: Math.round(getSplatDefaultThreshold(part, domain) / domain.step) * domain.step,
     intensityMin: domain.min,
@@ -3264,7 +3267,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const canShowShellReconstruction = shellImageLayers.length > 0;
   const canShowGaussianSplatPreview = Boolean(selectedPart);
   const effectiveMprReconstructionMode = (
-    [MPR_RECONSTRUCTION_MODES.splat, MPR_RECONSTRUCTION_MODES.volume3d, MPR_RECONSTRUCTION_MODES.hybrid3d].includes(mprReconstructionMode) && canShowGaussianSplatPreview
+    PT3_RENDERER_RECONSTRUCTION_MODES.includes(mprReconstructionMode) && canShowGaussianSplatPreview
   )
     ? mprReconstructionMode
     : (
@@ -3387,6 +3390,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       panX: clampRange(savedViewport.panX, -200, 200, 0),
       panY: clampRange(savedViewport.panY, -200, 200, 0),
     });
+    // `splat` is the persisted legacy value and now explicitly selects the
+    // simplified voxel-derived renderer.
     setMprReconstructionMode(
       Object.values(MPR_RECONSTRUCTION_MODES).includes(savedMpr.reconstruction_mode)
         ? savedMpr.reconstruction_mode
@@ -5189,7 +5194,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       <div className="modal-backdrop" role="presentation">
         <div className="modal-content splat-config-modal" role="dialog" aria-modal="true" aria-labelledby="splat-config-title">
           <div className="modal-header">
-            <h3 id="splat-config-title">Mechanical 3DGS configuration</h3>
+            <h3 id="splat-config-title">Simplified 3DGS configuration</h3>
             <button type="button" className="modal-close" aria-label="Close splat configuration" onClick={() => setSplatConfigModalOpen(false)}>×</button>
           </div>
           <p className="muted">
@@ -5225,9 +5230,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 id="splat-max-count"
                 type="number"
                 min="1"
+                max="100000"
                 step="1000"
                 value={draft.maxSplats}
-                onChange={(event) => updateDraft({ maxSplats: Math.max(1, Number(event.target.value) || defaults.maxSplats) })}
+                onChange={(event) => updateDraft({
+                  maxSplats: Math.min(100000, Math.max(1, Number(event.target.value) || defaults.maxSplats)),
+                })}
               />
             </label>
             <label htmlFor="splat-output-format">
@@ -5327,7 +5335,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   Ray-marched volume
                 </option>
                 <option value={MPR_RECONSTRUCTION_MODES.splat} disabled={!canShowGaussianSplatPreview}>
-                  Mechanical 3DGS
+                  Simplified 3DGS
+                </option>
+                <option value={MPR_RECONSTRUCTION_MODES.realSplat} disabled={!canShowGaussianSplatPreview}>
+                  Real 3DGS
                 </option>
                 <option value={MPR_RECONSTRUCTION_MODES.hybrid3d} disabled={!canShowGaussianSplatPreview}>
                   Hybrid part view
@@ -5580,7 +5591,13 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     projectId={projectId}
                     volumeImageStack={volumeImageStack}
                     splatParameters={splatParameters}
-                    mode={effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.volume3d ? 'volume' : effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat ? 'splat' : 'hybrid'}
+                    mode={effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.volume3d
+                      ? 'volume'
+                      : effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.realSplat
+                        ? 'real-splat'
+                        : effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat
+                          ? 'splat'
+                          : 'hybrid'}
                     rotation={mprRotation}
                     zoom={viewportTransform.zoom}
                     mirrorScale={mprAxisMirrorScale}

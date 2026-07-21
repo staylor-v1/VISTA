@@ -33,24 +33,41 @@ function normalizeColor(value, fallback) {
   return fallback;
 }
 
-function normalizeLabelSlice(slice, index) {
-  if (typeof slice === 'string' && slice.trim()) {
-    return { url: slice.trim(), sliceIndex: index };
+function flattenSegmentationLabels(value) {
+  if (!Array.isArray(value) && !ArrayBuffer.isView(value)) return null;
+  const flattened = [];
+  const pending = Array.from(value).reverse();
+  while (pending.length > 0) {
+    const label = pending.pop();
+    if (Array.isArray(label) || ArrayBuffer.isView(label)) {
+      const nested = Array.from(label);
+      for (let index = nested.length - 1; index >= 0; index -= 1) pending.push(nested[index]);
+      continue;
+    }
+    const numeric = Number(label);
+    if (!Number.isInteger(numeric) || numeric < 0 || numeric > 255) return null;
+    flattened.push(numeric);
   }
+  return flattened;
+}
+
+function isDense3dLabelVolume(value) {
+  return Array.isArray(value) && value.every((slice) => (
+    (Array.isArray(slice) || ArrayBuffer.isView(slice))
+    && Array.from(slice).every((row) => Array.isArray(row) || ArrayBuffer.isView(row))
+  ));
+}
+
+function normalizeLabelSlice(slice, index) {
   if (!isPlainObject(slice)) return null;
-  const url = firstString(slice.url, slice.asset_url, slice.href, slice.path);
-  const labels = Array.isArray(slice.labels) || ArrayBuffer.isView(slice.labels)
+  const rawLabels = Array.isArray(slice.labels) || ArrayBuffer.isView(slice.labels)
     ? slice.labels
     : (Array.isArray(slice.data) || ArrayBuffer.isView(slice.data) ? slice.data : null);
-  if (!url && !labels) return null;
+  const labels = rawLabels ? flattenSegmentationLabels(rawLabels) : null;
+  if (!labels?.length) return null;
   const rawSliceIndex = slice.slice_index ?? slice.sliceIndex ?? slice.index ?? index;
   const sliceIndex = Number.isFinite(Number(rawSliceIndex)) ? Number(rawSliceIndex) : index;
-  return {
-    ...slice,
-    ...(url ? { url } : {}),
-    ...(labels ? { labels } : {}),
-    sliceIndex,
-  };
+  return { labels, sliceIndex };
 }
 
 /**
@@ -68,7 +85,9 @@ export function normalizePt3Segmentation(input) {
     if (!isPlainObject(segment)) return result;
     const rawId = segment.id ?? segment.segment_id ?? segment.segmentId;
     if (rawId === undefined || rawId === null || String(rawId).trim() === '') return result;
-    const id = String(rawId);
+    const normalizedId = typeof rawId === 'string' ? rawId.trim() : rawId;
+    const id = Number(normalizedId);
+    if (!Number.isInteger(id) || id < 1 || id > 255) return result;
     if (seen.has(id)) return result;
     seen.add(id);
     const label = firstString(segment.label, segment.name) || `Segment ${id}`;
@@ -83,9 +102,17 @@ export function normalizePt3Segmentation(input) {
     return result;
   }, []);
   const rawLabelSlices = raw.label_slices ?? raw.labelSlices;
-  const labelSlices = (Array.isArray(rawLabelSlices) ? rawLabelSlices : [])
+  const declaredLabelSlices = (Array.isArray(rawLabelSlices) ? rawLabelSlices : [])
     .map(normalizeLabelSlice)
     .filter(Boolean);
+  const rawDenseLabels = [raw.labels, raw.label_volume, raw.voxel_labels].find(isDense3dLabelVolume) || [];
+  const denseLabelSlices = rawDenseLabels
+    .map((labels, sliceIndex) => {
+      const flattened = flattenSegmentationLabels(labels);
+      return flattened?.length ? { sliceIndex, labels: flattened } : null;
+    })
+    .filter(Boolean);
+  const labelSlices = declaredLabelSlices.length > 0 ? declaredLabelSlices : denseLabelSlices;
   return { segments, labelSlices };
 }
 

@@ -104,10 +104,13 @@ def test_forged_builtin_fixture_path_cannot_materialize_repository_slice(client)
             headers=headers,
             json={"output_format": "json", "transfer_function": {"threshold": 245}},
         )
-    assert requested.status_code == 200, requested.text
+    # Materialization now rejects the forged provenance before a background
+    # conversion job is queued, which is safer than recording a delayed failure.
+    assert requested.status_code == 500, requested.text
+    assert "Could not read image stack slice untrusted.png" in requested.json()["detail"]
     status = client.get(
         f"/api/projects/{project['id']}/parts/{part['id']}/volume-splat-assets/status",
         headers=headers,
     )
     assert status.status_code == 200, status.text
-    assert status.json()["status"] == "failed", status.text
+    assert status.json()["status"] == "missing", status.text
