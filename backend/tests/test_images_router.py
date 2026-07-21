@@ -1,4 +1,5 @@
 import io
+import json
 import uuid
 import zipfile
 import pytest
@@ -171,6 +172,65 @@ def test_upload_numpy_voxel_data_accepts_3d_arrays(client):
     )
     assert r.status_code == 201
     assert r.json()["filename"] == "volume.npy"
+
+
+@pytest.mark.parametrize(
+    "dtype,expected_dtype,expected_bit_depth",
+    [
+        (np.uint8, "uint8", 8),
+        (np.uint16, "uint16", 16),
+        (np.uint32, "uint32", 32),
+        (np.float32, "float32", 32),
+    ],
+)
+def test_upload_numpy_voxel_data_records_dtype_bit_depth_for_display_window(
+    client, dtype, expected_dtype, expected_bit_depth
+):
+    pid = _create_project(client, name=f"npy-{expected_bit_depth}-bit")
+
+    voxel_array = np.arange(2 * 3 * 4, dtype=dtype).reshape((2, 3, 4))
+    payload = io.BytesIO()
+    np.save(payload, voxel_array)
+    payload.seek(0)
+
+    r = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": (f"volume-{expected_bit_depth}.npy", payload, "application/octet-stream")},
+    )
+
+    assert r.status_code == 201
+    metadata = r.json().get("metadata") or {}
+    assert metadata.get("pixel_dtype") == expected_dtype
+    assert metadata.get("voxel_dtype") == expected_dtype
+    assert metadata.get("bit_depth") == expected_bit_depth
+    assert metadata.get("bits_per_sample") == expected_bit_depth
+    assert metadata.get("volume_shape") == {"axial": 2, "coronal": 3, "sagittal": 4}
+    assert metadata.get("frame_count") == 2
+    assert metadata.get("load_mode") == "volume"
+    if np.issubdtype(np.dtype(dtype), np.floating):
+        assert metadata.get("signed") is True
+
+
+def test_upload_numpy_voxel_data_derived_dtype_metadata_overrides_client_metadata(client):
+    pid = _create_project(client, name="npy-derived-metadata")
+
+    voxel_array = np.arange(2 * 2 * 2, dtype=np.uint16).reshape((2, 2, 2))
+    payload = io.BytesIO()
+    np.save(payload, voxel_array)
+    payload.seek(0)
+
+    r = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("volume-overrides.npy", payload, "application/octet-stream")},
+        data={"metadata": json.dumps({"pixel_dtype": "uint8", "voxel_dtype": "uint8", "bit_depth": 8})},
+    )
+
+    assert r.status_code == 201
+    metadata = r.json().get("metadata") or {}
+    assert metadata.get("pixel_dtype") == "uint16"
+    assert metadata.get("voxel_dtype") == "uint16"
+    assert metadata.get("bit_depth") == 16
+    assert metadata.get("bits_per_sample") == 16
 
 
 def test_upload_numpy_voxel_data_rejects_non_3d_arrays(client):

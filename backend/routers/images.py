@@ -5,6 +5,7 @@ import os
 import mimetypes
 from urllib.parse import urlparse, unquote
 from pathlib import Path, PurePosixPath
+import zipfile
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Body
 from sqlalchemy import update, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +30,7 @@ from utils.serialization import to_data_instance_schema
 from utils.file_security import get_content_disposition_header
 from utils.cache_manager import get_cache
 import json as _json
+import numpy as np
 from PIL import Image, ImageSequence
 from utils.volume_loader import read_npy_header
 
@@ -195,6 +197,57 @@ def _prepare_thumbnail_image(image: Image.Image) -> tuple[Image.Image, str]:
     return image, 'JPEG'
 
 
+def _dtype_metadata_from_numpy_descr(dtype_descr: str) -> Dict[str, Any]:
+    try:
+        dtype = np.dtype(dtype_descr)
+    except (TypeError, ValueError):
+        return {}
+    metadata: Dict[str, Any] = {
+        "pixel_dtype": dtype.name,
+        "voxel_dtype": dtype.name,
+        "bit_depth": int(dtype.itemsize * 8),
+        "bits_per_sample": int(dtype.itemsize * 8),
+    }
+    if np.issubdtype(dtype, np.signedinteger) or np.issubdtype(dtype, np.floating):
+        metadata["signed"] = True
+    return metadata
+
+
+def _npy_voxel_metadata(file: UploadFile) -> Dict[str, Any]:
+    filename = (file.filename or "").lower()
+    if not any(filename.endswith(ext) for ext in VOXEL_DATA_EXTENSIONS):
+        return {}
+
+    try:
+        file.file.seek(0)
+        if filename.endswith(".npy"):
+            shape, dtype = read_npy_header(file.file)
+        else:
+            with zipfile.ZipFile(file.file) as archive:
+                npy_members = sorted(name for name in archive.namelist() if name.endswith(".npy"))
+                if not npy_members:
+                    return {}
+                with archive.open(npy_members[0]) as member:
+                    shape, dtype = read_npy_header(io.BytesIO(member.read()))
+    except Exception:
+        return {}
+    finally:
+        file.file.seek(0)
+
+    if len(shape) != 3:
+        return {}
+
+    metadata = _dtype_metadata_from_numpy_descr(dtype)
+    metadata["volume_shape"] = {
+        "axial": int(shape[0]),
+        "coronal": int(shape[1]),
+        "sagittal": int(shape[2]),
+    }
+    metadata["frame_count"] = int(shape[0])
+    metadata["load_mode"] = "volume"
+    return metadata
+
+
 def _image_intensity_metadata(file: UploadFile) -> Dict[str, Any]:
     filename = (file.filename or '').lower()
     if not any(filename.endswith(ext) for ext in SCALAR_INTENSITY_EXTENSIONS):
@@ -283,8 +336,6 @@ def _validate_voxel_data(file: UploadFile) -> None:
             if len(shape) != 3:
                 raise ValueError("NumPy volume must be exactly 3D")
         else:
-            import zipfile
-
             with zipfile.ZipFile(file.file) as archive:
                 npy_members = sorted(name for name in archive.namelist() if name.endswith(".npy"))
                 if not npy_members:
@@ -579,6 +630,7 @@ async def upload_image_to_project(
         parsed_metadata = {}
     parsed_metadata.update(_tiff_dimensionality_metadata(file))
     parsed_metadata.update(_image_intensity_metadata(file))
+    parsed_metadata.update(_npy_voxel_metadata(file))
     # If metadata_json is None or empty string, parsed_metadata remains None
     # Basic validation
     _validate_voxel_data(file)
