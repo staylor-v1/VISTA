@@ -915,9 +915,13 @@ const DashboardSettingsModal = memo(function DashboardSettingsModal({ onClose, s
             <label className="dashboard-debug-toggle">
               <input
                 type="checkbox"
+                role="switch"
                 checked={debugMode}
                 onChange={(event) => onDebugModeChange(event.target.checked)}
               />
+              <span className="dashboard-debug-switch" aria-hidden="true">
+                <span className="dashboard-debug-switch-thumb" />
+              </span>
               <span>Enable dashboard debug mode</span>
             </label>
           </section>
@@ -972,7 +976,7 @@ const DashboardSettingsModal = memo(function DashboardSettingsModal({ onClose, s
                     onClick={handleAcceptDatabase}
                     disabled={previewingDatabase || acceptingDatabase || !hasDatabaseUrlChange}
                   >
-                    {acceptingDatabase ? 'Accepting…' : 'Accept'}
+                    {acceptingDatabase ? 'Submitting…' : 'Submit Postgres URL'}
                   </button>
                 </div>
               </>
@@ -1035,7 +1039,7 @@ const DashboardSettingsModal = memo(function DashboardSettingsModal({ onClose, s
                 Keep Editing
               </button>
               <button type="button" className="btn btn-success" onClick={handleAcceptDatabase} disabled={acceptingDatabase}>
-                {acceptingDatabase ? 'Accepting…' : 'Accept This URL'}
+                {acceptingDatabase ? 'Submitting…' : 'Submit This URL'}
               </button>
             </div>
           </div>
