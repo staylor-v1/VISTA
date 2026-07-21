@@ -944,8 +944,34 @@ function getPartSummaryModalities(part, imageRefs = getPartImageRefs(part)) {
   return [...orderedConfiguredModalities, ...orderedLoadedModalities];
 }
 
-function getMprDimensions(part) {
-  const raw = part?.metadata?.volume_shape || part?.metadata?.mpr?.volume_shape || {};
+function getVolumeShapeFromEntry(entry, projectImageLookup = {}) {
+  const direct = entry?.volume_shape || entry?.metadata?.volume_shape;
+  if (direct) return direct;
+  const record = getProjectImageRecord(projectImageLookup, entry);
+  return record?.metadata?.volume_shape || null;
+}
+
+function isVolumeFileEntry(entry, projectImageLookup = {}) {
+  const filename = String(entry?.filename || getProjectImageRecord(projectImageLookup, entry)?.filename || '').toLowerCase();
+  return Boolean(
+    entry?.load_mode === 'volume'
+      || entry?.metadata?.load_mode === 'volume'
+      || entry?.tiff_dimensionality === '3d'
+      || entry?.metadata?.tiff_dimensionality === '3d'
+      || filename.endsWith('.npy')
+      || filename.endsWith('.npz')
+      || filename.endsWith('.inspiro')
+      || filename.endsWith('.tif')
+      || filename.endsWith('.tiff'),
+  );
+}
+
+function getMprDimensions(part, projectImageLookup = {}) {
+  const volumeSourceShape = (Array.isArray(part?.metadata?.source_images) ? part.metadata.source_images : [])
+    .filter((entry) => entry && !entry.overlay)
+    .map((entry) => getVolumeShapeFromEntry(entry, projectImageLookup))
+    .find(Boolean);
+  const raw = part?.metadata?.volume_shape || part?.metadata?.mpr?.volume_shape || volumeSourceShape || {};
   const dimensions = MPR_AXES.reduce((acc, axis) => {
     const value = Number(raw?.[axis]);
     acc[axis] = Number.isFinite(value) && value > 0 ? Math.floor(value) : 128;
@@ -976,13 +1002,26 @@ function getVolumeSourceImages(part, projectImageLookup = {}) {
       const imageId = getVolumeEntryImageId(entry, projectImageLookup);
       if (!imageId) return null;
       const sliceIndex = Number(entry?.metadata?.slice_index ?? entry?.slice_index ?? index);
+      const normalizedSliceIndex = Number.isFinite(sliceIndex) ? sliceIndex : index;
+      const volumeShape = getVolumeShapeFromEntry(entry, projectImageLookup);
+      if (isVolumeFileEntry(entry, projectImageLookup) && volumeShape) {
+        const axialCount = Math.max(1, Math.floor(Number(volumeShape.axial) || Number(entry?.frame_count) || Number(entry?.metadata?.frame_count) || 1));
+        return Array.from({ length: axialCount }, (_unused, axialIndex) => ({
+          id: `${String(imageId)}:axial:${axialIndex}`,
+          imageId: String(imageId),
+          filename,
+          sliceIndex: axialIndex,
+          url: `/api/images/${encodeURIComponent(String(imageId))}/volume-slice?axis=axial&index=${axialIndex}`,
+        }));
+      }
       return {
         id: String(imageId),
         filename,
-        sliceIndex: Number.isFinite(sliceIndex) ? sliceIndex : index,
+        sliceIndex: normalizedSliceIndex,
         url: `/api/images/${encodeURIComponent(String(imageId))}/content`,
       };
     })
+    .flat()
     .filter(Boolean)
     .sort((left, right) => left.sliceIndex - right.sliceIndex || left.filename.localeCompare(right.filename));
 }
@@ -3010,7 +3049,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     () => filteredParts.find((part) => part.id === selectedPartId) || filteredParts[0] || null,
     [filteredParts, selectedPartId],
   );
-  const mprDimensions = useMemo(() => getMprDimensions(selectedPart), [selectedPart]);
+  const mprDimensions = useMemo(() => getMprDimensions(selectedPart, projectImageLookup), [projectImageLookup, selectedPart]);
   const displayValueDomain = useMemo(
     () => getPartDisplayValueDomain(selectedPart, projectImageLookup),
     [projectImageLookup, selectedPart],
