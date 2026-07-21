@@ -761,8 +761,121 @@ def test_numpy_volume_metadata_and_axis_slice_endpoints(client, monkeypatch):
     sliced = client.get(f"/api/images/{image_id}/volume-slice?axis=coronal&index=1")
     assert sliced.status_code == 200
     assert sliced.headers["content-type"].startswith("image/png")
+    assert sliced.headers["cache-control"] == "private, max-age=3600"
     with Image.open(io.BytesIO(sliced.content)) as image:
         assert image.size == (4, 2)
+        assert image.convert("L").getextrema()[1] > 0
 
     out_of_range = client.get(f"/api/images/{image_id}/volume-slice?axis=sagittal&index=99")
     assert out_of_range.status_code == 400
+
+
+def test_uint16_constant_nonzero_volume_slice_renders_visible_pixels(client, monkeypatch):
+    pid = _create_project(client, name="uint16-constant-volume-slice")
+    volume = np.full((2, 3, 4), 2048, dtype=np.uint16)
+    payload = io.BytesIO()
+    np.save(payload, volume)
+    payload.seek(0)
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("constant-uint16.npy", payload, "application/octet-stream")},
+    )
+    assert upload.status_code == 201
+    image_id = upload.json()["id"]
+    raw_payload = payload.getvalue()
+
+    class Resp:
+        def raise_for_status(self):
+            return None
+
+        async def aread(self):
+            return raw_payload
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            return Resp()
+
+    monkeypatch.setattr("routers.images.httpx.AsyncClient", Client)
+
+    sliced = client.get(f"/api/images/{image_id}/volume-slice?axis=axial&index=0")
+
+    assert sliced.status_code == 200
+    assert sliced.headers["cache-control"] == "private, max-age=3600"
+    with Image.open(io.BytesIO(sliced.content)) as image:
+        assert image.size == (4, 3)
+        assert image.convert("L").getextrema() == (255, 255)
+
+
+def test_volume_slice_cache_reuses_rendered_png_for_repeated_slice(client, monkeypatch):
+    pid = _create_project(client, name="volume-slice-cache")
+    volume = np.arange(2 * 3 * 4, dtype=np.uint16).reshape((2, 3, 4))
+    payload = io.BytesIO()
+    np.save(payload, volume)
+    payload.seek(0)
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("cache-uint16.npy", payload, "application/octet-stream")},
+    )
+    assert upload.status_code == 201
+    image_id = upload.json()["id"]
+    raw_payload = payload.getvalue()
+    calls = {"count": 0}
+
+    class Resp:
+        def raise_for_status(self):
+            return None
+
+        async def aread(self):
+            calls["count"] += 1
+            return raw_payload
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            return Resp()
+
+    from routers import images as images_router
+
+    render_calls = {"count": 0}
+    original_render = images_router._normalize_array_slice_to_png
+
+    def counted_render(array):
+        render_calls["count"] += 1
+        return original_render(array)
+
+    monkeypatch.setattr("routers.images.httpx.AsyncClient", Client)
+    monkeypatch.setattr(images_router, "_normalize_array_slice_to_png", counted_render)
+
+    first = client.get(f"/api/images/{image_id}/volume-slice?axis=coronal&index=1")
+    second = client.get(f"/api/images/{image_id}/volume-slice?axis=coronal&index=1")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.content == second.content
+    assert calls["count"] == 2
+    assert render_calls["count"] == 1
+
+
+def test_float_volume_slice_ignores_nan_and_infinity_for_visible_pixels():
+    from routers.images import _scale_array_to_uint8
+
+    scaled = _scale_array_to_uint8(np.array([[np.nan, -np.inf, 5.0], [5.0, np.inf, 9.0]], dtype=np.float32))
+
+    assert scaled.dtype == np.uint8
+    assert scaled[0, 0] == 0
+    assert scaled[0, 1] == 0
+    assert scaled[1, 1] == 0
+    assert scaled[0, 2] == 0
+    assert scaled[1, 2] == 255
+
