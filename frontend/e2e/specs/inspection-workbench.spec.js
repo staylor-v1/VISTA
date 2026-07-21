@@ -8,6 +8,7 @@ const pr09ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr09-inspect
 const pr11ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr11-project-configuration.png');
 const pr14ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr14-report-normalization-advanced.png');
 const projectDataLayoutScreenshotPath = path.resolve(__dirname, '../../artifacts/project-data-load-images-layout.png');
+const pt3RealSplatScreenshotPath = path.resolve(__dirname, '../../artifacts/pt3-real-vs-simplified-3dgs.png');
 const simulatedUsers = ['basic', 'intermediate', 'advanced'];
 
 test.describe('Project Data load images layout', () => {
@@ -121,11 +122,12 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
 
         await expect(page.getByTestId('selected-image-panel')).toBeVisible();
         if (simulatedUser === 'advanced') {
-          const topViewButton = inspectionPanel.locator('.part-summary-images button', { hasText: 'TOP' }).first();
+          const topViewButton = inspectionPanel.getByRole('button', { name: /^TOP\b/ }).first();
           await topViewButton.click();
-          await expect(inspectionPanel.locator('.part-summary-images button.active', { hasText: 'TOP' }).first()).toBeVisible();
-          await inspectionPanel.locator('.part-summary-images button', { hasText: 'FRONT' }).first().click();
-          await expect(inspectionPanel.locator('.part-summary-images button.active', { hasText: 'FRONT' }).first()).toBeVisible();
+          await expect(topViewButton).toHaveClass(/selected/);
+          const frontViewButton = inspectionPanel.getByRole('button', { name: /^FRONT\b/ }).first();
+          await frontViewButton.click();
+          await expect(frontViewButton).toHaveClass(/selected/);
         }
         await expect(page.getByTestId('annotation-controls')).toBeVisible();
         await page.getByRole('button', { name: 'Other', exact: true }).click();
@@ -161,6 +163,95 @@ test.describe('Inspection Workbench screenshot artifact', () => {
     const panel = page.locator('section[aria-label="Inspection Workbench"]');
     await expect(panel).toBeVisible();
     await panel.screenshot({ path: screenshotPath });
+  });
+});
+
+test.describe('PT3 real and simplified 3DGS modes', () => {
+  test('keeps simplified separate and completes a voxel-native canonical Real 3DGS fit', async ({ page }) => {
+    const segmentedPart = {
+      id: 'part-adv-001',
+      batch_id: 'batch-adv-a',
+      serial_number: 'SN-ADV-001',
+      display_name: 'Segmented housing',
+      review_state: 'in_review',
+      metadata: {
+        defects: [],
+        volume_shape: { axial: 128, coronal: 96, sagittal: 80 },
+        spacing: [0.08, 0.08, 0.08],
+        pt3_segmentation: {
+          segments: [
+            { id: 1, label: 'Shell', color: '#f97316' },
+            { id: 2, label: 'Core', color: '#38bdf8' },
+          ],
+        },
+      },
+    };
+    const { projectId, getRealSplatRequests } = await mockInspectionWorkbenchRoutes(page, {
+      type: 'PT3',
+      scenario: 'advanced',
+      mockParts: [segmentedPart],
+      realSplatSegmentIds: [1, 1, 2, 2],
+    });
+
+    await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
+    await page.getByRole('tab', { name: 'Inspection' }).click();
+    const viewSelector = page.getByLabel('3D view');
+    await expect(viewSelector).toBeVisible();
+    await expect(viewSelector.locator('option[value="splat"]')).toHaveText('Simplified 3DGS');
+    await expect(viewSelector.locator('option[value="real_splat"]')).toHaveText('Real 3DGS');
+
+    await viewSelector.selectOption('real_splat');
+    const viewer = page.getByTestId('pt3-gaussian-splat-viewer');
+    await expect(viewer).toContainText('Real 3DGS missing');
+    await expect(page.getByRole('group', { name: 'Real 3DGS fitting' })).toBeVisible();
+    await expect(page.getByLabel('Real 3DGS fitting strategy')).toHaveValue('voxel_direct');
+    await expect(page.getByLabel('Real 3DGS splat budget')).toHaveValue('50000');
+    await expect(page.getByLabel('Real 3DGS splat budget')).toHaveAttribute('max', '100000');
+    const computeButton = page.getByRole('button', { name: 'Fit voxel splats' });
+    await expect(computeButton).toBeEnabled();
+    await expect(page.getByTestId('splat-config-button')).toHaveCount(0);
+
+    await computeButton.click();
+    await expect(viewer).toContainText('37% complete');
+    await expect.poll(() => getRealSplatRequests().length).toBe(1);
+    expect(getRealSplatRequests()[0]).toEqual(expect.objectContaining({
+      fit_mode: 'voxel_direct',
+      cameras: [],
+      parameters: expect.objectContaining({ max_splats: 50000, sh_degree: 0, optimize_camera_poses: false }),
+    }));
+    await expect(viewer).toContainText('Voxel splats ready • analytic fit • canonical v1');
+    await expect(viewer).toContainText('splats 4');
+    await expect(page.getByRole('button', { name: 'Recompute voxel splats' })).toBeEnabled();
+    const segmentationControls = page.getByRole('group', { name: 'Segmentation display' });
+    await expect(segmentationControls).toContainText('Shell');
+    await expect(segmentationControls).toContainText('Core');
+
+    const sceneBox = await page.getByTestId('mpr-pane-3d').locator('.mpr-volume-scene').boundingBox();
+    const controlsBox = await page.getByRole('group', { name: 'Real 3DGS fitting' }).boundingBox();
+    const segmentationBox = await segmentationControls.boundingBox();
+    expect(sceneBox?.width).toBeGreaterThanOrEqual(380);
+    expect(sceneBox?.width).toBeLessThanOrEqual(420);
+    expect(sceneBox && controlsBox
+      && controlsBox.x >= sceneBox.x
+      && controlsBox.y >= sceneBox.y
+      && controlsBox.x + controlsBox.width <= sceneBox.x + sceneBox.width
+      && controlsBox.y + controlsBox.height <= sceneBox.y + sceneBox.height).toBeTruthy();
+    expect(sceneBox && segmentationBox
+      && segmentationBox.x >= sceneBox.x
+      && segmentationBox.y >= sceneBox.y
+      && segmentationBox.x + segmentationBox.width <= sceneBox.x + sceneBox.width
+      && segmentationBox.y + segmentationBox.height <= sceneBox.y + sceneBox.height).toBeTruthy();
+    expect(controlsBox && segmentationBox && (
+      controlsBox.x < segmentationBox.x + segmentationBox.width
+      && controlsBox.x + controlsBox.width > segmentationBox.x
+      && controlsBox.y < segmentationBox.y + segmentationBox.height
+      && controlsBox.y + controlsBox.height > segmentationBox.y
+    )).toBeFalsy();
+    await page.getByTestId('mpr-pane-3d').screenshot({ path: pt3RealSplatScreenshotPath });
+
+    await viewSelector.selectOption('splat');
+    await expect(page.getByTestId('splat-config-button')).toBeVisible();
+    await expect(viewer).not.toContainText('Real 3DGS');
   });
 });
 

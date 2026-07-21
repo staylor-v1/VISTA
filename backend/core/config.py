@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     ML_MAX_BULK_ANNOTATIONS: int = 1000  # Lowered from 5000 to prevent memory/timeout issues
     ML_PRESIGNED_URL_EXPIRY_SECONDS: int = 3600  # 1 hour to allow slow uploads of large artifacts
     TOOLBOX_MODEL_SERVICE_URL: Optional[str] = None
+    # Trusted local Python entry point used for calibrated, optimized 3DGS
+    # training. The browser cannot choose this value; deployments explicitly
+    # opt in with e.g. ``package.module.optimize``.
+    PT3_REAL_3DGS_PROVIDER: Optional[str] = None
 
     # Image deletion / retention settings
     IMAGE_DELETE_RETENTION_DAYS: int = 60  # Soft delete retention window (days)

@@ -1332,7 +1332,7 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('mpr-pane-sagittal')).toHaveTextContent(/299 \/ 299/);
   });
 
-  test('keeps PT3 MPR quadrants constrained after clicking the 3D pane', async () => {
+  test('opens the 3D pane as an accessible fullscreen view without mounting a duplicate scene', async () => {
     mockWorkbenchFetch(scenarioByUser[2]);
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
 
@@ -1349,13 +1349,500 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getByTestId(testId)).not.toHaveClass('mpr-pane-hidden');
     });
 
+    expect(screen.getByRole('button', { name: 'Open 3D part view fullscreen' })).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('mpr-pane-3d'));
+
+    const fullscreen = screen.getByRole('dialog', { name: '3D reconstruction' });
+    expect(fullscreen).toHaveAttribute('aria-modal', 'true');
+    expect(within(fullscreen).getByRole('application', { name: 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.' })).toBeInTheDocument();
+    expect(document.querySelectorAll('.mpr-volume-scene')).toHaveLength(1);
+    expect(within(fullscreen).getByRole('button', { name: 'Close fullscreen 3D view' })).toHaveFocus();
 
     expect(mprGrid).toHaveClass('mpr-grid-four');
     expect(mprGrid).not.toHaveClass('mpr-grid-single');
     quadrantPaneIds.forEach((testId) => {
       expect(screen.getByTestId(testId)).not.toHaveClass('mpr-pane-hidden');
     });
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: '3D reconstruction' })).not.toBeInTheDocument();
+    expect(document.querySelectorAll('.mpr-volume-scene')).toHaveLength(1);
+  });
+
+  test('opens XY, XZ, and YZ slices as frozen fullscreen MPR canvases', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+
+    fireEvent.click(screen.getByLabelText('Mirror', { selector: '#mpr-mirror-coronal' }));
+    const compactAxialScaleY = screen.getByTestId('mpr-preview-axial').style.getPropertyValue('--projection-scale-y');
+    expect(compactAxialScaleY).toBe('-1');
+
+    const cases = [
+      { axis: 'axial', slice: 16, width: 80, height: 96, backingImageId: 'pt3-z-016' },
+      { axis: 'coronal', slice: 50, width: 80, height: 128, backingImageId: 'pt3-z-000' },
+      { axis: 'sagittal', slice: 64, width: 96, height: 128, backingImageId: 'pt3-z-000' },
+    ];
+
+    for (const testCase of cases) {
+      fireEvent.change(document.querySelector(`#mpr-slice-${testCase.axis}`), {
+        target: { value: String(testCase.slice) },
+      });
+      fireEvent.click(screen.getByTestId(`mpr-pane-${testCase.axis}`));
+
+      const fullscreenCanvas = screen.getByTestId('fullscreen-mpr-slice');
+      expect(fullscreenCanvas.tagName).toBe('CANVAS');
+      expect(fullscreenCanvas).toHaveAttribute('role', 'img');
+      expect(fullscreenCanvas).toHaveAttribute('data-mpr-axis', testCase.axis);
+      expect(fullscreenCanvas).toHaveAttribute('data-mpr-slice-index', String(testCase.slice));
+      expect(fullscreenCanvas).toHaveAttribute('data-mpr-slice-key', `${testCase.axis}:${testCase.slice}`);
+      expect(fullscreenCanvas).toHaveAttribute('data-mpr-backing-image-id', testCase.backingImageId);
+      expect(fullscreenCanvas).toHaveAttribute('width', String(testCase.width));
+      expect(fullscreenCanvas).toHaveAttribute('height', String(testCase.height));
+      const fullscreenOverlay = screen.getByLabelText('fullscreen measurement overlay');
+      expect(fullscreenOverlay).toHaveAttribute('viewBox', `0 0 ${testCase.width} ${testCase.height}`);
+      expect(fullscreenOverlay).toHaveAttribute('preserveAspectRatio', 'xMidYMid meet');
+      if (testCase.axis === 'axial') {
+        expect(fullscreenCanvas.style.getPropertyValue('--projection-scale-y')).toBe(compactAxialScaleY);
+        expect(fullscreenOverlay.style.getPropertyValue('--projection-scale-y')).toBe(compactAxialScaleY);
+      }
+      expect(document.querySelector('.inspection-fullscreen-image-zoom-layer img')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByLabelText('Close fullscreen image'));
+    }
+  });
+
+  test('maps letterboxed fullscreen XZ pointer coordinates back to the reconstructed slice', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+    fireEvent.click(screen.getByLabelText('Mirror', { selector: '#mpr-mirror-sagittal' }));
+    fireEvent.change(document.querySelector('#mpr-slice-coronal'), { target: { value: '50' } });
+    fireEvent.click(screen.getByTestId('mpr-pane-coronal'));
+
+    const fullscreenCanvas = screen.getByTestId('fullscreen-mpr-slice');
+    fullscreenCanvas.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      width: 400,
+      height: 400,
+      right: 400,
+      bottom: 400,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Draw box' }));
+
+    // The 80x128 XZ bitmap occupies x=75..325 in this square element, and the
+    // sagittal mirror reverses the displayed X coordinate back into source space.
+    // A press in the left letterbox must not start an annotation.
+    fireEvent.mouseDown(fullscreenCanvas, { clientX: 20, clientY: 100, button: 0 });
+    fireEvent.mouseUp(fullscreenCanvas, { clientX: 225, clientY: 300, button: 0 });
+    expect(global.fetch.mock.calls.some((call) => call[0].includes('/annotations') && call[1]?.method === 'POST')).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Draw box' }));
+    fireEvent.mouseDown(fullscreenCanvas, { clientX: 100, clientY: 100, button: 0 });
+    fireEvent.mouseUp(fullscreenCanvas, { clientX: 225, clientY: 300, button: 0 });
+
+    await waitFor(() => {
+      const postCall = global.fetch.mock.calls.find((call) => {
+        if (!call[0].includes('/annotations') || call[1]?.method !== 'POST') return false;
+        const body = JSON.parse(call[1].body);
+        return body.geometry?.axis === 'coronal' && body.geometry?.slice_index === 50;
+      });
+      expect(postCall).toBeDefined();
+      const payload = JSON.parse(postCall[1].body);
+      expect(payload.image_id).toBe('pt3-z-000');
+      expect(payload.bbox).toEqual({ x: 32, y: 32, width: 40, height: 64 });
+      expect(payload.geometry.box).toEqual(expect.objectContaining({
+        axis: 'coronal',
+        slice_index: 50,
+        imageWidth: 80,
+        imageHeight: 128,
+      }));
+    });
+  });
+
+  test('keeps one 3D scene and exposes renderer-specific controls only in fullscreen', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'volume3d' } });
+    expect(screen.queryByRole('group', { name: 'Ray-march controls' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Open 3D part view fullscreen' }));
+
+    const modeSelect = screen.getByLabelText('3D view');
+    const cases = [
+      ['orientation', 'Orientation only'],
+      ['stack', 'Stack reconstruction'],
+      ['shell', 'Reference shell'],
+      ['volume3d', 'Ray-marched volume'],
+      ['splat', 'Simplified 3DGS'],
+      ['real_splat', 'Real 3DGS'],
+      ['hybrid3d', 'Hybrid part view'],
+    ];
+
+    cases.forEach(([value, label]) => {
+      fireEvent.change(modeSelect, { target: { value } });
+      expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toHaveTextContent(label);
+      expect(document.querySelectorAll('.mpr-volume-scene')).toHaveLength(1);
+      expect(screen.queryAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(
+        ['volume3d', 'splat', 'real_splat', 'hybrid3d'].includes(value) ? 1 : 0,
+      );
+      expect(screen.queryByRole('group', { name: 'Ray-march controls' }) !== null).toBe(value === 'volume3d');
+      expect(screen.queryByRole('group', { name: '3DGS controls' }) !== null).toBe(['splat', 'real_splat'].includes(value));
+    });
+
+    expect(screen.getAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(1);
+    expect(document.querySelector('.mpr-volume-model')).not.toBeInTheDocument();
+    expect(document.querySelector('.mpr-volume-overlay')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('3D viewer mode')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('3DGS opacity')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Volume opacity')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Clip/crop')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reset view' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Zoom +' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Zoom -' })).not.toBeInTheDocument();
+
+    fireEvent.change(modeSelect, { target: { value: 'volume3d' } });
+    const density = screen.getByLabelText('Ray-march density');
+    const threshold = screen.getByLabelText('Ray-march intensity threshold');
+    const preset = screen.getByLabelText('Transfer function preset');
+    const quality = screen.getByLabelText('Quality profile');
+    const guides = screen.getByLabelText('Show slice guides');
+    const orbitX = screen.getByRole('slider', { name: 'Orbit X' });
+    const orbitY = screen.getByRole('slider', { name: 'Orbit Y' });
+    expect(density).toHaveValue('1.25');
+    expect(threshold).toHaveValue('0.08');
+    expect(preset).toHaveValue('machinedMetal');
+    expect(quality).toHaveValue('balanced');
+    expect(guides).toBeChecked();
+    expect(orbitX).toHaveValue('-22');
+    expect(orbitY).toHaveValue('32');
+    expect(document.querySelector('.mpr-volume-model')).not.toBeInTheDocument();
+    expect(document.querySelector('.mpr-volume-overlay')).not.toBeInTheDocument();
+
+    fireEvent.change(density, { target: { value: '0.4' } });
+    fireEvent.change(threshold, { target: { value: '0.3' } });
+    fireEvent.change(preset, { target: { value: 'defect' } });
+    fireEvent.change(quality, { target: { value: 'quality' } });
+    fireEvent.click(guides);
+    expect(density).toHaveValue('0.4');
+    expect(threshold).toHaveValue('0.3');
+    expect(preset).toHaveValue('defect');
+    expect(quality).toHaveValue('quality');
+    expect(guides).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset ray-march settings' }));
+    expect(density).toHaveValue('1.25');
+    expect(threshold).toHaveValue('0.08');
+    expect(preset).toHaveValue('machinedMetal');
+    expect(quality).toHaveValue('balanced');
+    expect(guides).toBeChecked();
+
+    fireEvent.change(orbitX, { target: { value: '-40' } });
+    fireEvent.change(orbitY, { target: { value: '75' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom +' }));
+    expect(orbitX).toHaveValue('-40');
+    expect(orbitY).toHaveValue('75');
+    expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toHaveTextContent('Zoom 1.42x');
+    fireEvent.click(screen.getByRole('button', { name: 'Reset view' }));
+    expect(orbitX).toHaveValue('-22');
+    expect(orbitY).toHaveValue('32');
+    expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toHaveTextContent('Zoom 1.00x');
+
+    fireEvent.change(modeSelect, { target: { value: 'splat' } });
+    const splatControls = screen.getByRole('group', { name: '3DGS controls' });
+    const splatOpacity = within(splatControls).getByLabelText('3DGS opacity');
+    const splatPointSize = within(splatControls).getByLabelText('3DGS point size');
+    const splatContrast = within(splatControls).getByLabelText('3DGS contrast');
+    const splatGuides = within(splatControls).getByLabelText('Show slice guides');
+    const splatOrbitX = within(splatControls).getByLabelText('3DGS Orbit X');
+    const splatOrbitY = within(splatControls).getByLabelText('3DGS Orbit Y');
+    expect(splatOpacity).toHaveValue('1.25');
+    expect(splatPointSize).toHaveValue('1.35');
+    expect(splatContrast).toHaveValue('1.2');
+    expect(splatGuides).toBeChecked();
+    expect(splatOrbitX).toHaveValue('-22');
+    expect(splatOrbitY).toHaveValue('32');
+    expect(document.querySelector('.mpr-volume-model')).not.toBeInTheDocument();
+    expect(document.querySelector('.mpr-volume-overlay')).not.toBeInTheDocument();
+
+    fireEvent.change(splatOpacity, { target: { value: '0.7' } });
+    fireEvent.change(splatPointSize, { target: { value: '2.1' } });
+    fireEvent.change(splatContrast, { target: { value: '1.6' } });
+    fireEvent.click(splatGuides);
+    expect(splatOpacity).toHaveValue('0.7');
+    expect(splatPointSize).toHaveValue('2.1');
+    expect(splatContrast).toHaveValue('1.6');
+    expect(splatGuides).not.toBeChecked();
+    fireEvent.click(within(splatControls).getByRole('button', { name: 'Reset 3DGS settings' }));
+    expect(splatOpacity).toHaveValue('1.25');
+    expect(splatPointSize).toHaveValue('1.35');
+    expect(splatContrast).toHaveValue('1.2');
+    expect(splatGuides).toBeChecked();
+
+    fireEvent.change(splatOrbitX, { target: { value: '-35' } });
+    fireEvent.change(splatOrbitY, { target: { value: '64' } });
+    fireEvent.click(within(splatControls).getByRole('button', { name: '3DGS Zoom +' }));
+    expect(splatOrbitX).toHaveValue('-35');
+    expect(splatOrbitY).toHaveValue('64');
+    expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toHaveTextContent('Zoom 1.12x');
+    fireEvent.click(within(splatControls).getByRole('button', { name: 'Reset 3DGS view' }));
+    expect(splatOrbitX).toHaveValue('-22');
+    expect(splatOrbitY).toHaveValue('32');
+    expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toHaveTextContent('Zoom 1.00x');
+
+    const fullscreenScene = screen.getByRole('application', { name: 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.' });
+    const dispatchOrbitPointer = (type, pointerId, clientY) => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: 60, clientY });
+      Object.defineProperty(event, 'pointerId', { value: pointerId });
+      fireEvent(fullscreenScene, event);
+    };
+    dispatchOrbitPointer('pointerdown', 71, 100);
+    dispatchOrbitPointer('pointermove', 71, 80);
+    expect(splatOrbitX).toHaveValue('-29');
+    dispatchOrbitPointer('pointerup', 71, 80);
+    fireEvent.click(within(splatControls).getByRole('button', { name: 'Reset 3DGS view' }));
+    dispatchOrbitPointer('pointerdown', 72, 100);
+    dispatchOrbitPointer('pointermove', 72, 120);
+    expect(splatOrbitX).toHaveValue('-15');
+    dispatchOrbitPointer('pointerup', 72, 120);
+    fireEvent.click(within(splatControls).getByRole('button', { name: 'Reset 3DGS view' }));
+    fireEvent.keyDown(fullscreenScene, { key: 'ArrowUp' });
+    expect(splatOrbitX).toHaveValue('-27');
+    fireEvent.keyDown(fullscreenScene, { key: 'ArrowDown' });
+    expect(splatOrbitX).toHaveValue('-22');
+
+    const lastControl = within(splatControls).getByRole('button', { name: '3DGS Zoom +' });
+    lastControl.focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(within(screen.getByRole('dialog', { name: '3D reconstruction' })).getByRole('button', { name: 'Close fullscreen 3D view' })).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(lastControl).toHaveFocus();
+    fireEvent.keyDown(lastControl, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: '3D reconstruction' })).not.toBeInTheDocument();
+  });
+
+  test('applies each MPR axis mirror to the single CSS and PT3 3D scene', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+    const scene = screen.getByRole('button', { name: 'Open 3D part view fullscreen' });
+    const modeSelect = screen.getByLabelText('3D view');
+    const sagittalMirror = screen.getByLabelText('Mirror', { selector: '#mpr-mirror-sagittal' });
+    const coronalMirror = screen.getByLabelText('Mirror', { selector: '#mpr-mirror-coronal' });
+    const axialMirror = screen.getByLabelText('Mirror', { selector: '#mpr-mirror-axial' });
+
+    const expectMirrorAttributes = (element, { x, y, z }) => {
+      expect(element).toHaveAttribute('data-mirror-x', String(x));
+      expect(element).toHaveAttribute('data-mirror-y', String(y));
+      expect(element).toHaveAttribute('data-mirror-z', String(z));
+    };
+    const expectCssMirror = ({ x, y, z }) => {
+      const model = document.querySelector('.mpr-volume-model');
+      expect(model).toBeInTheDocument();
+      expect(model.style.getPropertyValue('--volume-mirror-x')).toBe(String(x));
+      expect(model.style.getPropertyValue('--volume-mirror-y')).toBe(String(y));
+      expect(model.style.getPropertyValue('--volume-mirror-z')).toBe(String(z));
+    };
+    const expectSingleStableScene = () => {
+      expect(document.querySelectorAll('.mpr-volume-scene')).toHaveLength(1);
+      expect(screen.getByRole('button', { name: 'Open 3D part view fullscreen' })).toBe(scene);
+    };
+
+    expectMirrorAttributes(scene, { x: 1, y: 1, z: 1 });
+    expectCssMirror({ x: 1, y: 1, z: 1 });
+
+    fireEvent.click(sagittalMirror);
+    expectMirrorAttributes(scene, { x: -1, y: 1, z: 1 });
+    expectCssMirror({ x: -1, y: 1, z: 1 });
+    expectSingleStableScene();
+
+    fireEvent.click(coronalMirror);
+    expectMirrorAttributes(scene, { x: -1, y: -1, z: 1 });
+    expectCssMirror({ x: -1, y: -1, z: 1 });
+    expectSingleStableScene();
+
+    fireEvent.click(axialMirror);
+    expectMirrorAttributes(scene, { x: -1, y: -1, z: -1 });
+    expectCssMirror({ x: -1, y: -1, z: -1 });
+    expectSingleStableScene();
+
+    fireEvent.change(modeSelect, { target: { value: 'volume3d' } });
+    const pt3Viewer = screen.getByTestId('pt3-gaussian-splat-viewer');
+    expectMirrorAttributes(pt3Viewer, { x: -1, y: -1, z: -1 });
+    expect(screen.getAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(1);
+    expectSingleStableScene();
+
+    fireEvent.click(sagittalMirror);
+    expectMirrorAttributes(pt3Viewer, { x: 1, y: -1, z: -1 });
+    fireEvent.click(coronalMirror);
+    expectMirrorAttributes(pt3Viewer, { x: 1, y: 1, z: -1 });
+    fireEvent.click(axialMirror);
+    expectMirrorAttributes(pt3Viewer, { x: 1, y: 1, z: 1 });
+    expectSingleStableScene();
+
+    fireEvent.click(axialMirror);
+    expectMirrorAttributes(pt3Viewer, { x: 1, y: 1, z: -1 });
+    expect(screen.getAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(1);
+    expectSingleStableScene();
+
+    fireEvent.change(modeSelect, { target: { value: 'orientation' } });
+    expect(screen.queryByTestId('pt3-gaussian-splat-viewer')).not.toBeInTheDocument();
+    expectCssMirror({ x: 1, y: 1, z: -1 });
+    expectSingleStableScene();
+  });
+
+  test('keeps a deterministic spatial fallback visible when ray marching has no volume stack', async () => {
+    mockWorkbenchFetch(scenarioByUser[0]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'volume3d' } });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Showing deterministic volume bounds fallback/i)).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText('Three.js mechanical volume renderer')).not.toBeVisible();
+    expect(screen.getByLabelText('Mechanical 3DGS preview')).toBeVisible();
+
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'splat' } });
+    expect(screen.getByLabelText('Three.js mechanical volume renderer')).not.toBeVisible();
+    expect(screen.getByLabelText('Mechanical 3DGS preview')).toBeVisible();
+  });
+
+  test('uses a neutral deterministic 3DGS fallback when preprocessing status returns an HTTP error', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    const workbenchFetch = global.fetch;
+    global.fetch = jest.fn((url, options) => {
+      if (url.includes('/volume-splat-assets/status')) {
+        return Promise.resolve({ ok: false, status: 500 });
+      }
+      return workbenchFetch(url, options);
+    });
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+    await screen.findByTestId('mpr-panel');
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'splat' } });
+
+    const viewer = screen.getByTestId('pt3-gaussian-splat-viewer');
+    await waitFor(() => expect(viewer).toHaveTextContent('Generated 3DGS asset unavailable'));
+    expect(viewer).toHaveTextContent('Simplified 3DGS ready');
+    expect(viewer).not.toHaveTextContent('HTTP 500');
+  });
+
+  test('releases an active fullscreen orbit capture when the view closes or loses focus', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+    fireEvent.click(screen.getByRole('button', { name: 'Open 3D part view fullscreen' }));
+    let scene = screen.getByRole('application', { name: 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.' });
+    const setPointerCapture = jest.fn();
+    const releasePointerCapture = jest.fn();
+    scene.setPointerCapture = setPointerCapture;
+    scene.hasPointerCapture = jest.fn(() => true);
+    scene.releasePointerCapture = releasePointerCapture;
+    const dispatchPointerDown = (target, pointerId) => {
+      const event = new MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: 30, clientY: 30 });
+      Object.defineProperty(event, 'pointerId', { value: pointerId });
+      fireEvent(target, event);
+    };
+
+    dispatchPointerDown(scene, 31);
+    expect(setPointerCapture).toHaveBeenCalledWith(31);
+    fireEvent.click(screen.getByRole('button', { name: 'Close fullscreen 3D view' }));
+    expect(releasePointerCapture).toHaveBeenCalledWith(31);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open 3D part view fullscreen' }));
+    scene = screen.getByRole('application', { name: 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.' });
+    const blurReleasePointerCapture = jest.fn();
+    scene.setPointerCapture = jest.fn();
+    scene.hasPointerCapture = jest.fn(() => true);
+    scene.releasePointerCapture = blurReleasePointerCapture;
+    dispatchPointerDown(scene, 32);
+    fireEvent.blur(window);
+    expect(blurReleasePointerCapture).toHaveBeenCalledWith(32);
+  });
+
+  test('red team: orbit drag does not open fullscreen and repeated keyboard and backdrop cycles remain operable at narrow width', async () => {
+    const originalWidth = window.innerWidth;
+    window.innerWidth = 375;
+    fireEvent(window, new Event('resize'));
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+    const scene = screen.getByRole('button', { name: 'Open 3D part view fullscreen' });
+    const dispatchPointer = (type, { pointerId, ...init }) => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, ...init });
+      Object.defineProperty(event, 'pointerId', { value: pointerId });
+      fireEvent(scene, event);
+    };
+
+    dispatchPointer('pointerdown', { pointerId: 17, button: 0, clientX: 40, clientY: 40 });
+    dispatchPointer('pointermove', { pointerId: 17, clientX: 85, clientY: 65 });
+    dispatchPointer('pointerup', { pointerId: 17, button: 0, clientX: 85, clientY: 65 });
+    fireEvent.click(scene);
+    expect(screen.queryByRole('dialog', { name: '3D reconstruction' })).not.toBeInTheDocument();
+
+    scene.focus();
+    fireEvent.keyDown(scene, { key: 'Enter' });
+    let closeButton = screen.getByRole('button', { name: 'Close fullscreen 3D view' });
+    expect(closeButton).toHaveFocus();
+    expect(screen.getByTestId('mpr-pane-3d')).toHaveClass('mpr-pane-volume-fullscreen');
+    fireEvent.keyDown(document, { key: 'Tab' });
+    const fullscreenScene = screen.getByRole('application', { name: 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.' });
+    expect(fullscreenScene).toHaveFocus();
+    const patchCallsBeforeHotkey = global.fetch.mock.calls.filter((call) => call[1]?.method === 'PATCH').length;
+    fireEvent.keyDown(document, { key: 'a' });
+    expect(global.fetch.mock.calls.filter((call) => call[1]?.method === 'PATCH')).toHaveLength(patchCallsBeforeHotkey);
+    const zoomBeforeKeyboard = screen.getByTestId('mpr-pane-3d').textContent;
+    fireEvent.keyDown(fullscreenScene, { key: '+' });
+    expect(screen.getByTestId('mpr-pane-3d').textContent).not.toBe(zoomBeforeKeyboard);
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(closeButton).toHaveFocus();
+    fireEvent.click(closeButton);
+    await waitFor(() => expect(scene).toHaveFocus());
+
+    fireEvent.keyDown(scene, { key: ' ' });
+    expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toBeInTheDocument();
+    fireEvent.click(document.querySelector('.mpr-3d-fullscreen-backdrop'));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '3D reconstruction' })).not.toBeInTheDocument());
+    await waitFor(() => expect(scene).toHaveFocus());
+
+    fireEvent.click(scene);
+    closeButton = screen.getByRole('button', { name: 'Close fullscreen 3D view' });
+    expect(closeButton).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '3D reconstruction' })).not.toBeInTheDocument());
+    await waitFor(() => expect(scene).toHaveFocus());
+
+    window.innerWidth = originalWidth;
+    fireEvent(window, new Event('resize'));
+  });
+
+  test('red team: a canceled orbit gesture does not consume the next intentional fullscreen click', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+    const scene = screen.getByRole('button', { name: 'Open 3D part view fullscreen' });
+    const dispatchPointer = (type, { pointerId, ...init }) => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, ...init });
+      Object.defineProperty(event, 'pointerId', { value: pointerId });
+      fireEvent(scene, event);
+    };
+
+    dispatchPointer('pointerdown', { pointerId: 23, button: 0, clientX: 30, clientY: 30 });
+    dispatchPointer('pointermove', { pointerId: 23, clientX: 80, clientY: 70 });
+    dispatchPointer('pointercancel', { pointerId: 23, clientX: 80, clientY: 70 });
+    fireEvent.click(scene);
+
+    expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toBeInTheDocument();
   });
 
   test('creates PT3 cube annotations from boxes on two MPR slices', async () => {
@@ -1786,9 +2273,18 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByText(/Click and drag to draw a measurement line/i)).toBeInTheDocument();
 
     const fullscreenImage = screen.getByAltText(/fullscreen$/i);
+    expect(fullscreenImage.tagName).toBe('IMG');
+    expect(fullscreenImage).toHaveAttribute('src', '/api/images/part-basic-1-image-1/content');
+    expect(screen.queryByTestId('fullscreen-mpr-slice')).not.toBeInTheDocument();
+    Object.defineProperty(fullscreenImage, 'width', { configurable: true, value: 1000 });
+    Object.defineProperty(fullscreenImage, 'height', { configurable: true, value: 500 });
+    fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500 });
+    fireEvent.click(fullscreenImage, { clientX: 100, clientY: 100 });
+    fireEvent.click(fullscreenImage, { clientX: 300, clientY: 200 });
+    expect(global.fetch.mock.calls.some((call) => call[0].includes('/annotations') && call[1]?.method === 'POST')).toBe(false);
+
     Object.defineProperty(fullscreenImage, 'naturalWidth', { configurable: true, value: 1000 });
     Object.defineProperty(fullscreenImage, 'naturalHeight', { configurable: true, value: 500 });
-	    fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500 });
 	    fireEvent.click(fullscreenImage, { clientX: 100, clientY: 100 });
 	    fireEvent.mouseMove(fullscreenImage, { clientX: 200, clientY: 100 });
 	    await waitFor(() => expect(screen.getByLabelText('fullscreen measurement overlay')).toHaveTextContent('5.00 mm'));
@@ -2964,10 +3460,13 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getAllByTestId('mpr-preview-sagittal')[0].querySelector('.mpr-slice-canvas')).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('splat-config-button'));
-    const modal = screen.getByRole('dialog', { name: 'Mechanical 3DGS configuration' });
+    const modal = screen.getByRole('dialog', { name: 'Simplified 3DGS configuration' });
     expect(within(modal).getByLabelText('Intensity threshold')).toHaveValue(150);
     expect(within(modal).getByText(/0-200 loaded image range/)).toBeInTheDocument();
     expect(within(modal).getByTestId('splat-config-summary')).toHaveTextContent('threshold 150');
+    expect(within(modal).getByLabelText('Maximum splats')).toHaveAttribute('max', '100000');
+    fireEvent.change(within(modal).getByLabelText('Maximum splats'), { target: { value: '250000' } });
+    expect(within(modal).getByLabelText('Maximum splats')).toHaveValue(100000);
 
     fireEvent.change(within(modal).getByLabelText('Downsample stride'), { target: { value: '3' } });
     fireEvent.click(within(modal).getByRole('button', { name: 'Apply splat parameters' }));
@@ -3008,12 +3507,17 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getAllByRole('img', { name: /Volume reconstruction slice/ })[0]).toHaveAttribute('draggable', 'false');
 
     expect(screen.queryByTestId('pt3-gaussian-splat-viewer')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'volume3d' } });
+    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('Ray march loading');
+    expect(screen.queryByLabelText('3DGS opacity')).not.toBeInTheDocument();
+    expect(global.fetch.mock.calls.some((call) => call[0].includes('/volume-splat-assets'))).toBe(false);
+
     fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'splat' } });
     expect(screen.getByLabelText('3D view')).toHaveValue('splat');
     expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toBeInTheDocument();
     expect(screen.getByLabelText('Mechanical 3DGS preview')).toBeInTheDocument();
     expect(screen.queryByRole('img', { name: /Volume reconstruction slice/ })).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('Mechanical 3DGS preprocessing is still running'));
+    await waitFor(() => expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('Simplified 3DGS preprocessing is still running'));
     const splatPostCall = global.fetch.mock.calls.find((call) => call[0].includes('/volume-splat-assets') && call[1]?.method === 'POST');
     expect(splatPostCall).toBeTruthy();
     expect(JSON.parse(splatPostCall[1].body).source_path).toBeUndefined();
@@ -3274,6 +3778,15 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.queryByRole('img', { name: /Volume reconstruction slice/ })).not.toBeInTheDocument();
     expect(screen.getAllByRole('img', { name: /fallback projection from front view/i }).length).toBeGreaterThan(0);
     expect(screen.queryByRole('img', { name: /Fallback visual hull shell front view/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('mpr-pane-coronal'));
+    expect(screen.getByAltText('XZ slice 8 fullscreen')).toHaveAttribute(
+      'src',
+      '/api/images/part-basic-1-image-1/content',
+    );
+    expect(screen.queryByTestId('fullscreen-mpr-slice')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Close fullscreen image'));
+
     fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'shell' } });
     expect(screen.getByRole('img', { name: /Fallback visual hull shell front view/i })).toBeInTheDocument();
     expect(screen.queryByText('No stack')).not.toBeInTheDocument();

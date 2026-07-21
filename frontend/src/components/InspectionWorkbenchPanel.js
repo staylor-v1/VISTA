@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Actions, Layout, Model } from 'flexlayout-react';
 import 'flexlayout-react/style/light.css';
 import CalibrationManager from './CalibrationManager';
-import Pt3GaussianSplatViewer from './Pt3GaussianSplatViewer';
+import Pt3GaussianSplatViewer, { DEFAULT_RAY_MARCH_SETTINGS, DEFAULT_SPLAT_VIEW_SETTINGS } from './Pt3GaussianSplatViewer';
+import { getMprAxisMirrorScale } from './pt3VolumeGeometry';
 import { DEFAULT_INTERFACE_HIERARCHY } from '../utils/interfaceHierarchy';
 import { isUiSectionEnabled } from '../utils/uiSections';
 
@@ -41,9 +42,25 @@ const MPR_RECONSTRUCTION_MODES = {
   stack: 'stack',
   shell: 'shell',
   splat: 'splat',
+  realSplat: 'real_splat',
   volume3d: 'volume3d',
   hybrid3d: 'hybrid3d',
 };
+const MPR_RECONSTRUCTION_LABELS = {
+  [MPR_RECONSTRUCTION_MODES.orientation]: 'Orientation only',
+  [MPR_RECONSTRUCTION_MODES.stack]: 'Stack reconstruction',
+  [MPR_RECONSTRUCTION_MODES.shell]: 'Reference shell',
+  [MPR_RECONSTRUCTION_MODES.splat]: 'Simplified 3DGS',
+  [MPR_RECONSTRUCTION_MODES.realSplat]: 'Real 3DGS',
+  [MPR_RECONSTRUCTION_MODES.volume3d]: 'Ray-marched volume',
+  [MPR_RECONSTRUCTION_MODES.hybrid3d]: 'Hybrid part view',
+};
+const PT3_RENDERER_RECONSTRUCTION_MODES = [
+  MPR_RECONSTRUCTION_MODES.volume3d,
+  MPR_RECONSTRUCTION_MODES.splat,
+  MPR_RECONSTRUCTION_MODES.realSplat,
+  MPR_RECONSTRUCTION_MODES.hybrid3d,
+];
 const DEFAULT_MPR_PROJECTION_MIRROR = { axial: false, coronal: false, sagittal: false };
 const MPR_VOLUME_CACHE_LIMIT = 4;
 const MPR_SLICE_CANVAS_CACHE_LIMIT = 96;
@@ -1170,7 +1187,7 @@ function getDefaultSplatParameters(part, displayDomain) {
   const domain = getNormalizedDisplayDomain(displayDomain);
   const dimensions = getMprDimensions(part);
   const voxelCount = Math.max(1, Number(dimensions.axial || 1) * Number(dimensions.coronal || 1) * Number(dimensions.sagittal || 1));
-  const targetMaxSplats = Math.min(250000, Math.max(50000, Math.round(voxelCount * 0.08)));
+  const targetMaxSplats = Math.min(100000, Math.max(50000, Math.round(voxelCount * 0.08)));
   return {
     threshold: Math.round(getSplatDefaultThreshold(part, domain) / domain.step) * domain.step,
     intensityMin: domain.min,
@@ -1672,22 +1689,27 @@ function createDefaultSegment(index = 0) {
   };
 }
 
-function getMprAxisImageDimensions(axis, dimensions = {}) {
+function getMprAxisImageDimensions(axis, dimensions = {}, volumeCache = null) {
+  const resolvedDimensions = {
+    axial: Number(volumeCache?.depth) || Number(dimensions.axial),
+    coronal: Number(volumeCache?.height) || Number(dimensions.coronal),
+    sagittal: Number(volumeCache?.width) || Number(dimensions.sagittal),
+  };
   if (axis === 'coronal') {
     return {
-      width: Math.max(1, Number(dimensions.sagittal) || 1),
-      height: Math.max(1, Number(dimensions.axial) || 1),
+      width: Math.max(1, resolvedDimensions.sagittal || 1),
+      height: Math.max(1, resolvedDimensions.axial || 1),
     };
   }
   if (axis === 'sagittal') {
     return {
-      width: Math.max(1, Number(dimensions.coronal) || 1),
-      height: Math.max(1, Number(dimensions.axial) || 1),
+      width: Math.max(1, resolvedDimensions.coronal || 1),
+      height: Math.max(1, resolvedDimensions.axial || 1),
     };
   }
   return {
-    width: Math.max(1, Number(dimensions.sagittal) || 1),
-    height: Math.max(1, Number(dimensions.coronal) || 1),
+    width: Math.max(1, resolvedDimensions.sagittal || 1),
+    height: Math.max(1, resolvedDimensions.coronal || 1),
   };
 }
 
@@ -1864,16 +1886,16 @@ function getPlaneFocusRange(position, maxDimension) {
   return [Math.max(0, lo), hi];
 }
 
-function projectMprPointToOverlay(vx, vy, vz, dims, rotation, zoom, width, height) {
+function projectMprPointToOverlay(vx, vy, vz, dims, rotation, zoom, width, height, mirrorScale) {
   const rx = (rotation.x * Math.PI) / 180;
   const ry = (rotation.y * Math.PI) / 180;
   const cosRx = Math.cos(rx), sinRx = Math.sin(rx);
   const cosRy = Math.cos(ry), sinRy = Math.sin(ry);
   const maxDim = Math.max(dims.sagittal, dims.coronal, dims.axial);
-  let px = vx - dims.sagittal / 2;
-  let py = vy - dims.coronal / 2;
-  let pz = vz - dims.axial / 2;
-  let t = px * cosRy - pz * sinRy; pz = px * sinRy + pz * cosRy; px = t;
+  let px = (vx - dims.sagittal / 2) * (mirrorScale?.x ?? 1);
+  let py = (vy - dims.coronal / 2) * (mirrorScale?.y ?? 1);
+  let pz = (vz - dims.axial / 2) * (mirrorScale?.z ?? 1);
+  let t = px * cosRy + pz * sinRy; pz = -px * sinRy + pz * cosRy; px = t;
   t = py * cosRx + pz * sinRx; pz = -py * sinRx + pz * cosRx; py = t;
   return { x: (px * zoom / maxDim + 0.5) * width, y: (py * zoom / maxDim + 0.5) * height, z: pz };
 }
@@ -2146,9 +2168,26 @@ function DisplayWindowControl({ displayWindow, displayDomain, onChange }) {
   );
 }
 
-function MprSliceCanvas({ axis, volumeCache, overlayCaches = [], volumeCacheStatus, slicePosition, dimensions, displayWindow, displayDomain }) {
+const MprSliceCanvas = React.forwardRef(function MprSliceCanvas({
+  axis,
+  volumeCache,
+  overlayCaches = [],
+  volumeCacheStatus,
+  slicePosition,
+  dimensions,
+  displayWindow,
+  displayDomain,
+  className = '',
+  ...canvasProps
+}, externalRef) {
   const canvasRef = useRef(null);
   const relevantSlicePosition = slicePosition[axis];
+  const fallbackDimensions = getMprAxisImageDimensions(axis, dimensions, volumeCache);
+  const setCanvasRef = useCallback((node) => {
+    canvasRef.current = node;
+    if (typeof externalRef === 'function') externalRef(node);
+    else if (externalRef) externalRef.current = node;
+  }, [externalRef]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2187,15 +2226,21 @@ function MprSliceCanvas({ axis, volumeCache, overlayCaches = [], volumeCacheStat
 
   return (
     <canvas
-      ref={canvasRef}
-      className="mpr-slice-canvas"
-      aria-hidden="true"
+      {...canvasProps}
+      ref={setCanvasRef}
+      className={`mpr-slice-canvas ${className}`.trim()}
+      width={fallbackDimensions.width}
+      height={fallbackDimensions.height}
+      role={canvasProps.role || (canvasProps['aria-label'] ? 'img' : undefined)}
+      aria-hidden={canvasProps['aria-label'] ? undefined : true}
+      data-mpr-axis={axis}
+      data-mpr-slice-index={relevantSlicePosition}
       data-volume-cache-status={volumeCacheStatus}
       data-display-window={`${formatWindowValue(displayWindow?.min ?? 0)}-${formatWindowValue(displayWindow?.max ?? 255)}`}
       data-display-domain={`${formatWindowValue(displayDomain?.min ?? 0)}-${formatWindowValue(displayDomain?.max ?? 255)}`}
     />
   );
-}
+});
 
 function safeDecodeFilename(value) {
   const raw = String(value || '');
@@ -2479,6 +2524,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [activeMprPane, setActiveMprPane] = useState('axial');
   const [mprRotation, setMprRotation] = useState({ x: -22, y: 32 });
   const [mprReconstructionMode, setMprReconstructionMode] = useState(MPR_RECONSTRUCTION_MODES.orientation);
+  const [mprFullscreenOpen, setMprFullscreenOpen] = useState(false);
+  const [rayMarchSettings, setRayMarchSettings] = useState(() => ({ ...DEFAULT_RAY_MARCH_SETTINGS }));
+  const [splatViewSettings, setSplatViewSettings] = useState(() => ({ ...DEFAULT_SPLAT_VIEW_SETTINGS }));
   const [splatConfigModalOpen, setSplatConfigModalOpen] = useState(false);
   const [splatParameterOverridesByPart, setSplatParameterOverridesByPart] = useState({});
   const [mprProjectionMirror, setMprProjectionMirror] = useState(DEFAULT_MPR_PROJECTION_MIRROR);
@@ -2591,6 +2639,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const workbenchDetailsRef = useRef(null);
   const inspectionResizeSaveTimerRef = useRef(null);
   const mprDragRef = useRef(null);
+  const suppressNextMprSceneClickRef = useRef(false);
+  const mprFullscreenCloseRef = useRef(null);
+  const mprFullscreenSceneRef = useRef(null);
+  const mprFullscreenOpenerRef = useRef(null);
   const tileAnnotationDraftRef = useRef(null);
   const mprAnnotationDraftRef = useRef(null);
   const segmentationDraftRef = useRef(null);
@@ -2948,6 +3000,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     () => getSplatParametersForPart(selectedPart, displayValueDomain, splatParameterOverridesByPart),
     [displayValueDomain, selectedPart, splatParameterOverridesByPart],
   );
+  const mprAxisMirrorScale = useMemo(
+    () => getMprAxisMirrorScale(mprProjectionMirror),
+    [mprProjectionMirror],
+  );
 
   useEffect(() => {
     const canvas = mprOverlayCanvasRef.current;
@@ -2959,7 +3015,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (activeMprPane !== 'volume') return;
+    if (activeMprPane !== 'volume' || PT3_RENDERER_RECONSTRUCTION_MODES.includes(mprReconstructionMode)) return;
     const dims = {
       sagittal: Math.max(1, mprDimensions.sagittal || 1),
       coronal: Math.max(1, mprDimensions.coronal || 1),
@@ -2987,7 +3043,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     const drawOrder = MPR_AXES;
     drawOrder.forEach((axis) => {
       const color = MPR_AXIS_CONFIG[axis].color;
-      const line = full[axis].map(([x, y, z]) => projectMprPointToOverlay(x, y, z, dims, mprRotation, viewportTransform.zoom, canvas.width, canvas.height));
+      const line = full[axis].map(([x, y, z]) => projectMprPointToOverlay(x, y, z, dims, mprRotation, viewportTransform.zoom, canvas.width, canvas.height, mprAxisMirrorScale));
       ctx.beginPath();
       ctx.moveTo(line[0].x, line[0].y);
       line.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
@@ -3000,7 +3056,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       ctx.setLineDash([]);
       const active = activeMprPane === axis ? axis : null;
       if (active) {
-        const quad = focus[axis].map(([x, y, z]) => projectMprPointToOverlay(x, y, z, dims, mprRotation, viewportTransform.zoom, canvas.width, canvas.height));
+        const quad = focus[axis].map(([x, y, z]) => projectMprPointToOverlay(x, y, z, dims, mprRotation, viewportTransform.zoom, canvas.width, canvas.height, mprAxisMirrorScale));
         ctx.beginPath();
         ctx.moveTo(quad[0].x, quad[0].y);
         quad.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
@@ -3014,7 +3070,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         ctx.stroke();
       }
     });
-  }, [activeMprPane, mprDimensions, mprRotation, slicePosition, viewportTransform.zoom]);
+  }, [activeMprPane, mprAxisMirrorScale, mprDimensions, mprFullscreenOpen, mprReconstructionMode, mprRotation, slicePosition, viewportTransform.zoom]);
 
   const modalityOptions = useMemo(() => getModalities(selectedPart), [selectedPart]);
   const activeViewName = useMemo(() => {
@@ -3075,6 +3131,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     const key = String(imageId || '');
     return annotationSourceImageIdLookup[key] || key;
   }, [annotationSourceImageIdLookup]);
+  const fullscreenBackingImageId = String(
+    fullscreenImageModal?.backingImageId || fullscreenImageModal?.imageId || '',
+  );
+  const fullscreenMprSliceKey = fullscreenImageModal?.sourceKind === 'mpr'
+    ? String(fullscreenImageModal.sliceKey || getMprSliceKey(fullscreenImageModal.axis, fullscreenImageModal.sliceIndex))
+    : '';
   const applySessionCalibration = useCallback((imageId, calibration) => {
     if (!imageId || !isValidCalibration(calibration)) return false;
     const key = String(imageId);
@@ -3087,10 +3149,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   }, []);
 
   const handleFullscreenCalibrationChange = useCallback((calibration) => {
-    if (!applySessionCalibration(fullscreenImageModal?.imageId, calibration)) return;
+    if (!applySessionCalibration(fullscreenBackingImageId, calibration)) return;
     setFullscreenCalibrationPromptVisible(false);
     setFullscreenMeasureActive(true);
-  }, [applySessionCalibration, fullscreenImageModal?.imageId]);
+  }, [applySessionCalibration, fullscreenBackingImageId]);
 
   const handleTileCalibrationChange = useCallback((calibration) => {
     if (!applySessionCalibration(tileCalibrationPromptImageId, calibration)) return;
@@ -3151,7 +3213,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       const match = volumeImageStack.find((entry) => Number(entry.sliceIndex) === Number(target)) || volumeImageStack[Math.min(target, volumeImageStack.length - 1)] || volumeImageStack[0];
       return match?.id || match?.imageId || selectedImageRef || null;
     }
-    return selectedImageRef || (volumeImageStack[0]?.id || volumeImageStack[0]?.imageId || null);
+    return volumeImageStack[0]?.id || volumeImageStack[0]?.imageId || selectedImageRef || null;
   }, [selectedImageRef, slicePosition.axial, volumeImageStack]);
 
   const getMprAnnotationSliceContext = useCallback((axis, explicitSliceIndex = slicePosition[axis]) => {
@@ -3159,7 +3221,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     const sliceIndex = Number(explicitSliceIndex ?? slicePosition[safeAxis] ?? 0) || 0;
     const slicePositionForCanvas = { ...slicePosition, [safeAxis]: sliceIndex };
     const cachedCanvas = getCachedMprSliceCanvas(safeAxis, slicePositionForCanvas, mprDimensions, volumeCacheState.cache);
-    const fallbackDimensions = getMprAxisImageDimensions(safeAxis, mprDimensions);
+    const fallbackDimensions = getMprAxisImageDimensions(safeAxis, mprDimensions, volumeCacheState.cache);
     return {
       axis: safeAxis,
       sliceIndex,
@@ -3172,22 +3234,40 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   }, [getMprAnnotationImage, mprDimensions, slicePosition, volumeCacheState.cache]);
 
   const openMprAnnotationTool = useCallback((axis, mode) => {
-    const imageId = getMprAnnotationImage(axis);
+    const sliceContext = getMprAnnotationSliceContext(axis);
+    const hasVolumeStack = volumeImageStack.length > 0;
+    const fallbackImage = !hasVolumeStack
+      ? getFallbackProjectionImage(sliceContext.axis, shellImageLayers)
+      : null;
+    const imageId = fallbackImage?.id || sliceContext.imageId;
     if (!imageId) return;
-    const sliceValue = slicePosition[axis];
+    const sliceValue = sliceContext.sliceIndex;
     const axisLabel = (MPR_AXIS_CONFIG[axis]?.sliceLabel || axis).toUpperCase();
-    setFullscreenImageModal({ imageId: String(imageId), label: `${MPR_AXIS_CONFIG[axis]?.label || axis.toUpperCase()} slice ${sliceValue}` });
+    const label = `${MPR_AXIS_CONFIG[axis]?.label || axis.toUpperCase()} slice ${sliceValue}`;
+    setFullscreenImageModal(!hasVolumeStack ? {
+      sourceKind: 'image',
+      imageId: String(imageId),
+      label,
+    } : {
+      sourceKind: 'mpr',
+      axis: sliceContext.axis,
+      sliceIndex: sliceContext.sliceIndex,
+      sliceKey: sliceContext.sliceKey,
+      backingImageId: String(imageId),
+      imageId: String(imageId),
+      label,
+    });
     setFullscreenMeasureActive(mode === 'measure');
     setFullscreenBoxActive(mode === 'box');
     setFullscreenCalibrationPromptVisible(false);
     setAnnotationDraft((prev) => ({ ...prev, comment: `${mode === 'measure' ? 'Measurement' : 'Box'} on ${axisLabel} ${sliceValue}` }));
-  }, [getMprAnnotationImage, slicePosition]);
+  }, [getMprAnnotationSliceContext, shellImageLayers, volumeImageStack]);
 
   const canShowStackReconstruction = volumePreviewLayers.length > 0;
   const canShowShellReconstruction = shellImageLayers.length > 0;
   const canShowGaussianSplatPreview = Boolean(selectedPart);
   const effectiveMprReconstructionMode = (
-    [MPR_RECONSTRUCTION_MODES.splat, MPR_RECONSTRUCTION_MODES.volume3d, MPR_RECONSTRUCTION_MODES.hybrid3d].includes(mprReconstructionMode) && canShowGaussianSplatPreview
+    PT3_RENDERER_RECONSTRUCTION_MODES.includes(mprReconstructionMode) && canShowGaussianSplatPreview
   )
     ? mprReconstructionMode
     : (
@@ -3205,6 +3285,52 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       setMprReconstructionMode(effectiveMprReconstructionMode);
     }
   }, [effectiveMprReconstructionMode, mprReconstructionMode]);
+
+  const clearMprVolumeDrag = useCallback((suppressSceneClick = false) => {
+    const drag = mprDragRef.current;
+    mprDragRef.current = null;
+    suppressNextMprSceneClickRef.current = Boolean(suppressSceneClick && drag?.moved);
+    const captureTarget = drag?.captureTarget;
+    if (captureTarget?.hasPointerCapture?.(drag.pointerId)) {
+      captureTarget.releasePointerCapture?.(drag.pointerId);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!mprFullscreenOpen) {
+      clearMprVolumeDrag(false);
+      return undefined;
+    }
+    mprFullscreenCloseRef.current?.focus();
+    const handleWindowBlur = () => clearMprVolumeDrag(false);
+    const handleKeyDown = (event) => {
+      if (event.key === 'Tab') {
+        const dialog = mprFullscreenSceneRef.current?.closest('[role="dialog"]');
+        const focusable = Array.from(dialog?.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])
+          .filter((element) => element.getAttribute('aria-hidden') !== 'true');
+        if (focusable.length === 0) return;
+        event.preventDefault();
+        const activeIndex = focusable.indexOf(document.activeElement);
+        const nextIndex = event.shiftKey
+          ? (activeIndex <= 0 ? focusable.length - 1 : activeIndex - 1)
+          : (activeIndex < 0 || activeIndex === focusable.length - 1 ? 0 : activeIndex + 1);
+        focusable[nextIndex].focus();
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        clearMprVolumeDrag(false);
+        setMprFullscreenOpen(false);
+        window.requestAnimationFrame(() => mprFullscreenOpenerRef.current?.focus());
+      }
+    };
+    window.addEventListener('blur', handleWindowBlur);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('blur', handleWindowBlur);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [clearMprVolumeDrag, mprFullscreenOpen]);
 
   const tooltipValues = useMemo(() => {
     const domain = getNormalizedDisplayDomain(displayValueDomain);
@@ -3264,6 +3390,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       panX: clampRange(savedViewport.panX, -200, 200, 0),
       panY: clampRange(savedViewport.panY, -200, 200, 0),
     });
+    // `splat` is the persisted legacy value and now explicitly selects the
+    // simplified voxel-derived renderer.
     setMprReconstructionMode(
       Object.values(MPR_RECONSTRUCTION_MODES).includes(savedMpr.reconstruction_mode)
         ? savedMpr.reconstruction_mode
@@ -3510,6 +3638,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   useEffect(() => {
     if (!selectedPart?.id) return undefined;
     const handleInspectorHotkeys = (event) => {
+      if (mprFullscreenOpen) return;
       const focusedTag = event.target?.tagName?.toLowerCase();
       if (focusedTag === 'input' || focusedTag === 'textarea' || focusedTag === 'select' || event.defaultPrevented) {
         return;
@@ -3531,7 +3660,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     };
     document.addEventListener('keydown', handleInspectorHotkeys);
     return () => document.removeEventListener('keydown', handleInspectorHotkeys);
-  }, [inspectorHotkeys, savingPartId, selectedPart, updatePartReviewState]);
+  }, [inspectorHotkeys, mprFullscreenOpen, savingPartId, selectedPart, updatePartReviewState]);
 
   const reviewSummary = useMemo(() => {
     return parts.reduce(
@@ -3579,6 +3708,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       startX: event.clientX,
       startY: event.clientY,
       rotation: mprRotation,
+      moved: false,
+      captureTarget: event.currentTarget,
     };
     event.currentTarget.setPointerCapture?.(event.pointerId);
   };
@@ -3589,8 +3720,9 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     event.preventDefault();
     const dx = event.clientX - drag.startX;
     const dy = event.clientY - drag.startY;
+    if (Math.abs(dx) > 4 || Math.abs(dy) > 4) drag.moved = true;
     setMprRotation({
-      x: Math.min(72, Math.max(-72, drag.rotation.x - dy * 0.35)),
+      x: Math.min(72, Math.max(-72, drag.rotation.x + dy * 0.35)),
       y: drag.rotation.y + dx * 0.35,
     });
   };
@@ -3599,9 +3731,30 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     const drag = mprDragRef.current;
     if (drag?.pointerId === event.pointerId) {
       event.preventDefault();
-      mprDragRef.current = null;
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
+      clearMprVolumeDrag(drag.moved);
     }
+  };
+
+  const handleMprVolumePointerCancel = (event) => {
+    const drag = mprDragRef.current;
+    if (drag?.pointerId !== event.pointerId) return;
+    clearMprVolumeDrag(false);
+  };
+
+  const openMprFullscreen = (event) => {
+    if (suppressNextMprSceneClickRef.current) {
+      suppressNextMprSceneClickRef.current = false;
+      return;
+    }
+    mprFullscreenOpenerRef.current = event.currentTarget.querySelector?.('[role="button"]') || event.currentTarget;
+    setActiveMprPane('volume');
+    setMprFullscreenOpen(true);
+  };
+
+  const closeMprFullscreen = () => {
+    clearMprVolumeDrag(false);
+    setMprFullscreenOpen(false);
+    window.requestAnimationFrame(() => mprFullscreenOpenerRef.current?.focus());
   };
 
   const preventMprNativeDrag = (event) => {
@@ -4457,8 +4610,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     if (!selectedPart?.id || !lineId || !isFiniteMeasurementLine(nextLine)) return null;
     const calibratedLine = getMeasurementLineWithDerivedLength(
       nextLine,
-      getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId),
-      getCalibrationForImage(getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId)),
+      getAnnotationSourceImageIdForImage(fullscreenBackingImageId),
+      getCalibrationForImage(getAnnotationSourceImageIdForImage(fullscreenBackingImageId)),
     );
     const width = Math.abs(calibratedLine.x2 - calibratedLine.x1);
     const height = Math.abs(calibratedLine.y2 - calibratedLine.y1);
@@ -4506,7 +4659,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 
   const updateBoxAnnotationGeometry = async (boxId, nextBox) => {
     if (!selectedPart?.id || !boxId || !isFiniteAnnotationBox(nextBox)) return null;
-    const annotationImageId = getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId);
+    const annotationImageId = getAnnotationSourceImageIdForImage(fullscreenBackingImageId);
     const pixelsPerMm = Number(getCalibrationForImage(annotationImageId)?.pixels_per_mm || 0);
     const widthMm = pixelsPerMm > 0 ? nextBox.width / pixelsPerMm : null;
     const heightMm = pixelsPerMm > 0 ? nextBox.height / pixelsPerMm : null;
@@ -4521,6 +4674,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       geometry: {
         imageWidth: nextBox.imageWidth,
         imageHeight: nextBox.imageHeight,
+        ...(nextBox.axis ? { axis: nextBox.axis, slice_index: nextBox.sliceIndex } : {}),
         box: {
           x: nextBox.x,
           y: nextBox.y,
@@ -4528,6 +4682,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
           height: nextBox.height,
           imageWidth: nextBox.imageWidth,
           imageHeight: nextBox.imageHeight,
+          ...(nextBox.axis ? { axis: nextBox.axis, slice_index: nextBox.sliceIndex } : {}),
         },
       },
       measurements,
@@ -5039,7 +5194,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       <div className="modal-backdrop" role="presentation">
         <div className="modal-content splat-config-modal" role="dialog" aria-modal="true" aria-labelledby="splat-config-title">
           <div className="modal-header">
-            <h3 id="splat-config-title">Mechanical 3DGS configuration</h3>
+            <h3 id="splat-config-title">Simplified 3DGS configuration</h3>
             <button type="button" className="modal-close" aria-label="Close splat configuration" onClick={() => setSplatConfigModalOpen(false)}>×</button>
           </div>
           <p className="muted">
@@ -5075,9 +5230,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 id="splat-max-count"
                 type="number"
                 min="1"
+                max="100000"
                 step="1000"
                 value={draft.maxSplats}
-                onChange={(event) => updateDraft({ maxSplats: Math.max(1, Number(event.target.value) || defaults.maxSplats) })}
+                onChange={(event) => updateDraft({
+                  maxSplats: Math.min(100000, Math.max(1, Number(event.target.value) || defaults.maxSplats)),
+                })}
               />
             </label>
             <label htmlFor="splat-output-format">
@@ -5177,7 +5335,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   Ray-marched volume
                 </option>
                 <option value={MPR_RECONSTRUCTION_MODES.splat} disabled={!canShowGaussianSplatPreview}>
-                  Mechanical 3DGS
+                  Simplified 3DGS
+                </option>
+                <option value={MPR_RECONSTRUCTION_MODES.realSplat} disabled={!canShowGaussianSplatPreview}>
+                  Real 3DGS
                 </option>
                 <option value={MPR_RECONSTRUCTION_MODES.hybrid3d} disabled={!canShowGaussianSplatPreview}>
                   Hybrid part view
@@ -5350,43 +5511,120 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 </article>
               );
             })}
+            {mprFullscreenOpen && <div className="mpr-3d-fullscreen-backdrop" aria-hidden="true" onClick={closeMprFullscreen} />}
             <article
-              className={`mpr-pane mpr-pane-volume ${activeMprPane === 'volume' ? 'active-pane' : ''}`}
+              className={`mpr-pane mpr-pane-volume ${activeMprPane === 'volume' ? 'active-pane' : ''} ${mprFullscreenOpen ? 'mpr-pane-volume-fullscreen' : ''}`}
               data-testid="mpr-pane-3d"
-              onClick={() => {
+              role={mprFullscreenOpen ? 'dialog' : undefined}
+              aria-modal={mprFullscreenOpen ? 'true' : undefined}
+              aria-labelledby={mprFullscreenOpen ? 'mpr-3d-fullscreen-title' : undefined}
+              aria-describedby={mprFullscreenOpen ? 'mpr-3d-fullscreen-mode' : undefined}
+              onClick={(event) => {
                 setActiveMprPane('volume');
+                if (!mprFullscreenOpen && !event.target.closest('button, input, select, label')) {
+                  openMprFullscreen(event);
+                }
               }}
               onWheel={handleMprVolumeWheel}
             >
               <header className="mpr-pane-header">
-                <strong>3D</strong>
-                <span>Zoom {viewportTransform.zoom.toFixed(2)}x</span>
+                <strong id={mprFullscreenOpen ? 'mpr-3d-fullscreen-title' : undefined}>{mprFullscreenOpen ? '3D reconstruction' : '3D'}</strong>
+                <span id={mprFullscreenOpen ? 'mpr-3d-fullscreen-mode' : undefined}>
+                  {mprFullscreenOpen ? `${MPR_RECONSTRUCTION_LABELS[effectiveMprReconstructionMode]} • ` : ''}Zoom {viewportTransform.zoom.toFixed(2)}x
+                </span>
+                {mprFullscreenOpen && (
+                  <button
+                    type="button"
+                    className="modal-close-btn mpr-3d-fullscreen-close"
+                    aria-label="Close fullscreen 3D view"
+                    ref={mprFullscreenCloseRef}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      closeMprFullscreen();
+                    }}
+                  >
+                    &times;
+                  </button>
+                )}
               </header>
               <div
                 className="mpr-volume-scene"
-                role="img"
-                aria-label="3D part view with colored slicing plane reticle"
+                data-mirror-x={mprAxisMirrorScale.x}
+                data-mirror-y={mprAxisMirrorScale.y}
+                data-mirror-z={mprAxisMirrorScale.z}
+                role={mprFullscreenOpen ? 'application' : 'button'}
+                tabIndex={0}
+                ref={mprFullscreenSceneRef}
+                aria-label={mprFullscreenOpen ? 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.' : 'Open 3D part view fullscreen'}
                 onPointerDown={handleMprVolumePointerDown}
                 onPointerMove={handleMprVolumePointerMove}
                 onPointerUp={handleMprVolumePointerUp}
-                onPointerCancel={handleMprVolumePointerUp}
+                onPointerCancel={handleMprVolumePointerCancel}
                 onDragStart={preventMprNativeDrag}
+                onKeyDown={(event) => {
+                  if (!mprFullscreenOpen && ['Enter', ' '].includes(event.key)) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openMprFullscreen(event);
+                    return;
+                  }
+                  if (!mprFullscreenOpen) return;
+                  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', '+', '=', '-', '_', '0'].includes(event.key)) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }
+                  if (event.key === 'ArrowLeft') setMprRotation((prev) => ({ ...prev, y: prev.y - 5 }));
+                  else if (event.key === 'ArrowRight') setMprRotation((prev) => ({ ...prev, y: prev.y + 5 }));
+                  else if (event.key === 'ArrowUp') setMprRotation((prev) => ({ ...prev, x: Math.max(-72, prev.x - 5) }));
+                  else if (event.key === 'ArrowDown') setMprRotation((prev) => ({ ...prev, x: Math.min(72, prev.x + 5) }));
+                  else if (['+', '='].includes(event.key)) adjustZoom(0.12);
+                  else if (['-', '_'].includes(event.key)) adjustZoom(-0.12);
+                  else if (event.key === '0') resetViewport();
+                }}
               >
-                <canvas className="mpr-volume-overlay" ref={mprOverlayCanvasRef} aria-hidden="true" />
-                {[MPR_RECONSTRUCTION_MODES.splat, MPR_RECONSTRUCTION_MODES.volume3d, MPR_RECONSTRUCTION_MODES.hybrid3d].includes(effectiveMprReconstructionMode) && (
+                {!PT3_RENDERER_RECONSTRUCTION_MODES.includes(effectiveMprReconstructionMode) && (
+                  <canvas className="mpr-volume-overlay" ref={mprOverlayCanvasRef} aria-hidden="true" />
+                )}
+                {PT3_RENDERER_RECONSTRUCTION_MODES.includes(effectiveMprReconstructionMode) && (
                   <Pt3GaussianSplatViewer
                     part={selectedPart}
                     projectId={projectId}
+                    volumeImageStack={volumeImageStack}
                     splatParameters={splatParameters}
-                    initialMode={effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.volume3d ? 'volume' : effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat ? 'splat' : 'hybrid'}
+                    mode={effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.volume3d
+                      ? 'volume'
+                      : effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.realSplat
+                        ? 'real-splat'
+                        : effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat
+                          ? 'splat'
+                          : 'hybrid'}
+                    rotation={mprRotation}
+                    zoom={viewportTransform.zoom}
+                    mirrorScale={mprAxisMirrorScale}
+                    slicePosition={slicePosition}
+                    rayMarchSettings={rayMarchSettings}
+                    splatViewSettings={splatViewSettings}
+                    onRayMarchSettingsChange={setRayMarchSettings}
+                    onSplatViewSettingsChange={setSplatViewSettings}
+                    onRotationChange={setMprRotation}
+                    onZoomChange={(nextZoom) => setViewportTransform((prev) => ({ ...prev, zoom: nextZoom }))}
+                    onResetView={resetViewport}
+                    showRayMarchControls={mprFullscreenOpen}
+                    showSplatControls={mprFullscreenOpen}
                   />
                 )}
-                <div
+                {!PT3_RENDERER_RECONSTRUCTION_MODES.includes(effectiveMprReconstructionMode) && <div
                   className={`mpr-volume-model reconstruction-${effectiveMprReconstructionMode}`}
                   style={{
-                    '--volume-rotate-x': `${mprRotation.x}deg`,
+                    '--volume-rotate-x': `${-mprRotation.x}deg`,
                     '--volume-rotate-y': `${mprRotation.y}deg`,
-                    '--volume-zoom': viewportTransform.zoom,
+                    '--volume-mirror-x': mprAxisMirrorScale.x,
+                    '--volume-mirror-y': mprAxisMirrorScale.y,
+                    '--volume-mirror-z': mprAxisMirrorScale.z,
+                    '--volume-zoom': mprFullscreenOpen
+                      && [MPR_RECONSTRUCTION_MODES.orientation, MPR_RECONSTRUCTION_MODES.stack, MPR_RECONSTRUCTION_MODES.shell].includes(effectiveMprReconstructionMode)
+                      ? Math.min(3.4, Math.max(3, viewportTransform.zoom * 1.8))
+                      : viewportTransform.zoom,
                     '--slice-axial-depth': `${(getFraction(slicePosition.axial, mprDimensions.axial - 1) - 0.5) * 108}px`,
                     '--slice-coronal-y': `${(getFraction(slicePosition.coronal, mprDimensions.coronal - 1) - 0.5) * 138}px`,
                     '--slice-sagittal-x': `${(getFraction(slicePosition.sagittal, mprDimensions.sagittal - 1) - 0.5) * 190}px`,
@@ -5441,7 +5679,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   <span className="volume-reticle reticle-x" />
                   <span className="volume-reticle reticle-y" />
                   <span className="volume-reticle reticle-z" />
-                </div>
+                </div>}
               </div>
               <div className="mpr-volume-legend" aria-label="MPR axis legend">
                 {MPR_AXES.map((axis) => (
@@ -7045,18 +7283,57 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   };
 
   const getFullscreenImagePointerPosition = (event) => {
-    const image = fullscreenImageRef.current;
-    if (!image) return null;
-    const rect = image.getBoundingClientRect();
-    if (!rect.width || !rect.height || !image.naturalWidth || !image.naturalHeight) return null;
+    const surface = fullscreenImageRef.current;
+    if (!surface) return null;
+    const rect = surface.getBoundingClientRect();
+    const isCanvasSurface = surface.tagName === 'CANVAS';
+    const naturalWidth = Number(isCanvasSurface ? surface.width : surface.naturalWidth);
+    const naturalHeight = Number(isCanvasSurface ? surface.height : surface.naturalHeight);
+    if (!rect.width || !rect.height || !naturalWidth || !naturalHeight) return null;
     const rawDisplayX = event.clientX - rect.left;
     const rawDisplayY = event.clientY - rect.top;
     const displayX = Math.min(rect.width, Math.max(0, rawDisplayX));
     const displayY = Math.min(rect.height, Math.max(0, rawDisplayY));
-    const x = (displayX / rect.width) * image.naturalWidth;
-    const y = (displayY / rect.height) * image.naturalHeight;
+    const isMprSurface = fullscreenImageModal?.sourceKind === 'mpr';
+    const containScale = isMprSurface
+      ? Math.min(rect.width / naturalWidth, rect.height / naturalHeight)
+      : null;
+    const contentWidth = isMprSurface ? naturalWidth * containScale : rect.width;
+    const contentHeight = isMprSurface ? naturalHeight * containScale : rect.height;
+    const contentLeft = isMprSurface ? (rect.width - contentWidth) / 2 : 0;
+    const contentTop = isMprSurface ? (rect.height - contentHeight) / 2 : 0;
+    const rawContentX = rawDisplayX - contentLeft;
+    const rawContentY = rawDisplayY - contentTop;
+    if (rawContentX < 0 || rawContentX > contentWidth || rawContentY < 0 || rawContentY > contentHeight) {
+      return null;
+    }
+    let sourceFractionX = rawContentX / contentWidth;
+    let sourceFractionY = rawContentY / contentHeight;
+    if (isMprSurface) {
+      const displayAxes = MPR_DISPLAY_AXES_BY_VIEW[fullscreenImageModal.axis] || MPR_DISPLAY_AXES_BY_VIEW.axial;
+      if (mprProjectionMirror[displayAxes.x] === true) sourceFractionX = 1 - sourceFractionX;
+      if (mprProjectionMirror[displayAxes.y] === true) sourceFractionY = 1 - sourceFractionY;
+    }
+    const x = sourceFractionX * naturalWidth;
+    const y = sourceFractionY * naturalHeight;
     if (![x, y, displayX, displayY].every(Number.isFinite)) return null;
-    return { x, y, displayX, displayY, rawDisplayX, rawDisplayY, rect, naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight };
+    return {
+      x,
+      y,
+      displayX,
+      displayY,
+      rawDisplayX,
+      rawDisplayY,
+      rect,
+      naturalWidth,
+      naturalHeight,
+      contentRect: {
+        left: rect.left + contentLeft,
+        top: rect.top + contentTop,
+        width: contentWidth,
+        height: contentHeight,
+      },
+    };
   };
 
   const makeBoxFromMovedCorner = (box, corner, point, naturalWidth, naturalHeight) => {
@@ -7100,7 +7377,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 		      setFullscreenAnnotationPreview(null);
 	      return;
 	    }
-    if (!getCalibrationForImage(getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId))) {
+	    if (!getCalibrationForImage(getAnnotationSourceImageIdForImage(fullscreenBackingImageId))) {
       setFullscreenCalibrationPromptVisible(true);
       return;
     }
@@ -7127,7 +7404,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     setFullscreenCropActive(false);
 	    setPendingMeasurePoint(null);
 	    pendingMeasurePointRef.current = null;
-	    if (!requireCalibrationForAnnotation(fullscreenImageModal?.imageId, { surface: 'fullscreen', toolMode: 'box' })) return;
+	    if (!requireCalibrationForAnnotation(fullscreenBackingImageId, { surface: 'fullscreen', toolMode: 'box' })) return;
 	    setFullscreenCalibrationPromptVisible(false);
 	    setFullscreenEditingEndpoint(null);
     setFullscreenEditingBoxCorner(null);
@@ -7159,19 +7436,30 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 
 	  const commitFullscreenBox = async (box) => {
 	    if (isFiniteAnnotationBox(box)) {
-	      if (!requireCalibrationForAnnotation(fullscreenImageModal?.imageId, { surface: 'fullscreen', toolMode: 'box' })) {
+	      if (!requireCalibrationForAnnotation(fullscreenBackingImageId, { surface: 'fullscreen', toolMode: 'box' })) {
 	        setPendingBoxPoint(null);
 	        pendingBoxPointRef.current = null;
 	        setFullscreenAnnotationPreview(null);
 	        return;
 	      }
-	      const annotationSourceImageId = getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId);
-	      const existingBoxCount = (storedBoxAnnotationsByImageId[String(annotationSourceImageId || '')] || []).length;
+	      const annotationSourceImageId = getAnnotationSourceImageIdForImage(fullscreenBackingImageId);
+	      const existingBoxCount = fullscreenMprSliceKey
+	        ? (storedMprBoxAnnotationsBySlice[fullscreenMprSliceKey] || []).length
+	        : (storedBoxAnnotationsByImageId[String(annotationSourceImageId || '')] || []).length;
+	      const mprGeometryPatch = fullscreenMprSliceKey
+	        ? {
+	          axis: fullscreenImageModal.axis,
+	          slice_index: fullscreenImageModal.sliceIndex,
+	          box: { axis: fullscreenImageModal.axis, slice_index: fullscreenImageModal.sliceIndex },
+	        }
+	        : {};
 	      await createBoxAnnotation({
-	        imageId: fullscreenImageModal?.imageId,
+	        imageId: fullscreenBackingImageId,
 	        box,
 	        name: 'Drawn bounding box',
 	        color: MEASUREMENT_COLORS[existingBoxCount % MEASUREMENT_COLORS.length],
+	        modality: fullscreenMprSliceKey ? 'volume' : undefined,
+	        geometryPatch: mprGeometryPatch,
 	      });
 	    }
 	    setPendingBoxPoint(null);
@@ -7181,7 +7469,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 
   const commitFullscreenMeasureLine = async (line) => {
     if (!line) return;
-    if (!getCalibrationForImage(getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId))) {
+    if (!getCalibrationForImage(getAnnotationSourceImageIdForImage(fullscreenBackingImageId))) {
       setPendingMeasurePoint(null);
       pendingMeasurePointRef.current = null;
       setFullscreenMeasureActive(false);
@@ -7190,15 +7478,31 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     }
     const kind = classifyMeasurementLine(line);
     const name = nextMeasurementName(kind);
-    const annotationSourceImageId = getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId);
-    const existingLineCount = (storedMeasurementLinesByImageId[String(annotationSourceImageId || '')] || []).length
-      + fullscreenMeasurements.filter((item) => String(item.imageId || '') === String(annotationSourceImageId || '')).length;
+    const annotationSourceImageId = getAnnotationSourceImageIdForImage(fullscreenBackingImageId);
+    const annotationLookupKey = fullscreenMprSliceKey || String(annotationSourceImageId || '');
+    const existingLineCount = ((fullscreenMprSliceKey
+      ? storedMprMeasurementLinesBySlice[fullscreenMprSliceKey]
+      : storedMeasurementLinesByImageId[String(annotationSourceImageId || '')]) || []).length
+      + fullscreenMeasurements.filter((item) => String(item.imageId || '') === annotationLookupKey).length;
     const color = MEASUREMENT_COLORS[existingLineCount % MEASUREMENT_COLORS.length];
     const distancePx = Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
     const distanceMm = getLineDistanceMm(line, annotationSourceImageId);
-    const created = await createMeasurementAnnotation({ imageId: fullscreenImageModal?.imageId, line, name, color, distanceMm });
+    const mprLine = fullscreenMprSliceKey
+      ? { ...line, axis: fullscreenImageModal.axis, slice_index: fullscreenImageModal.sliceIndex }
+      : line;
+    const created = await createMeasurementAnnotation({
+      imageId: fullscreenBackingImageId,
+      line: mprLine,
+      name,
+      color,
+      distanceMm,
+      modality: fullscreenMprSliceKey ? 'volume' : undefined,
+      geometryPatch: fullscreenMprSliceKey
+        ? { axis: fullscreenImageModal.axis, slice_index: fullscreenImageModal.sliceIndex }
+        : {},
+    });
     if (created && (!created.image_id || !created.geometry?.line)) {
-      setFullscreenMeasurements((prev) => [...prev, { ...line, id: created.id, imageId: String(annotationSourceImageId || ''), name, kind, color, distanceMm, distancePx }]);
+      setFullscreenMeasurements((prev) => [...prev, { ...mprLine, id: created.id, imageId: annotationLookupKey, name, kind, color, distanceMm, distancePx }]);
     }
 	    setPendingMeasurePoint(null);
 	    pendingMeasurePointRef.current = null;
@@ -7239,6 +7543,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
           ...nextBox,
           id: fullscreenEditingBoxCorner.boxId,
           color: fullscreenEditingBoxCorner.box.color,
+          axis: fullscreenEditingBoxCorner.box.axis,
+          sliceIndex: fullscreenEditingBoxCorner.box.sliceIndex,
         });
       }
       setFullscreenEditingBoxCorner(null);
@@ -7246,7 +7552,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     }
 	    if (fullscreenBoxActive || fullscreenCropActive) return;
 	    if (!fullscreenMeasureActive) return;
-    if (!getCalibrationForImage(getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId))) {
+    if (!getCalibrationForImage(getAnnotationSourceImageIdForImage(fullscreenBackingImageId))) {
       setFullscreenMeasureActive(false);
       setFullscreenCalibrationPromptVisible(true);
       setPendingMeasurePoint(null);
@@ -7326,7 +7632,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	        imageHeight: position.naturalHeight,
 	      });
 	      if (fullscreenCropActive) {
-	        await createCropChildImage({ parentImageId: getAnnotationSourceImageIdForImage(fullscreenImageModal?.imageId), cropBox: box });
+	        await createCropChildImage({ parentImageId: getAnnotationSourceImageIdForImage(fullscreenBackingImageId), cropBox: box });
 	      } else {
 	        await commitFullscreenBox(box);
 	      }
@@ -7432,7 +7738,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	        distancePx: Math.hypot(position.x - firstMeasurePoint.x, position.y - firstMeasurePoint.y),
 	        distanceMm: getLineDistanceMm(
 	          { x1: firstMeasurePoint.x, y1: firstMeasurePoint.y, x2: position.x, y2: position.y },
-	          fullscreenImageModal?.imageId,
+	          fullscreenBackingImageId,
 	        ),
 	      };
 	      setFullscreenAnnotationPreview({ mode: 'measure', line });
@@ -7512,9 +7818,13 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	  };
 
   const renderFullscreenImageModal = () => {
-    if (!fullscreenImageModal?.imageId) return null;
-    const fullscreenImageId = String(fullscreenImageModal.imageId);
+    if (!fullscreenBackingImageId) return null;
+    const isMprFullscreen = fullscreenImageModal?.sourceKind === 'mpr';
+    const fullscreenImageId = fullscreenBackingImageId;
     const fullscreenAnnotationSourceImageId = getAnnotationSourceImageIdForImage(fullscreenImageId);
+    const fullscreenAnnotationLookupKey = isMprFullscreen
+      ? fullscreenMprSliceKey
+      : fullscreenAnnotationSourceImageId;
     const fullscreenBaseImageId = String(fullscreenImageModal.baseImageId || (
       fullscreenAnnotationSourceImageId && fullscreenAnnotationSourceImageId !== fullscreenImageId
         ? fullscreenAnnotationSourceImageId
@@ -7522,10 +7832,14 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     ));
     const fullscreenImageRecord = projectImageLookup[fullscreenImageId] || {};
 	    const fullscreenMeasurementLines = [
-	      ...(measurementLinesByImageId[fullscreenAnnotationSourceImageId] || []),
-	      ...fullscreenMeasurements.filter((line) => String(line.imageId || '') === fullscreenAnnotationSourceImageId),
+	      ...(isMprFullscreen
+	        ? (mprMeasurementLinesBySlice[fullscreenAnnotationLookupKey] || [])
+	        : (measurementLinesByImageId[fullscreenAnnotationSourceImageId] || [])),
+	      ...fullscreenMeasurements.filter((line) => String(line.imageId || '') === String(fullscreenAnnotationLookupKey || '')),
 	    ].filter(isFiniteMeasurementLine);
-	    const fullscreenBoxAnnotations = (boxAnnotationsByImageId[fullscreenAnnotationSourceImageId] || [])
+	    const fullscreenBoxAnnotations = (isMprFullscreen
+	      ? (mprBoxAnnotationsBySlice[fullscreenAnnotationLookupKey] || [])
+	      : (boxAnnotationsByImageId[fullscreenAnnotationSourceImageId] || []))
 	      .filter(isFiniteAnnotationBox)
 	      .map((box) => getBoxWithDerivedDimensions(box, fullscreenAnnotationSourceImageId));
 	    const fullscreenPreviewLines = fullscreenAnnotationPreview?.mode === 'measure'
@@ -7548,6 +7862,59 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	        summary: `${getAnnotationBoxWidthLabel(box)} • ${getAnnotationBoxHeightLabel(box)}`,
 	      })),
 	    ];
+	    const fullscreenSurfaceClassName = `inspection-fullscreen-image ${fullscreenBaseImageId ? 'analysis-overlay-image' : ''} ${fullscreenMeasureActive || fullscreenBoxActive || fullscreenCropActive || fullscreenEditingEndpoint || fullscreenEditingBoxCorner ? 'measurement-active' : ''}`;
+	    const fullscreenSurfaceProps = {
+	      ref: fullscreenImageRef,
+	      className: fullscreenSurfaceClassName,
+	      'aria-label': `${fullscreenImageModal.label} fullscreen`,
+	      onMouseDown: (event) => {
+	        handleFullscreenMeasurePointerDown(event);
+	        handleFullscreenBoxPointerDown(event);
+	      },
+	      onMouseUp: (event) => {
+	        handleFullscreenMeasurePointerUp(event);
+	        handleFullscreenBoxPointerUp(event);
+	      },
+	      onMouseLeave: (event) => {
+	        handleFullscreenBoxPointerCancel(event);
+	        if (fullscreenMeasureActive && pendingMeasurePointRef.current) {
+	          setPendingMeasurePoint(null);
+	          pendingMeasurePointRef.current = null;
+	          setFullscreenAnnotationPreview(null);
+	        }
+	      },
+	      onClick: (event) => {
+	        if (fullscreenEditingEndpoint?.lineId || fullscreenEditingBoxCorner?.boxId) {
+	          handleFullscreenMeasurePointerDown(event);
+	        } else if (fullscreenMeasureActive) {
+	          if (pendingMeasurePointRef.current || pendingMeasurePoint) {
+	            handleFullscreenMeasurePointerUp(event);
+	          } else {
+	            handleFullscreenMeasurePointerDown(event);
+	          }
+	        }
+	      },
+	    };
+	    const fullscreenMprSlicePosition = isMprFullscreen
+	      ? { ...slicePosition, [fullscreenImageModal.axis]: fullscreenImageModal.sliceIndex }
+	      : null;
+	    const fullscreenMprProjectionStyle = isMprFullscreen
+	      ? getMprCrosshairStyle(
+	        fullscreenImageModal.axis,
+	        fullscreenMprSlicePosition,
+	        mprDimensions,
+	        mprProjectionMirror,
+	      )
+	      : undefined;
+	    const fullscreenMprImageDimensions = isMprFullscreen
+	      ? getMprAxisImageDimensions(fullscreenImageModal.axis, mprDimensions, volumeCacheState.cache)
+	      : null;
+	    const fullscreenOverlayViewBox = fullscreenMprImageDimensions
+	      ? `0 0 ${fullscreenMprImageDimensions.width} ${fullscreenMprImageDimensions.height}`
+	      : '0 0 1000 1000';
+	    const fullscreenOverlayContentTransform = fullscreenMprImageDimensions
+	      ? `scale(${fullscreenMprImageDimensions.width / 1000} ${fullscreenMprImageDimensions.height / 1000})`
+	      : undefined;
 	    return (
       <div className="modal inspection-fullscreen-modal" style={{ display: 'flex' }} onClick={closeFullscreenImageModal}>
         <div className="modal-content inspection-fullscreen-modal-content" onClick={(event) => event.stopPropagation()}>
@@ -7563,9 +7930,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	              <button type="button" className={`btn btn-secondary ${fullscreenBoxActive ? 'active' : ''}`} onClick={toggleFullscreenBox}>
 	                Draw box
 	              </button>
-                  <button type="button" className={`btn btn-secondary ${fullscreenCropActive ? 'active' : ''}`} onClick={toggleFullscreenCrop}>
-                    New Crop
-                  </button>
+                  {!isMprFullscreen && (
+                    <button type="button" className={`btn btn-secondary ${fullscreenCropActive ? 'active' : ''}`} onClick={toggleFullscreenCrop}>
+                      New Crop
+                    </button>
+                  )}
 	              <button type="button" className="modal-close-btn" aria-label="Close fullscreen image" onClick={closeFullscreenImageModal}>&times;</button>
 	            </div>
           </div>
@@ -7610,47 +7979,45 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	                    transformOrigin: `${fullscreenImageZoom.originX}% ${fullscreenImageZoom.originY}%`,
 	                  }}
                 >
-                  {fullscreenBaseImageId && (
+                  {!isMprFullscreen && fullscreenBaseImageId && (
                     <img
                       src={`/api/images/${encodeURIComponent(fullscreenBaseImageId)}/content`}
                       alt={`${fullscreenImageModal.label} source fullscreen`}
                       className="inspection-fullscreen-image"
                     />
                   )}
-                  <img
-                    ref={fullscreenImageRef}
-                    src={`/api/images/${encodeURIComponent(fullscreenImageModal.imageId)}/content`}
-	                    alt={`${fullscreenImageModal.label} fullscreen`}
-		                    className={`inspection-fullscreen-image ${fullscreenBaseImageId ? 'analysis-overlay-image' : ''} ${fullscreenMeasureActive || fullscreenBoxActive || fullscreenCropActive || fullscreenEditingEndpoint || fullscreenEditingBoxCorner ? 'measurement-active' : ''}`}
-		                    onMouseDown={(event) => {
-                          handleFullscreenMeasurePointerDown(event);
-                          handleFullscreenBoxPointerDown(event);
-                        }}
-		                    onMouseUp={(event) => {
-                          handleFullscreenMeasurePointerUp(event);
-                          handleFullscreenBoxPointerUp(event);
-                        }}
-		                    onMouseLeave={(event) => {
-                          handleFullscreenBoxPointerCancel(event);
-                          if (fullscreenMeasureActive && pendingMeasurePointRef.current) {
-                            setPendingMeasurePoint(null);
-                            pendingMeasurePointRef.current = null;
-                            setFullscreenAnnotationPreview(null);
-                          }
-                        }}
-		                    onClick={(event) => {
-                          if (fullscreenEditingEndpoint?.lineId || fullscreenEditingBoxCorner?.boxId) {
-                            handleFullscreenMeasurePointerDown(event);
-                          } else if (fullscreenMeasureActive) {
-                            if (pendingMeasurePointRef.current || pendingMeasurePoint) {
-                              handleFullscreenMeasurePointerUp(event);
-                            } else {
-                              handleFullscreenMeasurePointerDown(event);
-                            }
-                          }
-                        }}
-		                  />
-                  <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 1000 1000`} preserveAspectRatio="none" aria-label="fullscreen measurement overlay">
+                  {isMprFullscreen ? (
+                    <MprSliceCanvas
+                      {...fullscreenSurfaceProps}
+                      className={`${fullscreenSurfaceClassName} inspection-fullscreen-mpr-slice`}
+                      axis={fullscreenImageModal.axis}
+                      volumeCache={volumeCacheState.cache}
+                      overlayCaches={activeVolumeOverlayCaches}
+                      volumeCacheStatus={volumeCacheState.status}
+                      slicePosition={fullscreenMprSlicePosition}
+                      dimensions={mprDimensions}
+                      displayWindow={displayWindow}
+                      displayDomain={displayValueDomain}
+                      style={fullscreenMprProjectionStyle}
+                      data-testid="fullscreen-mpr-slice"
+                      data-mpr-slice-key={fullscreenMprSliceKey}
+                      data-mpr-backing-image-id={fullscreenImageId}
+                    />
+                  ) : (
+                    <img
+                      {...fullscreenSurfaceProps}
+                      src={`/api/images/${encodeURIComponent(fullscreenImageId)}/content`}
+                      alt={`${fullscreenImageModal.label} fullscreen`}
+		                />
+                  )}
+		          <svg
+		            className={`inspection-fullscreen-measurement-overlay ${isMprFullscreen ? 'mpr-projection-overlay' : ''}`.trim()}
+		            viewBox={fullscreenOverlayViewBox}
+		            preserveAspectRatio={isMprFullscreen ? 'xMidYMid meet' : 'none'}
+		            style={fullscreenMprProjectionStyle}
+		            aria-label="fullscreen measurement overlay"
+		          >
+		            <g transform={fullscreenOverlayContentTransform}>
 	                    {[...fullscreenMeasurementLines, ...fullscreenPreviewLines].map((line) => {
                       const labelPosition = getMeasurementLabelViewBoxPosition(line, 20);
                       const endpointPositions = getMeasurementEndpointViewBoxPosition(line);
@@ -7716,6 +8083,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                         </g>
                       );
                     })}
+		            </g>
 	                  </svg>
 	                </div>
 
@@ -7744,7 +8112,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 	                          <span className="inspection-fullscreen-annotation-title">{annotation.title || `Annotation ${index + 1}`}</span>
 	                          <span className="inspection-fullscreen-annotation-length">{annotation.summary}</span>
 	                        </button>
-	                        {annotation.annotationType === 'box' && (
+	                        {annotation.annotationType === 'box' && !isMprFullscreen && (
 	                          <button
 	                            type="button"
 	                            className="inspection-fullscreen-annotation-crop"

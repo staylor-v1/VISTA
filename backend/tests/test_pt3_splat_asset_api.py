@@ -1,10 +1,812 @@
 import json
+import base64
+import asyncio
+import io
+import threading
+from types import SimpleNamespace
+import uuid
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
+import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from core import models
+from routers import inspection_workbench
 
 
-def test_pt3_part_volume_splat_asset_route_updates_metadata(client, tmp_path):
+def test_pt3_cache_root_honors_configured_cache_dir(monkeypatch, tmp_path):
+    configured_root = tmp_path / "writable-cache"
+    monkeypatch.setenv("CACHE_DIR", str(configured_root))
+
+    assert inspection_workbench._pt3_cache_root() == configured_root.resolve()
+
+
+def test_pending_real_splat_status_hides_internal_fallback_path_and_resolves_old_cache_key():
+    previous = {
+        "job_id": "published-job",
+        "status": "ready",
+        "cache_key": "published-cache-key",
+        "asset_path": "/private/cache/published.json",
+        "asset_url": "/api/published-cache-key",
+        "splat_count": 12,
+    }
+    pending = {
+        "job_id": "recompute-job",
+        "status": "pending",
+        "stage": "optimizing",
+        "progress_percent": 42,
+        "previous_ready_asset": previous,
+    }
+
+    status_payload = inspection_workbench._real_splat_status_from_metadata(
+        uuid.uuid4(),
+        uuid.uuid4(),
+        {"pt3_real_splat_asset": pending},
+    ).model_dump(mode="json")
+
+    assert status_payload["status"] == "pending"
+    assert "previous_ready_asset" not in status_payload["metadata"]
+    assert "/private/cache" not in json.dumps(status_payload)
+    assert inspection_workbench._pt3_real_splat_asset_for_cache(
+        pending,
+        "published-cache-key",
+    ) == previous
+
+
+def test_real_splat_status_rejects_forged_paths_and_derives_internal_url(
+    monkeypatch,
+    tmp_path,
+):
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("CACHE_DIR", str(cache_root))
+    project_id = uuid.uuid4()
+    part_id = uuid.uuid4()
+    cache_key = "pt3-voxel-direct-contained"
+    external_path = tmp_path / f"{cache_key}.json"
+    external_path.write_text("{}", encoding="utf-8")
+    forged = {
+        "job_id": "forged-job",
+        "status": "ready",
+        "cache_key": cache_key,
+        "asset_path": str(external_path),
+        "asset_url": "https://attacker.example/forged-real-asset",
+        "source_files": ["/private/cache/source.npy"],
+        "splat_count": 1,
+        "progress_percent": 100,
+    }
+
+    rejected = inspection_workbench._real_splat_status_from_metadata(
+        project_id,
+        part_id,
+        {"pt3_real_splat_asset": forged},
+    ).model_dump(mode="json")
+
+    assert rejected["status"] == "missing"
+    assert rejected["asset_url"] is None
+    assert "attacker.example" not in json.dumps(rejected)
+    assert "/private/cache" not in json.dumps(rejected)
+    assert inspection_workbench._usable_previous_pt3_real_splat_asset(
+        forged,
+        project_id=project_id,
+        part_id=part_id,
+    ) is None
+
+    contained_path = (
+        cache_root
+        / "pt3_real_splat_assets"
+        / str(project_id)
+        / str(part_id)
+        / "contained-job"
+        / "canonical.json"
+    )
+    contained_path.parent.mkdir(parents=True)
+    contained_path.write_text("{}", encoding="utf-8")
+    contained = {
+        **forged,
+        "job_id": "contained-job",
+        "asset_path": str(contained_path),
+    }
+    accepted = inspection_workbench._real_splat_status_from_metadata(
+        project_id,
+        part_id,
+        {"pt3_real_splat_asset": contained},
+    ).model_dump(mode="json")
+
+    expected_url = (
+        f"/api/projects/{project_id}/parts/{part_id}/"
+        f"real-gaussian-splat-assets/{cache_key}"
+    )
+    assert accepted["status"] == "ready"
+    assert accepted["asset_url"] == expected_url
+    assert accepted["metadata"]["asset_url"] == expected_url
+    assert "asset_path" not in accepted["metadata"]
+    assert "source_files" not in accepted["metadata"]
+    assert "attacker.example" not in json.dumps(accepted)
+
+
+def test_provider_camera_binding_keeps_voxel_sources_separate_from_generated_views():
+    assert inspection_workbench._pt3_provider_camera_view_binding(
+        source_image_ids=["server-owned-container-id"],
+        camera_image_ids={"generated-view-a", "generated-view-b"},
+    ) == "generated_from_voxel_volume"
+
+    assert inspection_workbench._pt3_provider_camera_view_binding(
+        source_image_ids=["source-view-a", "source-view-b"],
+        camera_image_ids={"source-view-a", "source-view-b"},
+    ) == "server_inferred_source_views"
+
+    # A directory of axial/slice images is still a voxel volume, not an
+    # exterior camera stack, so independently generated views are valid here.
+    assert inspection_workbench._pt3_provider_camera_view_binding(
+        source_image_ids=["slice-z000", "slice-z001", "slice-z002"],
+        camera_image_ids={"generated-view-a", "generated-view-b"},
+    ) == "generated_from_voxel_volume"
+
+
+@pytest.mark.asyncio
+async def test_stale_simplified_worker_cannot_publish_over_newer_recompute(
+    db_session,
+    monkeypatch,
+    tmp_path,
+):
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("CACHE_DIR", str(cache_root))
+    project_id = uuid.uuid4()
+    part_id = uuid.uuid4()
+    old_job_id = "older-simplified-job"
+    newer_asset = {
+        "job_id": "newer-simplified-job",
+        "status": "pending",
+        "stage": "queued",
+        "progress_percent": 0,
+    }
+    project = models.Project(
+        id=project_id,
+        name="PT3 stale Simplified worker regression",
+        meta_group_id="pt3-stale-simplified",
+        project_type="PT3",
+    )
+    part = models.InspectionPart(
+        id=part_id,
+        project_id=project_id,
+        serial_number="PT3-STALE-SIMPLIFIED-001",
+        metadata_json={
+            "volume_stack_id": "stale-simplified-volume",
+            "pt3_splat_asset": {
+                "job_id": old_job_id,
+                "status": "pending",
+                "stage": "queued",
+                "progress_percent": 0,
+            },
+        },
+    )
+    db_session.add_all([project, part])
+    await db_session.commit()
+
+    input_path = inspection_workbench._pt3_simplified_splat_job_input_path(
+        project_id=project_id,
+        part_id=part_id,
+        job_id=old_job_id,
+    )
+    input_path.mkdir(parents=True)
+    source_path = input_path / "volume.npy"
+    np.save(source_path, np.ones((1, 1, 1), dtype=np.uint8))
+    converter_started = threading.Event()
+    allow_completion = threading.Event()
+    output_root = (
+        cache_root / "pt3_splat_assets" / str(project_id) / str(part_id)
+    )
+
+    def blocking_converter(*_args, **_kwargs):
+        converter_started.set()
+        if not allow_completion.wait(timeout=5):
+            raise AssertionError("test did not release the Simplified converter")
+        output_root.mkdir(parents=True, exist_ok=True)
+        output_path = output_root / "stale-simplified-output.json"
+        output_path.write_text("{}", encoding="utf-8")
+        return SimpleNamespace(
+            cache_key="stale-simplified-output",
+            path=str(output_path),
+            output_format="json",
+            splat_count=1,
+            metadata={"volume_stack_id": "stale-simplified-volume"},
+        )
+
+    monkeypatch.setattr(
+        inspection_workbench,
+        "convert_volume_to_splat_asset",
+        blocking_converter,
+    )
+    payload_data = inspection_workbench.schemas.PT3SplatConversionRequest(
+        volume_stack_id="stale-simplified-volume",
+        max_splats=1,
+        output_format="json",
+    ).model_dump(mode="json")
+
+    async with AsyncSession(bind=db_session.bind, expire_on_commit=False) as job_db:
+        worker = asyncio.create_task(
+            inspection_workbench._run_pt3_splat_generation_job(
+                project_id=project_id,
+                part_id=part_id,
+                source_path_text=str(source_path),
+                payload_data=payload_data,
+                job_id=old_job_id,
+                requested_by="stale-simplified@example.com",
+                job_db=job_db,
+            )
+        )
+        assert await asyncio.to_thread(converter_started.wait, 5)
+        part.metadata_json = {
+            **part.metadata_json,
+            "pt3_splat_asset": newer_asset,
+        }
+        await db_session.commit()
+        allow_completion.set()
+        await asyncio.wait_for(worker, timeout=5)
+
+    await db_session.refresh(part)
+    assert part.metadata_json["pt3_splat_asset"] == newer_asset
+    assert not input_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_simplified_worker_rechecks_ownership_after_compute_slot_wait(
+    db_session,
+    monkeypatch,
+    tmp_path,
+):
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("CACHE_DIR", str(cache_root))
+    project_id = uuid.uuid4()
+    part_id = uuid.uuid4()
+    old_job_id = "waiting-simplified-job"
+    newer_asset = {
+        "job_id": "replacement-simplified-job",
+        "status": "pending",
+        "stage": "queued",
+        "progress_percent": 0,
+    }
+    project = models.Project(
+        id=project_id,
+        name="PT3 waiting Simplified worker regression",
+        meta_group_id="pt3-waiting-simplified",
+        project_type="PT3",
+    )
+    part = models.InspectionPart(
+        id=part_id,
+        project_id=project_id,
+        serial_number="PT3-WAITING-SIMPLIFIED-001",
+        metadata_json={
+            "volume_stack_id": "waiting-simplified-volume",
+            "pt3_splat_asset": {
+                "job_id": old_job_id,
+                "status": "pending",
+                "stage": "queued",
+                "progress_percent": 0,
+            },
+        },
+    )
+    db_session.add_all([project, part])
+    await db_session.commit()
+
+    input_path = inspection_workbench._pt3_simplified_splat_job_input_path(
+        project_id=project_id,
+        part_id=part_id,
+        job_id=old_job_id,
+    )
+    input_path.mkdir(parents=True)
+    source_path = input_path / "volume.npy"
+    np.save(source_path, np.ones((1, 1, 1), dtype=np.uint8))
+    converter_called = False
+
+    def converter_must_not_run(*_args, **_kwargs):
+        nonlocal converter_called
+        converter_called = True
+        raise AssertionError("superseded Simplified job entered conversion")
+
+    monkeypatch.setattr(
+        inspection_workbench,
+        "convert_volume_to_splat_asset",
+        converter_must_not_run,
+    )
+    wait_started = asyncio.Event()
+    acquire_compute_slot = inspection_workbench._acquire_pt3_splat_compute_slot
+
+    async def observed_compute_slot_wait():
+        wait_started.set()
+        await acquire_compute_slot()
+
+    monkeypatch.setattr(
+        inspection_workbench,
+        "_acquire_pt3_splat_compute_slot",
+        observed_compute_slot_wait,
+    )
+    payload_data = inspection_workbench.schemas.PT3SplatConversionRequest(
+        volume_stack_id="waiting-simplified-volume",
+        max_splats=1,
+        output_format="json",
+    ).model_dump(mode="json")
+
+    await acquire_compute_slot()
+    slot_held_by_test = True
+    try:
+        async with AsyncSession(bind=db_session.bind, expire_on_commit=False) as job_db:
+            worker = asyncio.create_task(
+                inspection_workbench._run_pt3_splat_generation_job(
+                    project_id=project_id,
+                    part_id=part_id,
+                    source_path_text=str(source_path),
+                    payload_data=payload_data,
+                    job_id=old_job_id,
+                    requested_by="waiting-simplified@example.com",
+                    job_db=job_db,
+                )
+            )
+            await asyncio.wait_for(wait_started.wait(), timeout=5)
+            assert worker.done() is False
+            part.metadata_json = {
+                **part.metadata_json,
+                "pt3_splat_asset": newer_asset,
+            }
+            await db_session.commit()
+            inspection_workbench._PT3_SPLAT_COMPUTE_SEMAPHORE.release()
+            slot_held_by_test = False
+            await asyncio.wait_for(worker, timeout=5)
+    finally:
+        if slot_held_by_test:
+            inspection_workbench._PT3_SPLAT_COMPUTE_SEMAPHORE.release()
+
+    await db_session.refresh(part)
+    assert part.metadata_json["pt3_splat_asset"] == newer_asset
+    assert converter_called is False
+    assert not input_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_stale_identity_mapped_worker_cannot_reclaim_newer_recompute(
+    db_session, monkeypatch, tmp_path
+):
+    """Locked worker rereads must refresh expire_on_commit=False identity state."""
+
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("CACHE_DIR", str(cache_root))
+    project_id = uuid.uuid4()
+    part_id = uuid.uuid4()
+    old_job_id = "older-background-job"
+    newer_asset = {
+        "job_id": "newer-recompute-job",
+        "status": "pending",
+        "stage": "queued",
+        "progress_percent": 0,
+    }
+    project = models.Project(
+        id=project_id,
+        name="PT3 stale worker regression",
+        meta_group_id="pt3-stale-worker",
+        project_type="PT3",
+    )
+    part = models.InspectionPart(
+        id=part_id,
+        project_id=project_id,
+        serial_number="PT3-STALE-WORKER-001",
+        metadata_json={
+            "volume_stack_id": "stale-worker-volume",
+            "pt3_real_splat_asset": {
+                "job_id": old_job_id,
+                "status": "pending",
+                "stage": "optimizing",
+                "progress_percent": 25,
+            },
+        },
+    )
+    db_session.add_all([project, part])
+    await db_session.commit()
+
+    # Two old worker sessions retain the original ORM row after commit, exactly
+    # as the production sessionmaker does with expire_on_commit=False.
+    async with AsyncSession(bind=db_session.bind, expire_on_commit=False) as progress_db, AsyncSession(
+        bind=db_session.bind, expire_on_commit=False
+    ) as completion_db:
+        progress_part = (
+            await progress_db.execute(
+                select(models.InspectionPart).where(models.InspectionPart.id == part_id)
+            )
+        ).scalar_one()
+        completion_part = (
+            await completion_db.execute(
+                select(models.InspectionPart).where(models.InspectionPart.id == part_id)
+            )
+        ).scalar_one()
+        await progress_db.commit()
+        await completion_db.commit()
+        assert progress_part.metadata_json["pt3_real_splat_asset"]["job_id"] == old_job_id
+        assert completion_part.metadata_json["pt3_real_splat_asset"]["job_id"] == old_job_id
+
+        # A different request now owns the row, while both worker identity maps
+        # still contain the older pending job.
+        part.metadata_json = {
+            **part.metadata_json,
+            "pt3_real_splat_asset": newer_asset,
+        }
+        await db_session.commit()
+
+        progress_was_published = await inspection_workbench._update_pt3_real_splat_job_progress(
+            project_id=project_id,
+            part_id=part_id,
+            job_id=old_job_id,
+            progress_percent=75,
+            stage="stale-progress",
+            job_db=progress_db,
+        )
+        assert progress_was_published is False
+
+        input_path, output_path = inspection_workbench._pt3_real_splat_job_cache_paths(
+            project_id=project_id,
+            part_id=part_id,
+            job_id=old_job_id,
+        )
+        input_path.mkdir(parents=True)
+        output_path.mkdir(parents=True)
+        source_path = input_path / "volume.npy"
+        np.save(source_path, np.ones((1, 1, 1), dtype=np.uint8))
+
+        optimizer_called = False
+
+        def stale_optimizer(**_kwargs):
+            nonlocal optimizer_called
+            optimizer_called = True
+            return SimpleNamespace(
+                cache_key="stale-output",
+                path=str(output_path / "stale.json"),
+                splat_count=1,
+                metadata={},
+            )
+
+        monkeypatch.setattr(
+            inspection_workbench,
+            "optimize_real_gaussian_splat_asset",
+            stale_optimizer,
+        )
+        payload_data = inspection_workbench.schemas.PT3RealSplatOptimizationRequest(
+            parameters={"max_splats": 1}
+        ).model_dump(mode="json")
+        await inspection_workbench._run_pt3_real_splat_optimization_job(
+            project_id=project_id,
+            part_id=part_id,
+            source_path_text=str(source_path),
+            payload_data=payload_data,
+            job_id=old_job_id,
+            requested_by="stale-worker@example.com",
+            job_db=completion_db,
+        )
+
+    await db_session.refresh(part)
+    assert part.metadata_json["pt3_real_splat_asset"] == newer_asset
+    assert optimizer_called is False
+    assert not input_path.exists()
+    assert not output_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_superseding_running_job_makes_progress_callback_abort_compute(
+    db_session, monkeypatch, tmp_path
+):
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("CACHE_DIR", str(cache_root))
+    project_id = uuid.uuid4()
+    part_id = uuid.uuid4()
+    job_id = "running-job"
+    pending_asset = {
+        "job_id": job_id,
+        "status": "pending",
+        "stage": "queued",
+        "progress_percent": 0,
+    }
+    newer_asset = {
+        "job_id": "replacement-job",
+        "status": "pending",
+        "stage": "queued",
+        "progress_percent": 0,
+    }
+    project = models.Project(
+        id=project_id,
+        name="PT3 superseded compute regression",
+        meta_group_id="pt3-superseded-compute",
+        project_type="PT3",
+    )
+    part = models.InspectionPart(
+        id=part_id,
+        project_id=project_id,
+        serial_number="PT3-SUPERSEDED-COMPUTE-001",
+        metadata_json={
+            "volume_stack_id": "superseded-compute-volume",
+            "pt3_real_splat_asset": pending_asset,
+        },
+    )
+    db_session.add_all([project, part])
+    await db_session.commit()
+
+    input_path, output_path = inspection_workbench._pt3_real_splat_job_cache_paths(
+        project_id=project_id,
+        part_id=part_id,
+        job_id=job_id,
+    )
+    input_path.mkdir(parents=True)
+    source_path = input_path / "volume.npy"
+    np.save(source_path, np.ones((1, 1, 1), dtype=np.uint8))
+    optimizer_started = threading.Event()
+    allow_progress = threading.Event()
+    continued_after_progress = False
+
+    def cancellable_optimizer(**kwargs):
+        nonlocal continued_after_progress
+        output_path.mkdir(parents=True, exist_ok=True)
+        (output_path / "partial.json").write_text("{}", encoding="utf-8")
+        optimizer_started.set()
+        if not allow_progress.wait(timeout=5):
+            raise AssertionError("test did not release the fake optimizer")
+        kwargs["progress_callback"](40, "running-test-fit")
+        continued_after_progress = True
+        raise AssertionError("a superseded optimizer continued after reporting progress")
+
+    monkeypatch.setattr(
+        inspection_workbench,
+        "optimize_real_gaussian_splat_asset",
+        cancellable_optimizer,
+    )
+    payload_data = inspection_workbench.schemas.PT3RealSplatOptimizationRequest(
+        parameters={"max_splats": 1}
+    ).model_dump(mode="json")
+
+    async with AsyncSession(bind=db_session.bind, expire_on_commit=False) as job_db:
+        worker = asyncio.create_task(
+            inspection_workbench._run_pt3_real_splat_optimization_job(
+                project_id=project_id,
+                part_id=part_id,
+                source_path_text=str(source_path),
+                payload_data=payload_data,
+                job_id=job_id,
+                requested_by="superseded-worker@example.com",
+                job_db=job_db,
+            )
+        )
+        assert await asyncio.to_thread(optimizer_started.wait, 5)
+        part.metadata_json = {
+            **part.metadata_json,
+            "pt3_real_splat_asset": newer_asset,
+        }
+        await db_session.commit()
+        allow_progress.set()
+        await asyncio.wait_for(worker, timeout=5)
+
+    await db_session.refresh(part)
+    assert part.metadata_json["pt3_real_splat_asset"] == newer_asset
+    assert continued_after_progress is False
+    assert not input_path.exists()
+    assert not output_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_real_splat_compute_slot_serializes_jobs():
+    await inspection_workbench._acquire_pt3_real_splat_compute_slot()
+    waiter = asyncio.create_task(
+        inspection_workbench._acquire_pt3_real_splat_compute_slot()
+    )
+    try:
+        await asyncio.sleep(0.12)
+        assert waiter.done() is False
+        inspection_workbench._PT3_REAL_SPLAT_COMPUTE_SEMAPHORE.release()
+        await asyncio.wait_for(waiter, timeout=1)
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+            inspection_workbench._PT3_REAL_SPLAT_COMPUTE_SEMAPHORE.release()
+        elif not waiter.cancelled() and waiter.exception() is None:
+            inspection_workbench._PT3_REAL_SPLAT_COMPUTE_SEMAPHORE.release()
+
+
+@pytest.mark.asyncio
+async def test_create_real_splat_reloads_locked_part_after_materialization_for_fallback(
+    monkeypatch, tmp_path
+):
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("CACHE_DIR", str(cache_root))
+    project_id = uuid.uuid4()
+    part_id = uuid.uuid4()
+    source_id = str(uuid.uuid4())
+    published_job_id = "job-that-finished-during-download"
+    published_path = (
+        cache_root
+        / "pt3_real_splat_assets"
+        / str(project_id)
+        / str(part_id)
+        / published_job_id
+        / "published.json"
+    )
+    published_path.parent.mkdir(parents=True)
+    published_path.write_text("{}", encoding="utf-8")
+    late_ready_asset = {
+        "job_id": published_job_id,
+        "status": "ready",
+        "cache_key": "late-ready-cache",
+        "asset_path": str(published_path),
+        "asset_url": "/api/late-ready-cache",
+        "splat_count": 5,
+    }
+    initial_part = SimpleNamespace(
+        id=part_id,
+        metadata_json={
+            "volume_stack_id": "stale-stack-id",
+            "source_images": [{"image_id": source_id, "filename": "volume.npy"}],
+        },
+    )
+    current_part = SimpleNamespace(
+        id=part_id,
+        metadata_json={
+            "volume_stack_id": "fresh-stack-id",
+            "source_images": [{"image_id": source_id, "filename": "volume.npy"}],
+        },
+    )
+    events = []
+
+    class Result:
+        def scalar_one_or_none(self):
+            return current_part
+
+    class Database:
+        async def rollback(self):
+            events.append("rollback")
+
+        async def execute(self, statement):
+            events.append(("locked_reload", str(statement)))
+            return Result()
+
+    class Tasks:
+        def __init__(self):
+            self.calls = []
+
+        def add_task(self, function, **kwargs):
+            self.calls.append((function, kwargs))
+
+    async def access_check(**_kwargs):
+        return SimpleNamespace(project_type="PT3")
+
+    async def stale_part_lookup(**_kwargs):
+        return initial_part
+
+    async def materialize(**_kwargs):
+        events.append("materialize")
+        # Simulate another job committing while this request copied its input.
+        current_part.metadata_json["pt3_real_splat_asset"] = late_ready_asset
+        return str(tmp_path / "volume.npy"), [source_id]
+
+    captured_patch = {}
+
+    async def update_metadata(**kwargs):
+        captured_patch.update(kwargs["metadata_patch"])
+        current_part.metadata_json = {
+            **current_part.metadata_json,
+            **kwargs["metadata_patch"],
+        }
+        return current_part
+
+    monkeypatch.setattr(inspection_workbench, "_get_project_with_access_check", access_check)
+    monkeypatch.setattr(inspection_workbench.crud, "get_inspection_part", stale_part_lookup)
+    monkeypatch.setattr(inspection_workbench, "_materialize_part_volume_stack", materialize)
+    monkeypatch.setattr(inspection_workbench.crud, "update_inspection_part_metadata", update_metadata)
+    monkeypatch.setattr(
+        inspection_workbench.settings,
+        "PT3_REAL_3DGS_PROVIDER",
+        "tests.fake.provider",
+    )
+    tasks = Tasks()
+    camera_payloads = [
+        {
+            "image_id": image_id,
+            "width": 16,
+            "height": 16,
+            "intrinsics": [1, 0, 8, 0, 1, 8, 0, 0, 1],
+            "rotation_quaternion": [1, 0, 0, 0],
+            "translation": [index, 0, 0],
+        }
+        for index, image_id in enumerate(("generated-view-a", "generated-view-b"))
+    ]
+
+    response = await inspection_workbench.create_pt3_real_gaussian_splat_asset(
+        project_id=project_id,
+        part_id=part_id,
+        payload=inspection_workbench.schemas.PT3RealSplatOptimizationRequest(
+            fit_mode="synthetic_views",
+            cameras=camera_payloads,
+        ),
+        background_tasks=tasks,
+        db=Database(),
+        current_user=SimpleNamespace(email="concurrency@example.com"),
+    )
+
+    pending = captured_patch["pt3_real_splat_asset"]
+    assert response.status == "pending"
+    assert pending["volume_stack_id"] == "fresh-stack-id"
+    assert pending["previous_ready_asset"] == {
+        **late_ready_asset,
+        "asset_url": (
+            f"/api/projects/{project_id}/parts/{part_id}/"
+            "real-gaussian-splat-assets/late-ready-cache"
+        ),
+    }
+    assert pending["source_image_ids"] == [source_id]
+    assert pending["camera_view_binding"] == "generated_from_voxel_volume"
+    assert events[0:3] == ["rollback", "materialize", "rollback"]
+    assert events[3][0] == "locked_reload"
+    assert "FOR UPDATE" in events[3][1]
+    assert len(tasks.calls) == 1
+    assert tasks.calls[0][1]["payload_data"]["source_image_ids"] == [source_id]
+    assert tasks.calls[0][1]["payload_data"]["camera_view_binding"] == (
+        "generated_from_voxel_volume"
+    )
+
+
+@pytest.mark.asyncio
+async def test_pending_recompute_keeps_previous_asset_downloadable(monkeypatch, tmp_path):
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    project_id = uuid.uuid4()
+    part_id = uuid.uuid4()
+    cache_key = "published-cache-key"
+    asset_path = (
+        tmp_path
+        / "cache"
+        / "pt3_real_splat_assets"
+        / str(project_id)
+        / str(part_id)
+        / "published-job"
+        / "published.json"
+    )
+    asset_path.parent.mkdir(parents=True)
+    asset_path.write_text("{}", encoding="utf-8")
+    previous = {
+        "job_id": "published-job",
+        "status": "ready",
+        "cache_key": cache_key,
+        "asset_path": str(asset_path),
+        "asset_url": f"/api/{cache_key}",
+    }
+    part = SimpleNamespace(
+        metadata_json={
+            "pt3_real_splat_asset": {
+                "job_id": "recompute-job",
+                "status": "pending",
+                "previous_ready_asset": previous,
+            }
+        }
+    )
+
+    async def access_check(**_kwargs):
+        return object()
+
+    async def get_part(**_kwargs):
+        return part
+
+    monkeypatch.setattr(inspection_workbench, "_get_project_with_access_check", access_check)
+    monkeypatch.setattr(inspection_workbench.crud, "get_inspection_part", get_part)
+
+    response = await inspection_workbench.get_pt3_real_gaussian_splat_asset(
+        project_id=project_id,
+        part_id=part_id,
+        cache_key=cache_key,
+        db=object(),
+        current_user=SimpleNamespace(email="reader@example.com"),
+    )
+
+    assert Path(response.path) == asset_path
+
+
+def test_pt3_part_volume_splat_asset_route_rejects_readable_client_source_path(
+    client,
+    tmp_path,
+):
     headers = {"X-User-Id": "pt3-splat@example.com", "X-User-Groups": '["pt3-splat-group"]'}
     project = client.post(
         "/api/projects",
@@ -22,6 +824,8 @@ def test_pt3_part_volume_splat_asset_route_updates_metadata(client, tmp_path):
     image.putpixel((0, 1), 250)
     image.save(stack_dir / "z000.png")
 
+    # The file is valid and readable by the service, but project-part routes
+    # must derive their inputs from server-owned image records only.
     response = client.post(
         f"/api/projects/{project['id']}/parts/{part['id']}/volume-splat-assets",
         headers=headers,
@@ -33,32 +837,21 @@ def test_pt3_part_volume_splat_asset_route_updates_metadata(client, tmp_path):
         },
     )
 
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["status"] == "pending"
+    assert response.status_code == 422, response.text
+    assert "source_path is not accepted" in response.json()["detail"]
 
     status_response = client.get(
         f"/api/projects/{project['id']}/parts/{part['id']}/volume-splat-assets/status",
         headers=headers,
     )
     assert status_response.status_code == 200
-    payload = status_response.json()
-    assert payload["status"] == "ready"
-    assert payload["splat_count"] == 1
-    assert payload["asset_url"].endswith(payload["cache_key"])
+    assert status_response.json()["status"] == "missing"
 
     parts = client.get(f"/api/projects/{project['id']}/parts", headers=headers).json()
-    metadata = parts[0]["metadata"]["pt3_splat_asset"]
-    assert metadata["volume_stack_id"] == "stack-from-part"
-    assert metadata["source_image_ids"] == ["slice-image-1"]
-    assert Path(metadata["asset_path"]).exists()
-
-    download = client.get(payload["asset_url"], headers=headers)
-    assert download.status_code == 200
-    assert download.json()["metadata"]["cache_key"] == payload["cache_key"]
+    assert "pt3_splat_asset" not in parts[0]["metadata"]
 
 
-def test_pt3_part_volume_splat_status_reports_missing_and_failed(client):
+def test_pt3_part_volume_splat_status_reports_missing_after_rejected_path(client):
     headers = {"X-User-Id": "pt3-splat-status@example.com", "X-User-Groups": '["pt3-splat-status-group"]'}
     project = client.post(
         "/api/projects",
@@ -83,18 +876,25 @@ def test_pt3_part_volume_splat_status_reports_missing_and_failed(client):
         headers=headers,
         json={"source_path": "/definitely/not/a/volume", "output_format": "json"},
     )
-    assert response.status_code == 200
-    failed = client.get(
+    assert response.status_code == 422
+    still_missing = client.get(
         f"/api/projects/{project['id']}/volume-stacks/stack-status/splat-status",
         headers=headers,
     )
-    assert failed.status_code == 200
-    assert failed.json()["status"] == "failed"
+    assert still_missing.status_code == 200
+    assert still_missing.json()["status"] == "missing"
 
-def test_pt3_splat_creation_infers_source_path_from_part_image_stack(client):
+
+def test_pt3_splat_creation_infers_source_path_from_part_image_stack(
+    client,
+    monkeypatch,
+    tmp_path,
+):
     import base64
     import io
 
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("CACHE_DIR", str(cache_root))
     headers = {"X-User-Id": "pt3-splat-stack@example.com", "X-User-Groups": '["pt3-splat-stack-group"]'}
     project = client.post(
         "/api/projects",
@@ -136,7 +936,12 @@ def test_pt3_splat_creation_infers_source_path_from_part_image_stack(client):
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["status"] == "pending"
+    queued_payload = response.json()
+    assert queued_payload["status"] == "pending"
+    assert queued_payload["metadata"]["job_id"]
+    assert "asset_path" not in queued_payload["metadata"]
+    assert "source_files" not in queued_payload["metadata"]
+    assert "source_path" not in queued_payload["metadata"]["conversion_parameters"]
     status_response = client.get(
         f"/api/projects/{project['id']}/parts/{part['id']}/volume-splat-assets/status",
         headers=headers,
@@ -146,4 +951,627 @@ def test_pt3_splat_creation_infers_source_path_from_part_image_stack(client):
     assert payload["status"] == "ready"
     assert payload["splat_count"] == 1
     assert payload["metadata"]["source_image_ids"] == [image_record["id"]]
-    assert "pt3_volume_stacks" in payload["metadata"]["conversion_parameters"]["source_path"]
+    assert "asset_path" not in payload["metadata"]
+    assert "source_files" not in payload["metadata"]
+    assert "source_path" not in payload["metadata"]["conversion_parameters"]
+    downloaded = client.get(payload["asset_url"], headers=headers)
+    assert downloaded.status_code == 200
+    assert downloaded.json()["metadata"]["source_files"] == [
+        "0000-stack-z000.png"
+    ]
+    output_root = (
+        cache_root
+        / "pt3_splat_assets"
+        / project["id"]
+        / part["id"]
+    )
+    input_root = (
+        cache_root
+        / "pt3_volume_stacks"
+        / project["id"]
+        / part["id"]
+    )
+    first_asset_path = output_root / f"{payload['cache_key']}.json"
+    assert first_asset_path.is_file()
+    assert not any(candidate.is_dir() for candidate in input_root.iterdir())
+
+    recompute = client.post(
+        f"/api/projects/{project['id']}/parts/{part['id']}/volume-splat-assets",
+        headers=headers,
+        json={"transfer_function": {"threshold": 210}, "output_format": "json"},
+    )
+    assert recompute.status_code == 200, recompute.text
+    recomputed = client.get(
+        f"/api/projects/{project['id']}/parts/{part['id']}/volume-splat-assets/status",
+        headers=headers,
+    ).json()
+    assert recomputed["status"] == "ready"
+    assert recomputed["cache_key"] != payload["cache_key"]
+    assert not first_asset_path.exists()
+    assert (output_root / f"{recomputed['cache_key']}.json").is_file()
+    assert not any(candidate.is_dir() for candidate in input_root.iterdir())
+
+
+def test_pt3_simplified_asset_api_rejects_forged_metadata_paths(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("CACHE_DIR", str(cache_root))
+    project_id = uuid.uuid4()
+    part_id = uuid.uuid4()
+    expected_root = (
+        cache_root / "pt3_splat_assets" / str(project_id) / str(part_id)
+    )
+    expected_root.mkdir(parents=True)
+    headers = {
+        "X-User-Id": "pt3-splat-forged@example.com",
+        "X-User-Groups": '["pt3-splat-forged-group"]',
+    }
+    part = SimpleNamespace(id=part_id, metadata_json={})
+
+    async def access_check(**_kwargs):
+        return SimpleNamespace(project_type="PT3")
+
+    async def get_part(**_kwargs):
+        return part
+
+    monkeypatch.setattr(
+        inspection_workbench,
+        "_get_project_with_access_check",
+        access_check,
+    )
+    monkeypatch.setattr(inspection_workbench.crud, "get_inspection_part", get_part)
+
+    outside_key = "outside-key"
+    outside_file = tmp_path / f"{outside_key}.json"
+    outside_file.write_text('{"secret":"do-not-disclose"}', encoding="utf-8")
+
+    traversal_key = "traversal-key"
+    traversal_target = expected_root.parent / f"{traversal_key}.json"
+    traversal_target.write_text('{"secret":"do-not-disclose"}', encoding="utf-8")
+    traversal_path = expected_root / ".." / f"{traversal_key}.json"
+
+    symlink_key = "symlink-key"
+    symlink_target = tmp_path / f"{symlink_key}.json"
+    symlink_target.write_text('{"secret":"do-not-disclose"}', encoding="utf-8")
+    symlink_path = expected_root / f"{symlink_key}.json"
+    symlink_path.symlink_to(symlink_target)
+
+    extension_key = "extension-key"
+    extension_path = expected_root / f"{extension_key}.txt"
+    extension_path.write_text("do-not-disclose", encoding="utf-8")
+
+    mismatched_key = "declared-key"
+    mismatched_path = expected_root / "different-key.json"
+    mismatched_path.write_text('{"secret":"do-not-disclose"}', encoding="utf-8")
+
+    forged_cases = [
+        (outside_key, outside_file),
+        (traversal_key, traversal_path),
+        (symlink_key, symlink_path),
+        (extension_key, extension_path),
+        (mismatched_key, mismatched_path),
+    ]
+    for cache_key, asset_path in forged_cases:
+        part.metadata_json = {
+            "pt3_splat_asset": {
+                "status": "ready",
+                "cache_key": cache_key,
+                "asset_path": str(asset_path),
+                "asset_url": "https://attacker.example/forged",
+                "output_format": "json",
+                "splat_count": 1,
+            }
+        }
+        status_response = client.get(
+            f"/api/projects/{project_id}/parts/{part_id}/volume-splat-assets/status",
+            headers=headers,
+        )
+        assert status_response.status_code == 200
+        assert status_response.json()["status"] == "missing"
+        assert "asset_path" not in status_response.json()["metadata"]
+        assert "attacker.example" not in status_response.text
+
+        download = client.get(
+            f"/api/projects/{project_id}/parts/{part_id}/volume-splat-assets/{cache_key}",
+            headers=headers,
+        )
+        assert download.status_code == 404
+        assert b"do-not-disclose" not in download.content
+
+
+def test_pt3_simplified_asset_api_serves_only_ready_or_safe_legacy_cache_file(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("CACHE_DIR", str(cache_root))
+    project_id = uuid.uuid4()
+    part_id = uuid.uuid4()
+    cache_key = "pt3-splat-safe-cache-key"
+    asset_path = (
+        cache_root
+        / "pt3_splat_assets"
+        / str(project_id)
+        / str(part_id)
+        / f"{cache_key}.json"
+    )
+    asset_path.parent.mkdir(parents=True)
+    asset_path.write_text('{"safe":true}', encoding="utf-8")
+    headers = {
+        "X-User-Id": "pt3-splat-contained@example.com",
+        "X-User-Groups": '["pt3-splat-contained-group"]',
+    }
+    asset = {
+        "status": "ready",
+        "cache_key": cache_key,
+        "asset_path": str(asset_path),
+        "asset_url": "https://attacker.example/forged",
+        "output_format": "json",
+        "splat_count": 1,
+        "conversion_parameters": {"source_path": "/private/source/stack"},
+    }
+    part = SimpleNamespace(id=part_id, metadata_json={"pt3_splat_asset": asset})
+
+    async def access_check(**_kwargs):
+        return SimpleNamespace(project_type="PT3")
+
+    async def get_part(**_kwargs):
+        return part
+
+    monkeypatch.setattr(
+        inspection_workbench,
+        "_get_project_with_access_check",
+        access_check,
+    )
+    monkeypatch.setattr(inspection_workbench.crud, "get_inspection_part", get_part)
+    status_url = (
+        f"/api/projects/{project_id}/parts/{part_id}/volume-splat-assets/status"
+    )
+    download_url = (
+        f"/api/projects/{project_id}/parts/{part_id}/volume-splat-assets/{cache_key}"
+    )
+
+    ready = client.get(status_url, headers=headers)
+    assert ready.status_code == 200
+    ready_payload = ready.json()
+    assert ready_payload["status"] == "ready"
+    assert ready_payload["asset_url"] == download_url
+    assert "asset_path" not in ready_payload["metadata"]
+    assert "source_path" not in ready_payload["metadata"]["conversion_parameters"]
+    assert "attacker.example" not in ready.text
+    download = client.get(download_url, headers=headers)
+    assert download.status_code == 200
+    assert download.json() == {"safe": True}
+
+    asset["status"] = "pending"
+    pending = client.get(status_url, headers=headers)
+    assert pending.status_code == 200
+    assert pending.json()["status"] == "pending"
+    assert pending.json()["asset_url"] is None
+    assert client.get(download_url, headers=headers).status_code == 404
+
+    # Status-less metadata predates lifecycle states. It remains readable only
+    # when the file satisfies the same strict cache containment contract.
+    asset.pop("status")
+    legacy = client.get(status_url, headers=headers)
+    assert legacy.status_code == 200
+    assert legacy.json()["status"] == "ready"
+    assert client.get(download_url, headers=headers).status_code == 200
+
+
+def test_real_3dgs_status_exposes_builtin_voxel_fit_and_view_mode_requires_provider(client, monkeypatch):
+    monkeypatch.setattr(inspection_workbench.settings, "PT3_REAL_3DGS_PROVIDER", None)
+    headers = {"X-User-Id": "pt3-real@example.com", "X-User-Groups": '["pt3-real-group"]'}
+    project = client.post(
+        "/api/projects",
+        headers=headers,
+        json={"name": "PT3 real splat", "description": "", "meta_group_id": "pt3-real-group", "project_type": "PT3"},
+    ).json()
+    part = client.post(
+        f"/api/projects/{project['id']}/parts",
+        headers=headers,
+        json={"serial_number": "PT3-REAL-001", "metadata": {"volume_stack_id": "real-stack"}},
+    ).json()
+
+    status_response = client.get(
+        f"/api/projects/{project['id']}/parts/{part['id']}/real-gaussian-splat-assets/status",
+        headers=headers,
+    )
+    assert status_response.status_code == 200
+    assert status_response.json()["status"] == "missing"
+    assert status_response.json()["metadata"]["provider_configured"] is False
+    assert status_response.json()["metadata"]["voxel_direct_available"] is True
+
+    create_response = client.post(
+        f"/api/projects/{project['id']}/parts/{part['id']}/real-gaussian-splat-assets",
+        headers=headers,
+        json={
+            "cameras": [
+                {
+                    "image_id": "view-a",
+                    "width": 16,
+                    "height": 16,
+                    "intrinsics": [1, 0, 8, 0, 1, 8, 0, 0, 1],
+                    "rotation_quaternion": [1, 0, 0, 0],
+                    "translation": [0, 0, 0],
+                },
+                {
+                    "image_id": "view-b",
+                    "width": 16,
+                    "height": 16,
+                    "intrinsics": [1, 0, 8, 0, 1, 8, 0, 0, 1],
+                    "rotation_quaternion": [1, 0, 0, 0],
+                    "translation": [1, 0, 0],
+                },
+            ],
+        },
+    )
+    assert create_response.status_code == 503
+    assert create_response.json()["detail"] == "synthetic_views requires a configured Real 3DGS provider"
+
+
+def test_real_3dgs_direct_voxel_fit_runs_without_cameras_or_provider(client, monkeypatch):
+    monkeypatch.setattr(inspection_workbench.settings, "PT3_REAL_3DGS_PROVIDER", None)
+    headers = {"X-User-Id": "pt3-direct@example.com", "X-User-Groups": '["pt3-direct-group"]'}
+    project = client.post(
+        "/api/projects",
+        headers=headers,
+        json={
+            "name": "PT3 direct voxel fit",
+            "description": "",
+            "meta_group_id": "pt3-direct-group",
+            "project_type": "PT3",
+        },
+    ).json()
+
+    image = Image.new("L", (2, 2), color=0)
+    image.putpixel((0, 0), 160)
+    image.putpixel((1, 0), 160)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    image_bytes = buffer.getvalue()
+    upload = client.post(
+        f"/api/projects/{project['id']}/images",
+        headers=headers,
+        files={"file": ("direct-z000.png", io.BytesIO(image_bytes), "image/png")},
+        data={
+            "metadata": json.dumps(
+                {
+                    "volume_stack_id": "direct-stack",
+                    "slice_index": 0,
+                    "analysis_inline_image_base64": base64.b64encode(image_bytes).decode("ascii"),
+                }
+            )
+        },
+    )
+    assert upload.status_code == 201, upload.text
+    image_record = upload.json()
+    part = client.post(
+        f"/api/projects/{project['id']}/parts",
+        headers=headers,
+        json={
+            "serial_number": "PT3-DIRECT-001",
+            "metadata": {
+                "volume_stack_id": "direct-stack",
+                "spacing": [2.0, 3.0, 4.0],
+                "source_images": [
+                    {"filename": "direct-z000.png", "image_id": image_record["id"], "slice_index": 0}
+                ],
+                "pt3_segmentation": {
+                    "segments": [
+                        {"id": 1, "label": "Left", "color": "#ff0000"},
+                        {"id": 2, "label": "Right", "color": "#00ff00"},
+                    ],
+                    "labels": [[[1, 2], [0, 0]]],
+                },
+            },
+        },
+    ).json()
+
+    created = client.post(
+        f"/api/projects/{project['id']}/parts/{part['id']}/real-gaussian-splat-assets",
+        headers=headers,
+        json={"fit_mode": "voxel_direct", "parameters": {"max_splats": 2}},
+    )
+    assert created.status_code == 202, created.text
+    assert created.json()["status"] == "pending"
+
+    status_response = client.get(
+        f"/api/projects/{project['id']}/parts/{part['id']}/real-gaussian-splat-assets/status",
+        headers=headers,
+    )
+    assert status_response.status_code == 200
+    fitted = status_response.json()
+    assert fitted["status"] == "ready", fitted
+    assert fitted["splat_count"] == 2
+    assert fitted["progress_percent"] == 100
+    assert fitted["metadata"]["fit_mode"] == "voxel_direct"
+    assert fitted["metadata"]["optimization_domain"] == "voxel_field"
+    assert fitted["metadata"]["camera_model"] == "none"
+    assert fitted["metadata"]["physical_space"]["spacing"] == [2.0, 3.0, 4.0]
+    assert "asset_path" not in fitted["metadata"]
+
+    asset_response = client.get(fitted["asset_url"], headers=headers)
+    assert asset_response.status_code == 200
+    asset = asset_response.json()
+    assert asset["sh_degree"] == 0
+    assert asset["segment_ids"] == [1, 2]
+    assert asset["scalar_values"] == [160.0, 160.0]
+
+
+def test_real_3dgs_preserves_numpy_volume_format_and_prunes_recompute_jobs(client, monkeypatch, tmp_path):
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("CACHE_DIR", str(cache_root))
+    monkeypatch.setattr(inspection_workbench.settings, "PT3_REAL_3DGS_PROVIDER", None)
+    headers = {"X-User-Id": "pt3-numpy@example.com", "X-User-Groups": '["pt3-numpy-group"]'}
+    project = client.post(
+        "/api/projects",
+        headers=headers,
+        json={"name": "PT3 numpy", "description": "", "meta_group_id": "pt3-numpy-group", "project_type": "PT3"},
+    ).json()
+    volume = np.full((2, 2, 2), 80, dtype=np.float32)
+    buffer = io.BytesIO()
+    np.save(buffer, volume)
+    volume_bytes = buffer.getvalue()
+    upload = client.post(
+        f"/api/projects/{project['id']}/images",
+        headers=headers,
+        files={"file": ("volume.npy", io.BytesIO(volume_bytes), "application/octet-stream")},
+        data={"metadata": json.dumps({"analysis_inline_image_base64": base64.b64encode(volume_bytes).decode("ascii")})},
+    )
+    assert upload.status_code == 201, upload.text
+    image_record = upload.json()
+    part = client.post(
+        f"/api/projects/{project['id']}/parts",
+        headers=headers,
+        json={
+            "serial_number": "PT3-NUMPY-001",
+            "metadata": {
+                "volume_stack_id": "numpy-stack",
+                "source_images": [{"filename": "volume.npy", "image_id": image_record["id"], "slice_index": 0}],
+            },
+        },
+    ).json()
+
+    endpoint = f"/api/projects/{project['id']}/parts/{part['id']}/real-gaussian-splat-assets"
+    first = client.post(endpoint, headers=headers, json={"fit_mode": "voxel_direct", "parameters": {"max_splats": 1}})
+    assert first.status_code == 202, first.text
+    first_status = client.get(f"{endpoint}/status", headers=headers).json()
+    assert first_status["status"] == "ready", first_status
+    assert first_status["metadata"]["dimensions"] == [2, 2, 2]
+    first_job_id = first_status["job_id"]
+    input_root = cache_root / "pt3_volume_stacks" / project["id"] / part["id"]
+    output_root = cache_root / "pt3_real_splat_assets" / project["id"] / part["id"]
+    assert not (input_root / first_job_id).exists()
+    assert (output_root / first_job_id).is_dir()
+
+    second = client.post(endpoint, headers=headers, json={"fit_mode": "voxel_direct", "parameters": {"max_splats": 1}})
+    assert second.status_code == 202, second.text
+    second_status = client.get(f"{endpoint}/status", headers=headers).json()
+    assert second_status["status"] == "ready", second_status
+    second_job_id = second_status["job_id"]
+    second_asset_url = second_status["asset_url"]
+    assert second_job_id != first_job_id
+    assert not (input_root / second_job_id).exists()
+    assert not (output_root / first_job_id).exists()
+    assert (output_root / second_job_id).is_dir()
+
+    rejected = client.post(
+        endpoint,
+        headers=headers,
+        json={"fit_mode": "voxel_direct", "source_image_ids": ["not-the-owned-image"]},
+    )
+    assert rejected.status_code == 422
+    assert not any(candidate.is_dir() for candidate in input_root.iterdir())
+
+    def fail_fit(**_kwargs):
+        raise RuntimeError("synthetic fitter failure")
+
+    monkeypatch.setattr(inspection_workbench, "optimize_real_gaussian_splat_asset", fail_fit)
+    failed = client.post(
+        endpoint,
+        headers=headers,
+        json={"fit_mode": "voxel_direct", "parameters": {"max_splats": 1}},
+    )
+    assert failed.status_code == 202
+    failed_status = client.get(f"{endpoint}/status", headers=headers).json()
+    assert failed_status["status"] == "ready"
+    assert failed_status["job_id"] == second_job_id
+    assert failed_status["asset_url"] == second_asset_url
+    assert failed_status["metadata"]["last_recompute_status"] == "failed"
+    assert failed_status["metadata"]["last_recompute_error"] == "synthetic fitter failure"
+    assert failed_status["metadata"]["last_recompute_job_id"] != second_job_id
+    assert not any(candidate.is_dir() for candidate in input_root.iterdir())
+    assert [candidate.name for candidate in output_root.iterdir() if candidate.is_dir()] == [second_job_id]
+    assert client.get(second_asset_url, headers=headers).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_materialization_uses_authoritative_image_suffix_for_http_fetch(monkeypatch, tmp_path):
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("CACHE_DIR", str(cache_root))
+    project_id = uuid.uuid4()
+    part_id = uuid.uuid4()
+    image_id = uuid.uuid4()
+    volume = np.arange(8, dtype=np.float32).reshape(2, 2, 2)
+    buffer = io.BytesIO()
+    np.save(buffer, volume)
+    volume_bytes = buffer.getvalue()
+    image = SimpleNamespace(
+        id=image_id,
+        project_id=project_id,
+        filename="authoritative-volume.npy",
+        object_storage_key=f"{project_id}/authoritative-volume.npy",
+        metadata_json={},
+    )
+    part = SimpleNamespace(
+        id=part_id,
+        metadata_json={
+            "source_images": [
+                {
+                    "filename": "stale-or-forged.png",
+                    "image_id": str(image_id),
+                    "slice_index": 0,
+                }
+            ]
+        },
+    )
+
+    async def get_image(**_kwargs):
+        return image
+
+    class Response:
+        headers = {"content-length": str(len(volume_bytes))}
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self, chunk_size):
+            for offset in range(0, len(volume_bytes), chunk_size):
+                yield volume_bytes[offset : offset + chunk_size]
+
+    class Stream:
+        async def __aenter__(self):
+            return Response()
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def stream(self, _method, _url):
+            return Stream()
+
+    monkeypatch.setattr(inspection_workbench, "_get_active_project_image_by_id", get_image)
+    monkeypatch.setattr(inspection_workbench, "get_presigned_download_url", lambda **_kwargs: "https://example.test/volume")
+    monkeypatch.setattr(inspection_workbench.httpx, "AsyncClient", Client)
+
+    source_path, source_ids = await inspection_workbench._materialize_part_volume_stack(
+        project_id=project_id,
+        part=part,
+        db=object(),
+        materialization_key="http-job",
+    )
+
+    assert Path(source_path).name == "0000-authoritative-volume.npy"
+    assert source_ids == [str(image_id)]
+    assert np.array_equal(np.load(source_path), volume)
+
+
+@pytest.mark.asyncio
+async def test_worker_cleans_job_cache_when_part_disappears_before_lookup(monkeypatch, tmp_path):
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    project_id = uuid.uuid4()
+    part_id = uuid.uuid4()
+    job_id = "part-deleted-job"
+    input_path, output_path = inspection_workbench._pt3_real_splat_job_cache_paths(
+        project_id=project_id,
+        part_id=part_id,
+        job_id=job_id,
+    )
+    input_path.mkdir(parents=True)
+    output_path.mkdir(parents=True)
+    (input_path / "source.npy").write_bytes(b"source")
+    (output_path / "partial.json").write_text("{}", encoding="utf-8")
+
+    async def missing_part(**_kwargs):
+        return None
+
+    monkeypatch.setattr(inspection_workbench.crud, "get_inspection_part", missing_part)
+
+    await inspection_workbench._run_pt3_real_splat_optimization_job(
+        project_id=project_id,
+        part_id=part_id,
+        source_path_text=str(input_path / "source.npy"),
+        payload_data={},
+        job_id=job_id,
+        requested_by="deleted-part@example.com",
+        job_db=object(),
+    )
+
+    assert not input_path.exists()
+    assert not output_path.exists()
+
+
+def test_real_3dgs_preserves_multipage_tiff_frames(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr(inspection_workbench.settings, "PT3_REAL_3DGS_PROVIDER", None)
+    headers = {"X-User-Id": "pt3-tiff@example.com", "X-User-Groups": '["pt3-tiff-group"]'}
+    project = client.post(
+        "/api/projects",
+        headers=headers,
+        json={"name": "PT3 TIFF", "description": "", "meta_group_id": "pt3-tiff-group", "project_type": "PT3"},
+    ).json()
+    frames = [Image.new("L", (2, 2), color=value) for value in (50, 100, 150)]
+    buffer = io.BytesIO()
+    frames[0].save(buffer, format="TIFF", save_all=True, append_images=frames[1:])
+    tiff_bytes = buffer.getvalue()
+    upload = client.post(
+        f"/api/projects/{project['id']}/images",
+        headers=headers,
+        files={"file": ("volume.tiff", io.BytesIO(tiff_bytes), "image/tiff")},
+        data={"metadata": json.dumps({"analysis_inline_image_base64": base64.b64encode(tiff_bytes).decode("ascii")})},
+    )
+    assert upload.status_code == 201, upload.text
+    image_record = upload.json()
+    part = client.post(
+        f"/api/projects/{project['id']}/parts",
+        headers=headers,
+        json={
+            "serial_number": "PT3-TIFF-001",
+            "metadata": {
+                "volume_stack_id": "tiff-stack",
+                "source_images": [{"filename": "volume.tiff", "image_id": image_record["id"], "slice_index": 0}],
+            },
+        },
+    ).json()
+    endpoint = f"/api/projects/{project['id']}/parts/{part['id']}/real-gaussian-splat-assets"
+    created = client.post(endpoint, headers=headers, json={"fit_mode": "voxel_direct", "parameters": {"max_splats": 3}})
+    assert created.status_code == 202, created.text
+    fitted = client.get(f"{endpoint}/status", headers=headers).json()
+    assert fitted["status"] == "ready", fitted
+    assert fitted["metadata"]["dimensions"] == [3, 2, 2]
+
+
+def test_real_3dgs_camera_schema_rejects_invalid_calibration(client, monkeypatch):
+    monkeypatch.setattr(inspection_workbench.settings, "PT3_REAL_3DGS_PROVIDER", "tests.fake.provider")
+    headers = {"X-User-Id": "pt3-camera@example.com", "X-User-Groups": '["pt3-camera-group"]'}
+    project = client.post(
+        "/api/projects", headers=headers,
+        json={"name": "PT3 camera", "description": "", "meta_group_id": "pt3-camera-group", "project_type": "PT3"},
+    ).json()
+    part = client.post(
+        f"/api/projects/{project['id']}/parts", headers=headers,
+        json={"serial_number": "PT3-CAMERA-001", "metadata": {"volume_stack_id": "camera-stack"}},
+    ).json()
+    response = client.post(
+        f"/api/projects/{project['id']}/parts/{part['id']}/real-gaussian-splat-assets",
+        headers=headers,
+        json={"cameras": [
+            {"image_id": "a", "width": 16, "height": 16, "intrinsics": [0, 0, 8, 0, 1, 8, 0, 0, 1], "rotation_quaternion": [1, 0, 0, 0], "translation": [0, 0, 0]},
+            {"image_id": "b", "width": 16, "height": 16, "intrinsics": [1, 0, 8, 0, 1, 8, 0, 0, 1], "rotation_quaternion": [0, 0, 0, 0], "translation": [0, 0, 0]},
+        ]},
+    )
+    assert response.status_code == 422
+
+    disabled_parameter = client.post(
+        f"/api/projects/{project['id']}/parts/{part['id']}/real-gaussian-splat-assets",
+        headers=headers,
+        json={
+            "cameras": [
+                {"image_id": "a", "width": 16, "height": 16, "intrinsics": [1, 0, 8, 0, 1, 8, 0, 0, 1], "rotation_quaternion": [1, 0, 0, 0], "translation": [0, 0, 0]},
+                {"image_id": "b", "width": 16, "height": 16, "intrinsics": [1, 0, 8, 0, 1, 8, 0, 0, 1], "rotation_quaternion": [1, 0, 0, 0], "translation": [1, 0, 0]},
+            ],
+            "parameters": {"optimize_covariance": False},
+        },
+    )
+    assert disabled_parameter.status_code == 422

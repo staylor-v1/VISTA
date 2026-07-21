@@ -1,6 +1,6 @@
 # PT3 local CT 3D viewer
 
-Vista's PT3 3D pane now uses one shared patient-space model for Volume, 3DGS, and Hybrid modes. The original scalar volume remains authoritative; Gaussian splats are a derived acceleration/visualization asset.
+Vista's PT3 3D pane uses one shared patient-space model for ray marching, simplified 3DGS, real 3DGS, and hybrid modes. The original scalar volume remains authoritative; Gaussian splats are derived visualization assets.
 
 ```text
 medical source
@@ -8,9 +8,16 @@ medical source
   -> authoritative scalar volume bundle
   -> GPU-style volume renderer
 
-medical source or volume bundle
-  -> adaptive sampling/reference rendering
-  -> layered or scalar-aware Gaussian asset
+authoritative scalar volume bundle
+  -> direct voxel-domain Gaussian fitting (default)
+  -> canonical scalar-aware Gaussian asset
+
+authoritative scalar volume bundle
+  -> calibrated/generated views
+  -> trusted synthetic-view or hybrid provider
+  -> canonical Gaussian asset
+
+canonical Gaussian asset
   -> 3DGS renderer
 
 volume renderer + 3DGS renderer
@@ -26,7 +33,7 @@ npm install
 npm start
 ```
 
-Open a PT3 inspection workbench and select **GPU volume renderer**, **3DGS renderer**, or **Hybrid volume + 3DGS** in the 3D view selector. The 2D MPR slice panes continue to display the same source 2D slices.
+Open a PT3 inspection workbench and select **GPU volume renderer**, **Simplified 3DGS**, **Real 3DGS**, or **Hybrid volume + simplified 3DGS** in the 3D view selector. The 2D MPR slice panes continue to display the same source 2D slices. Saved legacy `splat` selections remain mapped to the simplified renderer.
 
 ## Geometry and data contract
 
@@ -35,8 +42,36 @@ Viewer metadata is normalized as `dimensions`, `spacing`, `origin`, `direction`,
 ## Rendering paths
 
 - **Volume** uses the shared CT transfer-function controls, window/level presets (bone, soft tissue, lung), opacity, quality profiles, bounding box, orientation labels, and crop/clipping state. The current implementation is a browser-local renderer scaffold that preserves geometry and UI contracts while avoiding new large dependencies.
-- **3DGS** extends the existing PT3 Gaussian splat asset path. PLY and JSON `.splat` assets are parsed in a Web Worker so asset decoding does not block the main UI. Assets may contain baked colors today; scalar-aware JSON splats are versioned through metadata and should apply active transfer functions when exported with scalar attributes.
+- **Simplified 3DGS** is the existing slice-derived splat process. PLY and JSON `.splat` assets are parsed in a Web Worker so asset decoding does not block the main UI.
+- **Real 3DGS** is separate from the simplified slice-derived process and offers three fitting strategies. **Direct voxel fit** (`voxel_direct`) is the default: VISTA's built-in deterministic fitter works in physical voxel space and needs neither cameras nor an external provider. It groups spatially local, scalar-similar voxels, matches their physical first and second moments, and emits anisotropic covariance/scales, rotations, opacity, and degree-0 spherical harmonics. Scalar voxel values are view independent, so higher-order, view-dependent SH terms have no observable target in this mode. **Synthetic/camera views** (`synthetic_views`) and **Hybrid provider fit** (`hybrid`) require a trusted provider plus at least two calibrated or generated camera views; those provider modes may jointly optimize means, covariance/scales, rotations, opacity, spherical harmonics, and camera poses. In `hybrid`, the provider currently owns both voxel-native initialization and view refinement; the core adapter does not synthesize images or pass it a direct-fit seed. Configure the trusted server import as `PT3_REAL_3DGS_PROVIDER=package.module.function`. Real mode never substitutes a simplified asset.
 - **Hybrid** draws the translucent volume first and derived splats second in the same coordinate frame. This is a documented approximation rather than full order-independent transparency.
+
+All strategies publish canonical `pt3_real_3dgs/v1` JSON with patient-physical `means`, positive physical-unit `scales`, normalized quaternion `rotations` in `[w, x, y, z]` order, `opacities`, and coefficient-major RGB `sh_coefficients`. Gaussian rotations map local principal axes into patient space, so `Sigma = R diag(scales^2) R^T`. Voxel-direct assets additionally identify `optimization_domain` as `voxel_field`, set `camera_model` to `none`, retain scalar values, and report approximation metrics and explicit parameter provenance. Provider-backed modes must declare `coordinate_space: physical`, `camera_model: pinhole`, and `camera_convention: pt3_patient_physical_w2c_wxyz/v1`, then return optimized cameras in that same convention. The backend validates dimensions, finite values, coordinate/camera conventions, mode-specific camera requirements, asset containment, and fit/optimization metadata before publishing the result. Each request uses immutable job-specific inputs and output plus a row-locked job-ID check, so a stale background result cannot overwrite a newer recompute. Superseded outputs are pruned only after a replacement publishes successfully. A failed recompute removes only its own job copies and restores the prior usable asset with `last_recompute_*` diagnostics. The built-in fitter and trusted providers report staged progress; the UI polls and displays 0–99% updates, then reports 100% only after canonical validation succeeds.
+
+Provider cameras are undistorted pinhole views. Their row-major `intrinsics` is the pixel-space `K` matrix. `rotation_quaternion` is `[w, x, y, z]` for the patient-physical-to-camera rotation `R_pc`, and physical-unit `translation` satisfies `x_camera = R_pc x_patient + t`; camera axes are right-handed with +X right, +Y down, and +Z forward. SH view directions are expressed in patient axes from camera center to Gaussian mean. This fixed convention prevents a provider model trained in a normalized or camera-local frame from being silently overlaid on the patient volume.
+
+Real mode presents a fitting-strategy selector and a 1,000–100,000 splat-budget slider (50,000 default). The JSON/reference implementation is intentionally capped at 100,000 splats, 16,000,000 total voxels, and 1,000,000 active voxels until a binary, scalable GPU path replaces it. Adjusting either control does not start work: the user explicitly clicks **Fit voxel splats** for direct mode or **Train 3DGS splats** for provider modes, after which the current stage and estimated percentage are shown. Direct voxel fit is available whenever the PT3 voxel source can be materialized as an image stack, one NumPy volume, or one multi-page TIFF; larger fields require thresholding, downsampling, or a provider. For `synthetic_views` or `hybrid`, attach at least two calibrated/generated cameras at `part.metadata.pt3_real_3dgs.cameras` (the legacy `pt3_camera_calibrations` and `camera_calibrations` array keys are also read). Every PT3 source—including a directory of image slices—is treated as an authoritative voxel volume: server-inferred source IDs stay fixed, while generated exterior views may use their own unique camera IDs. Exact camera/source ID matches remain backward compatible, but client IDs never override the server-selected source files.
+
+Source downloads are streamed and atomically published under a 128 MiB per-file/whole-stack cap. Project-part APIs reject client filesystem paths and materialize only the part's server-owned sources. Simplified assets are content-keyed, written atomically, and capped at 100,000 splats; their two-pass sampler retains only the output budget rather than first allocating one Python object per active voxel. NPY, NPZ, and TIFF metadata is preflighted before decode; the reference path also caps decoded or NPZ-uncompressed data at 128 MiB and archives/stacks at 4,096 members, preventing compressed inputs from bypassing the voxel limit before allocation. CPU fitting/conversion jobs share a per-worker admission slot and recheck job ownership after waiting. The direct fitter's worst-case merge candidates use an in-place 48 MiB numeric buffer at the 1,000,000-active-voxel limit, and a superseded job aborts at its next progress boundary.
+
+The browser reference rasterizer reconstructs each complete 3D covariance from scale and quaternion, projects it with the active perspective-camera Jacobian, evaluates Graphdeco-order real spherical harmonics through degree four for the current view direction, depth-sorts the selected Gaussians, and alpha-composites Gaussian falloff. For responsiveness, canonical assets above 6,000 primitives are deterministically sampled for the Canvas preview; sampling reserves a representative for every nonempty visible segment when the budget permits, and the canonical asset itself is not reduced. Missing provider or camera metadata disables only `synthetic_views` and `hybrid`; it does not make the built-in voxel-direct strategy unavailable. The mathematical model and API contract are detailed in [PT3 voxel-native Gaussian fitting](./pt3-voxel-gaussian-fitting.md).
+
+## Segmentation contract
+
+Ray marching, simplified splats, and real splats share `part.metadata.pt3_segmentation`:
+
+```json
+{
+  "segments": [
+    {"id": 1, "label": "Region A", "color": "#ff7a45", "visible": true, "opacity": 0.8}
+  ],
+  "label_slices": [
+    {"slice_index": 0, "labels": [[0, 1], [0, 0]]}
+  ]
+}
+```
+
+Segment IDs are integers from 1 through 255; 0 is reserved for unsegmented background. Labels must be inline as a complete `labels`, `label_volume`, `voxel_labels`, or `label_slices` volume and must exactly match the source depth and slice dimensions. Arbitrary label URLs are intentionally not fetched by the browser or fitting jobs, avoiding inconsistent authorization and server-side request-forgery risk. Simplified and real splat JSON provide a `segment_ids` value for each segmented splat asset. When a simplified export is capped, deterministic proportional sampling reserves at least one representative for every present segment (including unsegmented label 0) whenever the budget permits; an undersized budget keeps the largest segment buckets with stable ties. Direct voxel fitting keeps every label boundary hard: a Gaussian group cannot combine voxels from different segments. Synthetic/hybrid providers must preserve every nonzero source label in their output IDs, may not invent labels, and declare `hard_source_label` or `max_weight_source_label` assignment in result metadata. The shared controls apply segment color, visibility, and opacity consistently; hidden segments are suppressed rather than recolored as background. Datasets without segmentation metadata, including the simple fixture, show no segment controls and render exactly as before.
 
 ## Preprocessing and privacy
 
@@ -49,6 +84,8 @@ Performance, Balanced, and Quality profiles adjust render resolution and volume 
 ## Known limitations
 
 - Existing baked 3DGS assets do not support arbitrary CT window/level remapping; use scalar-aware exports for that.
+- VISTA bundles a deterministic analytic voxel-domain reference fitter, not a global CUDA gradient/EM optimizer. It records closed-form/derived parameter provenance and does not claim to minimize the documented global reconstruction loss. Synthetic-view and hybrid refinement still require a configured trusted provider, and VISTA neither infers camera calibration from the slice stack nor synthesizes provider training views. Hybrid initialization/refinement is currently provider-owned.
+- The Canvas reference rasterizer uses full covariance projection and view-dependent SH but deterministically samples at most 6,000 Gaussians per frame. A future binary WebGL/CUDA rasterizer is needed for lossless interactive display of the full 100,000-splat cap.
 - Hybrid composition is volume-then-splat alpha blending, not exact order-independent transparency.
 - Direct DICOM browser import is not added here; use the existing local backend/synthetic fixtures and future preprocessing to produce browser-ready bundles.
 

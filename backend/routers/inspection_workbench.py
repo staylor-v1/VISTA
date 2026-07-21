@@ -1,12 +1,19 @@
+import asyncio
+import copy
 import uuid
 import json
 import mimetypes
 import re
 import base64
+import os
+import shutil
 import sys
+import tempfile
+import threading
 import httpx
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
@@ -24,11 +31,19 @@ from core.config import settings
 from core.project_types import DEFAULT_PROJECT_TYPE, normalize_project_type
 from utils.boto3_client import get_presigned_download_url, upload_file_to_s3
 from utils.cache_manager import get_cache
-from utils.volume_loader import load_slice_stack, load_volume
+from utils.volume_loader import (
+    REFERENCE_VOLUME_READ_LIMITS,
+    load_slice_stack,
+    load_volume,
+)
 from utils.gaussian_splat_converter import (
     SplatConversionParams,
     TransferFunction,
     convert_volume_to_splat_asset,
+)
+from utils.real_gaussian_splat_optimizer import (
+    RealGaussianSplatOptimizationError,
+    optimize_real_gaussian_splat_asset,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -92,6 +107,52 @@ SLICE_SEGMENTATION_METHOD_IDS = {
     "segmentation.sam.placeholder",
     "segmentation.opencv.placeholder",
 }
+PT3_MAX_MATERIALIZED_FILE_BYTES = REFERENCE_VOLUME_READ_LIMITS.max_source_bytes
+PT3_MAX_MATERIALIZED_STACK_BYTES = REFERENCE_VOLUME_READ_LIMITS.max_source_bytes
+PT3_DOWNLOAD_CHUNK_BYTES = 64 * 1024
+# Both bundled splat fitters are CPU- and memory-intensive. Keep one PT3 splat
+# compute in flight per backend worker; deployments can scale workers
+# deliberately instead of allowing an unbounded request burst in one process.
+_PT3_SPLAT_COMPUTE_SEMAPHORE = threading.BoundedSemaphore(value=1)
+# Backward-compatible alias retained for focused Real 3DGS tests and callers.
+_PT3_REAL_SPLAT_COMPUTE_SEMAPHORE = _PT3_SPLAT_COMPUTE_SEMAPHORE
+
+
+class _PT3RealSplatJobSuperseded(RuntimeError):
+    """Internal cancellation signal for a Real 3DGS job that lost ownership."""
+
+
+async def _acquire_pt3_splat_compute_slot() -> None:
+    """Acquire the process-local compute slot without blocking an event loop."""
+
+    while not _PT3_SPLAT_COMPUTE_SEMAPHORE.acquire(blocking=False):
+        await asyncio.sleep(0.05)
+
+
+async def _acquire_pt3_real_splat_compute_slot() -> None:
+    """Compatibility wrapper for the shared PT3 compute slot."""
+
+    await _acquire_pt3_splat_compute_slot()
+PT3_SIMPLIFIED_SPLAT_EXTENSIONS = {".json", ".ply", ".splat"}
+
+
+def _pt3_cache_root() -> Path:
+    """Return the configured writable cache root, with a stable repo fallback."""
+    configured = os.getenv("CACHE_DIR", "").strip()
+    root = Path(configured).expanduser() if configured else REPO_ROOT / ".cache"
+    if not root.is_absolute():
+        root = REPO_ROOT / root
+    root = root.resolve()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        probe = root / ".pt3-write-probe"
+        probe.touch(exist_ok=True)
+        probe.unlink(missing_ok=True)
+        return root
+    except OSError:
+        fallback = Path(tempfile.gettempdir()) / "vista-pt3-cache"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback.resolve()
 
 
 async def _get_project_with_access_check(
@@ -1546,37 +1607,172 @@ async def update_inspection_part_metadata_sources(
     return _serialize_inspection_part(updated)
 
 
-def _safe_stack_filename(record: dict, index: int) -> str:
-    raw_name = str(record.get("filename") or f"slice-{index:04d}.png").strip()
+def _safe_stack_filename(filename: object, index: int) -> str:
+    """Return a safe materialized name from the authoritative image record."""
+
+    raw_name = str(filename or f"slice-{index:04d}.png").strip()
     name = Path(raw_name).name or f"slice-{index:04d}.png"
     return f"{index:04d}-{name}"
 
 
-async def _write_image_record_to_stack_dir(image: models.DataInstance, destination: Path) -> None:
-    inline_data = None
+async def _write_image_record_to_stack_dir(
+    image: models.DataInstance,
+    destination: Path,
+    *,
+    max_bytes: Optional[int] = None,
+) -> int:
+    """Materialize one source with a hard byte limit and atomic publication."""
+
+    byte_limit = min(
+        PT3_MAX_MATERIALIZED_FILE_BYTES,
+        max_bytes if max_bytes is not None else PT3_MAX_MATERIALIZED_FILE_BYTES,
+    )
+    if byte_limit < 1:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="PT3 source stack exceeds the materialization limit",
+        )
+    partial = destination.with_name(f".{destination.name}.part")
+    partial.unlink(missing_ok=True)
+
+    def publish_bytes(payload: bytes) -> int:
+        if len(payload) > byte_limit:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=(
+                    f"PT3 source {image.filename} exceeds the "
+                    f"{byte_limit}-byte materialization limit"
+                ),
+            )
+        partial.write_bytes(payload)
+        partial.replace(destination)
+        return len(payload)
+
     metadata = image.metadata_json if isinstance(image.metadata_json, dict) else {}
     encoded = metadata.get("analysis_inline_image_base64")
     if isinstance(encoded, str) and encoded:
+        max_encoded_length = 4 * ((byte_limit + 2) // 3)
+        if len(encoded) > max_encoded_length:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=(
+                    f"PT3 source {image.filename} exceeds the "
+                    f"{byte_limit}-byte materialization limit"
+                ),
+            )
         try:
-            inline_data = base64.b64decode(encoded)
+            inline_data = base64.b64decode(encoded, validate=True)
         except Exception as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Inline image data for {image.filename} is invalid") from exc
-    if inline_data is not None:
-        destination.write_bytes(inline_data)
-        return
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Inline image data for {image.filename} is invalid",
+            ) from exc
+        return publish_bytes(inline_data)
 
-    presigned_url = get_presigned_download_url(bucket_name=settings.S3_BUCKET, object_name=image.object_storage_key)
+    # Built-in PT3 fixtures may intentionally be metadata-only when object storage is
+    # unavailable. Resolve only a basename inside the repository-owned fixture root;
+    # never accept an arbitrary path from persisted metadata.
+    if metadata.get("source") == "vista-test-data" and metadata.get("project_type") == "PT3":
+        raw_fixture_name = str(metadata.get("builtin_fixture_filename") or image.filename)
+        fixture_name = Path(raw_fixture_name).name
+        fixture_path = (PT3_TEST_STACK_ROOT / fixture_name).resolve()
+        fixture_root = PT3_TEST_STACK_ROOT.resolve()
+        expected_storage_key = f"{image.project_id}/test-data/{fixture_name}"
+        if (
+            raw_fixture_name == fixture_name
+            and image.filename == fixture_name
+            and image.object_storage_key == expected_storage_key
+            and fixture_path.parent == fixture_root
+            and fixture_path.is_file()
+        ):
+            if fixture_path.stat().st_size > byte_limit:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=(
+                        f"PT3 source {image.filename} exceeds the "
+                        f"{byte_limit}-byte materialization limit"
+                    ),
+                )
+            written = 0
+            try:
+                with fixture_path.open("rb") as source, partial.open("wb") as target:
+                    while chunk := source.read(PT3_DOWNLOAD_CHUNK_BYTES):
+                        written += len(chunk)
+                        if written > byte_limit:
+                            raise HTTPException(
+                                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                                detail="PT3 fixture exceeds the materialization limit",
+                            )
+                        target.write(chunk)
+                partial.replace(destination)
+                return written
+            except Exception:
+                partial.unlink(missing_ok=True)
+                raise
+
+    presigned_url = get_presigned_download_url(
+        bucket_name=settings.S3_BUCKET,
+        object_name=image.object_storage_key,
+    )
     if not presigned_url:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not read image stack slice {image.filename} from object storage")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Could not read image stack slice {image.filename} from object storage",
+        )
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(presigned_url)
-            response.raise_for_status()
-            destination.write_bytes(await response.aread())
+            async with client.stream("GET", presigned_url) as response:
+                response.raise_for_status()
+                raw_content_length = (getattr(response, "headers", {}) or {}).get(
+                    "content-length"
+                )
+                if raw_content_length is not None:
+                    try:
+                        content_length = int(raw_content_length)
+                    except (TypeError, ValueError) as exc:
+                        raise HTTPException(
+                            status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail="Object storage returned an invalid content length",
+                        ) from exc
+                    if content_length < 0:
+                        raise HTTPException(
+                            status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail="Object storage returned an invalid content length",
+                        )
+                    if content_length > byte_limit:
+                        raise HTTPException(
+                            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            detail=(
+                                f"PT3 source {image.filename} exceeds the "
+                                f"{byte_limit}-byte materialization limit"
+                            ),
+                        )
+                written = 0
+                with partial.open("wb") as target:
+                    async for chunk in response.aiter_bytes(
+                        chunk_size=PT3_DOWNLOAD_CHUNK_BYTES
+                    ):
+                        written += len(chunk)
+                        if written > byte_limit:
+                            raise HTTPException(
+                                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                                detail=(
+                                    f"PT3 source {image.filename} exceeds the "
+                                    f"{byte_limit}-byte materialization limit"
+                                ),
+                            )
+                        target.write(chunk)
+                partial.replace(destination)
+                return written
     except HTTPException:
+        partial.unlink(missing_ok=True)
         raise
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not materialize image stack slice {image.filename}") from exc
+        partial.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Could not materialize image stack slice {image.filename}",
+        ) from exc
 
 
 async def _materialize_part_volume_stack(
@@ -1584,12 +1780,18 @@ async def _materialize_part_volume_stack(
     project_id: uuid.UUID,
     part: models.InspectionPart,
     db: AsyncSession,
+    materialization_key: Optional[str] = None,
 ) -> tuple[str, list[str]]:
     metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
     source_images = [record for record in metadata.get("source_images") or [] if isinstance(record, dict)]
     stack_records = [record for record in source_images if record.get("image_id") and str(record.get("overlay") or "").lower() != "true"]
     if not stack_records:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No image stack slices are attached to this part for Gaussian splat generation")
+    if len(stack_records) > REFERENCE_VOLUME_READ_LIMITS.max_container_members:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="PT3 source stack contains too many files",
+        )
 
     def sort_key(item: dict):
         raw_index = item.get("slice_index")
@@ -1600,24 +1802,418 @@ async def _materialize_part_volume_stack(
         return (index, str(item.get("filename") or ""))
 
     stack_records = sorted(stack_records, key=sort_key)
-    stack_dir = Path(".cache") / "pt3_volume_stacks" / str(project_id) / str(part.id)
+    stack_dir = _pt3_cache_root() / "pt3_volume_stacks" / str(project_id) / str(part.id)
+    if materialization_key:
+        stack_dir = stack_dir / str(materialization_key)
     stack_dir.mkdir(parents=True, exist_ok=True)
     for existing in stack_dir.iterdir():
         if existing.is_file():
             existing.unlink()
 
     source_image_ids: list[str] = []
-    for index, record in enumerate(stack_records):
-        image_id = uuid.UUID(str(record.get("image_id")))
-        image = await _get_active_project_image_by_id(db=db, project_id=project_id, image_id=image_id)
-        if not image:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Image stack slice {record.get('image_id')} was not found")
-        source_image_ids.append(str(image.id))
-        await _write_image_record_to_stack_dir(image, stack_dir / _safe_stack_filename(record, index))
+    materialized_paths: list[Path] = []
+    materialized_bytes = 0
+    try:
+        for index, record in enumerate(stack_records):
+            image_id = uuid.UUID(str(record.get("image_id")))
+            image = await _get_active_project_image_by_id(db=db, project_id=project_id, image_id=image_id)
+            if not image:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Image stack slice {record.get('image_id')} was not found")
+            source_image_ids.append(str(image.id))
+            # The part metadata filename is display metadata and can be stale or
+            # attacker-controlled. Preserve the storage object's actual format by
+            # deriving the suffix from the authoritative DataInstance instead.
+            destination = stack_dir / _safe_stack_filename(image.filename, index)
+            remaining_bytes = PT3_MAX_MATERIALIZED_STACK_BYTES - materialized_bytes
+            written = await _write_image_record_to_stack_dir(
+                image,
+                destination,
+                max_bytes=remaining_bytes,
+            )
+            materialized_bytes += written
+            materialized_paths.append(destination)
+    except Exception:
+        for path in materialized_paths:
+            path.unlink(missing_ok=True)
+        for partial in stack_dir.glob(".*.part"):
+            partial.unlink(missing_ok=True)
+        raise
+
+    # A single implicit volume container must remain a file so load_volume can
+    # distinguish NumPy arrays and multi-page TIFFs from a directory of slices.
+    # A one-frame TIFF is still a valid depth-one volume. Multiple image files
+    # retain the historical slice-stack interpretation.
+    if len(materialized_paths) == 1 and materialized_paths[0].suffix.lower() in {".npy", ".npz", ".tif", ".tiff"}:
+        return str(materialized_paths[0]), source_image_ids
+    if any(path.suffix.lower() in {".npy", ".npz"} for path in materialized_paths):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A NumPy voxel volume must be the part's only source volume",
+        )
     return str(stack_dir), source_image_ids
 
 
-def _splat_status_from_metadata(part_id: uuid.UUID, metadata: object, *, volume_stack_id: Optional[str] = None) -> schemas.PT3SplatGenerationStatus:
+def _pt3_provider_camera_view_binding(
+    *,
+    source_image_ids: List[str],
+    camera_image_ids: set[str],
+) -> str:
+    """Classify provider cameras without letting their IDs select voxel inputs.
+
+    Every PT3 source format is an authoritative voxel volume, including an
+    image-slice directory. Independently generated/calibrated exterior views
+    therefore may use their own IDs. Exact identity remains classified for
+    backward compatibility, but camera IDs never select the source files.
+    """
+
+    expected_image_ids = set(source_image_ids)
+    if camera_image_ids == expected_image_ids:
+        return "server_inferred_source_views"
+    return "generated_from_voxel_volume"
+
+
+def _pt3_real_splat_job_cache_paths(
+    *, project_id: uuid.UUID, part_id: uuid.UUID, job_id: str
+) -> tuple[Path, Path]:
+    input_path = _pt3_cache_root() / "pt3_volume_stacks" / str(project_id) / str(part_id) / job_id
+    output_path = _pt3_cache_root() / "pt3_real_splat_assets" / str(project_id) / str(part_id) / job_id
+    return input_path, output_path
+
+
+def _remove_direct_child_cache_path(path: Path, *, parent: Path) -> None:
+    """Remove only one resolved job directory immediately below a known root."""
+
+    safe_parent = parent.resolve()
+    safe_path = path.resolve()
+    if safe_path.parent != safe_parent or safe_path == safe_parent:
+        return
+    if safe_path.is_dir():
+        shutil.rmtree(safe_path, ignore_errors=True)
+
+
+def _pt3_simplified_splat_job_input_path(
+    *, project_id: uuid.UUID, part_id: uuid.UUID, job_id: str
+) -> Path:
+    return (
+        _pt3_cache_root()
+        / "pt3_volume_stacks"
+        / str(project_id)
+        / str(part_id)
+        / job_id
+    )
+
+
+def _cleanup_pt3_simplified_splat_job_input(
+    *, project_id: uuid.UUID, part_id: uuid.UUID, job_id: str
+) -> None:
+    input_path = _pt3_simplified_splat_job_input_path(
+        project_id=project_id,
+        part_id=part_id,
+        job_id=job_id,
+    )
+    _remove_direct_child_cache_path(input_path, parent=input_path.parent)
+
+
+def _prune_stale_pt3_simplified_splat_output(
+    asset_path: Optional[Path],
+    *,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    latest_asset: object,
+) -> None:
+    """Remove a stale output only when no active/latest job can reference it."""
+
+    if asset_path is None:
+        return
+    current_asset = latest_asset if isinstance(latest_asset, dict) else {}
+    # A pending successor may be computing the same content key and about to
+    # publish this exact shared file, so pruning during that state is unsafe.
+    if current_asset.get("status") == "pending":
+        return
+    try:
+        expected_root = (
+            _pt3_cache_root()
+            / "pt3_splat_assets"
+            / str(project_id)
+            / str(part_id)
+        ).resolve()
+        candidate = asset_path.resolve()
+        referenced_path_text = str(current_asset.get("asset_path") or "").strip()
+        referenced_path = (
+            Path(referenced_path_text).expanduser().resolve()
+            if referenced_path_text
+            else None
+        )
+    except (OSError, RuntimeError):
+        return
+    if (
+        candidate.parent == expected_root
+        and candidate.suffix.lower() in PT3_SIMPLIFIED_SPLAT_EXTENSIONS
+        and candidate != referenced_path
+        and candidate.is_file()
+    ):
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _prune_pt3_simplified_splat_outputs(
+    *,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    keep_asset_path: Path,
+) -> None:
+    """Prune prior content keys after publishing the sole current part asset."""
+
+    try:
+        output_root = (
+            _pt3_cache_root()
+            / "pt3_splat_assets"
+            / str(project_id)
+            / str(part_id)
+        ).resolve()
+        keep_path = keep_asset_path.resolve()
+    except (OSError, RuntimeError):
+        return
+    if keep_path.parent != output_root or not output_root.is_dir():
+        return
+    for candidate in output_root.iterdir():
+        try:
+            resolved_candidate = candidate.resolve()
+            if (
+                resolved_candidate.parent == output_root
+                and resolved_candidate != keep_path
+                and resolved_candidate.suffix.lower()
+                in PT3_SIMPLIFIED_SPLAT_EXTENSIONS
+                and resolved_candidate.is_file()
+            ):
+                resolved_candidate.unlink(missing_ok=True)
+        except (OSError, RuntimeError):
+            continue
+
+
+def _cleanup_pt3_real_splat_job_cache(
+    *,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    job_id: str,
+    remove_input: bool = True,
+    remove_output: bool = True,
+) -> None:
+    input_path, output_path = _pt3_real_splat_job_cache_paths(
+        project_id=project_id, part_id=part_id, job_id=job_id
+    )
+    if remove_input:
+        _remove_direct_child_cache_path(input_path, parent=input_path.parent)
+    if remove_output:
+        _remove_direct_child_cache_path(output_path, parent=output_path.parent)
+
+
+def _prune_pt3_real_splat_job_cache(
+    *, project_id: uuid.UUID, part_id: uuid.UUID, keep_output_job_id: Optional[str]
+) -> None:
+    """Prune superseded outputs while retaining the published asset."""
+
+    output_root = (_pt3_cache_root() / "pt3_real_splat_assets" / str(project_id) / str(part_id)).resolve()
+    if output_root.is_dir():
+        for candidate in output_root.iterdir():
+            if candidate.is_dir() and candidate.name != keep_output_job_id:
+                _remove_direct_child_cache_path(candidate, parent=output_root)
+
+
+def _contained_pt3_real_splat_asset_path(
+    asset: object,
+    *,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    cache_key: Optional[str] = None,
+) -> Optional[Path]:
+    """Return a readable Real asset only from this part's server cache."""
+
+    if not isinstance(asset, dict):
+        return None
+    declared_cache_key = str(asset.get("cache_key") or "").strip()
+    if (
+        not declared_cache_key
+        or len(declared_cache_key) > 255
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", declared_cache_key) is None
+        or (cache_key is not None and declared_cache_key != cache_key)
+    ):
+        return None
+    raw_path = str(asset.get("asset_path") or "").strip()
+    if not raw_path:
+        return None
+    job_id = str(asset.get("job_id") or "").strip()
+    if job_id and (
+        len(job_id) > 255
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", job_id) is None
+    ):
+        return None
+    try:
+        expected_root = (
+            _pt3_cache_root()
+            / "pt3_real_splat_assets"
+            / str(project_id)
+            / str(part_id)
+        ).resolve()
+        asset_path = Path(raw_path).expanduser().resolve()
+        expected_job_root = (expected_root / job_id).resolve() if job_id else None
+    except (OSError, RuntimeError):
+        return None
+    if (
+        expected_root not in asset_path.parents
+        or (
+            expected_job_root is not None
+            and expected_job_root not in asset_path.parents
+        )
+        or asset_path.suffix.lower() != ".json"
+        or not asset_path.is_file()
+    ):
+        return None
+    return asset_path
+
+
+def _usable_previous_pt3_real_splat_asset(
+    asset: object,
+    *,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+) -> Optional[dict]:
+    """Return a contained, still-readable published asset for recompute fallback."""
+
+    if not isinstance(asset, dict):
+        return None
+    candidate = asset
+    if candidate.get("status") != "ready":
+        nested = candidate.get("previous_ready_asset")
+        candidate = nested if isinstance(nested, dict) else {}
+    if (
+        candidate.get("status") != "ready"
+        or not candidate.get("cache_key")
+        or not candidate.get("asset_path")
+    ):
+        return None
+    asset_path = _contained_pt3_real_splat_asset_path(
+        candidate,
+        project_id=project_id,
+        part_id=part_id,
+    )
+    if asset_path is None:
+        return None
+    # Do not recursively retain prior attempts inside the fallback record.
+    retained_asset = {
+        key: value
+        for key, value in candidate.items()
+        if key != "previous_ready_asset"
+    }
+    retained_asset["asset_path"] = str(asset_path)
+    retained_asset["asset_url"] = (
+        f"/api/projects/{project_id}/parts/{part_id}/"
+        f"real-gaussian-splat-assets/{candidate.get('cache_key')}"
+    )
+    return retained_asset
+
+
+def _pt3_real_splat_asset_for_cache(asset: object, cache_key: str) -> dict:
+    """Resolve the current asset, or the last good asset during recompute."""
+
+    if not isinstance(asset, dict):
+        return {}
+    if (
+        str(asset.get("status") or "").strip().lower() in {"", "ready"}
+        and asset.get("cache_key") == cache_key
+    ):
+        return asset
+    previous = asset.get("previous_ready_asset")
+    if (
+        asset.get("status") == "pending"
+        and isinstance(previous, dict)
+        and str(previous.get("status") or "").strip().lower() in {"", "ready"}
+        and previous.get("cache_key") == cache_key
+    ):
+        return previous
+    return {}
+
+
+def _public_pt3_real_splat_error(exc: Exception) -> str:
+    message = str(exc).strip() or exc.__class__.__name__
+    replacements = (
+        (str(_pt3_cache_root().resolve()), "<cache>"),
+        (str(REPO_ROOT.resolve()), "<repository>"),
+    )
+    for private_path, label in replacements:
+        message = message.replace(private_path, label)
+    return message[:1000]
+
+
+def _contained_pt3_simplified_splat_asset_path(
+    asset: object,
+    *,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    cache_key: Optional[str] = None,
+) -> Optional[Path]:
+    """Return a readable Simplified asset only when its metadata is cache-contained."""
+
+    if not isinstance(asset, dict):
+        return None
+    declared_cache_key = str(asset.get("cache_key") or "").strip()
+    if (
+        not declared_cache_key
+        or len(declared_cache_key) > 255
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", declared_cache_key) is None
+        or (cache_key is not None and declared_cache_key != cache_key)
+    ):
+        return None
+    raw_path = str(asset.get("asset_path") or "").strip()
+    if not raw_path:
+        return None
+    try:
+        expected_root = (
+            _pt3_cache_root()
+            / "pt3_splat_assets"
+            / str(project_id)
+            / str(part_id)
+        ).resolve()
+        asset_path = Path(raw_path).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return None
+    if (
+        asset_path.parent != expected_root
+        or asset_path.suffix.lower() not in PT3_SIMPLIFIED_SPLAT_EXTENSIONS
+        or asset_path.stem != declared_cache_key
+        or not asset_path.is_file()
+    ):
+        return None
+    return asset_path
+
+
+def _public_pt3_simplified_splat_asset(asset: object) -> dict:
+    """Strip server filesystem locations from Simplified asset responses."""
+
+    if not isinstance(asset, dict):
+        return {}
+    public_asset = {
+        key: value
+        for key, value in asset.items()
+        if key not in {"asset_path", "source_files"}
+    }
+    conversion_parameters = public_asset.get("conversion_parameters")
+    if isinstance(conversion_parameters, dict):
+        public_parameters = dict(conversion_parameters)
+        public_parameters.pop("source_path", None)
+        public_asset["conversion_parameters"] = public_parameters
+    return public_asset
+
+
+def _splat_status_from_metadata(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    metadata: object,
+    *,
+    volume_stack_id: Optional[str] = None,
+) -> schemas.PT3SplatGenerationStatus:
     safe_metadata = metadata if isinstance(metadata, dict) else {}
     asset = safe_metadata.get("pt3_splat_asset") if isinstance(safe_metadata.get("pt3_splat_asset"), dict) else {}
     requested_stack = str(volume_stack_id).strip() if volume_stack_id else ""
@@ -1625,22 +2221,37 @@ def _splat_status_from_metadata(part_id: uuid.UUID, metadata: object, *, volume_
     if requested_stack and asset_stack and requested_stack != asset_stack:
         return schemas.PT3SplatGenerationStatus(status="missing", part_id=part_id, volume_stack_id=requested_stack)
     raw_status = str(asset.get("status") or "").strip().lower()
+    asset_path = _contained_pt3_simplified_splat_asset_path(
+        asset,
+        project_id=project_id,
+        part_id=part_id,
+    )
     if raw_status in {"pending", "failed"}:
         status_value = raw_status
-    elif asset.get("asset_url") and asset.get("asset_path") and Path(str(asset.get("asset_path"))).is_file():
+    elif raw_status in {"", "ready"} and asset_path is not None:
         status_value = "ready"
     else:
         status_value = "missing"
+    public_asset = _public_pt3_simplified_splat_asset(asset)
+    asset_url = None
+    if status_value == "ready":
+        asset_url = (
+            f"/api/projects/{project_id}/parts/{part_id}/volume-splat-assets/"
+            f"{asset.get('cache_key')}"
+        )
+        public_asset["asset_url"] = asset_url
+    else:
+        public_asset.pop("asset_url", None)
     return schemas.PT3SplatGenerationStatus(
         status=status_value,
         part_id=part_id,
         volume_stack_id=requested_stack or asset_stack or None,
-        asset_url=asset.get("asset_url") if status_value == "ready" else None,
+        asset_url=asset_url,
         cache_key=asset.get("cache_key"),
         output_format=asset.get("output_format"),
         splat_count=asset.get("splat_count") if status_value == "ready" else None,
         error=asset.get("error") if status_value == "failed" else None,
-        metadata=asset,
+        metadata=public_asset,
     )
 
 
@@ -1650,56 +2261,195 @@ async def _run_pt3_splat_generation_job(
     part_id: uuid.UUID,
     source_path_text: str,
     payload_data: dict,
+    job_id: str,
     requested_by: str,
     job_db: AsyncSession,
 ):
+    compute_slot_acquired = False
+    generated_asset_path: Optional[Path] = None
     try:
-        part = await crud.get_inspection_part(db=job_db, project_id=project_id, part_id=part_id)
+        # Refresh under a row lock before doing any CPU work. The request-scoped
+        # session retains identity-mapped rows, so populate_existing is required
+        # to observe a newer recompute that superseded this background task.
+        await job_db.rollback()
+        admission_result = await job_db.execute(
+            select(models.InspectionPart)
+            .where(
+                models.InspectionPart.project_id == project_id,
+                models.InspectionPart.id == part_id,
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        part = admission_result.scalar_one_or_none()
         if not part:
+            await job_db.rollback()
             return
-        payload = schemas.PT3SplatConversionRequest(**payload_data)
-        source_path = Path(source_path_text).expanduser().resolve()
-        volume_info = load_volume(source_path)
-        params = SplatConversionParams(
-            transfer_function=TransferFunction(**payload.transfer_function.model_dump()),
-            downsample=payload.downsample,
-            max_splats=payload.max_splats,
-            output_format=payload.output_format,
+        metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+        admitted_asset = metadata.get("pt3_splat_asset")
+        if not isinstance(admitted_asset, dict) or admitted_asset.get("job_id") != job_id:
+            await job_db.rollback()
+            return
+        await job_db.rollback()
+
+        await _acquire_pt3_splat_compute_slot()
+        compute_slot_acquired = True
+
+        # This job may have waited behind another Real or Simplified fit. Check
+        # ownership again before decoding the volume or allocating splat state.
+        await job_db.rollback()
+        compute_result = await job_db.execute(
+            select(models.InspectionPart)
+            .where(
+                models.InspectionPart.project_id == project_id,
+                models.InspectionPart.id == part_id,
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
         )
-        volume_stack_id = payload.volume_stack_id or (part.metadata_json or {}).get("volume_stack_id") or str(part.id)
-        output_dir = Path(".cache") / "pt3_splat_assets" / str(project_id) / str(part_id)
-        asset = convert_volume_to_splat_asset(
-            volume_info,
-            volume_stack_id=str(volume_stack_id),
-            source_image_ids=payload.source_image_ids,
-            params=params,
-            output_dir=output_dir,
+        part = compute_result.scalar_one_or_none()
+        if not part:
+            await job_db.rollback()
+            return
+        metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+        compute_asset = metadata.get("pt3_splat_asset")
+        if not isinstance(compute_asset, dict) or compute_asset.get("job_id") != job_id:
+            await job_db.rollback()
+            return
+        metadata = copy.deepcopy(metadata)
+        await job_db.rollback()
+
+        try:
+            payload = schemas.PT3SplatConversionRequest(**payload_data)
+            source_path = Path(source_path_text).expanduser().resolve()
+            volume_info = load_volume(
+                source_path,
+                limits=REFERENCE_VOLUME_READ_LIMITS,
+            )
+            params = SplatConversionParams(
+                transfer_function=TransferFunction(
+                    **payload.transfer_function.model_dump()
+                ),
+                downsample=payload.downsample,
+                max_splats=payload.max_splats,
+                output_format=payload.output_format,
+            )
+            volume_stack_id = (
+                payload.volume_stack_id
+                or metadata.get("volume_stack_id")
+                or str(part.id)
+            )
+            output_dir = (
+                _pt3_cache_root()
+                / "pt3_splat_assets"
+                / str(project_id)
+                / str(part_id)
+            )
+            asset = await asyncio.to_thread(
+                convert_volume_to_splat_asset,
+                volume_info,
+                volume_stack_id=str(volume_stack_id),
+                source_image_ids=payload.source_image_ids,
+                params=params,
+                output_dir=output_dir,
+                segmentation=metadata.get("pt3_segmentation")
+                if isinstance(metadata.get("pt3_segmentation"), dict)
+                else None,
+            )
+            generated_asset_path = Path(asset.path)
+            asset_url = (
+                f"/api/projects/{project_id}/parts/{part_id}/"
+                f"volume-splat-assets/{asset.cache_key}"
+            )
+            asset_metadata = {
+                **asset.metadata,
+                "job_id": job_id,
+                "status": "ready",
+                "stage": "ready",
+                "progress_percent": 100,
+                "asset_path": asset.path,
+                "asset_url": asset_url,
+                "output_format": asset.output_format,
+                "splat_count": asset.splat_count,
+                "conversion_parameters": payload.model_dump(mode="json"),
+            }
+        except Exception as exc:  # failures remain visible to polling clients
+            asset_metadata = {
+                "job_id": job_id,
+                "status": "failed",
+                "stage": "failed",
+                "progress_percent": 0,
+                "volume_stack_id": payload_data.get("volume_stack_id"),
+                "source_image_ids": payload_data.get("source_image_ids") or [],
+                "error": _public_pt3_real_splat_error(exc),
+                "failed_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+        # Compare-and-swap at publication so an older completion or failure can
+        # never replace metadata owned by a newer configuration request.
+        await job_db.rollback()
+        latest_result = await job_db.execute(
+            select(models.InspectionPart)
+            .where(
+                models.InspectionPart.project_id == project_id,
+                models.InspectionPart.id == part_id,
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
         )
-        asset_url = f"/api/projects/{project_id}/parts/{part_id}/volume-splat-assets/{asset.cache_key}"
-        asset_metadata = {
-            **asset.metadata,
-            "status": "ready",
-            "asset_path": asset.path,
-            "asset_url": asset_url,
-            "output_format": asset.output_format,
-            "splat_count": asset.splat_count,
-            "conversion_parameters": payload.model_dump(mode="json"),
-        }
-    except Exception as exc:  # background job must persist failure for clients to poll
-        asset_metadata = {
-            "status": "failed",
-            "volume_stack_id": payload_data.get("volume_stack_id"),
-            "source_image_ids": payload_data.get("source_image_ids") or [],
-            "error": str(exc),
-            "failed_at": datetime.now(timezone.utc).isoformat(),
-        }
-    await crud.update_inspection_part_metadata(
-        db=job_db,
-        project_id=project_id,
-        part_id=part_id,
-        metadata_patch={"pt3_splat_asset": asset_metadata},
-        updated_by=requested_by,
-    )
+        latest_part = latest_result.scalar_one_or_none()
+        if not latest_part:
+            await job_db.rollback()
+            _prune_stale_pt3_simplified_splat_output(
+                generated_asset_path,
+                project_id=project_id,
+                part_id=part_id,
+                latest_asset={},
+            )
+            return
+        latest_metadata = (
+            latest_part.metadata_json
+            if isinstance(latest_part.metadata_json, dict)
+            else {}
+        )
+        latest_asset = latest_metadata.get("pt3_splat_asset")
+        if not isinstance(latest_asset, dict) or latest_asset.get("job_id") != job_id:
+            _prune_stale_pt3_simplified_splat_output(
+                generated_asset_path,
+                project_id=project_id,
+                part_id=part_id,
+                latest_asset=latest_asset,
+            )
+            await job_db.rollback()
+            return
+        published_part = await crud.update_inspection_part_metadata(
+            db=job_db,
+            project_id=project_id,
+            part_id=part_id,
+            metadata_patch={"pt3_splat_asset": asset_metadata},
+            updated_by=requested_by,
+        )
+        if (
+            published_part is not None
+            and asset_metadata.get("status") == "ready"
+            and generated_asset_path is not None
+        ):
+            # The shared semaphore is still held, so no other splat converter
+            # can be creating a not-yet-published file while prior keys are
+            # pruned for this one-asset-per-part lifecycle.
+            _prune_pt3_simplified_splat_outputs(
+                project_id=project_id,
+                part_id=part_id,
+                keep_asset_path=generated_asset_path,
+            )
+    finally:
+        if compute_slot_acquired:
+            _PT3_SPLAT_COMPUTE_SEMAPHORE.release()
+        _cleanup_pt3_simplified_splat_job_input(
+            project_id=project_id,
+            part_id=part_id,
+            job_id=job_id,
+        )
 
 
 @router.post(
@@ -1722,41 +2472,113 @@ async def create_pt3_volume_splat_asset(
     if not part:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
 
-    source_path = payload.source_path
-    source_image_ids = list(payload.source_image_ids or [])
-    if not source_path:
-        source_path, inferred_source_image_ids = await _materialize_part_volume_stack(project_id=project_id, part=part, db=db)
-        if not source_image_ids:
-            source_image_ids = inferred_source_image_ids
-
-    volume_stack_id = payload.volume_stack_id or (part.metadata_json or {}).get("volume_stack_id") or str(part.id)
-    conversion_parameters = payload.model_dump(mode="json")
-    conversion_parameters["source_path"] = source_path
-    conversion_parameters["source_image_ids"] = source_image_ids
-    pending_metadata = {
-        "status": "pending",
-        "volume_stack_id": str(volume_stack_id),
-        "source_image_ids": source_image_ids,
-        "requested_at": datetime.now(timezone.utc).isoformat(),
-        "conversion_parameters": conversion_parameters,
-    }
-    await crud.update_inspection_part_metadata(
-        db=db,
-        project_id=project_id,
-        part_id=part_id,
-        metadata_patch={"pt3_splat_asset": pending_metadata},
-        updated_by=current_user.email,
+    if payload.source_path is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "source_path is not accepted for project-part conversion; "
+                "attach source images to the part and let the server materialize them"
+            ),
+        )
+    materialization_part = SimpleNamespace(
+        id=part.id,
+        metadata_json=copy.deepcopy(
+            part.metadata_json if isinstance(part.metadata_json, dict) else {}
+        ),
     )
+    await db.rollback()
+    job_id = str(uuid.uuid4())
+    try:
+        source_path, inferred_source_image_ids = await _materialize_part_volume_stack(
+            project_id=project_id,
+            part=materialization_part,
+            db=db,
+            materialization_key=job_id,
+        )
+        await db.rollback()
+        source_image_ids = list(inferred_source_image_ids)
+        if payload.source_image_ids and payload.source_image_ids != source_image_ids:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="source_image_ids must exactly match the server-inferred image stack",
+            )
+
+        locked_result = await db.execute(
+            select(models.InspectionPart)
+            .where(
+                models.InspectionPart.project_id == project_id,
+                models.InspectionPart.id == part_id,
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        current_part = locked_result.scalar_one_or_none()
+        if not current_part:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Inspection part not found",
+            )
+        current_metadata = (
+            current_part.metadata_json
+            if isinstance(current_part.metadata_json, dict)
+            else {}
+        )
+        volume_stack_id = (
+            payload.volume_stack_id
+            or current_metadata.get("volume_stack_id")
+            or str(current_part.id)
+        )
+        conversion_parameters = payload.model_dump(mode="json")
+        conversion_parameters["source_path"] = None
+        conversion_parameters["source_image_ids"] = source_image_ids
+        pending_metadata = {
+            "job_id": job_id,
+            "status": "pending",
+            "stage": "queued",
+            "progress_percent": 0,
+            "volume_stack_id": str(volume_stack_id),
+            "source_image_ids": source_image_ids,
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+            "conversion_parameters": conversion_parameters,
+        }
+        updated_part = await crud.update_inspection_part_metadata(
+            db=db,
+            project_id=project_id,
+            part_id=part_id,
+            metadata_patch={"pt3_splat_asset": pending_metadata},
+            updated_by=current_user.email,
+        )
+        if not updated_part:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Inspection part not found",
+            )
+    except Exception:
+        await db.rollback()
+        _cleanup_pt3_simplified_splat_job_input(
+            project_id=project_id,
+            part_id=part_id,
+            job_id=job_id,
+        )
+        raise
+
     background_tasks.add_task(
         _run_pt3_splat_generation_job,
         project_id=project_id,
         part_id=part_id,
         source_path_text=source_path,
         payload_data=conversion_parameters,
+        job_id=job_id,
         requested_by=current_user.email,
         job_db=db,
     )
-    return _splat_status_from_metadata(part_id, {"pt3_splat_asset": pending_metadata}, volume_stack_id=str(volume_stack_id))
+    return _splat_status_from_metadata(
+        project_id,
+        part_id,
+        {"pt3_splat_asset": pending_metadata},
+        volume_stack_id=str(volume_stack_id),
+    )
 
 
 @router.get(
@@ -1773,7 +2595,548 @@ async def get_pt3_part_volume_splat_status(
     part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
     if not part:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
-    return _splat_status_from_metadata(part.id, part.metadata_json)
+    return _splat_status_from_metadata(project_id, part.id, part.metadata_json)
+
+
+def _real_splat_status_from_metadata(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    metadata: object,
+    *,
+    volume_stack_id: Optional[str] = None,
+) -> schemas.PT3RealSplatGenerationStatus:
+    safe_metadata = metadata if isinstance(metadata, dict) else {}
+    asset = safe_metadata.get("pt3_real_splat_asset") if isinstance(safe_metadata.get("pt3_real_splat_asset"), dict) else {}
+    requested_stack = str(volume_stack_id).strip() if volume_stack_id else ""
+    asset_stack = str(asset.get("volume_stack_id") or safe_metadata.get("volume_stack_id") or "").strip()
+    if requested_stack and asset_stack and requested_stack != asset_stack:
+        return schemas.PT3RealSplatGenerationStatus(status="missing", part_id=part_id, volume_stack_id=requested_stack)
+    raw_status = str(asset.get("status") or "").strip().lower()
+    asset_path = _contained_pt3_real_splat_asset_path(
+        asset,
+        project_id=project_id,
+        part_id=part_id,
+    )
+    if raw_status in {"pending", "failed"}:
+        status_value = raw_status
+    elif raw_status in {"", "ready"} and asset_path is not None:
+        status_value = "ready"
+    else:
+        status_value = "missing"
+    # The nested fallback is an internal lifecycle record and contains the
+    # server cache path. Keep it out of both POST and polling responses.
+    public_asset = {
+        key: value
+        for key, value in asset.items()
+        if key
+        not in {"asset_path", "asset_url", "previous_ready_asset", "source_files"}
+    }
+    asset_url = None
+    if status_value == "ready":
+        asset_url = (
+            f"/api/projects/{project_id}/parts/{part_id}/"
+            f"real-gaussian-splat-assets/{asset.get('cache_key')}"
+        )
+        public_asset["asset_url"] = asset_url
+    return schemas.PT3RealSplatGenerationStatus(
+        status=status_value,
+        job_id=asset.get("job_id"),
+        part_id=part_id,
+        volume_stack_id=requested_stack or asset_stack or None,
+        asset_url=asset_url,
+        cache_key=asset.get("cache_key"),
+        splat_count=asset.get("splat_count") if status_value == "ready" else None,
+        progress_percent=float(asset.get("progress_percent") or (100 if status_value == "ready" else 0)),
+        stage=str(asset.get("stage") or status_value),
+        error=(asset.get("error") if status_value == "failed" else None),
+        metadata={
+            **public_asset,
+            "provider_configured": bool(str(settings.PT3_REAL_3DGS_PROVIDER or "").strip()),
+            "voxel_direct_available": True,
+        },
+    )
+
+
+def _pt3_voxel_geometry(volume_info, metadata: dict) -> dict:
+    declared = metadata.get("pt3_volume_geometry") if isinstance(metadata.get("pt3_volume_geometry"), dict) else {}
+    spacing = declared.get("spacing") or metadata.get("spacing") or metadata.get("voxel_spacing") or [1.0, 1.0, 1.0]
+    origin = declared.get("origin") or metadata.get("origin") or [0.0, 0.0, 0.0]
+    direction = declared.get("direction") or metadata.get("direction") or [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    scalar_range = declared.get("scalar_range") or metadata.get("scalar_range") or metadata.get("scalarRange")
+    return {
+        "format": volume_info.format,
+        "shape_zyx": list(volume_info.shape),
+        "dtype": volume_info.dtype,
+        "spacing_xyz": list(spacing),
+        "origin_xyz": list(origin),
+        "direction": list(direction),
+        "scalar_range": list(scalar_range) if isinstance(scalar_range, (list, tuple)) else None,
+    }
+
+
+async def _update_pt3_real_splat_job_progress(
+    *,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    job_id: str,
+    progress_percent: float,
+    stage: str,
+    job_db: AsyncSession,
+) -> bool:
+    try:
+        safe_progress = min(99.0, max(0.0, float(progress_percent)))
+    except (TypeError, ValueError):
+        return False
+    # This request-scoped session is intentionally reused by the background
+    # task and uses expire_on_commit=False. End any earlier read transaction and
+    # force the locked SELECT to overwrite its identity-mapped InspectionPart;
+    # otherwise an older worker can keep seeing its own stale job_id after a
+    # newer recompute has already published pending metadata.
+    await job_db.rollback()
+    result = await job_db.execute(
+        select(models.InspectionPart)
+        .where(models.InspectionPart.project_id == project_id, models.InspectionPart.id == part_id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    part = result.scalar_one_or_none()
+    if not part:
+        await job_db.rollback()
+        return False
+    metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+    asset = metadata.get("pt3_real_splat_asset")
+    if not isinstance(asset, dict) or asset.get("job_id") != job_id:
+        await job_db.rollback()
+        return False
+    part.metadata_json = {
+        **metadata,
+        "pt3_real_splat_asset": {
+            **asset,
+            "status": "pending",
+            "stage": str(stage or "optimizing")[:120],
+            "progress_percent": safe_progress,
+            "progress_updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+    await job_db.commit()
+    return True
+
+
+async def _run_pt3_real_splat_optimization_job(
+    *,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    source_path_text: str,
+    payload_data: dict,
+    job_id: str,
+    requested_by: str,
+    job_db: AsyncSession,
+):
+    compute_slot_acquired = False
+    try:
+        part = await crud.get_inspection_part(db=job_db, project_id=project_id, part_id=part_id)
+        if not part:
+            _cleanup_pt3_real_splat_job_cache(
+                project_id=project_id,
+                part_id=part_id,
+                job_id=job_id,
+            )
+            return
+        initial_metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+        initial_asset = initial_metadata.get("pt3_real_splat_asset")
+        if not isinstance(initial_asset, dict) or initial_asset.get("job_id") != job_id:
+            await job_db.rollback()
+            _cleanup_pt3_real_splat_job_cache(
+                project_id=project_id,
+                part_id=part_id,
+                job_id=job_id,
+            )
+            return
+        await job_db.rollback()
+
+        await _acquire_pt3_real_splat_compute_slot()
+        compute_slot_acquired = True
+
+        # A newer request may have superseded this job while it waited for the
+        # process-local CPU slot. Refresh under lock before any volume decode or
+        # optimization work begins.
+        admission_result = await job_db.execute(
+            select(models.InspectionPart)
+            .where(
+                models.InspectionPart.project_id == project_id,
+                models.InspectionPart.id == part_id,
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        part = admission_result.scalar_one_or_none()
+        if not part:
+            await job_db.rollback()
+            _cleanup_pt3_real_splat_job_cache(
+                project_id=project_id,
+                part_id=part_id,
+                job_id=job_id,
+            )
+            return
+        metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+        admitted_asset = metadata.get("pt3_real_splat_asset")
+        if not isinstance(admitted_asset, dict) or admitted_asset.get("job_id") != job_id:
+            await job_db.rollback()
+            _cleanup_pt3_real_splat_job_cache(
+                project_id=project_id,
+                part_id=part_id,
+                job_id=job_id,
+            )
+            return
+        # Keep only plain metadata after releasing the admission lock.
+        metadata = copy.deepcopy(metadata)
+        await job_db.rollback()
+
+        payload = schemas.PT3RealSplatOptimizationRequest(**payload_data)
+        volume_info = load_volume(
+            Path(source_path_text).expanduser().resolve(),
+            limits=REFERENCE_VOLUME_READ_LIMITS,
+        )
+        volume_geometry = _pt3_voxel_geometry(volume_info, metadata)
+        volume_stack_id = payload.volume_stack_id or metadata.get("volume_stack_id") or str(part.id)
+        output_dir = _pt3_cache_root() / "pt3_real_splat_assets" / str(project_id) / str(part_id) / job_id
+        loop = asyncio.get_running_loop()
+
+        def report_progress(progress_percent: float, stage: str = "optimizing") -> None:
+            future = asyncio.run_coroutine_threadsafe(
+                _update_pt3_real_splat_job_progress(
+                    project_id=project_id,
+                    part_id=part_id,
+                    job_id=job_id,
+                    progress_percent=progress_percent,
+                    stage=stage,
+                    job_db=job_db,
+                ),
+                loop,
+            )
+            if future.result(timeout=15) is not True:
+                raise _PT3RealSplatJobSuperseded()
+
+        asset = await asyncio.to_thread(
+            optimize_real_gaussian_splat_asset,
+            provider_path=str(settings.PT3_REAL_3DGS_PROVIDER or ""),
+            volume_stack_id=str(volume_stack_id),
+            source_image_ids=payload.source_image_ids,
+            source_files=volume_info.source_files,
+            cameras=[camera.model_dump(mode="json") for camera in payload.cameras],
+            parameters=payload.parameters.model_dump(mode="json"),
+            fit_mode=payload.fit_mode,
+            volume_geometry=volume_geometry,
+            # Preserve malformed declarations so the shared strict normalizer
+            # rejects them instead of silently treating them as unsegmented.
+            segmentation=metadata.get("pt3_segmentation"),
+            output_dir=output_dir,
+            progress_callback=report_progress,
+        )
+        asset_url = f"/api/projects/{project_id}/parts/{part_id}/real-gaussian-splat-assets/{asset.cache_key}"
+        asset_metadata = {
+            **asset.metadata,
+            "job_id": job_id,
+            "status": "ready",
+            "stage": "ready",
+            "progress_percent": 100,
+            "asset_path": asset.path,
+            "asset_url": asset_url,
+            "volume_stack_id": str(volume_stack_id),
+            "source_image_ids": list(payload.source_image_ids),
+            "splat_count": asset.splat_count,
+            "request_parameters": payload.parameters.model_dump(mode="json"),
+            "fit_mode": payload.fit_mode,
+            "camera_view_binding": payload_data.get("camera_view_binding") or "none",
+        }
+        if payload.fit_mode != "voxel_direct":
+            asset_metadata["optimization_parameters"] = payload.parameters.model_dump(mode="json")
+    except _PT3RealSplatJobSuperseded:
+        # Supersession is a normal internal cancellation path. Do not publish a
+        # failure or expose implementation details to the polling client.
+        _cleanup_pt3_real_splat_job_cache(
+            project_id=project_id,
+            part_id=part_id,
+            job_id=job_id,
+        )
+        return
+    except Exception as exc:  # provider failures must remain visible to polling clients
+        asset_metadata = {
+            "job_id": job_id,
+            "status": "failed",
+            "stage": "failed",
+            "progress_percent": 0,
+            "representation": "real_3dgs",
+            "fit_mode": payload_data.get("fit_mode") or "voxel_direct",
+            "camera_view_binding": payload_data.get("camera_view_binding") or "none",
+            "volume_stack_id": payload_data.get("volume_stack_id"),
+            "source_image_ids": payload_data.get("source_image_ids") or [],
+            "error": _public_pt3_real_splat_error(exc),
+            "failed_at": datetime.now(timezone.utc).isoformat(),
+        }
+    finally:
+        if compute_slot_acquired:
+            _PT3_REAL_SPLAT_COMPUTE_SEMAPHORE.release()
+    # The optimizer may not report progress, and a failed preflight can leave
+    # the initial read transaction open. Always begin publication from a fresh
+    # transaction and refresh the identity-mapped row while taking its lock.
+    await job_db.rollback()
+    latest_result = await job_db.execute(
+        select(models.InspectionPart)
+        .where(models.InspectionPart.project_id == project_id, models.InspectionPart.id == part_id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    latest_part = latest_result.scalar_one_or_none()
+    if not latest_part:
+        await job_db.rollback()
+        _cleanup_pt3_real_splat_job_cache(
+            project_id=project_id, part_id=part_id, job_id=job_id
+        )
+        return
+    latest_metadata = latest_part.metadata_json if isinstance(latest_part.metadata_json, dict) else {}
+    latest_asset = latest_metadata.get("pt3_real_splat_asset")
+    if not isinstance(latest_asset, dict) or latest_asset.get("job_id") != job_id:
+        await job_db.rollback()
+        _cleanup_pt3_real_splat_job_cache(
+            project_id=project_id, part_id=part_id, job_id=job_id
+        )
+        return
+    job_succeeded = asset_metadata.get("status") == "ready"
+    if not job_succeeded:
+        previous_ready_asset = _usable_previous_pt3_real_splat_asset(
+            latest_asset,
+            project_id=project_id,
+            part_id=part_id,
+        )
+        if previous_ready_asset:
+            # A recompute is replace-on-success. If it fails, keep serving the
+            # last published canonical asset and expose the failed attempt as
+            # diagnostic metadata rather than turning a good asset into a 404.
+            asset_metadata = {
+                **previous_ready_asset,
+                "last_recompute_status": "failed",
+                "last_recompute_job_id": job_id,
+                "last_recompute_error": asset_metadata.get("error"),
+                "last_recompute_failed_at": asset_metadata.get("failed_at"),
+            }
+    await crud.update_inspection_part_metadata(
+        db=job_db,
+        project_id=project_id,
+        part_id=part_id,
+        metadata_patch={"pt3_real_splat_asset": asset_metadata},
+        updated_by=requested_by,
+    )
+    if job_succeeded:
+        _cleanup_pt3_real_splat_job_cache(
+            project_id=project_id,
+            part_id=part_id,
+            job_id=job_id,
+            remove_output=False,
+        )
+        _prune_pt3_real_splat_job_cache(
+            project_id=project_id,
+            part_id=part_id,
+            keep_output_job_id=job_id,
+        )
+    else:
+        _cleanup_pt3_real_splat_job_cache(
+            project_id=project_id, part_id=part_id, job_id=job_id
+        )
+
+
+@router.post(
+    "/projects/{project_id}/parts/{part_id}/real-gaussian-splat-assets",
+    response_model=schemas.PT3RealSplatGenerationStatus,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_pt3_real_gaussian_splat_asset(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    payload: schemas.PT3RealSplatOptimizationRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    project = await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    if project.project_type != "PT3":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Real Gaussian splat assets are only supported for PT3 projects")
+    if payload.fit_mode != "voxel_direct" and not str(settings.PT3_REAL_3DGS_PROVIDER or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"{payload.fit_mode} requires a configured Real 3DGS provider",
+        )
+
+    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+
+    # Release the request's initial read transaction before object-store I/O.
+    # Keep only an immutable JSON snapshot for locating the server-owned inputs;
+    # the authoritative part row is reloaded and locked after materialization.
+    materialization_part = SimpleNamespace(
+        id=part.id,
+        metadata_json=copy.deepcopy(
+            part.metadata_json if isinstance(part.metadata_json, dict) else {}
+        ),
+    )
+    await db.rollback()
+    job_id = str(uuid.uuid4())
+    try:
+        source_path, inferred_source_image_ids = await _materialize_part_volume_stack(
+            project_id=project_id,
+            part=materialization_part,
+            db=db,
+            materialization_key=job_id,
+        )
+        # Image lookups during materialization opened a new read transaction.
+        # End it so the following lock observes a job that may have published
+        # while the object-store copy was in flight.
+        await db.rollback()
+        source_image_ids = list(inferred_source_image_ids)
+        if payload.source_image_ids and payload.source_image_ids != source_image_ids:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="source_image_ids must exactly match the server-inferred image stack",
+            )
+        camera_view_binding = "none"
+        if payload.fit_mode != "voxel_direct":
+            camera_image_ids = {camera.image_id for camera in payload.cameras}
+            camera_view_binding = _pt3_provider_camera_view_binding(
+                source_image_ids=source_image_ids,
+                camera_image_ids=camera_image_ids,
+            )
+
+        locked_result = await db.execute(
+            select(models.InspectionPart)
+            .where(
+                models.InspectionPart.project_id == project_id,
+                models.InspectionPart.id == part_id,
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        current_part = locked_result.scalar_one_or_none()
+        if not current_part:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Inspection part not found",
+            )
+
+        current_metadata = (
+            current_part.metadata_json
+            if isinstance(current_part.metadata_json, dict)
+            else {}
+        )
+        volume_stack_id = (
+            payload.volume_stack_id
+            or current_metadata.get("volume_stack_id")
+            or str(current_part.id)
+        )
+        payload_data = payload.model_dump(mode="json")
+        payload_data["source_image_ids"] = source_image_ids
+        payload_data["camera_view_binding"] = camera_view_binding
+        pending_metadata = {
+            "job_id": job_id,
+            "status": "pending",
+            "stage": "queued",
+            "progress_percent": 0,
+            "representation": "real_3dgs",
+            "fit_mode": payload.fit_mode,
+            "camera_view_binding": camera_view_binding,
+            "volume_stack_id": str(volume_stack_id),
+            "source_image_ids": source_image_ids,
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+            "request_parameters": payload.parameters.model_dump(mode="json"),
+        }
+        previous_ready_asset = _usable_previous_pt3_real_splat_asset(
+            current_metadata.get("pt3_real_splat_asset"),
+            project_id=project_id,
+            part_id=part_id,
+        )
+        if previous_ready_asset:
+            pending_metadata["previous_ready_asset"] = previous_ready_asset
+        updated_part = await crud.update_inspection_part_metadata(
+            db=db,
+            project_id=project_id,
+            part_id=part_id,
+            metadata_patch={"pt3_real_splat_asset": pending_metadata},
+            updated_by=current_user.email,
+        )
+        if not updated_part:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Inspection part not found",
+            )
+    except Exception:
+        await db.rollback()
+        _cleanup_pt3_real_splat_job_cache(
+            project_id=project_id,
+            part_id=part_id,
+            job_id=job_id,
+            remove_output=False,
+        )
+        raise
+    background_tasks.add_task(
+        _run_pt3_real_splat_optimization_job,
+        project_id=project_id,
+        part_id=part_id,
+        source_path_text=source_path,
+        payload_data=payload_data,
+        job_id=job_id,
+        requested_by=current_user.email,
+        job_db=db,
+    )
+    return _real_splat_status_from_metadata(
+        project_id,
+        part_id,
+        {"pt3_real_splat_asset": pending_metadata},
+        volume_stack_id=str(volume_stack_id),
+    )
+
+
+@router.get(
+    "/projects/{project_id}/parts/{part_id}/real-gaussian-splat-assets/status",
+    response_model=schemas.PT3RealSplatGenerationStatus,
+)
+async def get_pt3_real_gaussian_splat_status(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+    return _real_splat_status_from_metadata(project_id, part.id, part.metadata_json)
+
+
+@router.get("/projects/{project_id}/parts/{part_id}/real-gaussian-splat-assets/{cache_key}")
+async def get_pt3_real_gaussian_splat_asset(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    cache_key: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+    metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+    lifecycle_asset = metadata.get("pt3_real_splat_asset") if isinstance(metadata.get("pt3_real_splat_asset"), dict) else {}
+    asset = _pt3_real_splat_asset_for_cache(lifecycle_asset, cache_key)
+    asset_path = _contained_pt3_real_splat_asset_path(
+        asset,
+        project_id=project_id,
+        part_id=part_id,
+        cache_key=cache_key,
+    )
+    if asset_path is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Real Gaussian splat asset file not found")
+    return FileResponse(asset_path, media_type="application/json", filename=asset_path.name)
 
 
 @router.get(
@@ -1789,7 +3152,12 @@ async def get_pt3_volume_stack_splat_status(
     await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
     result = await db.execute(select(models.InspectionPart).where(models.InspectionPart.project_id == project_id))
     for part in result.scalars().all():
-        status_payload = _splat_status_from_metadata(part.id, part.metadata_json, volume_stack_id=volume_stack_id)
+        status_payload = _splat_status_from_metadata(
+            project_id,
+            part.id,
+            part.metadata_json,
+            volume_stack_id=volume_stack_id,
+        )
         if status_payload.status != "missing":
             return status_payload
         metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
@@ -1812,12 +3180,18 @@ async def get_pt3_volume_splat_asset(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
     metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
     asset = metadata.get("pt3_splat_asset") if isinstance(metadata.get("pt3_splat_asset"), dict) else {}
-    if asset.get("cache_key") != cache_key or not asset.get("asset_path"):
+    raw_status = str(asset.get("status") or "").strip().lower()
+    if raw_status not in {"", "ready"}:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Volume splat asset not found")
-    asset_path = Path(str(asset["asset_path"])).resolve()
-    if not asset_path.is_file():
+    asset_path = _contained_pt3_simplified_splat_asset_path(
+        asset,
+        project_id=project_id,
+        part_id=part_id,
+        cache_key=cache_key,
+    )
+    if asset_path is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Volume splat asset file not found")
-    media_type = "application/json" if asset_path.suffix == ".json" else "application/octet-stream"
+    media_type = "application/json" if asset_path.suffix.lower() in {".json", ".splat"} else "application/octet-stream"
     return FileResponse(asset_path, media_type=media_type, filename=asset_path.name)
 
 
@@ -2848,6 +4222,7 @@ async def load_project_test_data(
             metadata = {
                 "source": "vista-test-data",
                 "project_type": "PT3",
+                "builtin_fixture_filename": file_path.name,
                 "volume_stack_id": "PT3_SYNTH_MPR_001",
                 "slice_index": index,
                 "slice_axis": "Z",

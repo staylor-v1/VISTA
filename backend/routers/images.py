@@ -4,7 +4,7 @@ import io
 import os
 import mimetypes
 from urllib.parse import urlparse, unquote
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Body
 from sqlalchemy import update, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -906,6 +906,26 @@ async def get_image_content(
                 "Content-Disposition": get_content_disposition_header(db_image.filename, "inline")
             }
         )
+
+    metadata = db_image.metadata_json if isinstance(db_image.metadata_json, dict) else {}
+    fixture_name = metadata.get("builtin_fixture_filename") or db_image.filename
+    if metadata.get("source") == "vista-test-data" and metadata.get("project_type") == "PT3" and fixture_name:
+        fixture_root = (Path(__file__).resolve().parents[2] / "test" / "data" / "3D" / "geometric").resolve()
+        safe_name = Path(str(fixture_name)).name
+        fixture_path = (fixture_root / safe_name).resolve()
+        expected_storage_key = f"{db_image.project_id}/test-data/{safe_name}"
+        if (
+            safe_name == str(fixture_name)
+            and db_image.filename == safe_name
+            and db_image.object_storage_key == expected_storage_key
+            and fixture_path.parent == fixture_root
+            and fixture_path.is_file()
+        ):
+            return StreamingResponse(
+                content=fixture_path.open("rb"),
+                media_type=db_image.content_type or "image/png",
+                headers={"Content-Disposition": get_content_disposition_header(db_image.filename, "inline")},
+            )
 
     # Get the presigned URL for internal use
     internal_url = get_presigned_download_url(

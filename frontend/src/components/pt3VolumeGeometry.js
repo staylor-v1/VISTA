@@ -11,6 +11,107 @@ export const DEFAULT_VOLUME_METADATA = Object.freeze({
   sourceId: 'synthetic-local-preview',
 });
 
+export const PT3_VIEW_CAMERA_FOV_DEGREES = 38;
+export const PT3_VIEW_CAMERA_DISTANCE_MULTIPLIER = 2.2;
+
+export function normalizeAxisMirrorScale(candidate = {}) {
+  return {
+    x: Number(candidate?.x) < 0 ? -1 : 1,
+    y: Number(candidate?.y) < 0 ? -1 : 1,
+    z: Number(candidate?.z) < 0 ? -1 : 1,
+  };
+}
+
+export function getMprAxisMirrorScale(projectionMirror = {}) {
+  return {
+    x: projectionMirror?.sagittal === true ? -1 : 1,
+    y: projectionMirror?.coronal === true ? -1 : 1,
+    z: projectionMirror?.axial === true ? -1 : 1,
+  };
+}
+
+/**
+ * Convert source-image coordinates (X right, Y row-down, Z through the stack)
+ * into Three.js' Y-up world coordinates after applying the user's mirrors.
+ */
+export function getPt3WorldScale(mirrorScale = {}) {
+  const normalized = normalizeAxisMirrorScale(mirrorScale);
+  return { x: normalized.x, y: -normalized.y, z: normalized.z };
+}
+
+/**
+ * The ray-marched box encloses complete voxels, so each physical edge includes
+ * one spacing interval per voxel rather than only the span between centers.
+ */
+export function getPt3ViewSize(metadata) {
+  const meta = normalizeVolumeMetadata(metadata);
+  return meta.dimensions.map((dimension, axis) => Math.max(Number.EPSILON, dimension * meta.spacing[axis]));
+}
+
+export function getPt3CameraDistance(metadata) {
+  return Math.max(...getPt3ViewSize(metadata)) * PT3_VIEW_CAMERA_DISTANCE_MULTIPLIER;
+}
+
+export function getPt3CameraClippingRange(metadata) {
+  const distance = getPt3CameraDistance(metadata);
+  return {
+    near: Math.max(Number.EPSILON, distance / 1000),
+    far: Math.max(Number.EPSILON * 2, distance * 100),
+  };
+}
+
+/**
+ * Build the Canvas2D projection used by 3DGS from the same model and camera
+ * contract as the Three.js ray marcher. The returned tuple is
+ * [screenX, screenY, viewZ, pixelsPerWorldUnit].
+ */
+export function createPt3PerspectiveProjector({
+  metadata,
+  width,
+  height,
+  rotation = {},
+  zoom = 1,
+  mirrorScale,
+} = {}) {
+  const safeWidth = Math.max(1, Number(width) || 1);
+  const safeHeight = Math.max(1, Number(height) || 1);
+  const meta = normalizeVolumeMetadata(metadata);
+  const center = meta.dimensions.map((dimension, axis) => (dimension - 1) * meta.spacing[axis] / 2);
+  const direction = meta.direction;
+  const worldScale = getPt3WorldScale(mirrorScale);
+  const rx = (Number(rotation?.x) || 0) * Math.PI / 180;
+  const ry = (Number(rotation?.y) || 0) * Math.PI / 180;
+  const cosRx = Math.cos(rx);
+  const sinRx = Math.sin(rx);
+  const cosRy = Math.cos(ry);
+  const sinRy = Math.sin(ry);
+  const safeZoom = Math.min(4, Math.max(0.2, Number(zoom) || 1));
+  const focalLength = (safeHeight / 2)
+    / Math.tan((PT3_VIEW_CAMERA_FOV_DEGREES * Math.PI / 180) / 2)
+    * safeZoom;
+  const cameraZ = getPt3CameraDistance(metadata);
+
+  return (point = []) => {
+    const relativeX = (Number(point[0]) || 0) - meta.origin[0];
+    const relativeY = (Number(point[1]) || 0) - meta.origin[1];
+    const relativeZ = (Number(point[2]) || 0) - meta.origin[2];
+    const x = (direction[0] * relativeX + direction[3] * relativeY + direction[6] * relativeZ - center[0]) * worldScale.x;
+    const y = (direction[1] * relativeX + direction[4] * relativeY + direction[7] * relativeZ - center[1]) * worldScale.y;
+    const z = (direction[2] * relativeX + direction[5] * relativeY + direction[8] * relativeZ - center[2]) * worldScale.z;
+    const yawX = x * cosRy + z * sinRy;
+    const yawZ = -x * sinRy + z * cosRy;
+    const worldY = y * cosRx - yawZ * sinRx;
+    const viewZ = y * sinRx + yawZ * cosRx;
+    const pixelsPerWorldUnit = focalLength / Math.max(Number.EPSILON, cameraZ - viewZ);
+    return [
+      safeWidth / 2 + yawX * pixelsPerWorldUnit,
+      safeHeight / 2 - worldY * pixelsPerWorldUnit,
+      viewZ,
+      pixelsPerWorldUnit,
+    ];
+  };
+}
+
 export function normalizeVolumeMetadata(candidate = {}) {
   const dimensions = normalizeVec3(candidate.dimensions || candidate.shape || DEFAULT_VOLUME_METADATA.dimensions, DEFAULT_VOLUME_METADATA.dimensions, true);
   const spacing = normalizeVec3(candidate.spacing || DEFAULT_VOLUME_METADATA.spacing, DEFAULT_VOLUME_METADATA.spacing);
