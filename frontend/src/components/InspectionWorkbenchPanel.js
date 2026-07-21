@@ -53,6 +53,11 @@ const MPR_RECONSTRUCTION_LABELS = {
   [MPR_RECONSTRUCTION_MODES.volume3d]: 'Ray-marched volume',
   [MPR_RECONSTRUCTION_MODES.hybrid3d]: 'Hybrid part view',
 };
+const PT3_RENDERER_RECONSTRUCTION_MODES = [
+  MPR_RECONSTRUCTION_MODES.volume3d,
+  MPR_RECONSTRUCTION_MODES.splat,
+  MPR_RECONSTRUCTION_MODES.hybrid3d,
+];
 const DEFAULT_MPR_PROJECTION_MIRROR = { axial: false, coronal: false, sagittal: false };
 const MPR_VOLUME_CACHE_LIMIT = 4;
 const MPR_SLICE_CANVAS_CACHE_LIMIT = 96;
@@ -1887,7 +1892,7 @@ function projectMprPointToOverlay(vx, vy, vz, dims, rotation, zoom, width, heigh
   let px = (vx - dims.sagittal / 2) * (mirrorScale?.x ?? 1);
   let py = (vy - dims.coronal / 2) * (mirrorScale?.y ?? 1);
   let pz = (vz - dims.axial / 2) * (mirrorScale?.z ?? 1);
-  let t = px * cosRy - pz * sinRy; pz = px * sinRy + pz * cosRy; px = t;
+  let t = px * cosRy + pz * sinRy; pz = -px * sinRy + pz * cosRy; px = t;
   t = py * cosRx + pz * sinRx; pz = -py * sinRx + pz * cosRx; py = t;
   return { x: (px * zoom / maxDim + 0.5) * width, y: (py * zoom / maxDim + 0.5) * height, z: pz };
 }
@@ -3007,7 +3012,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (activeMprPane !== 'volume' || [MPR_RECONSTRUCTION_MODES.volume3d, MPR_RECONSTRUCTION_MODES.splat].includes(mprReconstructionMode)) return;
+    if (activeMprPane !== 'volume' || PT3_RENDERER_RECONSTRUCTION_MODES.includes(mprReconstructionMode)) return;
     const dims = {
       sagittal: Math.max(1, mprDimensions.sagittal || 1),
       coronal: Math.max(1, mprDimensions.coronal || 1),
@@ -5566,10 +5571,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   else if (event.key === '0') resetViewport();
                 }}
               >
-                {![MPR_RECONSTRUCTION_MODES.volume3d, MPR_RECONSTRUCTION_MODES.splat].includes(effectiveMprReconstructionMode) && (
+                {!PT3_RENDERER_RECONSTRUCTION_MODES.includes(effectiveMprReconstructionMode) && (
                   <canvas className="mpr-volume-overlay" ref={mprOverlayCanvasRef} aria-hidden="true" />
                 )}
-                {[MPR_RECONSTRUCTION_MODES.splat, MPR_RECONSTRUCTION_MODES.volume3d, MPR_RECONSTRUCTION_MODES.hybrid3d].includes(effectiveMprReconstructionMode) && (
+                {PT3_RENDERER_RECONSTRUCTION_MODES.includes(effectiveMprReconstructionMode) && (
                   <Pt3GaussianSplatViewer
                     part={selectedPart}
                     projectId={projectId}
@@ -5591,10 +5596,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     showSplatControls={mprFullscreenOpen}
                   />
                 )}
-                {![MPR_RECONSTRUCTION_MODES.volume3d, MPR_RECONSTRUCTION_MODES.splat].includes(effectiveMprReconstructionMode) && <div
+                {!PT3_RENDERER_RECONSTRUCTION_MODES.includes(effectiveMprReconstructionMode) && <div
                   className={`mpr-volume-model reconstruction-${effectiveMprReconstructionMode}`}
                   style={{
-                    '--volume-rotate-x': `${mprRotation.x}deg`,
+                    '--volume-rotate-x': `${-mprRotation.x}deg`,
                     '--volume-rotate-y': `${mprRotation.y}deg`,
                     '--volume-mirror-x': mprAxisMirrorScale.x,
                     '--volume-mirror-y': mprAxisMirrorScale.y,

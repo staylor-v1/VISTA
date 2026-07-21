@@ -32,6 +32,10 @@ from utils.gaussian_splat_converter import (
     TransferFunction,
     convert_volume_to_splat_asset,
 )
+from utils.real_gaussian_splat_optimizer import (
+    RealGaussianSplatOptimizationError,
+    optimize_real_gaussian_splat_asset,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -1814,6 +1818,212 @@ async def get_pt3_part_volume_splat_status(
     if not part:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
     return _splat_status_from_metadata(part.id, part.metadata_json)
+
+
+def _real_splat_status_from_metadata(
+    part_id: uuid.UUID,
+    metadata: object,
+    *,
+    volume_stack_id: Optional[str] = None,
+) -> schemas.PT3RealSplatGenerationStatus:
+    safe_metadata = metadata if isinstance(metadata, dict) else {}
+    asset = safe_metadata.get("pt3_real_splat_asset") if isinstance(safe_metadata.get("pt3_real_splat_asset"), dict) else {}
+    requested_stack = str(volume_stack_id).strip() if volume_stack_id else ""
+    asset_stack = str(asset.get("volume_stack_id") or safe_metadata.get("volume_stack_id") or "").strip()
+    if requested_stack and asset_stack and requested_stack != asset_stack:
+        return schemas.PT3RealSplatGenerationStatus(status="missing", part_id=part_id, volume_stack_id=requested_stack)
+    raw_status = str(asset.get("status") or "").strip().lower()
+    if raw_status in {"pending", "failed"}:
+        status_value = raw_status
+    elif asset.get("asset_url") and asset.get("asset_path") and Path(str(asset.get("asset_path"))).is_file():
+        status_value = "ready"
+    elif not str(settings.PT3_REAL_3DGS_PROVIDER or "").strip():
+        status_value = "unavailable"
+    else:
+        status_value = "missing"
+    return schemas.PT3RealSplatGenerationStatus(
+        status=status_value,
+        part_id=part_id,
+        volume_stack_id=requested_stack or asset_stack or None,
+        asset_url=asset.get("asset_url") if status_value == "ready" else None,
+        cache_key=asset.get("cache_key"),
+        splat_count=asset.get("splat_count") if status_value == "ready" else None,
+        progress_percent=float(asset.get("progress_percent") or (100 if status_value == "ready" else 0)),
+        stage=str(asset.get("stage") or status_value),
+        error=(asset.get("error") if status_value == "failed" else None),
+        metadata={
+            **asset,
+            "provider_configured": bool(str(settings.PT3_REAL_3DGS_PROVIDER or "").strip()),
+        },
+    )
+
+
+async def _run_pt3_real_splat_optimization_job(
+    *,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    source_path_text: str,
+    payload_data: dict,
+    requested_by: str,
+    job_db: AsyncSession,
+):
+    try:
+        part = await crud.get_inspection_part(db=job_db, project_id=project_id, part_id=part_id)
+        if not part:
+            return
+        payload = schemas.PT3RealSplatOptimizationRequest(**payload_data)
+        volume_info = load_volume(Path(source_path_text).expanduser().resolve())
+        metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+        volume_stack_id = payload.volume_stack_id or metadata.get("volume_stack_id") or str(part.id)
+        output_dir = _pt3_cache_root() / "pt3_real_splat_assets" / str(project_id) / str(part_id)
+        asset = optimize_real_gaussian_splat_asset(
+            provider_path=str(settings.PT3_REAL_3DGS_PROVIDER or ""),
+            volume_stack_id=str(volume_stack_id),
+            source_image_ids=payload.source_image_ids,
+            source_files=volume_info.source_files,
+            cameras=[camera.model_dump(mode="json") for camera in payload.cameras],
+            parameters=payload.parameters.model_dump(mode="json"),
+            segmentation=metadata.get("pt3_segmentation") if isinstance(metadata.get("pt3_segmentation"), dict) else None,
+            output_dir=output_dir,
+        )
+        asset_url = f"/api/projects/{project_id}/parts/{part_id}/real-gaussian-splat-assets/{asset.cache_key}"
+        asset_metadata = {
+            **asset.metadata,
+            "status": "ready",
+            "stage": "ready",
+            "progress_percent": 100,
+            "asset_path": asset.path,
+            "asset_url": asset_url,
+            "volume_stack_id": str(volume_stack_id),
+            "source_image_ids": list(payload.source_image_ids),
+            "splat_count": asset.splat_count,
+            "optimization_parameters": payload.parameters.model_dump(mode="json"),
+        }
+    except Exception as exc:  # provider failures must remain visible to polling clients
+        asset_metadata = {
+            "status": "failed",
+            "stage": "failed",
+            "progress_percent": 0,
+            "representation": "real_3dgs",
+            "volume_stack_id": payload_data.get("volume_stack_id"),
+            "source_image_ids": payload_data.get("source_image_ids") or [],
+            "error": str(exc),
+            "failed_at": datetime.now(timezone.utc).isoformat(),
+        }
+    await crud.update_inspection_part_metadata(
+        db=job_db,
+        project_id=project_id,
+        part_id=part_id,
+        metadata_patch={"pt3_real_splat_asset": asset_metadata},
+        updated_by=requested_by,
+    )
+
+
+@router.post(
+    "/projects/{project_id}/parts/{part_id}/real-gaussian-splat-assets",
+    response_model=schemas.PT3RealSplatGenerationStatus,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_pt3_real_gaussian_splat_asset(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    payload: schemas.PT3RealSplatOptimizationRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    project = await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    if project.project_type != "PT3":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Real Gaussian splat assets are only supported for PT3 projects")
+    if not str(settings.PT3_REAL_3DGS_PROVIDER or "").strip():
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Real 3DGS optimizer is not configured")
+    if len(payload.cameras) < 2:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Real 3DGS requires at least two calibrated camera views")
+
+    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+    source_path, inferred_source_image_ids = await _materialize_part_volume_stack(project_id=project_id, part=part, db=db)
+    source_image_ids = list(payload.source_image_ids or inferred_source_image_ids)
+    camera_image_ids = {camera.image_id for camera in payload.cameras}
+    missing_cameras = [image_id for image_id in source_image_ids if image_id not in camera_image_ids]
+    if missing_cameras:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Camera calibration is missing for {len(missing_cameras)} source image(s)",
+        )
+
+    volume_stack_id = payload.volume_stack_id or (part.metadata_json or {}).get("volume_stack_id") or str(part.id)
+    payload_data = payload.model_dump(mode="json")
+    payload_data["source_image_ids"] = source_image_ids
+    pending_metadata = {
+        "status": "pending",
+        "stage": "queued",
+        "progress_percent": 0,
+        "representation": "real_3dgs",
+        "volume_stack_id": str(volume_stack_id),
+        "source_image_ids": source_image_ids,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "optimization_parameters": payload.parameters.model_dump(mode="json"),
+    }
+    await crud.update_inspection_part_metadata(
+        db=db,
+        project_id=project_id,
+        part_id=part_id,
+        metadata_patch={"pt3_real_splat_asset": pending_metadata},
+        updated_by=current_user.email,
+    )
+    background_tasks.add_task(
+        _run_pt3_real_splat_optimization_job,
+        project_id=project_id,
+        part_id=part_id,
+        source_path_text=source_path,
+        payload_data=payload_data,
+        requested_by=current_user.email,
+        job_db=db,
+    )
+    return _real_splat_status_from_metadata(part_id, {"pt3_real_splat_asset": pending_metadata}, volume_stack_id=str(volume_stack_id))
+
+
+@router.get(
+    "/projects/{project_id}/parts/{part_id}/real-gaussian-splat-assets/status",
+    response_model=schemas.PT3RealSplatGenerationStatus,
+)
+async def get_pt3_real_gaussian_splat_status(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+    return _real_splat_status_from_metadata(part.id, part.metadata_json)
+
+
+@router.get("/projects/{project_id}/parts/{part_id}/real-gaussian-splat-assets/{cache_key}")
+async def get_pt3_real_gaussian_splat_asset(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    cache_key: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    if not part:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+    metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+    asset = metadata.get("pt3_real_splat_asset") if isinstance(metadata.get("pt3_real_splat_asset"), dict) else {}
+    if asset.get("cache_key") != cache_key or not asset.get("asset_path"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Real Gaussian splat asset not found")
+    asset_path = Path(str(asset["asset_path"])).resolve()
+    expected_root = (_pt3_cache_root() / "pt3_real_splat_assets" / str(project_id) / str(part_id)).resolve()
+    if expected_root not in asset_path.parents or not asset_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Real Gaussian splat asset file not found")
+    media_type = "application/json" if asset_path.suffix.lower() in {".json", ".splat"} else "application/octet-stream"
+    return FileResponse(asset_path, media_type=media_type, filename=asset_path.name)
 
 
 @router.get(

@@ -1,17 +1,32 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { generateTransferFunctionLut } from './pt3TransferFunctions';
-import { getPhysicalBounds, normalizeAxisMirrorScale, pointInsideCropBox } from './pt3VolumeGeometry';
+import {
+  createPt3PerspectiveProjector,
+  getPhysicalBounds,
+  normalizeVolumeMetadata,
+  normalizeAxisMirrorScale,
+  pointInsideCropBox,
+  voxelToPhysical,
+} from './pt3VolumeGeometry';
 import { createThreeMechanicalRenderer } from './pt3ThreeRenderer';
 import { MECHANICAL_TRANSFER_PRESETS, getMechanicalCropBox, getMechanicalVolumeMetadata, makeMechanicalFallbackSplats } from './pt3MechanicalVisualization';
-import { DEFAULT_SPLAT_VIEW_SETTINGS, getCanvasSplatStride, prepareSplatAssetForRendering } from './pt3SplatRendering';
+import { getSegmentDisplayStyle, normalizePt3Segmentation, segmentColorToRgba } from './pt3Segmentation';
+import {
+  DEFAULT_SPLAT_VIEW_SETTINGS,
+  getCanvasSplatStride,
+  prepareSplatAssetForRendering,
+  sortSplatRenderEntriesBackToFront,
+} from './pt3SplatRendering';
 
 export { DEFAULT_SPLAT_VIEW_SETTINGS } from './pt3SplatRendering';
 
 const SPLAT_METADATA_KEYS = ['gaussian_splat_url', 'gaussian_splat_asset_url', 'splat_url', 'splat_asset_url', 'point_cloud_url'];
-const VIEWER_MODES = { volume: 'volume', splat: 'splat', hybrid: 'hybrid' };
+const REAL_SPLAT_METADATA_KEYS = ['real_gaussian_splat_url', 'real_gaussian_splat_asset_url'];
+const VIEWER_MODES = { volume: 'volume', splat: 'splat', realSplat: 'real-splat', hybrid: 'hybrid' };
 const QUALITY_PROFILES = { performance: { sampleStep: 2.5, scale: 0.65 }, balanced: { sampleStep: 1.25, scale: 0.85 }, quality: { sampleStep: 0.75, scale: 1 } };
 const SPLAT_FALLBACK_NOTE = 'Generated 3DGS asset unavailable. Showing deterministic mechanical fallback splats.';
 const DEFAULT_AXIS_MIRROR_SCALE = Object.freeze({ x: 1, y: 1, z: 1 });
+const EMPTY_VOLUME_IMAGE_STACK = Object.freeze([]);
 export const DEFAULT_RAY_MARCH_SETTINGS = Object.freeze({
   presetKey: 'machinedMetal',
   volumeOpacity: 1.25,
@@ -70,11 +85,33 @@ export function getPt3GaussianSplatAsset(part) {
   return recordUrl ? { url: recordUrl, label: splatRecord.filename || 'splat source image', assetRecord: splatRecord } : null;
 }
 
+export function getPt3RealGaussianSplatAsset(part) {
+  const metadata = isPlainObject(part?.metadata) ? part.metadata : {};
+  const declaredAsset = isPlainObject(metadata.pt3_real_splat_asset) ? metadata.pt3_real_splat_asset : null;
+  if (declaredAsset?.status === 'ready') {
+    const url = firstString(declaredAsset.asset_url, declaredAsset.url, declaredAsset.href, declaredAsset.path);
+    if (url) return { url, label: 'optimized real 3DGS asset', assetRecord: declaredAsset };
+  }
+  const directUrl = firstString(...REAL_SPLAT_METADATA_KEYS.map((key) => metadata[key]));
+  if (directUrl) return { url: directUrl, label: 'real 3DGS metadata', assetRecord: metadata };
+  const explicitRealAsset = metadata.real_gaussian_splat;
+  if (typeof explicitRealAsset === 'string' && explicitRealAsset.trim()) {
+    return { url: explicitRealAsset.trim(), label: 'real 3DGS metadata', assetRecord: metadata };
+  }
+  if (isPlainObject(explicitRealAsset)) {
+    const url = firstString(explicitRealAsset.url, explicitRealAsset.asset_url, explicitRealAsset.href, explicitRealAsset.path);
+    if (url && (!explicitRealAsset.status || explicitRealAsset.status === 'ready')) {
+      return { url, label: 'real 3DGS metadata', assetRecord: explicitRealAsset };
+    }
+  }
+  return null;
+}
+
 
 function createSplatWorker() {
   const source = `
-    function parsePly(text){const lines=text.split(/\\r?\\n/);const end=lines.findIndex((line)=>line.trim()==='end_header');const countLine=lines.find((line)=>line.startsWith('element vertex '));const count=Number((countLine||'').split(/\\s+/).pop()||0);const positions=[];const scales=[];const colors=[];for(let index=end+1;index<lines.length&&positions.length/3<count;index+=1){const values=lines[index].trim().split(/\\s+/).map(Number);if(values.length>=8&&values.slice(0,8).every(Number.isFinite)){positions.push(values[0],values[1],values[2]);scales.push(values[3]);colors.push(values[5]/255,values[6]/255,values[7]/255,Math.max(0,Math.min(1,values[4])));}}return {positions:new Float32Array(positions),scales:new Float32Array(scales),colors:new Float32Array(colors),layers:[{id:'baked',label:'Baked splats',count:positions.length/3,visible:true,opacity:1}]};}
-    function parseJson(text){const payload=JSON.parse(text);const splats=Array.isArray(payload.splats)?payload.splats:[];const positions=new Float32Array(splats.length*3);const scales=new Float32Array(splats.length);const colors=new Float32Array(splats.length*4);const layerCounts=new Map();splats.forEach((splat,index)=>{positions.set([Number(splat.x)||0,Number(splat.y)||0,Number(splat.z)||0],index*3);scales[index]=Number.isFinite(Number(splat.scale))?Number(splat.scale):1;colors.set([(Number(splat.red)||0)/255,(Number(splat.green)||0)/255,(Number(splat.blue)||0)/255,Number(splat.opacity)||0.5],index*4);const layer=String(splat.layer||(Number(splat.intensity)>180?'surface':Number(splat.intensity)<80?'void':'core'));layerCounts.set(layer,(layerCounts.get(layer)||0)+1);});return {positions,scales,colors,layers:[...layerCounts].map(([id,count])=>({id,label:id,count,visible:true,opacity:1})),metadata:payload.metadata||{}};}
+    function parsePly(text){const lines=text.split(/\\r?\\n/);const end=lines.findIndex((line)=>line.trim()==='end_header');const countLine=lines.find((line)=>line.startsWith('element vertex '));const count=Number((countLine||'').split(/\\s+/).pop()||0);const vertexLine=lines.findIndex((line)=>line.startsWith('element vertex '));const properties=lines.slice(vertexLine+1,end).filter((line)=>line.trim().startsWith('property ')).map((line)=>line.trim().split(/\\s+/).pop());const propertyIndex=(name,fallback)=>{const found=properties.indexOf(name);return found>=0?found:fallback;};const segmentIndex=['segment_id','segmentId','label_id','label'].reduce((found,name)=>found>=0?found:properties.indexOf(name),-1);const positions=[];const scales=[];const colors=[];const segmentIds=[];for(let index=end+1;index<lines.length&&positions.length/3<count;index+=1){const values=lines[index].trim().split(/\\s+/).map(Number);if(values.length>=8&&values.slice(0,8).every(Number.isFinite)){positions.push(values[propertyIndex('x',0)],values[propertyIndex('y',1)],values[propertyIndex('z',2)]);scales.push(values[propertyIndex('scale',3)]);colors.push(values[propertyIndex('red',5)]/255,values[propertyIndex('green',6)]/255,values[propertyIndex('blue',7)]/255,Math.max(0,Math.min(1,values[propertyIndex('opacity',4)])));segmentIds.push(segmentIndex>=0?values[segmentIndex]:null);}}return {positions:new Float32Array(positions),scales:new Float32Array(scales),colors:new Float32Array(colors),segmentIds,layers:[{id:'baked',label:'Baked splats',count:positions.length/3,visible:true,opacity:1}]};}
+    function parseJson(text){const payload=JSON.parse(text);const splats=Array.isArray(payload.splats)?payload.splats:[];const positions=new Float32Array(splats.length*3);const scales=new Float32Array(splats.length);const colors=new Float32Array(splats.length*4);const segmentIds=new Array(splats.length);const layerCounts=new Map();splats.forEach((splat,index)=>{positions.set([Number(splat.x)||0,Number(splat.y)||0,Number(splat.z)||0],index*3);scales[index]=Number.isFinite(Number(splat.scale))?Number(splat.scale):1;colors.set([(Number(splat.red)||0)/255,(Number(splat.green)||0)/255,(Number(splat.blue)||0)/255,Number(splat.opacity)||0.5],index*4);segmentIds[index]=splat.segment_id??splat.segmentId??null;const layer=String(splat.layer||(Number(splat.intensity)>180?'surface':Number(splat.intensity)<80?'void':'core'));layerCounts.set(layer,(layerCounts.get(layer)||0)+1);});return {positions,scales,colors,segmentIds,layers:[...layerCounts].map(([id,count])=>({id,label:id,count,visible:true,opacity:1})),metadata:payload.metadata||{}};}
     self.onmessage=async(event)=>{const {id,url}=event.data||{};try{const response=await fetch(url);if(!response.ok)throw new Error('HTTP '+response.status);const text=await response.text();const parsed=text.trim().startsWith('{')?parseJson(text):parsePly(text);self.postMessage({id,ok:true,...parsed},[parsed.positions.buffer,parsed.scales.buffer,parsed.colors.buffer]);}catch(error){self.postMessage({id,ok:false,error:error.message||'Failed to parse splat asset'});}};
   `;
   return new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })));
@@ -100,6 +137,9 @@ function renderPreview(ctx, {
   slicePosition,
   showSliceGuides,
   tunedSplatView,
+  showReferenceFrame,
+  projectionCache,
+  segmentationSegments,
   statsRef,
 }) {
   if (!ctx?.canvas) return;
@@ -107,58 +147,68 @@ function renderPreview(ctx, {
   ctx.clearRect(0, 0, width, height);
   const cx = width / 2; const cy = height / 2;
   const bounds = getPhysicalBounds(metadata);
-  const scale = Math.min(width, height) / Math.max(...bounds.size, 1) * 0.72 * zoom;
-  const maxBoundsSize = Math.max(...bounds.size, 1);
+  const normalizedMetadata = normalizeVolumeMetadata(metadata);
+  const project = createPt3PerspectiveProjector({ metadata, width, height, rotation, zoom, mirrorScale });
+  const centerVoxel = normalizedMetadata.dimensions.map((dimension) => (dimension - 1) / 2);
+  const referencePixelsPerUnit = project(voxelToPhysical(centerVoxel, normalizedMetadata))[3];
   const lut = generateTransferFunctionLut({ preset, scalarRange: metadata.scalarRange, opacityMultiplier: volumeOpacity });
-  const ry = rotation.y * Math.PI / 180;
-  const rx = rotation.x * Math.PI / 180;
-  const cosRy = Math.cos(ry);
-  const sinRy = Math.sin(ry);
-  const cosRx = Math.cos(rx);
-  const sinRx = Math.sin(rx);
   const tuneColor = (value, fallback) => Math.round(Math.max(0, Math.min(1, ((value ?? fallback) - 0.5) * splatContrast + 0.5)) * 255);
-  const project = (p) => {
-    const x = (p[0] - bounds.min[0] - bounds.size[0] / 2) * mirrorScale.x;
-    const y = (p[1] - bounds.min[1] - bounds.size[1] / 2) * mirrorScale.y;
-    const z = (p[2] - bounds.min[2] - bounds.size[2] / 2) * mirrorScale.z;
-    // Match Three.js' positive Y-axis rotation so hybrid splats and the
-    // ray-marched volume remain locked together while orbiting.
-    const xz = x * cosRy + z * sinRy;
-    const zz = -x * sinRy + z * cosRy;
-    const yz = y * cosRx - zz * sinRx;
-    return [cx + xz * scale, cy + yz * scale, zz];
-  };
-  if (mode !== VIEWER_MODES.splat) {
+  if (mode === VIEWER_MODES.volume) {
+    const fallbackScale = Math.min(width, height) / Math.max(...bounds.size, 1) * 0.72 * zoom;
     for (let i = 0; i < 56; i += 1) {
       const t = i / 55;
       const colorIndex = Math.min(255, Math.max(0, Math.round(t * 255))) * 4;
       ctx.fillStyle = `rgba(${lut[colorIndex]},${lut[colorIndex + 1]},${lut[colorIndex + 2]},${(lut[colorIndex + 3] / 255) * 0.16})`;
-      const w = bounds.size[0] * scale * (0.25 + t * 0.7);
-      const h = bounds.size[1] * scale * (0.18 + (1 - t) * 0.62);
+      const w = bounds.size[0] * fallbackScale * (0.25 + t * 0.7);
+      const h = bounds.size[1] * fallbackScale * (0.18 + (1 - t) * 0.62);
       ctx.beginPath(); ctx.ellipse(cx, cy, w / 2, h / 2, rotation.y * Math.PI / 360, 0, Math.PI * 2); ctx.fill();
     }
   }
   if (mode !== VIEWER_MODES.volume && splats?.positions) {
-    let rendered = 0;
     const splatCount = Math.floor(splats.positions.length / 3);
     const stride = getCanvasSplatStride(splatCount);
-    for (let splatIndex = 0; splatIndex < splatCount; splatIndex += stride) {
-      const i = splatIndex * 3;
-      const point = [splats.positions[i], splats.positions[i + 1], splats.positions[i + 2]];
-      if (!pointInsideCropBox(point, crop)) continue;
-      const [x, y, z] = project(point); const ci = splatIndex * 4;
-      const alpha = Math.max(0, Math.min(1, (splats.colors?.[ci + 3] ?? 0.7) * splatOpacity));
+    let projectedSplats = projectionCache?.splats === splats
+      && projectionCache.width === width
+      && projectionCache.height === height
+      ? projectionCache.entries
+      : null;
+    if (!projectedSplats) {
+      projectedSplats = [];
+      for (let splatIndex = 0; splatIndex < splatCount; splatIndex += stride) {
+        const i = splatIndex * 3;
+        const point = [splats.positions[i], splats.positions[i + 1], splats.positions[i + 2]];
+        if (!pointInsideCropBox(point, crop)) continue;
+        const [x, y, viewZ, pixelsPerWorldUnit] = project(point);
+        projectedSplats.push({ splatIndex, x, y, viewZ, pixelsPerWorldUnit });
+      }
+      sortSplatRenderEntriesBackToFront(projectedSplats);
+      if (projectionCache) Object.assign(projectionCache, {
+        splats,
+        width,
+        height,
+        entries: projectedSplats,
+      });
+    }
+    projectedSplats.forEach(({ splatIndex, x, y, pixelsPerWorldUnit }) => {
+      const ci = splatIndex * 4;
+      const segment = getSegmentDisplayStyle(splats.segmentIds?.[splatIndex], segmentationSegments);
+      if (segment && !segment.visible) return;
+      const segmentRgba = segment ? segmentColorToRgba(segment.color, segment.opacity) : null;
+      const alpha = Math.max(0, Math.min(1, (splats.colors?.[ci + 3] ?? 0.7) * splatOpacity * (segmentRgba?.[3] ?? 1)));
       const authoredScale = Math.max(0.1, Number(splats.scales?.[splatIndex]) || 1);
-      const depthScale = Math.max(0.78, Math.min(1.22, 1 - z / maxBoundsSize * 0.08));
+      const depthScale = Math.max(0.65, Math.min(1.8, pixelsPerWorldUnit / referencePixelsPerUnit));
       const radius = tunedSplatView
         ? Math.max(0.9, Math.min(18, authoredScale * splatPointSize * 1.4 * depthScale))
-        : Math.max(1.4, 4 - z * 0.003);
-      ctx.fillStyle = `rgba(${tuneColor(splats.colors?.[ci], 0.4)},${tuneColor(splats.colors?.[ci + 1], 0.8)},${tuneColor(splats.colors?.[ci + 2], 1)},${alpha})`;
-      ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill(); rendered += 1;
-    }
-    statsRef.current.renderedSplats = rendered;
+        : Math.max(1.4, 4 * depthScale);
+      const red = segmentRgba ? segmentRgba[0] : tuneColor(splats.colors?.[ci], 0.4);
+      const green = segmentRgba ? segmentRgba[1] : tuneColor(splats.colors?.[ci + 1], 0.8);
+      const blue = segmentRgba ? segmentRgba[2] : tuneColor(splats.colors?.[ci + 2], 1);
+      ctx.fillStyle = `rgba(${red},${green},${blue},${alpha})`;
+      ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
+    });
+    statsRef.current.renderedSplats = projectedSplats.length;
   }
-  if (tunedSplatView) {
+  if (showReferenceFrame && tunedSplatView) {
     const drawLoop = (points, color, lineWidth = 1, dash = []) => {
       const projected = points.map(project);
       ctx.beginPath();
@@ -171,29 +221,36 @@ function renderPreview(ctx, {
       ctx.stroke();
       ctx.setLineDash([]);
     };
-    const [x0, y0, z0] = bounds.min;
-    const [x1, y1, z1] = bounds.max;
-    const corners = [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]];
+    const [dimensionX, dimensionY, dimensionZ] = normalizedMetadata.dimensions;
+    const x0 = -0.5; const x1 = dimensionX - 0.5;
+    const y0 = -0.5; const y1 = dimensionY - 0.5;
+    const z0 = -0.5; const z1 = dimensionZ - 0.5;
+    const framePoint = (x, y, z) => voxelToPhysical([x, y, z], normalizedMetadata);
+    const corners = [
+      framePoint(x0, y0, z0), framePoint(x1, y0, z0), framePoint(x1, y1, z0), framePoint(x0, y1, z0),
+      framePoint(x0, y0, z1), framePoint(x1, y0, z1), framePoint(x1, y1, z1), framePoint(x0, y1, z1),
+    ];
     [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]].forEach(([from, to]) => {
       const a = project(corners[from]); const b = project(corners[to]);
       ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]);
       ctx.strokeStyle = 'rgba(226,232,240,0.58)'; ctx.lineWidth = 1; ctx.stroke();
     });
-    const positionOnAxis = (axis, value) => {
-      const upper = Math.max(1, Number(metadata.dimensions?.[axis]) - 1);
-      return bounds.min[axis] + Math.max(0, Math.min(1, (Number(value) || 0) / upper)) * bounds.size[axis];
-    };
+    const positionOnAxis = (axis, value) => Math.max(
+      0,
+      Math.min(normalizedMetadata.dimensions[axis] - 1, Number(value) || 0),
+    );
     if (showSliceGuides) {
       const sliceX = positionOnAxis(0, slicePosition?.sagittal);
       const sliceY = positionOnAxis(1, slicePosition?.coronal);
       const sliceZ = positionOnAxis(2, slicePosition?.axial);
-      drawLoop([[x0, y0, sliceZ], [x1, y0, sliceZ], [x1, y1, sliceZ], [x0, y1, sliceZ]], 'rgba(59,130,246,0.9)', 1.2, [4, 3]);
-      drawLoop([[x0, sliceY, z0], [x1, sliceY, z0], [x1, sliceY, z1], [x0, sliceY, z1]], 'rgba(245,158,11,0.9)', 1.2, [4, 3]);
-      drawLoop([[sliceX, y0, z0], [sliceX, y1, z0], [sliceX, y1, z1], [sliceX, y0, z1]], 'rgba(16,185,129,0.9)', 1.2, [4, 3]);
+      drawLoop([framePoint(x0, y0, sliceZ), framePoint(x1, y0, sliceZ), framePoint(x1, y1, sliceZ), framePoint(x0, y1, sliceZ)], 'rgba(59,130,246,0.9)', 1.2, [4, 3]);
+      drawLoop([framePoint(x0, sliceY, z0), framePoint(x1, sliceY, z0), framePoint(x1, sliceY, z1), framePoint(x0, sliceY, z1)], 'rgba(245,158,11,0.9)', 1.2, [4, 3]);
+      drawLoop([framePoint(sliceX, y0, z0), framePoint(sliceX, y1, z0), framePoint(sliceX, y1, z1), framePoint(sliceX, y0, z1)], 'rgba(16,185,129,0.9)', 1.2, [4, 3]);
     }
     ctx.fillStyle = '#bae6fd'; ctx.fillText('R', width - 24, cy); ctx.fillText('S', cx, 18); ctx.fillText('A', cx + 22, cy + 24);
-  } else {
-    ctx.strokeStyle = 'rgba(226,232,240,0.72)'; ctx.lineWidth = 1; ctx.strokeRect(cx - bounds.size[0] * scale / 2, cy - bounds.size[1] * scale / 2, bounds.size[0] * scale, bounds.size[1] * scale);
+  } else if (showReferenceFrame) {
+    const fallbackScale = Math.min(width, height) / Math.max(...bounds.size, 1) * 0.72 * zoom;
+    ctx.strokeStyle = 'rgba(226,232,240,0.72)'; ctx.lineWidth = 1; ctx.strokeRect(cx - bounds.size[0] * fallbackScale / 2, cy - bounds.size[1] * fallbackScale / 2, bounds.size[0] * fallbackScale, bounds.size[1] * fallbackScale);
     ctx.fillStyle = '#bae6fd'; ctx.fillText('R', width - 24, cy); ctx.fillText('S', cx, 18); ctx.fillText('A', cx + 22, cy + 24);
   }
 }
@@ -201,7 +258,7 @@ function renderPreview(ctx, {
 export default function Pt3GaussianSplatViewer({
   part,
   projectId,
-  volumeImageStack = [],
+  volumeImageStack = EMPTY_VOLUME_IMAGE_STACK,
   splatParameters,
   mode = VIEWER_MODES.hybrid,
   rotation = { x: -18, y: 32 },
@@ -238,7 +295,9 @@ export default function Pt3GaussianSplatViewer({
   } = activeSplatViewSettings;
   const [status, setStatus] = useState('initializing');
   const [statusDetail, setStatusDetail] = useState(null);
-  const [rendererType, setRendererType] = useState('canvas2d-fallback');
+  const [rendererState, setRendererState] = useState({ mode: null, type: 'canvas2d-fallback' });
+  const rendererType = rendererState.mode === mode ? rendererState.type : 'canvas2d-fallback';
+  const [rayRendererFallback, setRayRendererFallback] = useState(null);
   const [splats, setSplats] = useState(null);
   const cropEnabled = false;
   const splatOpacity = mode === VIEWER_MODES.splat ? configuredSplatOpacity : 0.9;
@@ -340,9 +399,12 @@ export default function Pt3GaussianSplatViewer({
     let cancelled = false;
     if (!canvas || mode === VIEWER_MODES.splat) {
       disposeThreeRenderer(threeRendererRef, canvas);
-      setRendererType('canvas2d-fallback');
+      setRendererState({ mode, type: 'canvas2d-fallback' });
+      setRayRendererFallback(null);
       return undefined;
     }
+    setRendererState({ mode, type: 'canvas2d-fallback' });
+    setRayRendererFallback(null);
     createThreeMechanicalRenderer(canvas, { metadata, mode, volumeImageStack })
       .then((renderer) => {
         if (cancelled || !renderer) {
@@ -351,19 +413,22 @@ export default function Pt3GaussianSplatViewer({
         }
         threeRendererRef.current?.dispose?.();
         threeRendererRef.current = renderer;
-        setRendererType(renderer.rendererType || 'three-webgl');
+        setRendererState({ mode, type: renderer.rendererType || 'three-webgl' });
+        setRayRendererFallback(null);
         if (mode === VIEWER_MODES.volume) setStatus('ready');
       })
       .catch((error) => {
         if (!cancelled) {
           disposeThreeRenderer(threeRendererRef, canvas);
-          setRendererType('canvas2d-fallback');
+          setRendererState({ mode, type: 'canvas2d-fallback' });
           if (mode === VIEWER_MODES.volume) {
             setStatus('fallback');
             setStatusDetail({
               error: error.message || 'Could not initialize ray-marched volume',
               note: 'Ray-marched volume unavailable. Showing deterministic volume bounds fallback.',
             });
+          } else if (mode === VIEWER_MODES.hybrid) {
+            setRayRendererFallback('Ray-marched layer unavailable. Showing the aligned 3DGS fallback only.');
           }
         }
       });
@@ -376,6 +441,7 @@ export default function Pt3GaussianSplatViewer({
   useEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return undefined;
     let frameId = 0; let last = performance.now(); let frames = 0;
+    const projectionCache = {};
     const render = (time) => {
       const ratio = window.devicePixelRatio || 1; const profile = QUALITY_PROFILES[quality];
       const width = Math.max(1, Math.floor(canvas.clientWidth * ratio * profile.scale)); const height = Math.max(1, Math.floor(canvas.clientHeight * ratio * profile.scale));
@@ -411,7 +477,9 @@ export default function Pt3GaussianSplatViewer({
           splatContrast,
           slicePosition,
           showSliceGuides: splatGuidesVisible,
-          tunedSplatView: mode === VIEWER_MODES.splat,
+          tunedSplatView: mode === VIEWER_MODES.splat || rendererType === 'canvas2d-fallback',
+          showReferenceFrame: mode !== VIEWER_MODES.hybrid || rendererType === 'canvas2d-fallback',
+          projectionCache,
           statsRef,
         });
       }
@@ -542,7 +610,8 @@ export default function Pt3GaussianSplatViewer({
         </div>
       </fieldset>
     )}
-    <span className="pt3-gaussian-splat-status">{status === 'ready' ? `${mode.toUpperCase()} ready${mode === VIEWER_MODES.volume ? '' : ` • threshold ${splatParameters?.threshold ?? 'n/a'}`} • ${metadata.dimensions.join('×')} voxels • ${bounds.size.map((v) => v.toFixed(1)).join('×')} mm • ${rendererType} • FPS ${stats.fps || '…'}${mode === VIEWER_MODES.volume ? ` • slices ${volumeImageStack.length}` : ` • splats ${stats.renderedSplats || splats?.positions?.length / 3 || 0}`}` : status === 'pending' ? `Mechanical 3DGS preprocessing is still running • threshold ${splatParameters?.threshold ?? 'n/a'}` : `Mechanical 3D viewer ${status}${mode === VIEWER_MODES.volume ? '' : ` • threshold ${splatParameters?.threshold ?? 'n/a'}`}${statusDetail?.error ? `: ${statusDetail.error}` : ''}`}</span>
+    <span className="pt3-gaussian-splat-status">{status === 'ready' ? `${mode.toUpperCase()} ${mode === VIEWER_MODES.hybrid && rayRendererFallback ? 'degraded' : 'ready'}${mode === VIEWER_MODES.volume ? '' : ` • threshold ${splatParameters?.threshold ?? 'n/a'}`} • ${metadata.dimensions.join('×')} voxels • ${bounds.size.map((v) => v.toFixed(1)).join('×')} mm • ${rendererType} • FPS ${stats.fps || '…'}${mode === VIEWER_MODES.volume ? ` • slices ${volumeImageStack.length}` : ` • splats ${stats.renderedSplats || splats?.positions?.length / 3 || 0}`}` : status === 'pending' ? `Mechanical 3DGS preprocessing is still running • threshold ${splatParameters?.threshold ?? 'n/a'}` : `Mechanical 3D viewer ${status}${mode === VIEWER_MODES.volume ? '' : ` • threshold ${splatParameters?.threshold ?? 'n/a'}`}${statusDetail?.error ? `: ${statusDetail.error}` : ''}`}</span>
     {statusDetail?.note && <span className="pt3-viewer-note">{statusDetail.note}</span>}
+    {rayRendererFallback && <span className="pt3-viewer-note">{rayRendererFallback}</span>}
   </div>;
 }

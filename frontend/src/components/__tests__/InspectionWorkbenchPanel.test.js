@@ -1494,8 +1494,8 @@ describe('InspectionWorkbenchPanel', () => {
     });
 
     expect(screen.getAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(1);
-    expect(document.querySelector('.mpr-volume-model')).toBeInTheDocument();
-    expect(document.querySelector('.mpr-volume-overlay')).toBeInTheDocument();
+    expect(document.querySelector('.mpr-volume-model')).not.toBeInTheDocument();
+    expect(document.querySelector('.mpr-volume-overlay')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('3D viewer mode')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('3DGS opacity')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Volume opacity')).not.toBeInTheDocument();

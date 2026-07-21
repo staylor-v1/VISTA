@@ -3,7 +3,9 @@ import {
   getCanvasSplatStride,
   prepareSplatAssetForRendering,
   resolveSplatCoordinateSpace,
+  sortSplatRenderEntriesBackToFront,
 } from '../pt3SplatRendering';
+import { createPt3PerspectiveProjector } from '../pt3VolumeGeometry';
 
 describe('PT3 splat rendering helpers', () => {
   test('uses visibility-forward 3DGS defaults', () => {
@@ -77,5 +79,34 @@ describe('PT3 splat rendering helpers', () => {
     expect(getCanvasSplatStride(30000)).toBe(1);
     expect(getCanvasSplatStride(30001)).toBe(2);
     expect(Math.ceil(100000 / getCanvasSplatStride(100000))).toBeLessThanOrEqual(30000);
+  });
+
+  test('orders translucent Canvas splats far-to-near with stable depth ties', () => {
+    const entries = [
+      { splatIndex: 3, viewZ: 2 },
+      { splatIndex: 1, viewZ: -4 },
+      { splatIndex: 2, viewZ: 2 },
+    ];
+    expect(sortSplatRenderEntriesBackToFront(entries).map(({ splatIndex }) => splatIndex))
+      .toEqual([1, 2, 3]);
+  });
+
+  test('keeps far-to-near ordering after a mirrored 90-degree orbit', () => {
+    const metadata = { dimensions: [5, 3, 2], spacing: [2, 3, 4] };
+    const projector = createPt3PerspectiveProjector({
+      metadata,
+      width: 640,
+      height: 480,
+      rotation: { x: 0, y: 90 },
+      mirrorScale: { x: -1, y: 1, z: 1 },
+    });
+    const entries = [
+      { splatIndex: 0, viewZ: projector([0, 3, 2])[2] },
+      { splatIndex: 1, viewZ: projector([8, 3, 2])[2] },
+    ];
+
+    sortSplatRenderEntriesBackToFront(entries);
+    expect(entries[0].viewZ).toBeLessThan(entries[1].viewZ);
+    expect(entries.map(({ splatIndex }) => splatIndex)).toEqual([0, 1]);
   });
 });

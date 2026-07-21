@@ -213,6 +213,49 @@ class PT3SplatGenerationStatus(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class PT3RealSplatCamera(BaseModel):
+    image_id: str = Field(..., min_length=1, max_length=255)
+    width: int = Field(..., ge=1)
+    height: int = Field(..., ge=1)
+    intrinsics: List[float] = Field(..., min_length=9, max_length=9)
+    rotation_quaternion: List[float] = Field(..., min_length=4, max_length=4)
+    translation: List[float] = Field(..., min_length=3, max_length=3)
+
+
+class PT3RealSplatOptimizationParameters(BaseModel):
+    max_splats: int = Field(default=250_000, ge=1, le=2_000_000)
+    iterations: int = Field(default=30_000, ge=1, le=100_000)
+    sh_degree: int = Field(default=3, ge=0, le=4)
+    optimize_camera_poses: bool = True
+    optimize_means: bool = True
+    optimize_covariance: bool = True
+    optimize_rotation: bool = True
+    optimize_opacity: bool = True
+    optimize_spherical_harmonics: bool = True
+    densification_interval: int = Field(default=100, ge=1, le=10_000)
+    convergence_tolerance: float = Field(default=1e-5, gt=0.0, le=1.0)
+
+
+class PT3RealSplatOptimizationRequest(BaseModel):
+    volume_stack_id: Optional[str] = Field(default=None, max_length=255)
+    source_image_ids: List[str] = Field(default_factory=list, max_length=1000)
+    cameras: List[PT3RealSplatCamera] = Field(default_factory=list, max_length=1000)
+    parameters: PT3RealSplatOptimizationParameters = Field(default_factory=PT3RealSplatOptimizationParameters)
+
+
+class PT3RealSplatGenerationStatus(BaseModel):
+    status: str = Field(..., pattern=r"^(missing|pending|ready|failed|unavailable)$")
+    part_id: Optional[uuid.UUID] = None
+    volume_stack_id: Optional[str] = None
+    asset_url: Optional[str] = None
+    cache_key: Optional[str] = None
+    splat_count: Optional[int] = None
+    progress_percent: float = Field(default=0.0, ge=0.0, le=100.0)
+    stage: str = ""
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class InspectionPartSourceImageUpdateRequest(BaseModel):
     crop_subtitle: Optional[str] = Field(default=None, max_length=255)
 

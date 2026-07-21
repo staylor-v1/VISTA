@@ -1,4 +1,10 @@
-import { normalizeAxisMirrorScale } from './pt3VolumeGeometry';
+import {
+  getPt3CameraClippingRange,
+  getPt3CameraDistance,
+  getPt3ViewSize,
+  getPt3WorldScale,
+  PT3_VIEW_CAMERA_FOV_DEGREES,
+} from './pt3VolumeGeometry';
 
 let threeModulePromise = null;
 
@@ -53,11 +59,17 @@ export async function createThreeMechanicalRenderer(canvas, { metadata, mode, vo
   const volumeTexture = await createVolumeTexture(THREE, volumeImageStack);
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: 'high-performance' });
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(38, 1, 0.01, 10000);
+  const clipping = getPt3CameraClippingRange(metadata);
+  const camera = new THREE.PerspectiveCamera(
+    PT3_VIEW_CAMERA_FOV_DEGREES,
+    1,
+    clipping.near,
+    clipping.far,
+  );
   camera.position.set(0, 0, 260);
   const dimensions = metadata?.dimensions || [1, 1, 1];
   const spacing = metadata?.spacing || [1, 1, 1];
-  const size = dimensions.map((value, axis) => Math.max(1, value * spacing[axis]));
+  const size = getPt3ViewSize(metadata);
   const geometry = new THREE.BoxGeometry(size[0], size[1], size[2]);
   const presetColors = {
     machinedMetal: [[0.24, 0.36, 0.48], [0.96, 0.98, 1]],
@@ -142,10 +154,10 @@ export async function createThreeMechanicalRenderer(canvas, { metadata, mode, vo
   const inverseMatrix = new THREE.Matrix4();
   const sizeVector = new THREE.Vector3(...size);
 
-  const sliceOffset = (value, dimension, physicalSize) => {
-    const upper = Math.max(1, Number(dimension) - 1);
-    const fraction = Math.min(1, Math.max(0, (Number(value) || 0) / upper));
-    return (fraction - 0.5) * physicalSize;
+  const sliceOffset = (value, dimension, axisSpacing) => {
+    const upper = Math.max(0, Number(dimension) - 1);
+    const clamped = Math.min(upper, Math.max(0, Number(value) || 0));
+    return (clamped - upper / 2) * axisSpacing;
   };
 
   return {
@@ -159,14 +171,14 @@ export async function createThreeMechanicalRenderer(canvas, { metadata, mode, vo
       camera.updateProjectionMatrix();
       volumeGroup.rotation.x = (rotation?.x || 0) * Math.PI / 180;
       volumeGroup.rotation.y = (rotation?.y || 0) * Math.PI / 180;
-      const activeMirrorScale = normalizeAxisMirrorScale(mirrorScale);
-      volumeGroup.scale.set(activeMirrorScale.x, activeMirrorScale.y, activeMirrorScale.z);
+      const worldScale = getPt3WorldScale(mirrorScale);
+      volumeGroup.scale.set(worldScale.x, worldScale.y, worldScale.z);
       // Keep the camera outside the rotated volume at every zoom level. Three's
       // optical zoom changes framing without dollying through the volume.
-      camera.position.z = Math.max(...size, 1) * 2.2;
-      sliceGuides.axial.guide.position.z = sliceOffset(slicePosition?.axial, dimensions[2], size[2]);
-      sliceGuides.coronal.guide.position.y = sliceOffset(slicePosition?.coronal, dimensions[1], size[1]);
-      sliceGuides.sagittal.guide.position.x = sliceOffset(slicePosition?.sagittal, dimensions[0], size[0]);
+      camera.position.z = getPt3CameraDistance(metadata);
+      sliceGuides.axial.guide.position.z = sliceOffset(slicePosition?.axial, dimensions[2], spacing[2]);
+      sliceGuides.coronal.guide.position.y = sliceOffset(slicePosition?.coronal, dimensions[1], spacing[1]);
+      sliceGuides.sagittal.guide.position.x = sliceOffset(slicePosition?.sagittal, dimensions[0], spacing[0]);
       Object.values(sliceGuides).forEach(({ guide }) => { guide.visible = Boolean(showSliceGuides); });
       volumeGroup.updateMatrixWorld();
       inverseMatrix.copy(volumeGroup.matrixWorld).invert();

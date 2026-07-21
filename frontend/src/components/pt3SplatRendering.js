@@ -70,6 +70,12 @@ export function getCanvasSplatStride(splatCount, maxSplats = MAX_CANVAS_SPLATS) 
   return Math.max(1, Math.ceil(safeCount / safeMaximum));
 }
 
+export function sortSplatRenderEntriesBackToFront(entries = []) {
+  return entries.sort((left, right) => (
+    left.viewZ - right.viewZ || left.splatIndex - right.splatIndex
+  ));
+}
+
 /**
  * Convert declared/generated voxel points into the same physical space used by
  * the ray renderer while leaving physical/world point clouds untouched.
