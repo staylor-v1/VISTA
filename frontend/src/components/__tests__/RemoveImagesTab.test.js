@@ -19,7 +19,7 @@ describe('RemoveImagesTab', () => {
   test('unloads selected images', async () => {
     const fetchSpy = jest.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
     global.fetch = fetchSpy;
-    jest.spyOn(window, 'confirm').mockReturnValue(true);
+    const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(true);
     const onImagesRemoved = jest.fn().mockResolvedValue();
 
     render(
@@ -34,6 +34,8 @@ describe('RemoveImagesTab', () => {
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'unassigned-a.png' }));
     fireEvent.click(screen.getByRole('button', { name: 'Unload Selected (1)' }));
+
+    expect(confirmSpy).toHaveBeenCalledWith('Unload 1 selected image?');
 
     await waitForAsyncWork(() => {
       expect(fetchSpy).toHaveBeenCalledTimes(1);
