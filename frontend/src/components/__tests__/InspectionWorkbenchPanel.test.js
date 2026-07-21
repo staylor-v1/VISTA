@@ -1369,6 +1369,100 @@ describe('InspectionWorkbenchPanel', () => {
     expect(document.querySelectorAll('.mpr-volume-scene')).toHaveLength(1);
   });
 
+  test('opens XY, XZ, and YZ slices as frozen fullscreen MPR canvases', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+
+    fireEvent.click(screen.getByLabelText('Mirror', { selector: '#mpr-mirror-coronal' }));
+    const compactAxialScaleY = screen.getByTestId('mpr-preview-axial').style.getPropertyValue('--projection-scale-y');
+    expect(compactAxialScaleY).toBe('-1');
+
+    const cases = [
+      { axis: 'axial', slice: 16, width: 80, height: 96, backingImageId: 'pt3-z-016' },
+      { axis: 'coronal', slice: 50, width: 80, height: 128, backingImageId: 'pt3-z-000' },
+      { axis: 'sagittal', slice: 64, width: 96, height: 128, backingImageId: 'pt3-z-000' },
+    ];
+
+    for (const testCase of cases) {
+      fireEvent.change(document.querySelector(`#mpr-slice-${testCase.axis}`), {
+        target: { value: String(testCase.slice) },
+      });
+      fireEvent.click(screen.getByTestId(`mpr-pane-${testCase.axis}`));
+
+      const fullscreenCanvas = screen.getByTestId('fullscreen-mpr-slice');
+      expect(fullscreenCanvas.tagName).toBe('CANVAS');
+      expect(fullscreenCanvas).toHaveAttribute('role', 'img');
+      expect(fullscreenCanvas).toHaveAttribute('data-mpr-axis', testCase.axis);
+      expect(fullscreenCanvas).toHaveAttribute('data-mpr-slice-index', String(testCase.slice));
+      expect(fullscreenCanvas).toHaveAttribute('data-mpr-slice-key', `${testCase.axis}:${testCase.slice}`);
+      expect(fullscreenCanvas).toHaveAttribute('data-mpr-backing-image-id', testCase.backingImageId);
+      expect(fullscreenCanvas).toHaveAttribute('width', String(testCase.width));
+      expect(fullscreenCanvas).toHaveAttribute('height', String(testCase.height));
+      const fullscreenOverlay = screen.getByLabelText('fullscreen measurement overlay');
+      expect(fullscreenOverlay).toHaveAttribute('viewBox', `0 0 ${testCase.width} ${testCase.height}`);
+      expect(fullscreenOverlay).toHaveAttribute('preserveAspectRatio', 'xMidYMid meet');
+      if (testCase.axis === 'axial') {
+        expect(fullscreenCanvas.style.getPropertyValue('--projection-scale-y')).toBe(compactAxialScaleY);
+        expect(fullscreenOverlay.style.getPropertyValue('--projection-scale-y')).toBe(compactAxialScaleY);
+      }
+      expect(document.querySelector('.inspection-fullscreen-image-zoom-layer img')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByLabelText('Close fullscreen image'));
+    }
+  });
+
+  test('maps letterboxed fullscreen XZ pointer coordinates back to the reconstructed slice', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+    fireEvent.click(screen.getByLabelText('Mirror', { selector: '#mpr-mirror-sagittal' }));
+    fireEvent.change(document.querySelector('#mpr-slice-coronal'), { target: { value: '50' } });
+    fireEvent.click(screen.getByTestId('mpr-pane-coronal'));
+
+    const fullscreenCanvas = screen.getByTestId('fullscreen-mpr-slice');
+    fullscreenCanvas.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      width: 400,
+      height: 400,
+      right: 400,
+      bottom: 400,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Draw box' }));
+
+    // The 80x128 XZ bitmap occupies x=75..325 in this square element, and the
+    // sagittal mirror reverses the displayed X coordinate back into source space.
+    // A press in the left letterbox must not start an annotation.
+    fireEvent.mouseDown(fullscreenCanvas, { clientX: 20, clientY: 100, button: 0 });
+    fireEvent.mouseUp(fullscreenCanvas, { clientX: 225, clientY: 300, button: 0 });
+    expect(global.fetch.mock.calls.some((call) => call[0].includes('/annotations') && call[1]?.method === 'POST')).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Draw box' }));
+    fireEvent.mouseDown(fullscreenCanvas, { clientX: 100, clientY: 100, button: 0 });
+    fireEvent.mouseUp(fullscreenCanvas, { clientX: 225, clientY: 300, button: 0 });
+
+    await waitFor(() => {
+      const postCall = global.fetch.mock.calls.find((call) => {
+        if (!call[0].includes('/annotations') || call[1]?.method !== 'POST') return false;
+        const body = JSON.parse(call[1].body);
+        return body.geometry?.axis === 'coronal' && body.geometry?.slice_index === 50;
+      });
+      expect(postCall).toBeDefined();
+      const payload = JSON.parse(postCall[1].body);
+      expect(payload.image_id).toBe('pt3-z-000');
+      expect(payload.bbox).toEqual({ x: 32, y: 32, width: 40, height: 64 });
+      expect(payload.geometry.box).toEqual(expect.objectContaining({
+        axis: 'coronal',
+        slice_index: 50,
+        imageWidth: 80,
+        imageHeight: 128,
+      }));
+    });
+  });
+
   test('keeps one 3D scene and exposes renderer-specific controls only in fullscreen', async () => {
     mockWorkbenchFetch(scenarioByUser[2]);
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
@@ -2107,9 +2201,18 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByText(/Click and drag to draw a measurement line/i)).toBeInTheDocument();
 
     const fullscreenImage = screen.getByAltText(/fullscreen$/i);
+    expect(fullscreenImage.tagName).toBe('IMG');
+    expect(fullscreenImage).toHaveAttribute('src', '/api/images/part-basic-1-image-1/content');
+    expect(screen.queryByTestId('fullscreen-mpr-slice')).not.toBeInTheDocument();
+    Object.defineProperty(fullscreenImage, 'width', { configurable: true, value: 1000 });
+    Object.defineProperty(fullscreenImage, 'height', { configurable: true, value: 500 });
+    fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500 });
+    fireEvent.click(fullscreenImage, { clientX: 100, clientY: 100 });
+    fireEvent.click(fullscreenImage, { clientX: 300, clientY: 200 });
+    expect(global.fetch.mock.calls.some((call) => call[0].includes('/annotations') && call[1]?.method === 'POST')).toBe(false);
+
     Object.defineProperty(fullscreenImage, 'naturalWidth', { configurable: true, value: 1000 });
     Object.defineProperty(fullscreenImage, 'naturalHeight', { configurable: true, value: 500 });
-	    fullscreenImage.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500 });
 	    fireEvent.click(fullscreenImage, { clientX: 100, clientY: 100 });
 	    fireEvent.mouseMove(fullscreenImage, { clientX: 200, clientY: 100 });
 	    await waitFor(() => expect(screen.getByLabelText('fullscreen measurement overlay')).toHaveTextContent('5.00 mm'));
@@ -3600,6 +3703,15 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.queryByRole('img', { name: /Volume reconstruction slice/ })).not.toBeInTheDocument();
     expect(screen.getAllByRole('img', { name: /fallback projection from front view/i }).length).toBeGreaterThan(0);
     expect(screen.queryByRole('img', { name: /Fallback visual hull shell front view/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('mpr-pane-coronal'));
+    expect(screen.getByAltText('XZ slice 8 fullscreen')).toHaveAttribute(
+      'src',
+      '/api/images/part-basic-1-image-1/content',
+    );
+    expect(screen.queryByTestId('fullscreen-mpr-slice')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Close fullscreen image'));
+
     fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'shell' } });
     expect(screen.getByRole('img', { name: /Fallback visual hull shell front view/i })).toBeInTheDocument();
     expect(screen.queryByText('No stack')).not.toBeInTheDocument();

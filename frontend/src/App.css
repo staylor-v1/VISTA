@@ -5579,6 +5579,16 @@ ul li:hover {
   object-fit: contain;
 }
 
+.inspection-fullscreen-image-zoom-layer .inspection-fullscreen-mpr-slice {
+  position: static;
+  inset: auto;
+}
+
+.inspection-fullscreen-image-zoom-layer .mpr-projection-overlay {
+  transform: scale(var(--projection-scale-x, 1), var(--projection-scale-y, 1));
+  transform-origin: center;
+}
+
 .inspection-fullscreen-image-zoom-layer .analysis-overlay-image {
   position: absolute;
   inset: 0;
