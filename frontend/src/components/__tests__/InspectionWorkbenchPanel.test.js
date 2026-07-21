@@ -1336,6 +1336,52 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('mpr-pane-sagittal')).toHaveTextContent(/299 \/ 299/);
   });
 
+  test('uses voxel source metadata and volume-slice endpoints for single npy MPR volumes', async () => {
+    const npyScenario = {
+      user: 'npy-volume',
+      batches: [{ id: 'batch-npy', name: 'Batch NPY' }],
+      workspaceState: { selected_batch_id: 'batch-npy', selected_part_id: 'part-npy' },
+      parts: [
+        {
+          id: 'part-npy',
+          batch_id: 'batch-npy',
+          serial_number: 'NPY-200',
+          display_name: 'Single NPY volume',
+          review_state: 'unreviewed',
+          metadata: {
+            source_images: [
+              {
+                filename: 'scan_200x550x300.npy',
+                image_id: 'img-npy-200',
+                metadata: { load_mode: 'volume', frame_count: 200, volume_shape: { axial: 200, coronal: 550, sagittal: 300 } },
+              },
+            ],
+          },
+        },
+      ],
+      projectImages: [
+        {
+          id: 'img-npy-200',
+          filename: 'scan_200x550x300.npy',
+          metadata: { load_mode: 'volume', frame_count: 200, volume_shape: { axial: 200, coronal: 550, sagittal: 300 } },
+        },
+      ],
+    };
+    mockWorkbenchFetch(npyScenario);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+
+    expect(document.querySelector('#mpr-slice-axial')).toHaveAttribute('max', '199');
+    expect(document.querySelector('#mpr-slice-coronal')).toHaveAttribute('max', '549');
+    expect(document.querySelector('#mpr-slice-sagittal')).toHaveAttribute('max', '299');
+    expect(screen.getByTestId('mpr-pane-axial')).toHaveTextContent(/99 \/ 199/);
+    expect(screen.getByTestId('mpr-pane-coronal')).toHaveTextContent(/274 \/ 549/);
+    expect(screen.getByTestId('mpr-pane-sagittal')).toHaveTextContent(/149 \/ 299/);
+    expect(screen.getByTestId('mpr-preview-axial').querySelector('canvas')).toHaveAttribute('width', '300');
+    expect(screen.getByTestId('mpr-preview-axial').querySelector('canvas')).toHaveAttribute('height', '550');
+  });
+
   test('opens the 3D pane as an accessible fullscreen view without mounting a duplicate scene', async () => {
     mockWorkbenchFetch(scenarioByUser[2]);
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
