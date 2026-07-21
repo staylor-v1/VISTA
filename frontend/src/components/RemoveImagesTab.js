@@ -77,7 +77,7 @@ function RemoveImagesTab({ projectId, parts = [], images = [], onImagesRemoved, 
   const removeSelectedImages = async () => {
     const ids = Array.from(selectedImageIds);
     if (ids.length === 0 || isRemoving) return;
-    const confirmed = window.confirm(`Delete ${ids.length} selected image${ids.length === 1 ? '' : 's'}?`);
+    const confirmed = window.confirm(`Unload ${ids.length} selected image${ids.length === 1 ? '' : 's'}?`);
     if (!confirmed) return;
 
     setIsRemoving(true);
