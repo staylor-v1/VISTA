@@ -294,8 +294,9 @@ describe('project type UI exposure', () => {
     await user.click(screen.getByRole('button', { name: 'Open dashboard settings' }));
 
     const settingsModal = screen.getByRole('dialog', { name: 'Dashboard Settings' });
+    expect(settingsModal.querySelector('.dashboard-settings-body')).toBeInTheDocument();
     expect(await within(settingsModal).findByText('Debug Mode')).toBeInTheDocument();
-    const debugToggle = within(settingsModal).getByLabelText('Enable dashboard debug mode');
+    const debugToggle = within(settingsModal).getByRole('switch', { name: 'Enable dashboard debug mode' });
     expect(debugToggle).not.toBeChecked();
     await user.click(debugToggle);
     expect(window.localStorage.getItem('vista.dashboard.debugMode')).toBe('true');
@@ -304,6 +305,7 @@ describe('project type UI exposure', () => {
     const refreshedSettingsModal = screen.getByRole('dialog', { name: 'Dashboard Settings' });
     expect(within(refreshedSettingsModal).getByText('postgresql+asyncpg://old:secret@localhost:5432/vista')).toBeInTheDocument();
 
+    expect(within(refreshedSettingsModal).getByRole('button', { name: 'Submit Postgres URL' })).toBeDisabled();
     const urlInput = within(refreshedSettingsModal).getByLabelText('New Postgres URL');
     await user.clear(urlInput);
     await user.type(urlInput, 'postgresql+asyncpg://new:secret@localhost:5432/vista');
@@ -313,7 +315,7 @@ describe('project type UI exposure', () => {
     expect(within(previewModal).getByText('Preview Project')).toBeInTheDocument();
     expect(within(previewModal).getByText(/Images: 3 • Parts: 2/)).toBeInTheDocument();
 
-    await user.click(within(previewModal).getByRole('button', { name: 'Accept This URL' }));
+    await user.click(within(previewModal).getByRole('button', { name: 'Submit This URL' }));
 
     expect(await screen.findByText('Accepted Project')).toBeInTheDocument();
     expect(screen.getByText(/Postgres database URL updated for this backend session/i)).toBeInTheDocument();
