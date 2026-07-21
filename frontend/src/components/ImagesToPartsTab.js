@@ -241,6 +241,99 @@ function buildBuckets({ parts, images }) {
   return { partBuckets, unassigned };
 }
 
+
+function formatMegabytes(bytes) {
+  const value = Math.max(0, Number(bytes) || 0);
+  return Math.round(value / (1024 * 1024));
+}
+
+function getSliceCachingMessage(progress = {}) {
+  const loaded = formatMegabytes(progress.loadedBytes);
+  const totalBytes = Number(progress.totalBytes) || 0;
+  if (totalBytes > 0) return `Caching ${loaded}/${formatMegabytes(totalBytes)} MB`;
+  return `Caching ${loaded} MB`;
+}
+
+function readResponseBytesWithProgress(response, onProgress) {
+  const totalBytes = Number(response.headers?.get?.('content-length')) || 0;
+  if (!response.body?.getReader) return response.blob().then((blob) => {
+    onProgress?.({ loadedBytesDelta: blob.size || 0, totalBytesDelta: totalBytes || blob.size || 0 });
+    return blob;
+  });
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let loadedForResponse = 0;
+  if (totalBytes > 0) onProgress?.({ loadedBytesDelta: 0, totalBytesDelta: totalBytes });
+
+  return reader.read().then(function pump(result) {
+    if (result.done) {
+      return new Blob(chunks, { type: response.headers?.get?.('content-type') || 'image/png' });
+    }
+    const chunk = result.value;
+    const chunkLength = chunk?.byteLength || chunk?.length || 0;
+    loadedForResponse += chunkLength;
+    chunks.push(chunk);
+    onProgress?.({ loadedBytesDelta: chunkLength, totalBytesDelta: 0 });
+    return reader.read().then(pump);
+  }).then((blob) => {
+    if (!totalBytes && blob.size > loadedForResponse) onProgress?.({ loadedBytesDelta: blob.size - loadedForResponse, totalBytesDelta: blob.size });
+    return blob;
+  });
+}
+
+function usePreviewSliceCache(imageStack) {
+  const [state, setState] = useState({ status: 'idle', imageStack, progress: { loadedBytes: 0, totalBytes: 0 }, error: '' });
+  const stackKey = useMemo(() => (Array.isArray(imageStack) ? imageStack.map((entry) => `${entry.id}:${entry.url}`).join('|') : ''), [imageStack]);
+
+  useEffect(() => {
+    const stack = Array.isArray(imageStack) ? imageStack : [];
+    if (stack.length === 0) {
+      setState({ status: 'idle', imageStack: [], progress: { loadedBytes: 0, totalBytes: 0 }, error: '' });
+      return undefined;
+    }
+    if (typeof window === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+      setState({ status: 'ready', imageStack: stack, progress: { loadedBytes: 0, totalBytes: 0 }, error: '' });
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const objectUrls = [];
+    let loadedBytes = 0;
+    let totalBytes = 0;
+    let cancelled = false;
+
+    const updateProgress = ({ loadedBytesDelta = 0, totalBytesDelta = 0 } = {}) => {
+      loadedBytes += loadedBytesDelta;
+      totalBytes += totalBytesDelta;
+      if (!cancelled) setState((previous) => ({ ...previous, status: 'loading', progress: { loadedBytes, totalBytes } }));
+    };
+
+    setState({ status: 'loading', imageStack: stack, progress: { loadedBytes: 0, totalBytes: 0 }, error: '' });
+    Promise.all(stack.map(async (entry) => {
+      const response = await fetch(entry.url, { signal: controller.signal });
+      if (!response.ok) throw new Error(`Failed to cache preview slice (${response.status})`);
+      const blob = await readResponseBytesWithProgress(response, updateProgress);
+      const objectUrl = URL.createObjectURL(blob);
+      objectUrls.push(objectUrl);
+      return { ...entry, url: objectUrl };
+    })).then((cachedStack) => {
+      if (!cancelled) setState({ status: 'ready', imageStack: cachedStack, progress: { loadedBytes, totalBytes: totalBytes || loadedBytes }, error: '' });
+    }).catch((err) => {
+      if (err?.name === 'AbortError' || cancelled) return;
+      setState({ status: 'error', imageStack: stack, progress: { loadedBytes, totalBytes }, error: err.message || 'Failed to cache preview slices' });
+    });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      objectUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [imageStack, stackKey]);
+
+  return state;
+}
+
 function VolumeSliceViewer({ viewer, onChange, onClose }) {
   const { imageRef, axis, metadata, status, error } = viewer;
   useEffect(() => {
@@ -260,7 +353,9 @@ function VolumeSliceViewer({ viewer, onChange, onClose }) {
   const slicePosition = viewer.slicePosition || { axial: 0, coronal: 0, sagittal: 0 };
   const axisMax = Math.max(0, Number(dimensions[axis] || 1) - 1);
   const axialStack = useMemo(() => Array.from({ length: Math.max(1, Number(dimensions.axial) || 1) }, (_, index) => ({ id: `${imageRef.id}-${index}`, sliceIndex: index, url: `/api/images/${encodeURIComponent(imageRef.id)}/volume-slice?axis=axial&index=${index}` })), [dimensions.axial, imageRef.id]);
-  const volumeCacheState = useMprVolumeCache(axialStack, dimensions);
+  const previewSliceCache = usePreviewSliceCache(axialStack);
+  const volumeCacheState = useMprVolumeCache(previewSliceCache.imageStack, dimensions);
+  const previewIsLoading = previewSliceCache.status === 'loading' || volumeCacheState.status === 'loading';
   const imageDimensions = getMprAxisImageDimensions(axis, dimensions, volumeCacheState.cache);
   const setAxis = (nextAxis) => onChange((previous) => ({ ...previous, axis: nextAxis }));
   const setSlice = (value) => {
@@ -268,7 +363,7 @@ function VolumeSliceViewer({ viewer, onChange, onClose }) {
     onChange((previous) => ({ ...previous, slicePosition: { ...(previous.slicePosition || slicePosition), [axis]: next } }));
   };
   const handleWheel = (event) => { event.preventDefault(); setSlice((slicePosition[axis] || 0) + (event.deltaY > 0 ? 1 : -1)); };
-  return <div className="modal image-part-viewer-modal" role="dialog" aria-modal="true" aria-labelledby="volume-slice-viewer-title" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="modal-content image-part-viewer-content volume-slice-viewer"><div className="modal-header"><div><h3 id="volume-slice-viewer-title">{imageRef.displayName || imageRef.filename}</h3><p className="muted">Multi-image volume preview</p></div><button type="button" className="modal-close-btn" onClick={onClose} aria-label="Close volume viewer">&times;</button></div><div className="modal-body">{status === 'error' ? <p className="error-message">{error}</p> : null}{metadata ? <><dl className="volume-slice-metadata"><div><dt>Total images</dt><dd>{metadata.image_count}</dd></div><div><dt>Height × Width</dt><dd>{metadata.height} × {metadata.width}</dd></div><div><dt>Type</dt><dd>{metadata.interpretation === 'voxel_array' ? 'Voxel array' : 'Stack of 2D images'}</dd></div><div><dt>Bit depth</dt><dd>{metadata.bit_depth || metadata.metadata_bit_depth || 'Unknown'}-bit {metadata.pixel_dtype || metadata.voxel_dtype || ''}</dd></div></dl><div className="volume-slice-controls"><label>Slice axis<select value={axis} onChange={(event) => setAxis(event.target.value)}>{MPR_AXES.map((option) => <option key={option} value={option}>{MPR_AXIS_CONFIG[option].label} ({MPR_AXIS_CONFIG[option].sliceLabel} slices)</option>)}</select></label><label>Slice<input type="range" min="0" max={axisMax} value={slicePosition[axis] || 0} onChange={(event) => setSlice(event.target.value)} onWheel={handleWheel} /></label><label>Current slice<input type="number" min="0" max={axisMax} value={slicePosition[axis] || 0} onChange={(event) => setSlice(event.target.value)} /></label><span>{(slicePosition[axis] || 0) + 1} / {axisMax + 1}</span></div><div className="volume-slice-stage" onWheel={handleWheel}><MprSliceCanvas axis={axis} volumeCache={volumeCacheState.cache} volumeCacheStatus={volumeCacheState.status} slicePosition={slicePosition} dimensions={dimensions} displayWindow={{ min: 0, max: 255 }} displayDomain={{ min: 0, max: 255, step: 1, label: '8-bit preview' }} aria-label={`${MPR_AXIS_CONFIG[axis].label} slice ${slicePosition[axis] || 0}`} style={{ aspectRatio: `${imageDimensions.width} / ${imageDimensions.height}` }} /></div></> : <p className="muted">Loading volume metadata…</p>}</div></div></div>;
+  return <div className="modal image-part-viewer-modal" role="dialog" aria-modal="true" aria-labelledby="volume-slice-viewer-title" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="modal-content image-part-viewer-content volume-slice-viewer"><div className="modal-header"><div><h3 id="volume-slice-viewer-title">{imageRef.displayName || imageRef.filename}</h3><p className="muted">Multi-image volume preview</p></div><button type="button" className="modal-close-btn" onClick={onClose} aria-label="Close volume viewer">&times;</button></div><div className="modal-body">{status === 'error' ? <p className="error-message">{error}</p> : null}{metadata ? <><dl className="volume-slice-metadata"><div><dt>Total images</dt><dd>{metadata.image_count}</dd></div><div><dt>Height × Width</dt><dd>{metadata.height} × {metadata.width}</dd></div><div><dt>Type</dt><dd>{metadata.interpretation === 'voxel_array' ? 'Voxel array' : 'Stack of 2D images'}</dd></div><div><dt>Bit depth</dt><dd>{metadata.bit_depth || metadata.metadata_bit_depth || 'Unknown'}-bit {metadata.pixel_dtype || metadata.voxel_dtype || ''}</dd></div></dl><div className="volume-slice-controls"><label>Slice axis<select value={axis} onChange={(event) => setAxis(event.target.value)}>{MPR_AXES.map((option) => <option key={option} value={option}>{MPR_AXIS_CONFIG[option].label} ({MPR_AXIS_CONFIG[option].sliceLabel} slices)</option>)}</select></label><label>Slice<input type="range" min="0" max={axisMax} value={slicePosition[axis] || 0} onChange={(event) => setSlice(event.target.value)} onWheel={handleWheel} /></label><label>Current slice<input type="number" min="0" max={axisMax} value={slicePosition[axis] || 0} onChange={(event) => setSlice(event.target.value)} /></label><span>{(slicePosition[axis] || 0) + 1} / {axisMax + 1}</span></div><div className="volume-slice-stage" data-testid="volume-slice-stage" onWheel={handleWheel}>{previewIsLoading ? <div className="volume-slice-loading" role="status" aria-live="polite">{getSliceCachingMessage(previewSliceCache.progress)}</div> : null}{previewSliceCache.status === 'error' ? <div className="volume-slice-loading error-message" role="alert">{previewSliceCache.error}</div> : null}<MprSliceCanvas axis={axis} volumeCache={volumeCacheState.cache} volumeCacheStatus={volumeCacheState.status} slicePosition={slicePosition} dimensions={dimensions} displayWindow={{ min: 0, max: 255 }} displayDomain={{ min: 0, max: 255, step: 1, label: '8-bit preview' }} aria-label={`${MPR_AXIS_CONFIG[axis].label} slice ${slicePosition[axis] || 0}`} style={{ aspectRatio: `${imageDimensions.width} / ${imageDimensions.height}` }} /></div></> : <p className="muted">Loading volume metadata…</p>}</div></div></div>;
 }
 
 function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfiguration = null, onAssignmentsChanged, setError }) {
