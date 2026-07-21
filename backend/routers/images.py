@@ -1,10 +1,12 @@
 import uuid
 import base64
+import hashlib
 import io
 import os
 import mimetypes
 from urllib.parse import urlparse, unquote
 from pathlib import Path, PurePosixPath
+from collections import OrderedDict
 import zipfile
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Body
 from sqlalchemy import update, select
@@ -1032,6 +1034,36 @@ def convert_to_web_format(image_data: bytes, content_type: str) -> tuple[bytes, 
 
 
 
+_VOLUME_SLICE_CACHE_MAX_ITEMS = 256
+_volume_slice_png_cache: "OrderedDict[tuple[str, str, int, str], bytes]" = OrderedDict()
+
+
+def _volume_slice_cache_key(db_image: models.DataInstance, axis: str, index: int, payload: bytes) -> tuple[str, str, int, str]:
+    metadata = db_image.metadata_json if isinstance(db_image.metadata_json, dict) else {}
+    version_parts = [
+        str(db_image.id),
+        db_image.filename or '',
+        db_image.object_storage_key or '',
+        str(metadata.get('updated_at') or metadata.get('checksum') or metadata.get('content_sha256') or ''),
+        str(len(payload)),
+    ]
+    version = hashlib.sha256('|'.join(version_parts).encode('utf-8') + payload[:4096] + payload[-4096:]).hexdigest()
+    return (str(db_image.id), axis, int(index), version)
+
+
+def _get_cached_volume_slice_png(cache_key: tuple[str, str, int, str]) -> Optional[bytes]:
+    cached = _volume_slice_png_cache.get(cache_key)
+    if cached is not None:
+        _volume_slice_png_cache.move_to_end(cache_key)
+    return cached
+
+
+def _set_cached_volume_slice_png(cache_key: tuple[str, str, int, str], png: bytes) -> None:
+    _volume_slice_png_cache[cache_key] = png
+    _volume_slice_png_cache.move_to_end(cache_key)
+    while len(_volume_slice_png_cache) > _VOLUME_SLICE_CACHE_MAX_ITEMS:
+        _volume_slice_png_cache.popitem(last=False)
+
 
 def _normalize_array_slice_to_png(array: np.ndarray) -> bytes:
     arr = np.asarray(array)
@@ -1051,14 +1083,23 @@ def _scale_array_to_uint8(array: np.ndarray) -> np.ndarray:
     arr = np.asarray(array)
     if arr.dtype == np.uint8:
         return arr
-    finite = arr[np.isfinite(arr)] if np.issubdtype(arr.dtype, np.floating) else arr.reshape(-1)
+    if np.issubdtype(arr.dtype, np.floating):
+        finite_mask = np.isfinite(arr)
+        finite = arr[finite_mask]
+    else:
+        finite_mask = None
+        finite = arr.reshape(-1)
     if finite.size == 0:
         return np.zeros(arr.shape, dtype=np.uint8)
     lo = float(np.min(finite))
     hi = float(np.max(finite))
     if hi <= lo:
-        return np.zeros(arr.shape, dtype=np.uint8)
-    return np.clip(((arr.astype(np.float32) - lo) * 255.0) / (hi - lo), 0, 255).astype(np.uint8)
+        fill = 0 if hi <= 0 else 255
+        return np.full(arr.shape, fill, dtype=np.uint8)
+    scaled = ((arr.astype(np.float32, copy=False) - lo) * 255.0) / (hi - lo)
+    if finite_mask is not None:
+        scaled = np.where(finite_mask, scaled, 0)
+    return np.clip(scaled, 0, 255).astype(np.uint8)
 
 
 def _axis_slice(array: np.ndarray, axis: str, index: int) -> np.ndarray:
@@ -1192,7 +1233,11 @@ async def get_image_volume_slice(
         safe_axis = axis if axis in dimensions else 'axial'
         if index >= int(dimensions[safe_axis]):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Slice index is outside the selected axis')
-        png = _normalize_array_slice_to_png(_axis_slice(volume, safe_axis, index))
+        cache_key = _volume_slice_cache_key(db_image, safe_axis, index, payload)
+        png = _get_cached_volume_slice_png(cache_key)
+        if png is None:
+            png = _normalize_array_slice_to_png(_axis_slice(volume, safe_axis, index))
+            _set_cached_volume_slice_png(cache_key, png)
     except HTTPException:
         raise
     except Exception as exc:
@@ -1200,7 +1245,10 @@ async def get_image_volume_slice(
     return StreamingResponse(
         content=io.BytesIO(png),
         media_type='image/png',
-        headers={'Content-Disposition': get_content_disposition_header(f'{db_image.filename or "volume"}-{safe_axis}-{index}.png', 'inline')},
+        headers={
+            'Content-Disposition': get_content_disposition_header(f'{db_image.filename or "volume"}-{safe_axis}-{index}.png', 'inline'),
+            'Cache-Control': 'private, max-age=3600',
+        },
     )
 
 @router.get("/images/{image_id}/content", response_class=StreamingResponse)
