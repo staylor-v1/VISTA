@@ -181,8 +181,8 @@ def test_pt3_upload_numpy_volume_autoassigns_part_named_for_file(client):
     body = parts.json()
     assert len(body) == 1
     part = body[0]
-    assert part["serial_number"] == "volume.npy"
-    assert part["display_name"] == "volume.npy"
+    assert part["serial_number"] == "volume"
+    assert part["display_name"] == "volume"
     assert part["metadata"]["source_images"] == [
         {
             "filename": "volume.npy",
@@ -231,7 +231,7 @@ def test_pt3_upload_multipage_tiff_autoassigns_part_named_for_file(client):
     body = parts.json()
     assert len(body) == 1
     part = body[0]
-    assert part["serial_number"] == "stack.tif"
+    assert part["serial_number"] == "stack"
     source = part["metadata"]["source_images"][0]
     assert source["filename"] == "stack.tif"
     assert source["image_id"] == image_id

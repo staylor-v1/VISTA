@@ -386,6 +386,14 @@ def _is_volume_upload_metadata(metadata: Dict[str, Any]) -> bool:
     return metadata.get("load_mode") == "volume"
 
 
+def _part_name_for_volume_filename(filename: str) -> str:
+    trimmed_filename = filename.strip()
+    lower_filename = trimmed_filename.lower()
+    if lower_filename.endswith(".nii.gz"):
+        return trimmed_filename[: -len(".nii.gz")]
+    return Path(trimmed_filename).stem
+
+
 def _source_image_entry_from_data_instance(image: models.DataInstance) -> Dict[str, Any]:
     image_metadata = image.metadata_json if isinstance(image.metadata_json, dict) else {}
     entry: Dict[str, Any] = {
@@ -437,8 +445,12 @@ async def _autoassign_pt3_volume_upload_to_part(
     if not filename:
         return
 
+    part_name = _part_name_for_volume_filename(filename)
+    if not part_name:
+        return
+
     existing_parts = await crud.list_inspection_parts(db=db, project_id=project.id)
-    existing_part = next((part for part in existing_parts if part.serial_number == filename), None)
+    existing_part = next((part for part in existing_parts if part.serial_number == part_name), None)
     source_entry = _source_image_entry_from_data_instance(image)
 
     if existing_part is None:
@@ -446,8 +458,8 @@ async def _autoassign_pt3_volume_upload_to_part(
             db=db,
             project_id=project.id,
             part=schemas.InspectionPartCreate(
-                serial_number=filename,
-                display_name=filename,
+                serial_number=part_name,
+                display_name=part_name,
                 metadata={"source_images": [source_entry]},
             ),
             created_by=current_user.email,
