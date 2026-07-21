@@ -2,6 +2,13 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
+import { getProjectTypeLabel } from './projectTypes';
+
+function projectTypeCardMatcher(projectType) {
+  const expected = `Type: ${getProjectTypeLabel(projectType, { short: true })}`;
+  return (_content, element) => element?.classList?.contains('project-card-meta')
+    && element.textContent.includes(expected);
+}
 
 test('renders image management platform header', async () => {
   global.fetch = jest.fn((input) => {
@@ -276,7 +283,7 @@ describe('project type UI exposure', () => {
         </BrowserRouter>
       );
 
-      expect(await screen.findByText(new RegExp(`Type: ${projectType}`))).toBeInTheDocument();
+      expect(await screen.findByText(projectTypeCardMatcher(projectType))).toBeInTheDocument();
 
       await user.click(screen.getByRole('button', { name: 'New Project' }));
       await user.type(screen.getByLabelText('Project Name *'), `${projectType} ${userScenario.label} created`);
@@ -354,7 +361,7 @@ describe('project type UI exposure', () => {
     await user.selectOptions(screen.getByLabelText('Project Type *'), 'PT2');
     await user.click(screen.getByRole('button', { name: 'Create Project' }));
 
-    expect(await screen.findByText(/Type: PT2/)).toBeInTheDocument();
+    expect(await screen.findByText(projectTypeCardMatcher('PT2'))).toBeInTheDocument();
   });
 
   test('shows project card ellipsis menu and allows editing name and type', async () => {
@@ -427,7 +434,7 @@ describe('project type UI exposure', () => {
     await user.click(screen.getByRole('button', { name: 'Save Changes' }));
 
     expect(await screen.findByText('Project Edited')).toBeInTheDocument();
-    expect(screen.getByText(/Type: PT2/)).toBeInTheDocument();
+    expect(screen.getByText(projectTypeCardMatcher('PT2'))).toBeInTheDocument();
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(
         '/api/projects/project-1',
