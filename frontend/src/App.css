@@ -9164,3 +9164,71 @@ ul li:hover {
   width: 1.1rem;
   height: 1.1rem;
 }
+
+.volume-slice-viewer {
+  max-width: min(1100px, 94vw);
+}
+
+.volume-slice-metadata {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+}
+
+.volume-slice-metadata div {
+  border: 1px solid var(--border-color, #d7dde8);
+  border-radius: 8px;
+  padding: 0.65rem;
+  background: var(--bg-secondary, #f8fafc);
+}
+
+.volume-slice-metadata dt {
+  font-size: 0.75rem;
+  color: var(--text-muted, #64748b);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.volume-slice-metadata dd {
+  margin: 0.2rem 0 0;
+  font-weight: 700;
+}
+
+.volume-slice-controls {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.8fr) minmax(220px, 2fr) minmax(120px, 0.7fr) auto;
+  gap: 0.75rem;
+  align-items: end;
+  margin-bottom: 1rem;
+}
+
+.volume-slice-controls label {
+  display: grid;
+  gap: 0.25rem;
+  font-weight: 600;
+}
+
+.volume-slice-controls input,
+.volume-slice-controls select {
+  min-height: 2.25rem;
+}
+
+.volume-slice-stage {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 320px;
+  max-height: 65vh;
+  overflow: auto;
+  border: 1px solid var(--border-color, #d7dde8);
+  border-radius: 10px;
+  background: #0f172a;
+}
+
+.volume-slice-stage .mpr-slice-canvas {
+  max-width: 100%;
+  max-height: 62vh;
+  object-fit: contain;
+  image-rendering: auto;
+}

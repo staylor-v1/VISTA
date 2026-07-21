@@ -1,4 +1,5 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { MPR_AXES, MPR_AXIS_CONFIG, MprSliceCanvas, getMprAxisImageDimensions, useMprVolumeCache } from './InspectionWorkbenchPanel';
 import { buildConfiguredFilenameFields, isFilenameConventionEnabled } from './FilenameMetadataExtractor';
 
 function tagDuplicateFilename(filename = '', occurrence = 0) {
@@ -239,12 +240,44 @@ function buildBuckets({ parts, images }) {
 
   return { partBuckets, unassigned };
 }
+
+function VolumeSliceViewer({ viewer, onChange, onClose }) {
+  const { imageRef, axis, metadata, status, error } = viewer;
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/images/${encodeURIComponent(imageRef.id)}/volume-metadata`)
+      .then((response) => { if (!response.ok) throw new Error(`Failed to load volume metadata (${response.status})`); return response.json(); })
+      .then((data) => {
+        if (cancelled) return;
+        const dims = data.dimensions || { axial: data.image_count || 1, coronal: data.height || 1, sagittal: data.width || 1 };
+        onChange((previous) => ({ ...previous, metadata: { ...data, dimensions: dims }, status: 'ready', slicePosition: { axial: Math.floor((dims.axial - 1) / 2), coronal: Math.floor((dims.coronal - 1) / 2), sagittal: Math.floor((dims.sagittal - 1) / 2) } }));
+      })
+      .catch((err) => { if (!cancelled) onChange((previous) => ({ ...previous, status: 'error', error: err.message || 'Failed to load volume metadata' })); });
+    return () => { cancelled = true; };
+  }, [imageRef.id, onChange]);
+
+  const dimensions = useMemo(() => metadata?.dimensions || { axial: 1, coronal: 1, sagittal: 1 }, [metadata]);
+  const slicePosition = viewer.slicePosition || { axial: 0, coronal: 0, sagittal: 0 };
+  const axisMax = Math.max(0, Number(dimensions[axis] || 1) - 1);
+  const axialStack = useMemo(() => Array.from({ length: Math.max(1, Number(dimensions.axial) || 1) }, (_, index) => ({ id: `${imageRef.id}-${index}`, sliceIndex: index, url: `/api/images/${encodeURIComponent(imageRef.id)}/volume-slice?axis=axial&index=${index}` })), [dimensions.axial, imageRef.id]);
+  const volumeCacheState = useMprVolumeCache(axialStack, dimensions);
+  const imageDimensions = getMprAxisImageDimensions(axis, dimensions, volumeCacheState.cache);
+  const setAxis = (nextAxis) => onChange((previous) => ({ ...previous, axis: nextAxis }));
+  const setSlice = (value) => {
+    const next = Math.max(0, Math.min(axisMax, Math.round(Number(value) || 0)));
+    onChange((previous) => ({ ...previous, slicePosition: { ...(previous.slicePosition || slicePosition), [axis]: next } }));
+  };
+  const handleWheel = (event) => { event.preventDefault(); setSlice((slicePosition[axis] || 0) + (event.deltaY > 0 ? 1 : -1)); };
+  return <div className="modal image-part-viewer-modal" role="dialog" aria-modal="true" aria-labelledby="volume-slice-viewer-title" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="modal-content image-part-viewer-content volume-slice-viewer"><div className="modal-header"><div><h3 id="volume-slice-viewer-title">{imageRef.displayName || imageRef.filename}</h3><p className="muted">Multi-image volume preview</p></div><button type="button" className="modal-close-btn" onClick={onClose} aria-label="Close volume viewer">&times;</button></div><div className="modal-body">{status === 'error' ? <p className="error-message">{error}</p> : null}{metadata ? <><dl className="volume-slice-metadata"><div><dt>Total images</dt><dd>{metadata.image_count}</dd></div><div><dt>Height × Width</dt><dd>{metadata.height} × {metadata.width}</dd></div><div><dt>Type</dt><dd>{metadata.interpretation === 'voxel_array' ? 'Voxel array' : 'Stack of 2D images'}</dd></div><div><dt>Bit depth</dt><dd>{metadata.bit_depth || metadata.metadata_bit_depth || 'Unknown'}-bit {metadata.pixel_dtype || metadata.voxel_dtype || ''}</dd></div></dl><div className="volume-slice-controls"><label>Slice axis<select value={axis} onChange={(event) => setAxis(event.target.value)}>{MPR_AXES.map((option) => <option key={option} value={option}>{MPR_AXIS_CONFIG[option].label} ({MPR_AXIS_CONFIG[option].sliceLabel} slices)</option>)}</select></label><label>Slice<input type="range" min="0" max={axisMax} value={slicePosition[axis] || 0} onChange={(event) => setSlice(event.target.value)} onWheel={handleWheel} /></label><label>Current slice<input type="number" min="0" max={axisMax} value={slicePosition[axis] || 0} onChange={(event) => setSlice(event.target.value)} /></label><span>{(slicePosition[axis] || 0) + 1} / {axisMax + 1}</span></div><div className="volume-slice-stage" onWheel={handleWheel}><MprSliceCanvas axis={axis} volumeCache={volumeCacheState.cache} volumeCacheStatus={volumeCacheState.status} slicePosition={slicePosition} dimensions={dimensions} displayWindow={{ min: 0, max: 255 }} displayDomain={{ min: 0, max: 255, step: 1, label: '8-bit preview' }} aria-label={`${MPR_AXIS_CONFIG[axis].label} slice ${slicePosition[axis] || 0}`} style={{ aspectRatio: `${imageDimensions.width} / ${imageDimensions.height}` }} /></div></> : <p className="muted">Loading volume metadata…</p>}</div></div></div>;
+}
+
 function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfiguration = null, onAssignmentsChanged, setError }) {
   const initialBuckets = useMemo(() => buildBuckets({ parts, images }), [parts, images]);
   const [localBuckets, setLocalBuckets] = useState(initialBuckets);
   const [movingImages, setMovingImages] = useState([]);
   const [showThumbnails, setShowThumbnails] = useState(true);
   const [activeImageModal, setActiveImageModal] = useState(null);
+  const [volumeViewer, setVolumeViewer] = useState(null);
   const [selectedUnassigned, setSelectedUnassigned] = useState([]);
   const [selectionDrag, setSelectionDrag] = useState(null);
   const [showSomeModal, setShowSomeModal] = useState(false);
@@ -263,13 +296,13 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
   }, [initialBuckets]);
 
   React.useEffect(() => {
-    if (!activeImageModal) return undefined;
+    if (!activeImageModal && !volumeViewer) return undefined;
     const handleKeyDown = (event) => {
-      if (event.key === 'Escape') setActiveImageModal(null);
+      if (event.key === 'Escape') { setActiveImageModal(null); setVolumeViewer(null); }
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [activeImageModal]);
+  }, [activeImageModal, volumeViewer]);
 
   const findImageRef = (imageKeyOrFilename) => {
     const allImages = [
@@ -279,7 +312,17 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
     return allImages.find((image) => image.key === imageKeyOrFilename || image.id === imageKeyOrFilename || image.filename === imageKeyOrFilename) || { filename: imageKeyOrFilename, displayName: imageKeyOrFilename };
   };
 
+  const isMultiImageRef = (imageRef) => {
+    const filename = String(imageRef?.filename || '').toLowerCase();
+    const metadata = imageRef?.metadata || {};
+    return Boolean(imageRef?.id) && (filename.endsWith('.npy') || filename.endsWith('.npz') || filename.endsWith('.inspiro') || filename.endsWith('.tif') || filename.endsWith('.tiff') || Number(metadata.frame_count) > 1 || metadata.load_mode === 'volume' || metadata.volume_shape);
+  };
+
   const openImageModal = (imageRef) => {
+    if (isMultiImageRef(imageRef)) {
+      setVolumeViewer({ imageRef, axis: 'axial', slicePosition: { axial: 0, coronal: 0, sagittal: 0 }, metadata: null, status: 'loading', error: '' });
+      return;
+    }
     setActiveImageModal({ title: imageRef.displayName || imageRef.filename, images: [imageRef], mode: 'single' });
   };
 
@@ -710,6 +753,8 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
       </section>
 
       {showSomeModal ? <div className="modal image-part-viewer-modal" role="dialog" aria-modal="true" aria-label="Some selection modal"><div className="modal-content image-part-viewer-content fullscreen-some-modal"><div className="modal-header"><h3>Select Some Images</h3><button type="button" className="modal-close-btn" onClick={() => setShowSomeModal(false)} aria-label="Close some selection">&times;</button></div><div className="modal-body"><label>Regex filter<input type="text" value={someFilter} onChange={(e) => setSomeFilter(e.target.value)} placeholder="e.g. ^cam1_.*\\.png$" /></label><div className="image-part-chip-list">{filteredUnassigned.map((img) => renderImageChip(img, true))}</div></div></div></div> : null}
+
+      {volumeViewer ? <VolumeSliceViewer viewer={volumeViewer} onChange={setVolumeViewer} onClose={() => setVolumeViewer(null)} /> : null}
 
       {activeImageModal && (
         <div className="modal image-part-viewer-modal" role="dialog" aria-modal="true" aria-labelledby="image-part-viewer-title" onMouseDown={(event) => { if (event.target === event.currentTarget) setActiveImageModal(null); }}>

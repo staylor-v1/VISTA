@@ -650,3 +650,39 @@ describe('ImagesToPartsTab', () => {
   });
 
 });
+
+test('opens a multi-image volume viewer with metadata, editable slice, and axis control', async () => {
+  jest.spyOn(global, 'fetch').mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      image_count: 5,
+      height: 12,
+      width: 10,
+      interpretation: 'voxel_array',
+      bit_depth: 16,
+      pixel_dtype: 'uint16',
+      dimensions: { axial: 5, coronal: 12, sagittal: 10 },
+    }),
+  });
+
+  render(
+    <ImagesToPartsTab
+      projectId="proj-1"
+      parts={[{ id: 'part-1', serial_number: 'SN-001', display_name: 'Part 1', metadata: { source_images: [{ filename: 'volume.npy', image_id: 'img-volume' }] } }]}
+      images={[{ id: 'img-volume', filename: 'volume.npy', metadata: { load_mode: 'volume', frame_count: 5 } }]}
+    />
+  );
+
+  fireEvent.click(screen.getByRole('button', { name: 'volume.npy' }));
+
+  expect(await screen.findByRole('dialog', { name: 'volume.npy' })).toBeInTheDocument();
+  expect(await screen.findByText('Total images')).toBeInTheDocument();
+  expect(screen.getByText('5')).toBeInTheDocument();
+  expect(screen.getByText('12 × 10')).toBeInTheDocument();
+  expect(screen.getByText('Voxel array')).toBeInTheDocument();
+  expect(screen.getByText(/16-bit uint16/)).toBeInTheDocument();
+
+  fireEvent.change(screen.getByLabelText('Slice axis'), { target: { value: 'sagittal' } });
+  fireEvent.change(screen.getByLabelText('Current slice'), { target: { value: '3' } });
+  expect(screen.getByLabelText('Current slice')).toHaveValue(3);
+});

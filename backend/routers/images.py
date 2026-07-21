@@ -1019,6 +1019,178 @@ def convert_to_web_format(image_data: bytes, content_type: str) -> tuple[bytes, 
         return image_data, content_type
 
 
+
+
+def _normalize_array_slice_to_png(array: np.ndarray) -> bytes:
+    arr = np.asarray(array)
+    if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+        if arr.dtype != np.uint8:
+            arr = _scale_array_to_uint8(arr)
+        img = Image.fromarray(arr.astype(np.uint8), 'RGBA' if arr.shape[-1] == 4 else 'RGB')
+    else:
+        arr = _scale_array_to_uint8(arr)
+        img = Image.fromarray(arr.astype(np.uint8), 'L')
+    output = io.BytesIO()
+    img.save(output, format='PNG')
+    return output.getvalue()
+
+
+def _scale_array_to_uint8(array: np.ndarray) -> np.ndarray:
+    arr = np.asarray(array)
+    if arr.dtype == np.uint8:
+        return arr
+    finite = arr[np.isfinite(arr)] if np.issubdtype(arr.dtype, np.floating) else arr.reshape(-1)
+    if finite.size == 0:
+        return np.zeros(arr.shape, dtype=np.uint8)
+    lo = float(np.min(finite))
+    hi = float(np.max(finite))
+    if hi <= lo:
+        return np.zeros(arr.shape, dtype=np.uint8)
+    return np.clip(((arr.astype(np.float32) - lo) * 255.0) / (hi - lo), 0, 255).astype(np.uint8)
+
+
+def _axis_slice(array: np.ndarray, axis: str, index: int) -> np.ndarray:
+    if axis == 'axial':
+        return array[index, :, :]
+    if axis == 'coronal':
+        return array[:, index, :]
+    if axis == 'sagittal':
+        return array[:, :, index]
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Axis must be axial, coronal, or sagittal')
+
+
+def _volume_meta_from_shape(shape: tuple[int, ...], dtype: np.dtype, *, source_kind: str) -> Dict[str, Any]:
+    if len(shape) < 3:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Image is not a multi-image volume')
+    depth, height, width = int(shape[0]), int(shape[1]), int(shape[2])
+    return {
+        'source_kind': source_kind,
+        'interpretation': 'voxel_array' if source_kind in {'npy', 'npz', 'inspiro'} else 'stack_of_2d_images',
+        'image_count': depth,
+        'height': height,
+        'width': width,
+        'dimensions': {'axial': depth, 'coronal': height, 'sagittal': width},
+        'pixel_dtype': np.dtype(dtype).name,
+        'voxel_dtype': np.dtype(dtype).name,
+        'bit_depth': int(np.dtype(dtype).itemsize * 8),
+    }
+
+
+def _load_numpy_volume(payload: bytes, filename: str) -> np.ndarray:
+    lower = filename.lower()
+    if lower.endswith('.npy'):
+        return np.load(io.BytesIO(payload), allow_pickle=False)
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        members = sorted(name for name in archive.namelist() if name.endswith('.npy'))
+        if not members:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Archive does not contain a NumPy array')
+        with archive.open(members[0]) as member:
+            return np.load(io.BytesIO(member.read()), allow_pickle=False)
+
+
+def _load_tiff_volume(payload: bytes) -> np.ndarray:
+    with Image.open(io.BytesIO(payload)) as image:
+        frames = [np.asarray(frame.copy()) for frame in ImageSequence.Iterator(image)]
+    if not frames:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='TIFF has no frames')
+    return np.stack(frames, axis=0)
+
+
+def _volume_source_kind(filename: str) -> Optional[str]:
+    lower = filename.lower()
+    if lower.endswith('.npy'):
+        return 'npy'
+    if lower.endswith('.npz'):
+        return 'npz'
+    if lower.endswith('.inspiro'):
+        return 'inspiro'
+    if lower.endswith(('.tif', '.tiff')):
+        return 'tiff'
+    return None
+
+
+async def _read_authorized_image_bytes(db_image: models.DataInstance) -> bytes:
+    inline_data = _inline_image_bytes(db_image)
+    if inline_data is not None:
+        return inline_data
+    internal_url = get_presigned_download_url(bucket_name=settings.S3_BUCKET, object_name=db_image.object_storage_key)
+    if not internal_url:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Could not generate download URL')
+    async with httpx.AsyncClient() as client:
+        response = await client.get(internal_url)
+        response.raise_for_status()
+        return await response.aread()
+
+
+async def _get_authorized_image(db: AsyncSession, image_id: uuid.UUID, current_user: schemas.User, include_deleted: bool = False) -> models.DataInstance:
+    db_image = await crud.get_data_instance(db=db, image_id=image_id)
+    if db_image is None or (db_image.deleted_at and not include_deleted):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Image not found')
+    if not is_user_in_group(current_user.email, db_image.project.meta_group_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"User '{current_user.email}' does not have access to image '{image_id}'")
+    return db_image
+
+
+@router.get("/images/{image_id}/volume-metadata")
+async def get_image_volume_metadata(
+    image_id: uuid.UUID,
+    include_deleted: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    db_image = await _get_authorized_image(db, image_id, current_user, include_deleted)
+    kind = _volume_source_kind(db_image.filename or '')
+    if not kind:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported multi-image file type')
+    metadata = db_image.metadata_json if isinstance(db_image.metadata_json, dict) else {}
+    payload = await _read_authorized_image_bytes(db_image)
+    try:
+        volume = _load_tiff_volume(payload) if kind == 'tiff' else _load_numpy_volume(payload, db_image.filename or '')
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'Unable to read volume: {exc}') from exc
+    meta = _volume_meta_from_shape(volume.shape, volume.dtype, source_kind=kind)
+    meta.update({
+        'filename': db_image.filename,
+        'content_type': db_image.content_type,
+        'metadata_bit_depth': metadata.get('bit_depth') or metadata.get('bits_per_sample'),
+    })
+    return meta
+
+
+@router.get("/images/{image_id}/volume-slice", response_class=StreamingResponse)
+async def get_image_volume_slice(
+    image_id: uuid.UUID,
+    axis: str = Query('axial'),
+    index: int = Query(0, ge=0),
+    include_deleted: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    db_image = await _get_authorized_image(db, image_id, current_user, include_deleted)
+    kind = _volume_source_kind(db_image.filename or '')
+    if not kind:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported multi-image file type')
+    payload = await _read_authorized_image_bytes(db_image)
+    try:
+        volume = _load_tiff_volume(payload) if kind == 'tiff' else _load_numpy_volume(payload, db_image.filename or '')
+        meta = _volume_meta_from_shape(volume.shape, volume.dtype, source_kind=kind)
+        dimensions = meta['dimensions']
+        safe_axis = axis if axis in dimensions else 'axial'
+        if index >= int(dimensions[safe_axis]):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Slice index is outside the selected axis')
+        png = _normalize_array_slice_to_png(_axis_slice(volume, safe_axis, index))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'Unable to render volume slice: {exc}') from exc
+    return StreamingResponse(
+        content=io.BytesIO(png),
+        media_type='image/png',
+        headers={'Content-Disposition': get_content_disposition_header(f'{db_image.filename or "volume"}-{safe_axis}-{index}.png', 'inline')},
+    )
+
 @router.get("/images/{image_id}/content", response_class=StreamingResponse)
 async def get_image_content(
     image_id: uuid.UUID,
