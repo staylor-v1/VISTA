@@ -8661,11 +8661,110 @@ ul li:hover {
 }
 
 .pt3-gaussian-splat-webgl {
-  opacity: 0.38;
+  opacity: 1;
 }
 
 .pt3-gaussian-splat-canvas {
   z-index: 1;
+}
+
+.pt3-ray-march-controls {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 4;
+  width: min(250px, calc(100% - 32px));
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(125, 211, 252, 0.38);
+  border-radius: 7px;
+  background: rgba(8, 15, 29, 0.92);
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.36);
+  color: #e2e8f0;
+  pointer-events: auto;
+}
+
+.pt3-ray-march-controls legend {
+  padding: 0 6px;
+  color: #7dd3fc;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.pt3-ray-march-controls label {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 5px 10px;
+  color: #cbd5e1;
+  font-size: 0.72rem;
+}
+
+.pt3-ray-march-controls select,
+.pt3-ray-march-controls input[type='range'],
+.pt3-ray-march-controls button {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.pt3-ray-march-controls select,
+.pt3-ray-march-controls button {
+  min-height: 32px;
+  border: 1px solid rgba(148, 163, 184, 0.38);
+  border-radius: 4px;
+  background: #111c30;
+  color: #f1f5f9;
+  font: inherit;
+}
+
+.pt3-ray-march-controls button {
+  cursor: pointer;
+}
+
+.pt3-ray-march-controls button:hover,
+.pt3-ray-march-controls button:focus-visible {
+  border-color: #7dd3fc;
+  background: #17243a;
+}
+
+.pt3-ray-march-controls output {
+  color: #7dd3fc;
+  font-variant-numeric: tabular-nums;
+}
+
+.pt3-ray-march-controls .pt3-ray-march-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pt3-ray-march-controls .pt3-ray-march-checkbox input {
+  margin: 0;
+}
+
+.pt3-ray-march-view-actions {
+  display: grid;
+  grid-template-columns: 38px 1fr 38px;
+  gap: 6px;
+}
+
+.pt3-ray-march-controls .pt3-ray-march-view-actions button {
+  grid-column: auto;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .pt3-ray-march-controls {
+    top: 8px;
+    right: 8px;
+    width: min(220px, calc(100% - 16px));
+    max-height: calc(100% - 16px);
+    overflow-y: auto;
+    padding: 10px;
+    gap: 8px;
+  }
 }
 
 .pt3-gaussian-splat-status {

@@ -1369,11 +1369,13 @@ describe('InspectionWorkbenchPanel', () => {
     expect(document.querySelectorAll('.mpr-volume-scene')).toHaveLength(1);
   });
 
-  test('keeps every 3D reconstruction mode in the single fullscreen scene without floating settings', async () => {
+  test('keeps one 3D scene and exposes renderer-specific controls only in fullscreen', async () => {
     mockWorkbenchFetch(scenarioByUser[2]);
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
 
     await screen.findByTestId('mpr-panel');
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'volume3d' } });
+    expect(screen.queryByRole('group', { name: 'Ray-march controls' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Open 3D part view fullscreen' }));
 
     const modeSelect = screen.getByLabelText('3D view');
@@ -1393,20 +1395,211 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.queryAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(
         ['volume3d', 'splat', 'hybrid3d'].includes(value) ? 1 : 0,
       );
+      expect(screen.queryByRole('group', { name: 'Ray-march controls' }) !== null).toBe(value === 'volume3d');
+      expect(screen.queryByRole('group', { name: '3DGS controls' }) !== null).toBe(value === 'splat');
     });
 
     expect(screen.getAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(1);
+    expect(document.querySelector('.mpr-volume-model')).toBeInTheDocument();
+    expect(document.querySelector('.mpr-volume-overlay')).toBeInTheDocument();
     expect(screen.queryByLabelText('3D viewer mode')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Quality profile')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Orbit X')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Orbit Y')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('3DGS opacity')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Volume opacity')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Transfer function preset')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Clip/crop')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Reset view' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Zoom +' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Zoom -' })).not.toBeInTheDocument();
+
+    fireEvent.change(modeSelect, { target: { value: 'volume3d' } });
+    const density = screen.getByLabelText('Ray-march density');
+    const threshold = screen.getByLabelText('Ray-march intensity threshold');
+    const preset = screen.getByLabelText('Transfer function preset');
+    const quality = screen.getByLabelText('Quality profile');
+    const guides = screen.getByLabelText('Show slice guides');
+    const orbitX = screen.getByRole('slider', { name: 'Orbit X' });
+    const orbitY = screen.getByRole('slider', { name: 'Orbit Y' });
+    expect(density).toHaveValue('1.25');
+    expect(threshold).toHaveValue('0.08');
+    expect(preset).toHaveValue('machinedMetal');
+    expect(quality).toHaveValue('balanced');
+    expect(guides).toBeChecked();
+    expect(orbitX).toHaveValue('-22');
+    expect(orbitY).toHaveValue('32');
+    expect(document.querySelector('.mpr-volume-model')).not.toBeInTheDocument();
+    expect(document.querySelector('.mpr-volume-overlay')).not.toBeInTheDocument();
+
+    fireEvent.change(density, { target: { value: '0.4' } });
+    fireEvent.change(threshold, { target: { value: '0.3' } });
+    fireEvent.change(preset, { target: { value: 'defect' } });
+    fireEvent.change(quality, { target: { value: 'quality' } });
+    fireEvent.click(guides);
+    expect(density).toHaveValue('0.4');
+    expect(threshold).toHaveValue('0.3');
+    expect(preset).toHaveValue('defect');
+    expect(quality).toHaveValue('quality');
+    expect(guides).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset ray-march settings' }));
+    expect(density).toHaveValue('1.25');
+    expect(threshold).toHaveValue('0.08');
+    expect(preset).toHaveValue('machinedMetal');
+    expect(quality).toHaveValue('balanced');
+    expect(guides).toBeChecked();
+
+    fireEvent.change(orbitX, { target: { value: '-40' } });
+    fireEvent.change(orbitY, { target: { value: '75' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom +' }));
+    expect(orbitX).toHaveValue('-40');
+    expect(orbitY).toHaveValue('75');
+    expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toHaveTextContent('Zoom 1.42x');
+    fireEvent.click(screen.getByRole('button', { name: 'Reset view' }));
+    expect(orbitX).toHaveValue('-22');
+    expect(orbitY).toHaveValue('32');
+    expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toHaveTextContent('Zoom 1.00x');
+
+    fireEvent.change(modeSelect, { target: { value: 'splat' } });
+    const splatControls = screen.getByRole('group', { name: '3DGS controls' });
+    const splatOpacity = within(splatControls).getByLabelText('3DGS opacity');
+    const splatPointSize = within(splatControls).getByLabelText('3DGS point size');
+    const splatContrast = within(splatControls).getByLabelText('3DGS contrast');
+    const splatGuides = within(splatControls).getByLabelText('Show slice guides');
+    const splatOrbitX = within(splatControls).getByLabelText('3DGS Orbit X');
+    const splatOrbitY = within(splatControls).getByLabelText('3DGS Orbit Y');
+    expect(splatOpacity).toHaveValue('1.25');
+    expect(splatPointSize).toHaveValue('1.35');
+    expect(splatContrast).toHaveValue('1.2');
+    expect(splatGuides).toBeChecked();
+    expect(splatOrbitX).toHaveValue('-22');
+    expect(splatOrbitY).toHaveValue('32');
+    expect(document.querySelector('.mpr-volume-model')).not.toBeInTheDocument();
+    expect(document.querySelector('.mpr-volume-overlay')).not.toBeInTheDocument();
+
+    fireEvent.change(splatOpacity, { target: { value: '0.7' } });
+    fireEvent.change(splatPointSize, { target: { value: '2.1' } });
+    fireEvent.change(splatContrast, { target: { value: '1.6' } });
+    fireEvent.click(splatGuides);
+    expect(splatOpacity).toHaveValue('0.7');
+    expect(splatPointSize).toHaveValue('2.1');
+    expect(splatContrast).toHaveValue('1.6');
+    expect(splatGuides).not.toBeChecked();
+    fireEvent.click(within(splatControls).getByRole('button', { name: 'Reset 3DGS settings' }));
+    expect(splatOpacity).toHaveValue('1.25');
+    expect(splatPointSize).toHaveValue('1.35');
+    expect(splatContrast).toHaveValue('1.2');
+    expect(splatGuides).toBeChecked();
+
+    fireEvent.change(splatOrbitX, { target: { value: '-35' } });
+    fireEvent.change(splatOrbitY, { target: { value: '64' } });
+    fireEvent.click(within(splatControls).getByRole('button', { name: '3DGS Zoom +' }));
+    expect(splatOrbitX).toHaveValue('-35');
+    expect(splatOrbitY).toHaveValue('64');
+    expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toHaveTextContent('Zoom 1.12x');
+    fireEvent.click(within(splatControls).getByRole('button', { name: 'Reset 3DGS view' }));
+    expect(splatOrbitX).toHaveValue('-22');
+    expect(splatOrbitY).toHaveValue('32');
+    expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toHaveTextContent('Zoom 1.00x');
+
+    const fullscreenScene = screen.getByRole('application', { name: 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.' });
+    const dispatchOrbitPointer = (type, pointerId, clientY) => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: 60, clientY });
+      Object.defineProperty(event, 'pointerId', { value: pointerId });
+      fireEvent(fullscreenScene, event);
+    };
+    dispatchOrbitPointer('pointerdown', 71, 100);
+    dispatchOrbitPointer('pointermove', 71, 80);
+    expect(splatOrbitX).toHaveValue('-29');
+    dispatchOrbitPointer('pointerup', 71, 80);
+    fireEvent.click(within(splatControls).getByRole('button', { name: 'Reset 3DGS view' }));
+    dispatchOrbitPointer('pointerdown', 72, 100);
+    dispatchOrbitPointer('pointermove', 72, 120);
+    expect(splatOrbitX).toHaveValue('-15');
+    dispatchOrbitPointer('pointerup', 72, 120);
+    fireEvent.click(within(splatControls).getByRole('button', { name: 'Reset 3DGS view' }));
+    fireEvent.keyDown(fullscreenScene, { key: 'ArrowUp' });
+    expect(splatOrbitX).toHaveValue('-27');
+    fireEvent.keyDown(fullscreenScene, { key: 'ArrowDown' });
+    expect(splatOrbitX).toHaveValue('-22');
+
+    const lastControl = within(splatControls).getByRole('button', { name: '3DGS Zoom +' });
+    lastControl.focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(within(screen.getByRole('dialog', { name: '3D reconstruction' })).getByRole('button', { name: 'Close fullscreen 3D view' })).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(lastControl).toHaveFocus();
+    fireEvent.keyDown(lastControl, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: '3D reconstruction' })).not.toBeInTheDocument();
+  });
+
+  test('keeps a deterministic spatial fallback visible when ray marching has no volume stack', async () => {
+    mockWorkbenchFetch(scenarioByUser[0]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'volume3d' } });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Showing deterministic volume bounds fallback/i)).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText('Three.js mechanical volume renderer')).not.toBeVisible();
+    expect(screen.getByLabelText('Mechanical 3DGS preview')).toBeVisible();
+
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'splat' } });
+    expect(screen.getByLabelText('Three.js mechanical volume renderer')).not.toBeVisible();
+    expect(screen.getByLabelText('Mechanical 3DGS preview')).toBeVisible();
+  });
+
+  test('uses a neutral deterministic 3DGS fallback when preprocessing status returns an HTTP error', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    const workbenchFetch = global.fetch;
+    global.fetch = jest.fn((url, options) => {
+      if (url.includes('/volume-splat-assets/status')) {
+        return Promise.resolve({ ok: false, status: 500 });
+      }
+      return workbenchFetch(url, options);
+    });
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+    await screen.findByTestId('mpr-panel');
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'splat' } });
+
+    const viewer = screen.getByTestId('pt3-gaussian-splat-viewer');
+    await waitFor(() => expect(viewer).toHaveTextContent('Generated 3DGS asset unavailable'));
+    expect(viewer).toHaveTextContent('SPLAT ready');
+    expect(viewer).not.toHaveTextContent('HTTP 500');
+  });
+
+  test('releases an active fullscreen orbit capture when the view closes or loses focus', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+    fireEvent.click(screen.getByRole('button', { name: 'Open 3D part view fullscreen' }));
+    let scene = screen.getByRole('application', { name: 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.' });
+    const setPointerCapture = jest.fn();
+    const releasePointerCapture = jest.fn();
+    scene.setPointerCapture = setPointerCapture;
+    scene.hasPointerCapture = jest.fn(() => true);
+    scene.releasePointerCapture = releasePointerCapture;
+    const dispatchPointerDown = (target, pointerId) => {
+      const event = new MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: 30, clientY: 30 });
+      Object.defineProperty(event, 'pointerId', { value: pointerId });
+      fireEvent(target, event);
+    };
+
+    dispatchPointerDown(scene, 31);
+    expect(setPointerCapture).toHaveBeenCalledWith(31);
+    fireEvent.click(screen.getByRole('button', { name: 'Close fullscreen 3D view' }));
+    expect(releasePointerCapture).toHaveBeenCalledWith(31);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open 3D part view fullscreen' }));
+    scene = screen.getByRole('application', { name: 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.' });
+    const blurReleasePointerCapture = jest.fn();
+    scene.setPointerCapture = jest.fn();
+    scene.hasPointerCapture = jest.fn(() => true);
+    scene.releasePointerCapture = blurReleasePointerCapture;
+    dispatchPointerDown(scene, 32);
+    fireEvent.blur(window);
+    expect(blurReleasePointerCapture).toHaveBeenCalledWith(32);
   });
 
   test('red team: orbit drag does not open fullscreen and repeated keyboard and backdrop cycles remain operable at narrow width', async () => {
