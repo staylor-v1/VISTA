@@ -381,6 +381,99 @@ def _inspect_tiff_dimensionality(file: UploadFile) -> Optional[str]:
         file.file.seek(0)
 
 
+
+def _is_volume_upload_metadata(metadata: Dict[str, Any]) -> bool:
+    return metadata.get("load_mode") == "volume"
+
+
+def _source_image_entry_from_data_instance(image: models.DataInstance) -> Dict[str, Any]:
+    image_metadata = image.metadata_json if isinstance(image.metadata_json, dict) else {}
+    entry: Dict[str, Any] = {
+        "filename": image.filename,
+        "image_id": str(image.id),
+        "side": str(image_metadata.get("side") or "").strip().lower(),
+        "modality": str(image_metadata.get("modality") or "").strip().lower(),
+        "overlay": bool(image_metadata.get("overlay")),
+        "slice_axis": image_metadata.get("slice_axis"),
+        "slice_index": image_metadata.get("slice_index"),
+    }
+    volume_keys = (
+        "load_mode",
+        "tiff_dimensionality",
+        "frame_count",
+        "volume_shape",
+        "pixel_dtype",
+        "voxel_dtype",
+        "bit_depth",
+        "bits_per_sample",
+        "pixel_value_range",
+        "data_value_range",
+        "voxel_value_range",
+        "scalar_range",
+        "value_range",
+        "intensity_range",
+        "display_range",
+        "signed",
+    )
+    for key in volume_keys:
+        if key in image_metadata:
+            entry[key] = image_metadata[key]
+    entry["metadata"] = {key: image_metadata[key] for key in volume_keys if key in image_metadata}
+    return entry
+
+
+async def _autoassign_pt3_volume_upload_to_part(
+    *,
+    db: AsyncSession,
+    project: models.Project,
+    image: models.DataInstance,
+    current_user: schemas.User,
+) -> None:
+    image_metadata = image.metadata_json if isinstance(image.metadata_json, dict) else {}
+    if project.project_type != "PT3" or not _is_volume_upload_metadata(image_metadata):
+        return
+
+    filename = (image.filename or "").strip()
+    if not filename:
+        return
+
+    existing_parts = await crud.list_inspection_parts(db=db, project_id=project.id)
+    existing_part = next((part for part in existing_parts if part.serial_number == filename), None)
+    source_entry = _source_image_entry_from_data_instance(image)
+
+    if existing_part is None:
+        await crud.create_inspection_part(
+            db=db,
+            project_id=project.id,
+            part=schemas.InspectionPartCreate(
+                serial_number=filename,
+                display_name=filename,
+                metadata={"source_images": [source_entry]},
+            ),
+            created_by=current_user.email,
+        )
+        return
+
+    metadata = existing_part.metadata_json if isinstance(existing_part.metadata_json, dict) else {}
+    source_images = metadata.get("source_images") if isinstance(metadata.get("source_images"), list) else []
+    source_images = [
+        record
+        for record in source_images
+        if not (
+            isinstance(record, dict)
+            and (record.get("image_id") == str(image.id) or record.get("filename") == filename)
+        )
+    ]
+    source_images.append(source_entry)
+    await crud.update_inspection_part_metadata(
+        db=db,
+        project_id=project.id,
+        part_id=existing_part.id,
+        metadata_patch={**metadata, "source_images": source_images},
+        updated_by=current_user.email,
+    )
+
+
 SUPPORTED_S3_IMPORT_EXTENSIONS = {
     ".bmp",
     ".gif",
@@ -680,6 +773,12 @@ async def upload_image_to_project(
         group_id=resolved_group_id,
     )
     db_data_instance = await crud.create_data_instance(db=db, data_instance=data_instance_create)
+    await _autoassign_pt3_volume_upload_to_part(
+        db=db,
+        project=db_project,
+        image=db_data_instance,
+        current_user=current_user,
+    )
 
     # Invalidate project images cache
     cache = get_cache()

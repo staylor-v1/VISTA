@@ -157,6 +157,106 @@ def test_upload_image_bad_metadata(client):
     assert r.status_code == 400
 
 
+def test_pt3_upload_numpy_volume_autoassigns_part_named_for_file(client):
+    pr = client.post(
+        "/api/projects/",
+        json={"name": "PT3 NPY Auto Part", "description": None, "meta_group_id": "g", "project_type": "PT3"},
+    )
+    pid = pr.json()["id"]
+
+    voxel_array = np.zeros((3, 4, 5), dtype=np.uint16)
+    payload = io.BytesIO()
+    np.save(payload, voxel_array)
+    payload.seek(0)
+
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("volume.npy", payload, "application/octet-stream")},
+    )
+    assert upload.status_code == 201
+    image_id = upload.json()["id"]
+
+    parts = client.get(f"/api/projects/{pid}/parts")
+    assert parts.status_code == 200
+    body = parts.json()
+    assert len(body) == 1
+    part = body[0]
+    assert part["serial_number"] == "volume.npy"
+    assert part["display_name"] == "volume.npy"
+    assert part["metadata"]["source_images"] == [
+        {
+            "filename": "volume.npy",
+            "image_id": image_id,
+            "side": "",
+            "modality": "",
+            "overlay": False,
+            "slice_axis": None,
+            "slice_index": None,
+            "load_mode": "volume",
+            "frame_count": 3,
+            "volume_shape": {"axial": 3, "coronal": 4, "sagittal": 5},
+            "pixel_dtype": "uint16",
+            "voxel_dtype": "uint16",
+            "bit_depth": 16,
+            "bits_per_sample": 16,
+            "metadata": {
+                "load_mode": "volume",
+                "frame_count": 3,
+                "volume_shape": {"axial": 3, "coronal": 4, "sagittal": 5},
+                "pixel_dtype": "uint16",
+                "voxel_dtype": "uint16",
+                "bit_depth": 16,
+                "bits_per_sample": 16,
+            },
+        }
+    ]
+
+
+def test_pt3_upload_multipage_tiff_autoassigns_part_named_for_file(client):
+    pr = client.post(
+        "/api/projects/",
+        json={"name": "PT3 TIFF Auto Part", "description": None, "meta_group_id": "g", "project_type": "PT3"},
+    )
+    pid = pr.json()["id"]
+
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("stack.tif", _make_tiff_bytes(frame_count=2, size=(6, 7)), "image/tiff")},
+    )
+    assert upload.status_code == 201
+    image_id = upload.json()["id"]
+
+    parts = client.get(f"/api/projects/{pid}/parts")
+    assert parts.status_code == 200
+    body = parts.json()
+    assert len(body) == 1
+    part = body[0]
+    assert part["serial_number"] == "stack.tif"
+    source = part["metadata"]["source_images"][0]
+    assert source["filename"] == "stack.tif"
+    assert source["image_id"] == image_id
+    assert source["load_mode"] == "volume"
+    assert source["tiff_dimensionality"] == "3d"
+    assert source["frame_count"] == 2
+    assert source["volume_shape"] == {"axial": 2, "coronal": 7, "sagittal": 6}
+
+
+def test_pt1_upload_numpy_volume_does_not_autoassign_part(client):
+    pid = _create_project(client, name="PT1 NPY No Auto Part")
+    payload = io.BytesIO()
+    np.save(payload, np.zeros((3, 4, 5), dtype=np.uint8))
+    payload.seek(0)
+
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("volume.npy", payload, "application/octet-stream")},
+    )
+    assert upload.status_code == 201
+
+    parts = client.get(f"/api/projects/{pid}/parts")
+    assert parts.status_code == 200
+    assert parts.json() == []
+
 def test_upload_numpy_voxel_data_accepts_3d_arrays(client):
     pr = client.post("/api/projects/", json={"name": "P5", "description": None, "meta_group_id": "g"})
     pid = pr.json()["id"]
