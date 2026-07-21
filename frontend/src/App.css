@@ -9215,6 +9215,7 @@ ul li:hover {
 }
 
 .volume-slice-stage {
+  position: relative;
   display: flex;
   justify-content: center;
   align-items: center;
@@ -9224,6 +9225,25 @@ ul li:hover {
   border: 1px solid var(--border-color, #d7dde8);
   border-radius: 10px;
   background: #0f172a;
+}
+
+
+.volume-slice-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  color: #e2e8f0;
+  font-weight: 700;
+  text-align: center;
+  background: rgba(15, 23, 42, 0.82);
+}
+
+.volume-slice-loading.error-message {
+  color: #fecaca;
 }
 
 .volume-slice-stage .mpr-slice-canvas {

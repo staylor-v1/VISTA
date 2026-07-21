@@ -686,3 +686,79 @@ test('opens a multi-image volume viewer with metadata, editable slice, and axis 
   fireEvent.change(screen.getByLabelText('Current slice'), { target: { value: '3' } });
   expect(screen.getByLabelText('Current slice')).toHaveValue(3);
 });
+
+describe('ImagesToPartsTab volume preview progress', () => {
+  const originalCreateObjectUrl = URL.createObjectURL;
+  const originalRevokeObjectUrl = URL.revokeObjectURL;
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    URL.createObjectURL = originalCreateObjectUrl;
+    URL.revokeObjectURL = originalRevokeObjectUrl;
+  });
+
+  test('shows 3D slice caching progress inside the modal view section', async () => {
+    URL.createObjectURL = jest.fn(() => 'blob:preview-slice');
+    URL.revokeObjectURL = jest.fn();
+
+    const oneMb = new Uint8Array(1024 * 1024);
+    const sliceStream = {
+      getReader: () => {
+        let delivered = false;
+        return {
+          read: () => {
+            if (!delivered) {
+              delivered = true;
+              return Promise.resolve({ done: false, value: oneMb });
+            }
+            return new Promise(() => {});
+          },
+        };
+      },
+    };
+
+    global.fetch = jest.fn((url) => {
+      if (url.includes('/volume-metadata')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            image_count: 1,
+            height: 8,
+            width: 8,
+            dimensions: { axial: 1, coronal: 8, sagittal: 8 },
+            interpretation: 'voxel_array',
+            bit_depth: 8,
+            pixel_dtype: 'uint8',
+          }),
+        });
+      }
+      if (url.includes('/volume-slice')) {
+        return Promise.resolve({
+          ok: true,
+          headers: { get: (name) => (name.toLowerCase() === 'content-length' ? String(2 * 1024 * 1024) : 'image/png') },
+          body: sliceStream,
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+    });
+
+    render(
+      <ImagesToPartsTab
+        projectId="proj-1"
+        parts={[{
+          id: 'part-1',
+          serial_number: 'P1',
+          display_name: 'Part 1',
+          metadata: { source_images: [{ filename: 'scan.npy', image_id: 'img-volume-1' }] },
+        }]}
+        images={[{ id: 'img-volume-1', filename: 'scan.npy', metadata: { load_mode: 'volume' } }]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'scan.npy' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'scan.npy' });
+    await waitFor(() => expect(within(dialog).getByText('Caching 1/2 MB')).toBeInTheDocument());
+    expect(within(dialog).getByTestId('volume-slice-stage')).toContainElement(within(dialog).getByRole('status'));
+  });
+});
