@@ -175,6 +175,27 @@ def test_tif_2d_vs_3d_classification_by_frame_count(tmp_path):
     assert multi_volume.shape == (4, 12, 10)
 
 
+
+def test_reference_volume_limits_allow_2_5_gib_sources_and_decoded_numpy_payloads(tmp_path):
+    from utils.volume_loader import MAX_VOLUME_LOAD_BYTES, REFERENCE_VOLUME_READ_LIMITS
+
+    assert MAX_VOLUME_LOAD_BYTES == int(2.5 * 1024 * 1024 * 1024)
+    assert REFERENCE_VOLUME_READ_LIMITS.max_source_bytes == MAX_VOLUME_LOAD_BYTES
+    assert REFERENCE_VOLUME_READ_LIMITS.max_decoded_bytes == MAX_VOLUME_LOAD_BYTES
+    assert REFERENCE_VOLUME_READ_LIMITS.max_voxels == MAX_VOLUME_LOAD_BYTES
+
+    npy_path = tmp_path / "declared-large-but-allowed.npy"
+    header = _npy_header_bytes(shape=(1, 1, 400 * 1024 * 1024), dtype="|u1")
+    npy_path.write_bytes(header)
+    with npy_path.open("ab") as file_obj:
+        file_obj.truncate(len(header) + (400 * 1024 * 1024))
+
+    volume = load_volume(npy_path, limits=REFERENCE_VOLUME_READ_LIMITS)
+
+    assert volume.shape == (1, 1, 400 * 1024 * 1024)
+    assert volume.format == "numpy"
+
+
 def test_rejects_oversized_declared_npy_shape_before_payload_read(tmp_path):
     npy_path = tmp_path / "declared-too-large.npy"
     npy_path.write_bytes(_npy_header_bytes(shape=(1, 1, 101)))

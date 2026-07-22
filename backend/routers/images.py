@@ -34,7 +34,7 @@ from utils.cache_manager import get_cache
 import json as _json
 import numpy as np
 from PIL import Image, ImageSequence
-from utils.volume_loader import read_npy_header
+from utils.volume_loader import MAX_VOLUME_LOAD_BYTES, read_npy_header
 
 router = APIRouter(
     tags=["Images"],
@@ -100,6 +100,25 @@ async def _remove_unreferenced_project_metadata_for_image(
     return removed_count
 
 VOXEL_DATA_EXTENSIONS = {".npy", ".npz", ".inspiro"}
+MAX_UPLOAD_BYTES = MAX_VOLUME_LOAD_BYTES
+
+
+def _format_byte_limit(byte_count: int) -> str:
+    gib = byte_count / (1024 ** 3)
+    return f"{gib:.1f} GiB ({byte_count} bytes)"
+
+
+def _upload_size_limit() -> int:
+    return int(os.getenv("MAX_UPLOAD_BYTES", str(MAX_UPLOAD_BYTES)))
+
+
+def _file_too_large_detail(filename: str | None, file_size: int, max_size: int) -> str:
+    name = filename or "Uploaded file"
+    return (
+        f"{name} is too large: {file_size} bytes exceeds the built-in "
+        f"upload size limit of {_format_byte_limit(max_size)}. "
+        "Set MAX_UPLOAD_BYTES to adjust this limit."
+    )
 TIFF_EXTENSIONS = {".tif", ".tiff"}
 PNG_EXTENSIONS = {".png"}
 SCALAR_INTENSITY_EXTENSIONS = TIFF_EXTENSIONS | PNG_EXTENSIONS
@@ -642,7 +661,7 @@ async def import_project_s3_files(
     db_project = await get_project_or_403_writable(project_id, db, current_user)
     db_project_id = db_project.id
     bucket, prefix = _parse_s3_url(request.s3_url)
-    max_size = int(os.getenv("MAX_UPLOAD_BYTES", "10485760"))
+    max_size = _upload_size_limit()
     imported: List[schemas.DataInstance] = []
     failed: List[Dict[str, str]] = []
 
@@ -657,7 +676,7 @@ async def import_project_s3_files(
                 raise ValueError("S3 object not found or inaccessible")
             size_bytes = int(source_info.get("size") or 0)
             if size_bytes and size_bytes > max_size:
-                raise ValueError("File too large")
+                raise ValueError(_file_too_large_detail(filename, size_bytes, max_size))
 
             image_id = uuid.uuid4()
             object_storage_key = f"{db_project_id}/{image_id}/{filename}"
@@ -747,17 +766,20 @@ async def upload_image_to_project(
             parsed_metadata = {}
         parsed_metadata["tiff_dimensionality"] = tiff_dimensionality
         parsed_metadata["load_mode"] = "volume" if tiff_dimensionality == "3d" else "single_image"
-    max_size = int(os.getenv("MAX_UPLOAD_BYTES", "10485760"))  # 10MB default
-    # Try to read a small chunk to estimate streaming health, but do not load all into memory
+    max_size = _upload_size_limit()
+    # Try to read a small chunk to estimate streaming health, but do not load all into memory.
     try:
         file.file.seek(0, io.SEEK_END)
         file_size = file.file.tell()
         file.file.seek(0)
-        if file_size and file_size > max_size:
-            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File too large")
     except Exception:
-        # If we cannot get size ahead of time, proceed to stream; S3 client will handle
+        # If we cannot get size ahead of time, proceed to stream; S3 client will handle.
         file_size = None
+    if file_size and file_size > max_size:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=_file_too_large_detail(file.filename, file_size, max_size),
+        )
     success = await upload_file_to_s3(
         bucket_name=settings.S3_BUCKET,
         object_name=object_storage_key,

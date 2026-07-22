@@ -720,6 +720,49 @@ def test_import_project_s3_files_rejects_key_outside_prefix(client):
     assert response.status_code == 400
     assert "outside the requested S3 URL prefix" in response.json()["detail"]
 
+
+def test_upload_rejects_oversized_file_with_limit_detail(client, monkeypatch):
+    pid = _create_project(client, name="Upload Size Limit")
+    monkeypatch.setenv("MAX_UPLOAD_BYTES", "128")
+    payload = _make_png_bytes(size=(50, 50))
+
+    response = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("oversized.png", payload, "image/png")},
+    )
+
+    assert response.status_code == 413
+    detail = response.json()["detail"]
+    assert "oversized.png is too large" in detail
+    assert "built-in upload size limit" in detail
+    assert "128 bytes" in detail
+
+
+def test_import_project_s3_files_reports_oversized_object_limit(client, monkeypatch):
+    pid = _create_project(client, name="S3 Import Size Limit")
+    monkeypatch.setenv("MAX_UPLOAD_BYTES", "128")
+
+    async def fake_get_s3_object_info(bucket, key):
+        return {"size": 129, "content_type": "application/octet-stream", "metadata": {}}
+
+    async def fake_copy_s3_object_to_s3(*_args, **_kwargs):
+        raise AssertionError("oversized files must not be copied")
+
+    monkeypatch.setattr("routers.images.get_s3_object_info", fake_get_s3_object_info)
+    monkeypatch.setattr("routers.images.copy_s3_object_to_s3", fake_copy_s3_object_to_s3)
+
+    response = client.post(
+        f"/api/projects/{pid}/s3/import",
+        json={"s3_url": "s3://source-bucket/incoming", "keys": ["incoming/volume.npy"]},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["imported"] == []
+    assert body["failed"][0]["key"] == "incoming/volume.npy"
+    assert "volume.npy is too large" in body["failed"][0]["error"]
+    assert "built-in upload size limit" in body["failed"][0]["error"]
+
 def test_numpy_volume_metadata_and_axis_slice_endpoints(client, monkeypatch):
     pid = _create_project(client, name="volume-slice-endpoints")
     volume = np.arange(2 * 3 * 4, dtype=np.uint16).reshape((2, 3, 4))
