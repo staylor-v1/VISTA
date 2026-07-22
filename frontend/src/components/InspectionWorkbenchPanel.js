@@ -1359,6 +1359,23 @@ function normalizeDisplayWindow(candidate, domain, fallback) {
   return { min, max };
 }
 
+function remapDisplayWindow(candidate, previousDomain, nextDomain) {
+  const previous = getNormalizedDisplayDomain(previousDomain);
+  const next = getNormalizedDisplayDomain(nextDomain);
+  const windowRange = normalizeDisplayWindow(candidate, previous);
+  const previousSpan = previous.max - previous.min;
+  const nextSpan = next.max - next.min;
+  const mapValue = (value) => {
+    const ratio = (value - previous.min) / previousSpan;
+    const unrounded = next.min + (ratio * nextSpan);
+    return next.min + (Math.round((unrounded - next.min) / next.step) * next.step);
+  };
+  return normalizeDisplayWindow(
+    { min: mapValue(windowRange.min), max: mapValue(windowRange.max) },
+    next,
+  );
+}
+
 function getWindowPercent(value, domain) {
   const safeDomain = getNormalizedDisplayDomain(domain);
   return ((clampRange(value, safeDomain.min, safeDomain.max, safeDomain.min) - safeDomain.min) / (safeDomain.max - safeDomain.min)) * 100;
@@ -3051,6 +3068,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [segmentationMlStatus, setSegmentationMlStatus] = useState('');
   const [segmentationMlLoading, setSegmentationMlLoading] = useState(false);
   const [displayWindow, setDisplayWindow] = useState({ min: 0, max: 255 });
+  const displayWindowContextRef = useRef(null);
   const [activeOverlayIds, setActiveOverlayIds] = useState([]);
   const [cursorProbe, setCursorProbe] = useState({ x: 50, y: 50 });
   const [segmentationRun, setSegmentationRun] = useState(null);
@@ -3936,17 +3954,40 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         : MPR_RECONSTRUCTION_MODES.orientation,
     );
     setMprProjectionMirror(normalizeMprProjectionMirror(savedMpr.projection_mirror));
-    const savedDisplayWindow = savedMpr.display_window || {};
     const displayDomain = getNormalizedDisplayDomain(displayValueDomain);
-    const fallbackContrast = clampRange(savedMpr.contrast_percent, 50, 150, 100);
-    const fallbackRange = displayDomain.max - displayDomain.min;
-    const legacyFallback = fallbackContrast === 100
-      ? { min: displayDomain.min, max: displayDomain.max }
-      : {
-        min: displayDomain.min + (Math.max(0, 100 - fallbackContrast) / 100) * (fallbackRange / 2),
-        max: displayDomain.min + Math.min(1, fallbackContrast / 100) * fallbackRange,
+    const displayDomainKey = `${displayDomain.min}:${displayDomain.max}:${displayDomain.step}`;
+    const previousDisplayContext = displayWindowContextRef.current;
+    const isNewDisplayContext = !previousDisplayContext
+      || previousDisplayContext.projectId !== String(projectId);
+    const shouldHydrateSavedWindow = workspaceStateLoaded
+      && (isNewDisplayContext || previousDisplayContext.workspaceHydrated !== true);
+    if (shouldHydrateSavedWindow) {
+      const savedDisplayWindow = savedMpr.display_window || {};
+      const fallbackContrast = clampRange(savedMpr.contrast_percent, 50, 150, 100);
+      const fallbackRange = displayDomain.max - displayDomain.min;
+      const legacyFallback = fallbackContrast === 100
+        ? { min: displayDomain.min, max: displayDomain.max }
+        : {
+          min: displayDomain.min + (Math.max(0, 100 - fallbackContrast) / 100) * (fallbackRange / 2),
+          max: displayDomain.min + Math.min(1, fallbackContrast / 100) * fallbackRange,
       };
-    setDisplayWindow(normalizeDisplayWindow(savedDisplayWindow, displayDomain, legacyFallback));
+      setDisplayWindow(normalizeDisplayWindow(savedDisplayWindow, displayDomain, legacyFallback));
+    } else if (isNewDisplayContext) {
+      setDisplayWindow({ min: displayDomain.min, max: displayDomain.max });
+    } else if (previousDisplayContext.domainKey !== displayDomainKey) {
+      setDisplayWindow((current) => remapDisplayWindow(
+        current,
+        previousDisplayContext.domain,
+        displayDomain,
+      ));
+    }
+    displayWindowContextRef.current = {
+      projectId: String(projectId),
+      partId: String(selectedPart.id),
+      domainKey: displayDomainKey,
+      domain: displayDomain,
+      workspaceHydrated: workspaceStateLoaded,
+    };
     const stableOverlayIds = new Set(getOverlayLayers(selectedPart).map((overlay) => String(overlay.id)));
     const savedOverlayIds = Array.isArray(savedMpr.active_overlay_ids)
       ? savedMpr.active_overlay_ids
@@ -3961,7 +4002,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     setSegmentationRun(getLatestRunFromMetadata(selectedPart, 'segmentation_runs'));
     setMeasurementRun(getLatestRunFromMetadata(selectedPart, 'measurement_runs'));
     setMlActionLoading({ segmentation: false, measurement: false });
-  }, [selectedPart, projectType, mprDimensions, workspaceHydration, displayValueDomain]);
+  }, [selectedPart, projectType, projectId, mprDimensions, workspaceHydration, workspaceStateLoaded, displayValueDomain]);
 
   useEffect(() => {
     const savedInspector = workspaceHydration?.inspector || {};

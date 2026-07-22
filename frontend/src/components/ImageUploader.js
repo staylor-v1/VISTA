@@ -526,7 +526,9 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
   const [groupKey, setGroupKey] = useState('');
   const [uploading, setUploading] = useState(false);
   const [loadingTestData, setLoadingTestData] = useState(false);
+  const [loadingNistTestData, setLoadingNistTestData] = useState(false);
   const [testDataResult, setTestDataResult] = useState(null);
+  const [nistTestDataResult, setNistTestDataResult] = useState(null);
   const [uploadProgress, setUploadProgress] = useState(null);
   const [s3Url, setS3Url] = useState('');
   const [s3Objects, setS3Objects] = useState([]);
@@ -612,6 +614,7 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
     setActiveDataOperation(null);
     setUploading(false);
     setLoadingTestData(false);
+    setLoadingNistTestData(false);
     setAssociatedMetadataSaving(false);
     setAssociatedMetadataParsing(false);
     setAssociatedMetadataFile(null);
@@ -623,6 +626,7 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
     setSelectedFiles([]);
     setUploadMetadata('');
     setTestDataResult(null);
+    setNistTestDataResult(null);
     setS3Url('');
     setS3Objects([]);
     setSelectedS3Keys([]);
@@ -1567,6 +1571,57 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
     }
   };
 
+  const handleLoadNistTestData = async () => {
+    const operation = acquireDataOperation('nist_test_data');
+    if (!operation) return;
+    setLoadingNistTestData(true);
+    setNistTestDataResult(null);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/load-test-data?fixture=nist-cocr`, {
+        method: 'POST',
+        signal: operation.controller.signal,
+      });
+      if (!isDataOperationCurrent(operation)) return;
+      if (!response.ok) {
+        let detail = `HTTP ${response.status}`;
+        try {
+          const payload = await response.json();
+          detail = payload?.detail || detail;
+        } catch (parseError) {
+          detail = response.statusText || detail;
+        }
+        throw new Error(detail);
+      }
+      const payload = await response.json();
+      if (!isDataOperationCurrent(operation)) return;
+      setNistTestDataResult(payload);
+      setError(null);
+      if (onUploadComplete) {
+        await onUploadComplete(payload, {
+          source: 'test_data',
+          fixture: 'nist-cocr',
+          total: Number(payload?.images_created) || 0,
+          confirmedSucceeded: Number(payload?.images_created) || 0,
+          confirmedFailed: 0,
+          completionUnknown: 0,
+          notStarted: 0,
+          cancelled: false,
+          partsMayHaveChanged: true,
+          requiresAuthoritativeReconciliation: true,
+          payload,
+        });
+        if (!isDataOperationCurrent(operation)) return;
+      }
+    } catch (err) {
+      if (!isDataOperationCurrent(operation) || err?.name === 'AbortError') return;
+      const detail = err?.message ? ` ${err.message}` : '';
+      setError(`Failed to load NIST CoCr volume.${detail}`);
+    } finally {
+      if (ownsDataOperation(operation)) setLoadingNistTestData(false);
+      releaseDataOperation(operation);
+    }
+  };
+
   const selectedFilesTotalBytes = getTotalUploadSizeBytes(selectedFiles);
   const selectedS3TotalBytes = getTotalUploadSizeBytes(
     s3Objects.filter((object) => selectedS3KeySet.has(object.key))
@@ -1827,6 +1882,17 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
             >
               {loadingTestData ? 'Loading Test Data...' : 'Load Test Data'}
             </button>
+            {String(projectType || '').toUpperCase() === 'PT3' && (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ marginLeft: '8px' }}
+                disabled={dataOperationBusy}
+                onClick={handleLoadNistTestData}
+              >
+                {loadingNistTestData ? 'Loading NIST CoCr Volume...' : 'Load NIST CoCr Volume'}
+              </button>
+            )}
             {uploading && (
               <button
                 type="button"
@@ -1873,6 +1939,15 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
               Loaded {testDataResult.images_created || 0} new {projectType || 'project'} test images;
               {' '}
               created {testDataResult.ingest?.counters?.parts_created || 0} parts.
+            </div>
+          )}
+          {nistTestDataResult && (
+            <div className="alert alert-success" data-testid="load-nist-cocr-result">
+              Loaded {nistTestDataResult.images_created || 0} new NIST CoCr test images;
+              {' '}
+              created {nistTestDataResult.ingest?.counters?.parts_created || 0}
+              {' '}
+              {(nistTestDataResult.ingest?.counters?.parts_created || 0) === 1 ? 'part' : 'parts'}.
             </div>
           )}
         </form>

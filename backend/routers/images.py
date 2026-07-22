@@ -60,6 +60,7 @@ from utils.volume_loader import (
     preflight_zip_archive,
     read_npy_header,
 )
+from utils.pt3_test_fixtures import resolve_pt3_test_fixture_file
 
 router = APIRouter(
     tags=["Images"],
@@ -2741,10 +2742,28 @@ def _volume_source_kind(filename: str) -> Optional[str]:
     return None
 
 
+def _builtin_pt3_fixture_path(db_image: models.DataInstance) -> Path | None:
+    """Resolve trusted built-in fixture provenance from an image record."""
+
+    metadata = db_image.metadata_json if isinstance(db_image.metadata_json, dict) else {}
+    if metadata.get("source") != "vista-test-data" or metadata.get("project_type") != "PT3":
+        return None
+    return resolve_pt3_test_fixture_file(
+        fixture_id=metadata.get("builtin_fixture_id"),
+        fixture_filename=metadata.get("builtin_fixture_filename") or db_image.filename,
+        image_filename=db_image.filename,
+        object_storage_key=db_image.object_storage_key,
+        project_id=db_image.project_id,
+    )
+
+
 async def _read_authorized_image_bytes(db_image: models.DataInstance) -> bytes:
     inline_data = _inline_image_bytes(db_image)
     if inline_data is not None:
         return inline_data
+    fixture_path = _builtin_pt3_fixture_path(db_image)
+    if fixture_path is not None:
+        return await asyncio.to_thread(fixture_path.read_bytes)
     internal_url = get_presigned_download_url(bucket_name=settings.S3_BUCKET, object_name=db_image.object_storage_key)
     if not internal_url:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Could not generate download URL')
@@ -2763,6 +2782,12 @@ async def _iter_authorized_npy_bytes(db_image: models.DataInstance):
     inline_data = _inline_image_bytes(db_image)
     if inline_data is not None:
         yield inline_data
+        return
+    fixture_path = _builtin_pt3_fixture_path(db_image)
+    if fixture_path is not None:
+        with fixture_path.open('rb') as fixture_file:
+            while chunk := await asyncio.to_thread(fixture_file.read, 8 * 1024 * 1024):
+                yield chunk
         return
     internal_url = get_presigned_download_url(
         bucket_name=settings.S3_BUCKET,
@@ -2791,6 +2816,10 @@ async def _read_authorized_npy_header(db_image: models.DataInstance) -> tuple[tu
     inline_data = _inline_image_bytes(db_image)
     if inline_data is not None:
         return read_npy_header(io.BytesIO(inline_data[:max_prefix_bytes]))
+
+    fixture_path = _builtin_pt3_fixture_path(db_image)
+    if fixture_path is not None:
+        return await asyncio.to_thread(_read_npy_header_from_path, fixture_path)
 
     internal_url = get_presigned_download_url(
         bucket_name=settings.S3_BUCKET,
@@ -3046,25 +3075,13 @@ async def get_image_content(
             }
         )
 
-    metadata = db_image.metadata_json if isinstance(db_image.metadata_json, dict) else {}
-    fixture_name = metadata.get("builtin_fixture_filename") or db_image.filename
-    if metadata.get("source") == "vista-test-data" and metadata.get("project_type") == "PT3" and fixture_name:
-        fixture_root = (Path(__file__).resolve().parents[2] / "test" / "data" / "3D" / "geometric").resolve()
-        safe_name = Path(str(fixture_name)).name
-        fixture_path = (fixture_root / safe_name).resolve()
-        expected_storage_key = f"{db_image.project_id}/test-data/{safe_name}"
-        if (
-            safe_name == str(fixture_name)
-            and db_image.filename == safe_name
-            and db_image.object_storage_key == expected_storage_key
-            and fixture_path.parent == fixture_root
-            and fixture_path.is_file()
-        ):
-            return StreamingResponse(
-                content=fixture_path.open("rb"),
-                media_type=db_image.content_type or "image/png",
-                headers={"Content-Disposition": get_content_disposition_header(db_image.filename, "inline")},
-            )
+    fixture_path = _builtin_pt3_fixture_path(db_image)
+    if fixture_path is not None:
+        return StreamingResponse(
+            content=fixture_path.open("rb"),
+            media_type=db_image.content_type or "application/octet-stream",
+            headers={"Content-Disposition": get_content_disposition_header(db_image.filename, "inline")},
+        )
 
     # Get the presigned URL for internal use
     internal_url = get_presigned_download_url(

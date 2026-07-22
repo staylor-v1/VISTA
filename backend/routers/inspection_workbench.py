@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import httpx
+import numpy as np
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,6 +46,12 @@ from utils.gaussian_splat_converter import (
 from utils.real_gaussian_splat_optimizer import (
     RealGaussianSplatOptimizationError,
     optimize_real_gaussian_splat_asset,
+)
+from utils.pt3_test_fixtures import (
+    DEFAULT_PT3_FIXTURE_ID,
+    NIST_COCR_FIXTURE_ID,
+    get_pt3_test_fixture,
+    resolve_pt3_test_fixture_file,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -861,6 +868,46 @@ async def _get_active_project_image_by_filename(
     return result.scalars().first()
 
 
+NIST_FIXTURE_REUSE_FIELDS = (
+    "source",
+    "project_type",
+    "builtin_fixture_id",
+    "fixture_id",
+    "builtin_fixture_filename",
+    "fixture_role",
+    "volume_stack_id",
+    "volume_shape",
+    "axis_labels",
+    "load_mode",
+    "frame_count",
+    "voxel_dtype",
+    "pixel_dtype",
+    "bit_depth",
+    "overlay",
+    "modality",
+    "overlay_base_filename",
+    "overlay_base_image_id",
+)
+
+
+def _nist_fixture_reuse_conflicts(
+    *,
+    image: models.DataInstance,
+    expected_metadata: dict,
+    project_id: uuid.UUID,
+    filename: str,
+) -> list[str]:
+    existing_metadata = image.metadata_json if isinstance(image.metadata_json, dict) else {}
+    conflicts = [
+        field
+        for field in NIST_FIXTURE_REUSE_FIELDS
+        if existing_metadata.get(field) != expected_metadata.get(field)
+    ]
+    if image.object_storage_key != f"{project_id}/test-data/{filename}":
+        conflicts.append("object_storage_key")
+    return conflicts
+
+
 async def _create_test_image_if_missing(
     *,
     project_id: uuid.UUID,
@@ -879,6 +926,21 @@ async def _create_test_image_if_missing(
     )
     image = existing.scalars().first()
     if image:
+        if metadata.get("builtin_fixture_id") == NIST_COCR_FIXTURE_ID:
+            conflicts = _nist_fixture_reuse_conflicts(
+                image=image,
+                expected_metadata=metadata,
+                project_id=project_id,
+                filename=file_path.name,
+            )
+            if conflicts:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Existing image conflicts with built-in NIST fixture {file_path.name}: "
+                        f"{', '.join(conflicts)}"
+                    ),
+                )
         return image, False
 
     object_storage_key = f"{project_id}/test-data/{file_path.name}"
@@ -923,6 +985,40 @@ async def _create_test_image_if_missing(
         created_by=current_user.email,
     )
     return image, True
+
+
+def _validated_nist_fixture_shape(raw_spec, overlay_spec) -> tuple[int, int, int]:
+    """Read only NPY headers and reject a malformed or misaligned fixture pair."""
+
+    headers: list[tuple[tuple[int, ...], np.dtype]] = []
+    for file_spec in (raw_spec, overlay_spec):
+        try:
+            volume = np.load(file_spec.path, mmap_mode="r", allow_pickle=False)
+            shape = tuple(int(value) for value in volume.shape)
+            dtype = np.dtype(volume.dtype)
+            del volume
+        except (OSError, ValueError, TypeError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Invalid NIST CoCr fixture NPY header: {file_spec.filename}",
+            ) from exc
+        expected_dtype = np.dtype(file_spec.dtype)
+        if len(shape) != 3 or dtype != expected_dtype:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    f"Invalid NIST CoCr fixture header for {file_spec.filename}: "
+                    f"expected a 3D {expected_dtype.name} array"
+                ),
+            )
+        headers.append((shape, dtype))
+
+    if headers[0][0] != headers[1][0]:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="NIST CoCr raw and segmentation fixture volumes are not aligned",
+        )
+    return headers[0][0]
 
 
 
@@ -1891,21 +1987,17 @@ async def _write_image_record_to_stack_dir(
         return publish_bytes(inline_data)
 
     # Built-in PT3 fixtures may intentionally be metadata-only when object storage is
-    # unavailable. Resolve only a basename inside the repository-owned fixture root;
-    # never accept an arbitrary path from persisted metadata.
+    # unavailable. Persisted provenance is untrusted; resolve it through the central
+    # server-owned allowlist rather than joining a metadata-derived path.
     if metadata.get("source") == "vista-test-data" and metadata.get("project_type") == "PT3":
-        raw_fixture_name = str(metadata.get("builtin_fixture_filename") or image.filename)
-        fixture_name = Path(raw_fixture_name).name
-        fixture_path = (PT3_TEST_STACK_ROOT / fixture_name).resolve()
-        fixture_root = PT3_TEST_STACK_ROOT.resolve()
-        expected_storage_key = f"{image.project_id}/test-data/{fixture_name}"
-        if (
-            raw_fixture_name == fixture_name
-            and image.filename == fixture_name
-            and image.object_storage_key == expected_storage_key
-            and fixture_path.parent == fixture_root
-            and fixture_path.is_file()
-        ):
+        fixture_path = resolve_pt3_test_fixture_file(
+            fixture_id=metadata.get("builtin_fixture_id"),
+            fixture_filename=metadata.get("builtin_fixture_filename") or image.filename,
+            image_filename=image.filename,
+            object_storage_key=image.object_storage_key,
+            project_id=image.project_id,
+        )
+        if fixture_path is not None:
             if fixture_path.stat().st_size > byte_limit:
                 raise HTTPException(
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -4426,15 +4518,125 @@ async def clone_project_configuration(
 )
 async def load_project_test_data(
     project_id: uuid.UUID,
+    fixture: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
 ):
     project = await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
     project_type = (project.project_type or "PT1").upper()
+    fixture_id = fixture or DEFAULT_PT3_FIXTURE_ID
+    if get_pt3_test_fixture(fixture_id) is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown test-data fixture")
+    if fixture_id == NIST_COCR_FIXTURE_ID and project_type != "PT3":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The nist-cocr fixture is only available for PT3 projects",
+        )
     uploaded_records: List[dict] = []
     images_created = 0
 
-    if project_type == "PT3":
+    if project_type == "PT3" and fixture_id == NIST_COCR_FIXTURE_ID:
+        nist_fixture = get_pt3_test_fixture(NIST_COCR_FIXTURE_ID)
+        assert nist_fixture is not None
+        raw_spec = next(item for item in nist_fixture.files if item.role == "base")
+        overlay_spec = next(item for item in nist_fixture.files if item.role == "overlay")
+        if not raw_spec.path.is_file() or not overlay_spec.path.is_file():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="NIST CoCr test volumes not found")
+
+        axial, coronal, sagittal = _validated_nist_fixture_shape(raw_spec, overlay_spec)
+        volume_shape = {"axial": axial, "coronal": coronal, "sagittal": sagittal}
+        common_metadata = {
+            "source": "vista-test-data",
+            "project_type": "PT3",
+            "builtin_fixture_id": NIST_COCR_FIXTURE_ID,
+            "fixture_id": NIST_COCR_FIXTURE_ID,
+            "volume_stack_id": "PT3_NIST_COCR_SET1SAMPLE5_001",
+            "volume_shape": volume_shape,
+            "axis_labels": ["XY", "XZ", "YZ"],
+            "load_mode": "volume",
+            "frame_count": axial,
+        }
+        raw_metadata = {
+            **common_metadata,
+            "builtin_fixture_filename": raw_spec.filename,
+            "fixture_role": raw_spec.role,
+            "overlay": False,
+            "modality": "volume",
+            "voxel_dtype": raw_spec.dtype,
+            "pixel_dtype": raw_spec.dtype,
+            "bit_depth": 16,
+        }
+        raw_image, raw_created = await _create_test_image_if_missing(
+            project_id=project_id,
+            file_path=raw_spec.path,
+            metadata=raw_metadata,
+            db=db,
+            current_user=current_user,
+            allow_metadata_only=True,
+        )
+        images_created += 1 if raw_created else 0
+        raw_record = {
+            "filename": raw_spec.filename,
+            "image_id": str(raw_image.id),
+            "metadata": raw_metadata,
+            **raw_metadata,
+        }
+
+        overlay_metadata = {
+            **common_metadata,
+            "builtin_fixture_filename": overlay_spec.filename,
+            "fixture_role": overlay_spec.role,
+            "overlay": True,
+            "modality": "segmentation",
+            "voxel_dtype": overlay_spec.dtype,
+            "pixel_dtype": overlay_spec.dtype,
+            "bit_depth": 8,
+            "overlay_base_filename": raw_spec.filename,
+            "overlay_base_image_id": str(raw_image.id),
+        }
+        overlay_image, overlay_created = await _create_test_image_if_missing(
+            project_id=project_id,
+            file_path=overlay_spec.path,
+            metadata=overlay_metadata,
+            db=db,
+            current_user=current_user,
+            allow_metadata_only=True,
+        )
+        images_created += 1 if overlay_created else 0
+        overlay_record = {
+            "filename": overlay_spec.filename,
+            "image_id": str(overlay_image.id),
+            "metadata": overlay_metadata,
+            **overlay_metadata,
+        }
+        uploaded_records.extend([raw_record, overlay_record])
+
+        part_metadata = {
+            **common_metadata,
+            "volume_shape": volume_shape,
+            "voxel_dtype": raw_spec.dtype,
+            "bit_depth": 16,
+            "mpr": {"volume_shape": volume_shape, "axis_labels": ["XY", "XZ", "YZ"]},
+            "source_images": uploaded_records,
+            "view_images": {"volume": raw_spec.filename},
+            "overlay_images": {"volume": {"segmentation": overlay_spec.filename}},
+        }
+        ingest_payload = schemas.InspectionBulkIngestPayload(
+            batches=[
+                schemas.InspectionIngestBatchRecord(
+                    name="PT3_NIST_COCR_SET1SAMPLE5_BATCH",
+                    description="NIST CoCr set1sample5 paired volume test data",
+                    parts=[
+                        schemas.InspectionIngestPartRecord(
+                            serial_number="NIST-COCR-SET1SAMPLE5",
+                            display_name="NIST CoCr set1sample5 center cylinder",
+                            metadata=part_metadata,
+                        )
+                    ],
+                )
+            ]
+        )
+    elif project_type == "PT3":
         if not PT3_TEST_STACK_ROOT.exists():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PT3 test stack not found")
         volume_info = load_slice_stack(PT3_TEST_STACK_ROOT)

@@ -850,6 +850,22 @@ describe('ImageUploader', () => {
 
   describe('Load Test Data', () => {
     test.each([
+      ['PT1', false],
+      ['PT2', false],
+      ['PT3', true],
+    ])('shows the NIST CoCr loader only for %s projects', (projectType, expectsNistLoader) => {
+      renderUploader({ projectType });
+
+      expect(screen.getByRole('button', { name: 'Load Test Data' })).toBeInTheDocument();
+      const nistButton = screen.queryByRole('button', { name: 'Load NIST CoCr Volume' });
+      if (expectsNistLoader) {
+        expect(nistButton).toBeInTheDocument();
+      } else {
+        expect(nistButton).not.toBeInTheDocument();
+      }
+    });
+
+    test.each([
       ['PT1', 16, 4],
       ['PT3', 64, 1],
     ])('loads %s project test data and reports ingest counters', async (projectType, imagesCreated, partsCreated) => {
@@ -967,6 +983,122 @@ describe('ImageUploader', () => {
         );
       });
       expect(props.setError).toHaveBeenCalledWith('Failed to load PT3 test data. PT3 test stack not found');
+    });
+
+    test('loads the NIST CoCr pair from the exact fixture URL and refreshes project data', async () => {
+      const payload = {
+        project_type: 'PT3',
+        images_created: 2,
+        ingest: { counters: { parts_created: 1 } },
+      };
+      const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => payload,
+      });
+      const { props } = renderUploader({ projectType: 'PT3' });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Load NIST CoCr Volume' }));
+
+      await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(
+        '/api/projects/proj-1/load-test-data?fixture=nist-cocr',
+        expect.objectContaining({ method: 'POST', signal: expect.any(AbortSignal) }),
+      ));
+      expect(await screen.findByTestId('load-nist-cocr-result')).toHaveTextContent(
+        'Loaded 2 new NIST CoCr test images; created 1 part.'
+      );
+      expect(props.onUploadComplete).toHaveBeenCalledWith(
+        payload,
+        expect.objectContaining({
+          source: 'test_data',
+          fixture: 'nist-cocr',
+          confirmedSucceeded: 2,
+          partsMayHaveChanged: true,
+          requiresAuthoritativeReconciliation: true,
+          payload,
+        }),
+      );
+      expect(props.setError).toHaveBeenCalledWith(null);
+    });
+
+    test('keeps both fixture controls disabled with a NIST-specific label until refresh completes', async () => {
+      const payload = {
+        project_type: 'PT3',
+        images_created: 2,
+        ingest: { counters: { parts_created: 1 } },
+      };
+      jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => payload,
+      });
+      let resolveRefresh;
+      const onUploadComplete = jest.fn(() => new Promise((resolve) => {
+        resolveRefresh = resolve;
+      }));
+      renderUploader({ projectType: 'PT3', onUploadComplete });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Load NIST CoCr Volume' }));
+
+      expect(await screen.findByRole('button', { name: 'Loading NIST CoCr Volume...' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Load Test Data' })).toBeDisabled();
+      await waitFor(() => expect(onUploadComplete).toHaveBeenCalledTimes(1));
+      expect(screen.getByRole('button', { name: 'Loading NIST CoCr Volume...' })).toBeDisabled();
+
+      resolveRefresh();
+
+      await waitFor(() => expect(
+        screen.getByRole('button', { name: 'Load NIST CoCr Volume' })
+      ).not.toBeDisabled());
+    });
+
+    test('surfaces backend detail when NIST CoCr loading fails', async () => {
+      const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: false,
+        status: 404,
+        json: async () => ({ detail: 'NIST CoCr test volumes not found' }),
+      });
+      const { props } = renderUploader({ projectType: 'PT3' });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Load NIST CoCr Volume' }));
+
+      await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(
+        '/api/projects/proj-1/load-test-data?fixture=nist-cocr',
+        expect.objectContaining({ method: 'POST', signal: expect.any(AbortSignal) }),
+      ));
+      expect(props.setError).toHaveBeenCalledWith(
+        'Failed to load NIST CoCr volume. NIST CoCr test volumes not found'
+      );
+      expect(screen.queryByTestId('load-nist-cocr-result')).not.toBeInTheDocument();
+    });
+
+    test('guards NIST double-clicks and cross-loader concurrency with one operation token', async () => {
+      let resolveFetch;
+      const fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(() => new Promise((resolve) => {
+        resolveFetch = resolve;
+      }));
+      renderUploader({ projectType: 'PT3' });
+      const nistButton = screen.getByRole('button', { name: 'Load NIST CoCr Volume' });
+
+      fireEvent.click(nistButton);
+      fireEvent.click(nistButton);
+      fireEvent.click(screen.getByRole('button', { name: 'Load Test Data' }));
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy).toHaveBeenCalledWith(
+        '/api/projects/proj-1/load-test-data?fixture=nist-cocr',
+        expect.objectContaining({ method: 'POST' }),
+      );
+
+      await act(async () => {
+        resolveFetch({
+          ok: true,
+          json: async () => ({
+            project_type: 'PT3',
+            images_created: 2,
+            ingest: { counters: { parts_created: 1 } },
+          }),
+        });
+      });
+      await waitFor(() => expect(screen.getByTestId('load-nist-cocr-result')).toBeInTheDocument());
     });
   });
 
