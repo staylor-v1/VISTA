@@ -50,14 +50,12 @@ const MPR_RECONSTRUCTION_LABELS = {
   [MPR_RECONSTRUCTION_MODES.orientation]: 'Orientation only',
   [MPR_RECONSTRUCTION_MODES.stack]: 'Stack reconstruction',
   [MPR_RECONSTRUCTION_MODES.shell]: 'Reference shell',
-  [MPR_RECONSTRUCTION_MODES.splat]: 'Simplified 3DGS',
   [MPR_RECONSTRUCTION_MODES.realSplat]: 'Real 3DGS',
   [MPR_RECONSTRUCTION_MODES.volume3d]: 'Ray-marched volume',
   [MPR_RECONSTRUCTION_MODES.hybrid3d]: 'Hybrid part view',
 };
 const PT3_RENDERER_RECONSTRUCTION_MODES = [
   MPR_RECONSTRUCTION_MODES.volume3d,
-  MPR_RECONSTRUCTION_MODES.splat,
   MPR_RECONSTRUCTION_MODES.realSplat,
   MPR_RECONSTRUCTION_MODES.hybrid3d,
 ];
@@ -5392,9 +5390,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 <option value={MPR_RECONSTRUCTION_MODES.volume3d} disabled={!canShowGaussianSplatPreview}>
                   Ray-marched volume
                 </option>
-                <option value={MPR_RECONSTRUCTION_MODES.splat} disabled={!canShowGaussianSplatPreview}>
-                  Simplified 3DGS
-                </option>
                 <option value={MPR_RECONSTRUCTION_MODES.realSplat} disabled={!canShowGaussianSplatPreview}>
                   Real 3DGS
                 </option>
@@ -5403,16 +5398,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 </option>
               </select>
             </label>
-            {effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat && (
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                data-testid="splat-config-button"
-                onClick={() => setSplatConfigModalOpen(true)}
-              >
-                3DGS configuration
-              </button>
-            )}
             <span className="mpr-probe-readout">Probe {tooltipValues.base}</span>
             <div className="mpr-ml-actions">
               <button
@@ -5584,11 +5569,8 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
               aria-modal={mprFullscreenOpen ? 'true' : undefined}
               aria-labelledby={mprFullscreenOpen ? 'mpr-3d-fullscreen-title' : undefined}
               aria-describedby={mprFullscreenOpen ? 'mpr-3d-fullscreen-mode' : undefined}
-              onClick={(event) => {
+              onClick={() => {
                 setActiveMprPane('volume');
-                if (!mprFullscreenOpen && !event.target.closest('button, input, select, label')) {
-                  openMprFullscreen(event);
-                }
               }}
               onWheel={handleMprVolumeWheel}
             >
@@ -5621,6 +5603,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 tabIndex={0}
                 ref={mprFullscreenSceneRef}
                 aria-label={mprFullscreenOpen ? 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.' : 'Open 3D part view fullscreen'}
+                onClick={(event) => {
+                  if (!mprFullscreenOpen && !event.target.closest('button, input, select, label, fieldset')) {
+                    openMprFullscreen(event);
+                  }
+                }}
                 onPointerDown={handleMprVolumePointerDown}
                 onPointerMove={handleMprVolumePointerMove}
                 onPointerUp={handleMprVolumePointerUp}
@@ -5660,9 +5647,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                       ? 'volume'
                       : effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.realSplat
                         ? 'real-splat'
-                        : effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.splat
-                          ? 'splat'
-                          : 'hybrid'}
+                        : 'hybrid'}
                     rotation={mprRotation}
                     zoom={viewportTransform.zoom}
                     mirrorScale={mprAxisMirrorScale}

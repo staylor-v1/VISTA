@@ -185,6 +185,7 @@ export async function createThreeMechanicalRenderer(canvas, {
       sampleStep: { value: 1.25 },
       opacityMultiplier: { value: 1.25 },
       intensityThreshold: { value: 0.08 },
+      opacityRampWidth: { value: 0.52 },
       colorLow: { value: new THREE.Vector3(...presetColors.machinedMetal[0]) },
       colorHigh: { value: new THREE.Vector3(...presetColors.machinedMetal[1]) },
     },
@@ -208,6 +209,7 @@ export async function createThreeMechanicalRenderer(canvas, {
       uniform float sampleStep;
       uniform float opacityMultiplier;
       uniform float intensityThreshold;
+      uniform float opacityRampWidth;
       uniform vec3 colorLow;
       uniform vec3 colorHigh;
       in vec3 localPosition;
@@ -219,7 +221,7 @@ export async function createThreeMechanicalRenderer(canvas, {
         for (int i = 0; i < 512; i++) {
           if (any(lessThan(samplePoint, vec3(0.0))) || any(greaterThan(samplePoint, vec3(1.0))) || accumulated.a > 0.98) break;
           float value = texture(volumeMap, samplePoint).r;
-          float alpha = smoothstep(intensityThreshold, min(1.0, intensityThreshold + 0.52), value)
+          float alpha = smoothstep(intensityThreshold, min(1.0, intensityThreshold + opacityRampWidth), value)
             * 0.075 * opacityMultiplier * sampleStep;
           vec3 color = mix(colorLow, colorHigh, smoothstep(intensityThreshold, 1.0, value));
           if (hasSegmentation) {
@@ -279,7 +281,7 @@ export async function createThreeMechanicalRenderer(canvas, {
 
   return {
     rendererType: 'three-webgl-raymarch',
-    render({ width, height, rotation, zoom, mirrorScale, volumeOpacity, presetKey, intensityThreshold, sampleStep, slicePosition, showSliceGuides, segmentationPalette }) {
+    render({ width, height, rotation, zoom, mirrorScale, volumeOpacity, transferFunction, intensityThreshold, sampleStep, slicePosition, showSliceGuides, segmentationPalette }) {
       const safeWidth = Math.max(1, width || canvas.clientWidth || 1);
       const safeHeight = Math.max(1, height || canvas.clientHeight || 1);
       renderer.setSize(safeWidth, safeHeight, false);
@@ -306,9 +308,15 @@ export async function createThreeMechanicalRenderer(canvas, {
       material.uniforms.sampleStep.value = safeSampleStep;
       material.uniforms.stepSize.value = safeSampleStep / Math.max(...dimensions, 1);
       updateSegmentationPalette(segmentationPaletteTexture, segmentationStateTexture, segmentationPalette);
-      const colors = presetColors[presetKey] || presetColors.machinedMetal;
-      material.uniforms.colorLow.value.set(...colors[0]);
-      material.uniforms.colorHigh.value.set(...colors[1]);
+      const parseColor = (hex, fallback) => {
+        const match = /^#?([0-9a-f]{6})$/i.exec(String(hex || ''));
+        if (!match) return fallback;
+        const value = Number.parseInt(match[1], 16);
+        return [((value >> 16) & 255) / 255, ((value >> 8) & 255) / 255, (value & 255) / 255];
+      };
+      material.uniforms.opacityRampWidth.value = Math.min(1, Math.max(0.01, Number(transferFunction?.opacityRampWidth) || 0.52));
+      material.uniforms.colorLow.value.set(...parseColor(transferFunction?.colorLow, presetColors.machinedMetal[0]));
+      material.uniforms.colorHigh.value.set(...parseColor(transferFunction?.colorHigh, presetColors.machinedMetal[1]));
       renderer.render(scene, camera);
     },
     dispose() {
