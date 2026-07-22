@@ -89,10 +89,22 @@ jest.mock('../components/ClassManager', () => ({ classes }) => (
 ));
 jest.mock('../components/InspectionWorkbenchPanel', () => {
   const React = require('react');
-  const MockInspectionWorkbenchPanel = ({ launchFilters, onInspectionShareStateChange }) => (
+  const MockInspectionWorkbenchPanel = ({
+    launchFilters,
+    sessionMprSlicePosition,
+    onMprSlicePositionChange,
+    onInspectionShareStateChange,
+  }) => (
     <div>
       <div>Inspection workbench</div>
       <output data-testid="inspection-launch-filters">{JSON.stringify(launchFilters || null)}</output>
+      <output data-testid="inspection-session-mpr-slice-position">{JSON.stringify(sessionMprSlicePosition || null)}</output>
+      <button
+        type="button"
+        onClick={() => onMprSlicePositionChange?.({ axial: 17, coronal: 23, sagittal: 31 })}
+      >
+        Move MPR slice
+      </button>
       <button
         type="button"
         onClick={() => onInspectionShareStateChange?.({
@@ -1077,6 +1089,27 @@ describe('Project query parameter tab selection', () => {
       selected_image_ref: 'image-7',
       active_metadata_tab: 'details',
     }));
+  });
+
+  test('retains the MPR slice position when Inspection unmounts during tab navigation', async () => {
+    render(<Project />);
+
+    await waitFor(() => expect(screen.getByText('Inspection workbench')).toBeInTheDocument());
+    expect(screen.getByTestId('inspection-session-mpr-slice-position')).toHaveTextContent('null');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move MPR slice' }));
+    expect(screen.getByTestId('inspection-session-mpr-slice-position')).toHaveTextContent(
+      JSON.stringify({ axial: 17, coronal: 23, sagittal: 31 }),
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Analyze' }));
+    await waitFor(() => expect(screen.getByText('Analyze workbench')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'Inspection' }));
+
+    await waitFor(() => expect(screen.getByText('Inspection workbench')).toBeInTheDocument());
+    expect(screen.getByTestId('inspection-session-mpr-slice-position')).toHaveTextContent(
+      JSON.stringify({ axial: 17, coronal: 23, sagittal: 31 }),
+    );
   });
 
   test('shows project classes and metadata management only on the configuration General subtab', async () => {

@@ -166,6 +166,7 @@ function Project({ currentUserGroups = [] }) {
     payload: null,
   });
   const [inspectionLaunchFilters, setInspectionLaunchFilters] = useState(null);
+  const [inspectionMprSlicePositions, setInspectionMprSlicePositions] = useState({});
   const projectConfigurationPanelRef = useRef(null);
   const projectPartsRequestRef = useRef(null);
   const projectImagesRequestRef = useRef(null);
@@ -748,6 +749,14 @@ function Project({ currentUserGroups = [] }) {
     );
   }, [id, isActiveProject, location.pathname, location.search, navigate]);
 
+  const handleInspectionMprSlicePositionChange = useCallback((slicePosition) => {
+    if (!isActiveProject(id) || !slicePosition) return;
+    setInspectionMprSlicePositions((previous) => ({
+      ...previous,
+      [id]: slicePosition,
+    }));
+  }, [id, isActiveProject]);
+
   const handleMainTabChange = useCallback(async (nextTabKey) => {
     const requestProjectId = id;
     if (!isActiveProject(requestProjectId)) return;
@@ -1186,6 +1195,8 @@ function Project({ currentUserGroups = [] }) {
           projectType={project?.project_type}
           hierarchy={interfaceHierarchy.inspection}
           launchFilters={inspectionLaunchFilters}
+          sessionMprSlicePosition={inspectionMprSlicePositions[id]}
+          onMprSlicePositionChange={handleInspectionMprSlicePositionChange}
           onInspectionShareStateChange={handleInspectionShareStateChange}
         />
       );

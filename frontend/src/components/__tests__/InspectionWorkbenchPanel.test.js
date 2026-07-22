@@ -1588,6 +1588,7 @@ describe('InspectionWorkbenchPanel', () => {
   });
 
   test('exposes every axis slice for a 300 frame 300px 3D TIFF stack', async () => {
+    const onMprSlicePositionChange = jest.fn();
     const tiffScenario = {
       user: 'tiff-300',
       batches: [{ id: 'batch-tiff-300', name: 'Batch TIFF 300' }],
@@ -1625,16 +1626,27 @@ describe('InspectionWorkbenchPanel', () => {
       ],
     };
     mockWorkbenchFetch(tiffScenario);
-    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+    render(
+      <InspectionWorkbenchPanel
+        projectId="proj-1"
+        projectType="PT3"
+        sessionMprSlicePosition={{ axial: 17, coronal: 23, sagittal: 31 }}
+        onMprSlicePositionChange={onMprSlicePositionChange}
+      />,
+    );
 
     await screen.findByTestId('mpr-panel');
 
     expect(document.querySelector('#mpr-slice-axial')).toHaveAttribute('max', '299');
     expect(document.querySelector('#mpr-slice-coronal')).toHaveAttribute('max', '299');
     expect(document.querySelector('#mpr-slice-sagittal')).toHaveAttribute('max', '299');
+    expect(document.querySelector('#mpr-slice-axial')).toHaveValue('17');
+    expect(document.querySelector('#mpr-slice-coronal')).toHaveValue('23');
+    expect(document.querySelector('#mpr-slice-sagittal')).toHaveValue('31');
     expect(screen.getByTestId('mpr-pane-3d')).toHaveTextContent('3D');
 
     fireEvent.change(document.querySelector('#mpr-slice-axial'), { target: { value: '299' } });
+    expect(onMprSlicePositionChange).toHaveBeenLastCalledWith({ axial: 299, coronal: 23, sagittal: 31 });
     fireEvent.change(document.querySelector('#mpr-slice-coronal'), { target: { value: '299' } });
     fireEvent.change(document.querySelector('#mpr-slice-sagittal'), { target: { value: '299' } });
 

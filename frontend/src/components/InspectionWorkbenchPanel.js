@@ -3273,7 +3273,15 @@ export function buildInspectionShareParams(state = {}) {
   return params;
 }
 
-function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFilters, onInspectionShareStateChange }) {
+function InspectionWorkbenchPanel({
+  projectId,
+  projectType,
+  hierarchy,
+  launchFilters,
+  sessionMprSlicePosition,
+  onMprSlicePositionChange,
+  onInspectionShareStateChange,
+}) {
   const [batches, setBatches] = useState([]);
   const [parts, setParts] = useState([]);
   const [selectedBatchId, setSelectedBatchId] = useState('');
@@ -3285,6 +3293,11 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [error, setError] = useState(null);
   const [savingPartId, setSavingPartId] = useState(null);
   const [slicePosition, setSlicePosition] = useState({ axial: 0, coronal: 0, sagittal: 0 });
+  const sessionMprSlicePositionRef = useRef({ projectId, slicePosition: sessionMprSlicePosition });
+  if (sessionMprSlicePositionRef.current.projectId !== projectId) {
+    sessionMprSlicePositionRef.current = { projectId, slicePosition: sessionMprSlicePosition };
+  }
+  const slicePositionRef = useRef(slicePosition);
   const [viewportTransform, setViewportTransform] = useState({ zoom: 1, panX: 0, panY: 0 });
   const [activeMprPane, setActiveMprPane] = useState('axial');
   const [lastActiveMprAxis, setLastActiveMprAxis] = useState('axial');
@@ -4349,14 +4362,17 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   useEffect(() => {
     if (!selectedPart || projectType !== 'PT3') return;
     const savedMpr = workspaceHydration?.mpr || {};
-    const savedSlice = savedMpr?.slice_position || {};
+    const savedSlice = sessionMprSlicePositionRef.current.slicePosition || savedMpr?.slice_position || {};
     const savedViewport = savedMpr?.viewport_transform || {};
     const savedProbe = savedMpr?.cursor_probe || {};
-    setSlicePosition({
+    const hydratedSlicePosition = {
       axial: clampRange(savedSlice.axial, 0, Math.max(0, mprDimensions.axial - 1), Math.floor((mprDimensions.axial - 1) / 2)),
       coronal: clampRange(savedSlice.coronal, 0, Math.max(0, mprDimensions.coronal - 1), Math.floor((mprDimensions.coronal - 1) / 2)),
       sagittal: clampRange(savedSlice.sagittal, 0, Math.max(0, mprDimensions.sagittal - 1), Math.floor((mprDimensions.sagittal - 1) / 2)),
-    });
+    };
+    sessionMprSlicePositionRef.current.slicePosition = hydratedSlicePosition;
+    slicePositionRef.current = hydratedSlicePosition;
+    setSlicePosition(hydratedSlicePosition);
     setViewportTransform({
       zoom: clampRange(savedViewport.zoom, 0.5, 4, 1),
       panX: clampRange(savedViewport.panX, -200, 200, 0),
@@ -4674,15 +4690,23 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const updateSlicePosition = (axis, value, dimensions) => {
     const upper = Math.max(0, (dimensions?.[axis] || 1) - 1);
     const nextValue = Math.min(upper, Math.max(0, Number(value) || 0));
-    setSlicePosition((prev) => ({ ...prev, [axis]: nextValue }));
+    const nextSlicePosition = { ...slicePositionRef.current, [axis]: nextValue };
+    sessionMprSlicePositionRef.current.slicePosition = nextSlicePosition;
+    slicePositionRef.current = nextSlicePosition;
+    setSlicePosition(nextSlicePosition);
+    onMprSlicePositionChange?.(nextSlicePosition);
   };
 
   const stepSlicePosition = (axis, delta) => {
     const upper = Math.max(0, (mprDimensions?.[axis] || 1) - 1);
-    setSlicePosition((prev) => ({
-      ...prev,
-      [axis]: Math.min(upper, Math.max(0, Number(prev[axis] || 0) + delta)),
-    }));
+    const nextSlicePosition = {
+      ...slicePositionRef.current,
+      [axis]: Math.min(upper, Math.max(0, Number(slicePositionRef.current[axis] || 0) + delta)),
+    };
+    sessionMprSlicePositionRef.current.slicePosition = nextSlicePosition;
+    slicePositionRef.current = nextSlicePosition;
+    setSlicePosition(nextSlicePosition);
+    onMprSlicePositionChange?.(nextSlicePosition);
   };
 
   const handleMprPaneWheel = (axis, event) => {
