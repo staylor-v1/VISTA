@@ -15,6 +15,7 @@ import {
 } from './pt3ThreeRenderer';
 import { MECHANICAL_TRANSFER_PRESETS, getMechanicalCropBox, getMechanicalVolumeMetadata, makeMechanicalFallbackSplats } from './pt3MechanicalVisualization';
 import { getSegmentDisplayStyle, normalizePt3Segmentation, segmentColorToRgba } from './pt3Segmentation';
+import { renderPt3VectorAnnotations } from './pt3VectorAnnotations';
 import {
   DEFAULT_SPLAT_VIEW_SETTINGS,
   evaluateGraphdecoSphericalHarmonics,
@@ -35,6 +36,8 @@ const QUALITY_PROFILES = { performance: { sampleStep: 2.5, scale: 0.65 }, balanc
 const SPLAT_FALLBACK_NOTE = 'Generated 3DGS asset unavailable. Showing deterministic mechanical fallback splats.';
 const DEFAULT_AXIS_MIRROR_SCALE = Object.freeze({ x: 1, y: 1, z: 1 });
 const EMPTY_VOLUME_IMAGE_STACK = Object.freeze([]);
+const EMPTY_VECTOR_ANNOTATIONS = Object.freeze([]);
+const EMPTY_SEGMENTATION_SEGMENTS = Object.freeze([]);
 export const REAL_SPLAT_BROWSER_MAX = 100000;
 const DEFAULT_REAL_SPLAT_BUDGET = 50000;
 export const DEFAULT_RAY_MARCH_SETTINGS = Object.freeze({
@@ -47,6 +50,10 @@ export const DEFAULT_RAY_MARCH_SETTINGS = Object.freeze({
   showSliceGuides: true,
   ...DEFAULT_PT3_RECONSTRUCTION_OPTIONS,
 });
+
+export function getRenderablePt3SegmentationSegments(segments, showAnnotations = true) {
+  return showAnnotations ? segments : EMPTY_SEGMENTATION_SEGMENTS;
+}
 
 const RAY_MARCH_QUALITY_IDS = new Set(Object.keys(QUALITY_PROFILES));
 const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
@@ -540,6 +547,8 @@ export default function Pt3GaussianSplatViewer({
   onResetView,
   showRayMarchControls = false,
   showSplatControls = false,
+  vectorAnnotations = EMPTY_VECTOR_ANNOTATIONS,
+  showAnnotations = true,
 }) {
   const canvasRef = useRef(null);
   const webglCanvasRef = useRef(null);
@@ -612,6 +621,10 @@ export default function Pt3GaussianSplatViewer({
   const rayMarchControlsAvailable = mode === VIEWER_MODES.volume && rendererType.startsWith('three-');
   const realSplatCameras = useMemo(() => getPt3RealSplatCameras(part), [part]);
   const [segmentationSegments, setSegmentationSegments] = useState(segmentationContract.segments);
+  const renderableSegmentationSegments = getRenderablePt3SegmentationSegments(
+    segmentationSegments,
+    showAnnotations,
+  );
   const asset = useMemo(() => (
     mode === VIEWER_MODES.realSplat ? getPt3RealGaussianSplatAsset(part) : getPt3GaussianSplatAsset(part)
   ), [mode, part]);
@@ -879,7 +892,7 @@ export default function Pt3GaussianSplatViewer({
         sampleStep: profile.sampleStep,
         slicePosition,
         showSliceGuides,
-        segmentationPalette: segmentationSegments,
+        segmentationPalette: renderableSegmentationSegments,
         reconstructionStyle,
         windowCenter,
         windowWidth,
@@ -910,10 +923,20 @@ export default function Pt3GaussianSplatViewer({
           tunedSplatView: isPureSplatMode || rendererType === 'canvas2d-fallback',
           showReferenceFrame: mode !== VIEWER_MODES.hybrid || rendererType === 'canvas2d-fallback',
           projectionCache,
-          segmentationSegments,
+          segmentationSegments: renderableSegmentationSegments,
           statsRef,
         });
       }
+      renderPt3VectorAnnotations(ctx, {
+        vectorAnnotations,
+        showAnnotations,
+        metadata,
+        rotation,
+        zoom,
+        mirrorScale: activeMirrorScale,
+        width,
+        height,
+      });
       const renderDuration = Math.max(0.1, performance.now() - startedAt);
       statsRef.current.fps = Math.min(999, Math.max(1, Math.round(1000 / renderDuration)));
     };
@@ -931,7 +954,7 @@ export default function Pt3GaussianSplatViewer({
       resizeObserver?.disconnect();
       window.removeEventListener('resize', scheduleRender);
     };
-  }, [activeMirrorScale, boundaryBandWidth, boundaryEnhancement, boundaryStrength, colorHigh, colorLow, cropEnabled, intensityThreshold, isPureSplatMode, isoThreshold, isoWidth, metadata, mode, opacityRampWidth, quality, reconstructionStyle, rendererType, rotation, segmentationSegments, showSliceGuides, slicePosition, splatContrast, splatGuidesVisible, splatOpacity, splatPointSize, splats, volumeOpacity, windowCenter, windowWidth, zoom]);
+  }, [activeMirrorScale, boundaryBandWidth, boundaryEnhancement, boundaryStrength, colorHigh, colorLow, cropEnabled, intensityThreshold, isPureSplatMode, isoThreshold, isoWidth, metadata, mode, opacityRampWidth, quality, reconstructionStyle, renderableSegmentationSegments, rendererType, rotation, showAnnotations, showSliceGuides, slicePosition, splatContrast, splatGuidesVisible, splatOpacity, splatPointSize, splats, vectorAnnotations, volumeOpacity, windowCenter, windowWidth, zoom]);
 
   const updateRayMarchSetting = (key, value) => {
     onRayMarchSettingsChange?.({ ...activeRayMarchSettings, [key]: value });

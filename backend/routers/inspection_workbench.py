@@ -16,10 +16,11 @@ import numpy as np
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List, Optional
+from typing import Any, Callable, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -203,6 +204,76 @@ def _part_annotations(part) -> List[dict]:
     metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
     annotations = metadata.get(ANNOTATIONS_METADATA_KEY)
     return list(annotations) if isinstance(annotations, list) else []
+
+
+INSPECTION_MAX_ANNOTATIONS_PER_PART = 2_048
+INSPECTION_MAX_VISTA_SEGMENTS_PER_PART = 64
+INSPECTION_MAX_ANNOTATIONS_JSON_BYTES = 32 * 1024 * 1024
+
+
+async def _get_locked_inspection_part(
+    *,
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+):
+    return await crud.get_inspection_part_for_update(
+        db=db,
+        project_id=project_id,
+        part_id=part_id,
+    )
+
+
+def _validate_annotation_collection_limits(annotations: list[dict]) -> None:
+    if len(annotations) > INSPECTION_MAX_ANNOTATIONS_PER_PART:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "A part may contain at most "
+                f"{INSPECTION_MAX_ANNOTATIONS_PER_PART} annotations"
+            ),
+        )
+    if any(not isinstance(annotation, dict) for annotation in annotations):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Part annotations must contain only JSON objects",
+        )
+    vista_segment_count = sum(
+        1
+        for annotation in annotations
+        if (
+            annotation.get("annotation_kind") == "vista_segment"
+            or (
+                isinstance(annotation.get("geometry"), dict)
+                and "segment" in annotation["geometry"]
+            )
+        )
+    )
+    if vista_segment_count > INSPECTION_MAX_VISTA_SEGMENTS_PER_PART:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "A part may contain at most "
+                f"{INSPECTION_MAX_VISTA_SEGMENTS_PER_PART} VISTA segment annotations"
+            ),
+        )
+    try:
+        serialized_size = len(
+            json.dumps(annotations, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+        )
+    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Annotations must contain JSON-compatible finite values",
+        ) from exc
+    if serialized_size > INSPECTION_MAX_ANNOTATIONS_JSON_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Part annotations must contain at most "
+                f"{INSPECTION_MAX_ANNOTATIONS_JSON_BYTES} serialized bytes"
+            ),
+        )
 
 
 def _normalize_panel_dimension(value: object, *, fallback: int, minimum: int, maximum: int) -> int:
@@ -808,6 +879,107 @@ def _rebuild_part_image_maps(metadata: dict) -> dict:
         "view_images": view_images,
         "overlay_images": overlay_images,
     }
+
+
+_PART_IMAGE_MAP_METADATA_KEYS = (
+    "source_images",
+    "configured_views",
+    "modalities",
+    "view_images",
+    "overlay_images",
+)
+
+
+def _part_image_map_metadata_patch(metadata: dict) -> dict:
+    """Return only fields derived from source_images for a locked metadata merge.
+
+    Assignment routes discover source records from a project-wide snapshot. A
+    concurrent annotation save can commit after that snapshot but before the
+    assignment writes. Replaying the entire snapshot here would overwrite the
+    fresh annotations (and any other unrelated metadata), even though the CRUD
+    helper reloads the row under a lock. Keeping this patch key-scoped lets the
+    locked merge retain the authoritative non-image fields.
+    """
+
+    normalized = _rebuild_part_image_maps(metadata)
+    return {
+        key: normalized[key]
+        for key in _PART_IMAGE_MAP_METADATA_KEYS
+    }
+
+
+async def _mutate_part_source_images_locked(
+    *,
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    transform: Callable[[list], tuple[list, Any]],
+    updated_by: str,
+):
+    """Transform source_images from the authoritative row-lock snapshot."""
+
+    def mutate_metadata(metadata: dict) -> tuple[dict, Any]:
+        source_images = metadata.get("source_images")
+        current_source_images = list(source_images) if isinstance(source_images, list) else []
+        transformed_source_images, mutation_result = transform(current_source_images)
+        if transformed_source_images == current_source_images:
+            return {}, mutation_result
+        return (
+            _part_image_map_metadata_patch(
+                {**metadata, "source_images": transformed_source_images}
+            ),
+            mutation_result,
+        )
+
+    return await crud.mutate_inspection_part_metadata_locked(
+        db=db,
+        project_id=project_id,
+        part_id=part_id,
+        metadata_mutator=mutate_metadata,
+        updated_by=updated_by,
+    )
+
+
+def _remove_source_image_records(
+    source_images: list,
+    *,
+    filename: str,
+    image_id: uuid.UUID | str | None,
+    fallback_image_id: uuid.UUID | str | None = None,
+) -> tuple[list, Optional[dict]]:
+    retained = []
+    removed_entry = None
+    for record in source_images:
+        if _record_matches_image_identity(record, filename=filename, image_id=image_id):
+            removed_entry = {
+                **record,
+                "filename": str(record.get("filename") or filename).strip(),
+                "image_id": record.get("image_id") or (
+                    str(fallback_image_id) if fallback_image_id else None
+                ),
+            }
+            continue
+        retained.append(record)
+    return retained, removed_entry
+
+
+def _replace_source_image_record(
+    source_images: list,
+    *,
+    entry: dict,
+    filename: str,
+    image_id: uuid.UUID | str | None,
+) -> list:
+    retained = [
+        record
+        for record in source_images
+        if not _record_matches_image_identity(
+            record,
+            filename=filename,
+            image_id=image_id,
+        )
+    ]
+    return [*retained, dict(entry)]
 
 
 def _metadata_for_overlay_assignment(image: models.DataInstance) -> dict:
@@ -1853,7 +2025,7 @@ async def update_inspection_part_metadata_sources(
     current_user: schemas.User = Depends(get_current_user),
 ):
     project = await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
-    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    part = await _get_locked_inspection_part(db=db, project_id=project_id, part_id=part_id)
     if not part:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
 
@@ -3576,26 +3748,29 @@ async def assign_image_to_part(
         source_images = metadata.get("source_images")
         if not isinstance(source_images, list):
             continue
-        retained = []
-        for record in source_images:
-            if _record_matches_image_identity(record, filename=filename, image_id=payload_image_id):
-                source_entry = {
-                    **record,
-                    "filename": str(record.get("filename") or filename).strip(),
-                    "image_id": record.get("image_id") or (str(payload_image_id) if payload_image_id else None),
-                }
-                from_part_id = part.id
-                continue
-            retained.append(record)
-        if len(retained) != len(source_images):
-            normalized = _rebuild_part_image_maps({**metadata, "source_images": retained})
-            await crud.update_inspection_part_metadata(
+        if any(
+            _record_matches_image_identity(
+                record,
+                filename=filename,
+                image_id=payload_image_id,
+            )
+            for record in source_images
+        ):
+            _, removed_entry = await _mutate_part_source_images_locked(
                 db=db,
                 project_id=project_id,
                 part_id=part.id,
-                metadata_patch=normalized,
+                transform=lambda fresh_records: _remove_source_image_records(
+                    fresh_records,
+                    filename=filename,
+                    image_id=payload_image_id,
+                    fallback_image_id=payload_image_id,
+                ),
                 updated_by=current_user.email,
             )
+            if removed_entry is not None:
+                source_entry = removed_entry
+                from_part_id = part.id
 
     if source_entry is None:
         if payload_image_id:
@@ -3659,22 +3834,26 @@ async def assign_image_to_part(
             }
 
     if target_part:
-        target_metadata = target_part.metadata_json if isinstance(target_part.metadata_json, dict) else {}
-        target_source_images = target_metadata.get("source_images")
-        target_source_images = target_source_images if isinstance(target_source_images, list) else []
-        target_source_images = [
-            record for record in target_source_images
-            if not _record_matches_image_identity(record, filename=filename, image_id=payload_image_id)
-        ]
-        target_source_images.append(source_entry)
-        normalized_target = _rebuild_part_image_maps({**target_metadata, "source_images": target_source_images})
-        await crud.update_inspection_part_metadata(
+        persisted_target, _ = await _mutate_part_source_images_locked(
             db=db,
             project_id=project_id,
             part_id=target_part.id,
-            metadata_patch=normalized_target,
+            transform=lambda fresh_records: (
+                _replace_source_image_record(
+                    fresh_records,
+                    entry=source_entry,
+                    filename=filename,
+                    image_id=payload_image_id,
+                ),
+                source_entry,
+            ),
             updated_by=current_user.email,
         )
+        if not persisted_target:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Target part not found",
+            )
 
     return schemas.InspectionPartImageAssignmentResponse(
         project_id=project_id,
@@ -3721,24 +3900,29 @@ async def assign_overlay_to_base_image(
         source_images = metadata.get("source_images")
         if not isinstance(source_images, list):
             continue
-        retained = []
-        removed = False
-        for record in source_images:
-            if _record_matches_image_identity(record, filename=overlay_filename, image_id=overlay_image_id):
-                overlay_entry = {**record, "filename": str(record.get("filename") or overlay_filename).strip(), "image_id": record.get("image_id") or str(overlay_image.id)}
-                from_part_id = part.id
-                removed = True
-                continue
-            retained.append(record)
-        if removed:
-            normalized = _rebuild_part_image_maps({**metadata, "source_images": retained})
-            await crud.update_inspection_part_metadata(
+        if any(
+            _record_matches_image_identity(
+                record,
+                filename=overlay_filename,
+                image_id=overlay_image_id,
+            )
+            for record in source_images
+        ):
+            _, removed_entry = await _mutate_part_source_images_locked(
                 db=db,
                 project_id=project_id,
                 part_id=part.id,
-                metadata_patch=normalized,
+                transform=lambda fresh_records: _remove_source_image_records(
+                    fresh_records,
+                    filename=overlay_filename,
+                    image_id=overlay_image_id,
+                    fallback_image_id=overlay_image.id,
+                ),
                 updated_by=current_user.email,
             )
+            if removed_entry is not None:
+                overlay_entry = removed_entry
+                from_part_id = part.id
 
     if overlay_entry is None:
         overlay_entry = _metadata_for_overlay_assignment(overlay_image)
@@ -3769,31 +3953,66 @@ async def assign_overlay_to_base_image(
         if not target_part:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Base image is not assigned to an inspection part")
 
-        base_image_id = str(base_entry.get("image_id") or base_image.id)
-        overlay_entry = {
-            **overlay_entry,
-            "overlay": True,
-            "side": str(base_entry.get("side") or overlay_entry.get("side") or "").strip().lower(),
-            "modality": str(overlay_entry.get("modality") or "overlay").strip().lower() or "overlay",
-            "overlay_base_filename": base_filename,
-            "overlay_base_image_id": base_image_id,
-        }
-        target_metadata = target_part.metadata_json if isinstance(target_part.metadata_json, dict) else {}
-        target_source_images = target_metadata.get("source_images")
-        target_source_images = target_source_images if isinstance(target_source_images, list) else []
-        target_source_images = [
-            record for record in target_source_images
-            if not _record_matches_image_identity(record, filename=overlay_filename, image_id=overlay_image_id)
-        ]
-        target_source_images.append(overlay_entry)
-        normalized_target = _rebuild_part_image_maps({**target_metadata, "source_images": target_source_images})
-        await crud.update_inspection_part_metadata(
+        def attach_overlay_to_fresh_base(fresh_records):
+            fresh_base_entry = next(
+                (
+                    record
+                    for record in fresh_records
+                    if _record_matches_image_identity(
+                        record,
+                        filename=base_filename,
+                        image_id=base_image_id,
+                    )
+                    and not bool(record.get("overlay"))
+                ),
+                None,
+            )
+            if fresh_base_entry is None:
+                return fresh_records, None
+            attached_overlay = {
+                **overlay_entry,
+                "overlay": True,
+                "side": str(
+                    fresh_base_entry.get("side")
+                    or overlay_entry.get("side")
+                    or ""
+                ).strip().lower(),
+                "modality": str(
+                    overlay_entry.get("modality") or "overlay"
+                ).strip().lower() or "overlay",
+                "overlay_base_filename": base_filename,
+                "overlay_base_image_id": str(
+                    fresh_base_entry.get("image_id") or base_image.id
+                ),
+            }
+            return (
+                _replace_source_image_record(
+                    fresh_records,
+                    entry=attached_overlay,
+                    filename=overlay_filename,
+                    image_id=overlay_image_id,
+                ),
+                attached_overlay,
+            )
+
+        persisted_target, attached_overlay = await _mutate_part_source_images_locked(
             db=db,
             project_id=project_id,
             part_id=target_part.id,
-            metadata_patch=normalized_target,
+            transform=attach_overlay_to_fresh_base,
             updated_by=current_user.email,
         )
+        if not persisted_target:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Target part not found",
+            )
+        if attached_overlay is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Base image is no longer assigned to the inspection part",
+            )
+        overlay_entry = attached_overlay
 
     return schemas.InspectionOverlayAssignmentResponse(
         project_id=project_id,
@@ -3846,40 +4065,66 @@ async def update_inspection_part_source_image(
     current_user: schemas.User = Depends(get_current_user),
 ):
     await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
-    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    part = await _get_locked_inspection_part(db=db, project_id=project_id, part_id=part_id)
     if not part:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
     metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
-    source_images = metadata.get("source_images")
-    if not isinstance(source_images, list):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source image not found")
     target_ref = str(image_ref or "").strip()
-    updated_images = []
     found = False
-    for record in source_images:
-        if not isinstance(record, dict):
-            updated_images.append(record)
+    updated_collections: dict[str, list] = {}
+    for collection_key in ("source_images", "analysis_outputs"):
+        records = metadata.get(collection_key)
+        if not isinstance(records, list):
             continue
-        record_refs = {
-            str(record.get("image_id") or "").strip(),
-            str(record.get("filename") or "").strip(),
-        }
-        if target_ref and target_ref in record_refs:
-            found = True
-            next_record = dict(record)
-            if payload.crop_subtitle is not None:
-                next_record["crop_subtitle"] = payload.crop_subtitle.strip()
-            updated_images.append(next_record)
-        else:
-            updated_images.append(record)
+        updated_records = []
+        for record in records:
+            if not isinstance(record, dict):
+                updated_records.append(record)
+                continue
+            record_refs = {
+                str(record.get("image_id") or "").strip(),
+                str(record.get("filename") or "").strip(),
+            }
+            if target_ref and target_ref in record_refs:
+                found = True
+                next_record = dict(record)
+                if payload.crop_subtitle is not None:
+                    next_record["crop_subtitle"] = payload.crop_subtitle.strip()
+                if payload.hidden is not None:
+                    next_record["hidden"] = payload.hidden
+                updated_records.append(next_record)
+            else:
+                updated_records.append(record)
+        updated_collections[collection_key] = updated_records
     if not found:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source image not found")
-    normalized = _rebuild_part_image_maps({**metadata, "source_images": updated_images})
+    updated_metadata = {**metadata, **updated_collections}
+    normalized = (
+        _rebuild_part_image_maps(updated_metadata)
+        if "source_images" in updated_collections
+        else updated_metadata
+    )
+    metadata_patch = {
+        key: normalized[key]
+        for key in (
+            "source_images",
+            "analysis_outputs",
+            "configured_views",
+            "modalities",
+            "view_images",
+            "overlay_images",
+        )
+        if key in updated_collections or (
+            "source_images" in updated_collections
+            and key in normalized
+            and key != "analysis_outputs"
+        )
+    }
     updated = await crud.update_inspection_part_metadata(
         db=db,
         project_id=project_id,
         part_id=part_id,
-        metadata_patch=normalized,
+        metadata_patch=metadata_patch,
         updated_by=current_user.email,
     )
     if not updated:
@@ -3921,7 +4166,7 @@ async def invoke_part_segmentation(
 ):
     await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
 
-    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    part = await _get_locked_inspection_part(db=db, project_id=project_id, part_id=part_id)
     if not part:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
 
@@ -4131,7 +4376,7 @@ async def create_part_annotation(
     current_user: schemas.User = Depends(get_current_user),
 ):
     await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
-    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    part = await _get_locked_inspection_part(db=db, project_id=project_id, part_id=part_id)
     if not part:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
 
@@ -4162,6 +4407,7 @@ async def create_part_annotation(
     }
     annotations = _part_annotations(part)
     annotations.append(annotation_entry)
+    _validate_annotation_collection_limits(annotations)
     updated_part = await crud.update_inspection_part_metadata(
         db=db,
         project_id=project_id,
@@ -4187,11 +4433,12 @@ async def update_part_annotation(
     current_user: schemas.User = Depends(get_current_user),
 ):
     await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
-    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    part = await _get_locked_inspection_part(db=db, project_id=project_id, part_id=part_id)
     if not part:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
 
     existing_annotations = _part_annotations(part)
+    _validate_annotation_collection_limits(existing_annotations)
     update_payload = payload.model_dump(exclude_none=True)
     now = datetime.now(timezone.utc).isoformat()
     updated_annotation = None
@@ -4205,11 +4452,28 @@ async def update_part_annotation(
                 "updated_at": now,
                 "updated_by": current_user.email,
             }
+            try:
+                validated_annotation = schemas.InspectionAnnotation.model_validate(annotation)
+            except ValidationError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=[
+                        {
+                            "loc": list(error.get("loc", ())),
+                            "msg": error.get("msg", "Invalid annotation"),
+                            "type": error.get("type", "value_error"),
+                        }
+                        for error in exc.errors(include_url=False)
+                    ],
+                ) from exc
+            annotation = validated_annotation.model_dump(mode="json")
             updated_annotation = annotation
         updated_annotations.append(annotation)
 
     if not updated_annotation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Annotation not found")
+
+    _validate_annotation_collection_limits(updated_annotations)
 
     persisted = await crud.update_inspection_part_metadata(
         db=db,
@@ -4235,7 +4499,7 @@ async def delete_part_annotation(
     current_user: schemas.User = Depends(get_current_user),
 ):
     await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
-    part = await crud.get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    part = await _get_locked_inspection_part(db=db, project_id=project_id, part_id=part_id)
     if not part:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
 

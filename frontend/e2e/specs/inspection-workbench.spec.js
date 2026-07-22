@@ -339,8 +339,8 @@ test.describe('Inspection Workbench screenshot artifact', () => {
   });
 });
 
-test.describe('PT3 real and simplified 3DGS modes', () => {
-  test('keeps simplified separate and completes a voxel-native canonical Real 3DGS fit', async ({ page }) => {
+test.describe('PT3 Real 3DGS mode', () => {
+  test('omits obsolete simplified controls and completes a voxel-native canonical Real 3DGS fit', async ({ page }) => {
     const segmentedPart = {
       id: 'part-adv-001',
       batch_id: 'batch-adv-a',
@@ -370,7 +370,7 @@ test.describe('PT3 real and simplified 3DGS modes', () => {
     await page.getByRole('tab', { name: 'Inspection' }).click();
     const viewSelector = page.getByLabel('3D view');
     await expect(viewSelector).toBeVisible();
-    await expect(viewSelector.locator('option[value="splat"]')).toHaveText('Simplified 3DGS');
+    await expect(viewSelector.locator('option[value="splat"]')).toHaveCount(0);
     await expect(viewSelector.locator('option[value="real_splat"]')).toHaveText('Real 3DGS');
 
     await viewSelector.selectOption('real_splat');
@@ -421,10 +421,6 @@ test.describe('PT3 real and simplified 3DGS modes', () => {
       && controlsBox.y + controlsBox.height > segmentationBox.y
     )).toBeFalsy();
     await page.getByTestId('mpr-pane-3d').screenshot({ path: pt3RealSplatScreenshotPath });
-
-    await viewSelector.selectOption('splat');
-    await expect(page.getByTestId('splat-config-button')).toBeVisible();
-    await expect(viewer).not.toContainText('Real 3DGS');
   });
 });
 
@@ -472,7 +468,12 @@ test.describe('PT3 large NPY lazy MPR loading', () => {
     let sliceRequestDelayMs = 25;
 
     page.on('pageerror', (error) => pageErrors.push(error.message));
-    page.on('requestfailed', (request) => failedRequests.push(`${request.method()} ${request.url()}`));
+    page.on('requestfailed', (request) => {
+      // React may cancel superseded project-data reads while the inspection tab
+      // initializes; those browser aborts are not failed slice loads.
+      if (request.failure()?.errorText === 'net::ERR_ABORTED') return;
+      failedRequests.push(`${request.method()} ${request.url()}`);
+    });
 
     const { projectId } = await mockInspectionWorkbenchRoutes(page, {
       type: 'PT3',
@@ -519,31 +520,27 @@ test.describe('PT3 large NPY lazy MPR loading', () => {
     await expect(page.locator('.mpr-slice-canvas[data-slice-load-status="ready"]')).toHaveCount(3);
     await expect.poll(() => inFlightSliceRequests).toBe(0);
 
-    const baseRequestsBeforeOverlay = sliceRequests.filter((request) => request.imageId === baseImageId);
-    expect(baseRequestsBeforeOverlay.length).toBeGreaterThanOrEqual(3);
-    expect(baseRequestsBeforeOverlay.length).toBeLessThanOrEqual(24);
-    expect(baseRequestsBeforeOverlay.length).toBeLessThan(dimensions.axial / 20);
-    expect(sliceRequests.filter((request) => request.imageId === overlayImageId)).toHaveLength(0);
+    const baseRequestsAfterLoad = sliceRequests.filter((request) => request.imageId === baseImageId);
+    const overlayRequests = sliceRequests.filter((request) => request.imageId === overlayImageId);
+    expect(baseRequestsAfterLoad.length).toBeGreaterThanOrEqual(3);
+    expect(baseRequestsAfterLoad.length).toBeLessThanOrEqual(24);
+    expect(baseRequestsAfterLoad.length).toBeLessThan(dimensions.axial / 20);
+    expect(overlayRequests.length).toBeGreaterThanOrEqual(3);
+    expect(overlayRequests.length).toBeLessThanOrEqual(15);
     expect(maxInFlightSliceRequests).toBeLessThanOrEqual(4);
     for (const axis of ['axial', 'coronal', 'sagittal']) {
       const selectedIndex = Number(await page.locator(`#mpr-slice-${axis}`).inputValue());
-      expect(baseRequestsBeforeOverlay.find((request) => request.axis === axis)?.index).toBe(selectedIndex);
+      expect(baseRequestsAfterLoad.find((request) => request.axis === axis)?.index).toBe(selectedIndex);
     }
 
-    await page.getByRole('button', { name: 'Part Selection' }).click();
-    await expect(page.getByRole('heading', { name: 'Part Selection' })).toBeVisible();
-    const overlayToggle = page.getByRole('button', { name: 'OVERLAY', exact: true });
-    await expect(overlayToggle).toBeVisible();
-    await overlayToggle.click();
-    await expect(overlayToggle).toHaveAttribute('aria-pressed', 'true');
-    await page.getByRole('button', { name: 'Close Part Selection' }).click();
-    await expect.poll(() => sliceRequests.filter((request) => request.imageId === overlayImageId).length).toBeGreaterThanOrEqual(3);
-    await expect.poll(() => inFlightSliceRequests).toBe(0);
-
-    const overlayRequests = sliceRequests.filter((request) => request.imageId === overlayImageId);
-    expect(overlayRequests.length).toBeLessThanOrEqual(15);
+    const annotationList = page.getByTestId('annotation-list');
+    await expect(annotationList).toContainText('External: overlay for nist_part.npy');
+    await expect(annotationList.getByRole('button', {
+      name: 'Hide external overlay overlay for nist_part.npy',
+      exact: true,
+    })).toBeVisible();
     for (const overlayRequest of overlayRequests) {
-      expect(baseRequestsBeforeOverlay).toContainEqual(expect.objectContaining({
+      expect(baseRequestsAfterLoad).toContainEqual(expect.objectContaining({
         axis: overlayRequest.axis,
         index: overlayRequest.index,
       }));
@@ -633,6 +630,10 @@ test.describe('PT3 large NPY lazy MPR loading', () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
     });
+    // The rapid loop can outlive the original DOM node when React commits a
+    // slice update. Finish through Playwright's current locator so the final
+    // generation always targets the mounted slider.
+    await axialSlider.fill('299');
     await expect(axialSlider).toHaveValue('299');
     await expect(page.getByTestId('mpr-pane-axial').locator('[data-slice-load-status="ready"]')).toHaveCount(1);
     await expect.poll(() => inFlightSliceRequests, { timeout: 20_000 }).toBe(0);

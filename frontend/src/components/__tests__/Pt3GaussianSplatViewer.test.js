@@ -5,6 +5,7 @@ import Pt3GaussianSplatViewer, {
   DEFAULT_RAY_MARCH_SETTINGS,
   getPt3RealGaussianSplatAsset,
   getPt3RealSplatCameras,
+  getRenderablePt3SegmentationSegments,
   normalizeRayMarchSettings,
   REAL_SPLAT_BROWSER_MAX,
 } from '../Pt3GaussianSplatViewer';
@@ -12,10 +13,16 @@ import {
   createThreeMechanicalRenderer,
   DEFAULT_PT3_RECONSTRUCTION_OPTIONS,
 } from '../pt3ThreeRenderer';
+import { renderPt3VectorAnnotations } from '../pt3VectorAnnotations';
 
 jest.mock('../pt3ThreeRenderer', () => ({
   ...jest.requireActual('../pt3ThreeRenderer'),
   createThreeMechanicalRenderer: jest.fn(),
+}));
+
+jest.mock('../pt3VectorAnnotations', () => ({
+  ...jest.requireActual('../pt3VectorAnnotations'),
+  renderPt3VectorAnnotations: jest.fn(),
 }));
 
 const part = {
@@ -570,6 +577,80 @@ describe('Pt3GaussianSplatViewer renderer degradation', () => {
     rerender(<Pt3GaussianSplatViewer part={segmentedPart} mode="volume" />);
     expect(screen.getByRole('group', { name: 'Segmentation display' })).toHaveTextContent('Shell');
     expect(screen.getByLabelText('Show Shell')).toBeChecked();
+  });
+
+  test('forwards vector annotations and the global visibility gate to the registered Canvas overlay', async () => {
+    const vectorAnnotations = [{
+      id: 'vista-segment-a',
+      label: 'Internal pore',
+      color: '#22d3ee',
+      visible: true,
+      axis: 'axial',
+      minSlice: 0,
+      maxSlice: 0,
+      imageWidth: 128,
+      imageHeight: 1,
+      areas: [{ tool: 'rectangle', start: { x: 2, y: 0 }, end: { x: 8, y: 1 } }],
+    }];
+    const denseLabels = Array.from({ length: 128 }, () => 1);
+    const segmentedPart = {
+      ...part,
+      metadata: {
+        ...part.metadata,
+        pt3_segmentation: {
+          segments: [{ id: 1, label: 'Dense shell', color: '#f97316' }],
+          label_slices: [{ slice_index: 0, labels: denseLabels }],
+        },
+      },
+    };
+    const renderer = makeRenderer();
+    createThreeMechanicalRenderer.mockResolvedValue(renderer);
+    renderPt3VectorAnnotations.mockClear();
+    const { rerender } = render(<Pt3GaussianSplatViewer
+      part={segmentedPart}
+      mode="volume"
+      vectorAnnotations={vectorAnnotations}
+      showAnnotations={false}
+    />);
+
+    await waitFor(() => expect(renderPt3VectorAnnotations).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        vectorAnnotations,
+        showAnnotations: false,
+        metadata: expect.objectContaining({ dimensions: [128, 1, 1] }),
+      }),
+    ));
+    expect(createThreeMechanicalRenderer).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        segmentationLabelSlices: [{ sliceIndex: 0, labels: denseLabels }],
+      }),
+    );
+    expect(createThreeMechanicalRenderer.mock.calls[0][1]).not.toHaveProperty('vectorAnnotations');
+    await waitFor(() => expect(renderer.render).toHaveBeenCalledWith(
+      expect.objectContaining({ segmentationPalette: [] }),
+    ));
+
+    rerender(<Pt3GaussianSplatViewer
+      part={segmentedPart}
+      mode="volume"
+      vectorAnnotations={vectorAnnotations}
+      showAnnotations
+    />);
+    await waitFor(() => expect(renderPt3VectorAnnotations.mock.calls.some(([, options]) => (
+      options.vectorAnnotations === vectorAnnotations && options.showAnnotations === true
+    ))).toBe(true));
+    await waitFor(() => expect(renderer.render.mock.calls.some(([options]) => (
+      options.segmentationPalette.length === 1
+      && options.segmentationPalette[0].label === 'Dense shell'
+    ))).toBe(true));
+  });
+
+  test('removes dense segmentation styling from both volume and splat render inputs', () => {
+    const segments = [{ id: 1, label: 'Dense shell', visible: true, opacity: 1 }];
+    expect(getRenderablePt3SegmentationSegments(segments, false)).toEqual([]);
+    expect(getRenderablePt3SegmentationSegments(segments, true)).toBe(segments);
   });
 
   test('keeps keyboard interaction inside every segmentation control', () => {

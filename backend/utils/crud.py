@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from core import models, schemas
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Callable
 import logging
 
 logger = logging.getLogger(__name__)
@@ -513,6 +513,25 @@ async def get_inspection_part(
     return result.scalars().first()
 
 
+async def get_inspection_part_for_update(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+) -> Optional[models.InspectionPart]:
+    """Return a freshly-loaded part while holding its row lock until commit."""
+
+    result = await db.execute(
+        select(models.InspectionPart)
+        .where(
+            models.InspectionPart.project_id == project_id,
+            models.InspectionPart.id == part_id,
+        )
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    return result.scalar_one_or_none()
+
+
 async def update_inspection_part_batch_assignment(
     db: AsyncSession,
     project_id: uuid.UUID,
@@ -569,7 +588,25 @@ async def update_inspection_part_metadata(
     updated_by: Optional[str] = None,
     commit: bool = True,
 ) -> Optional[models.InspectionPart]:
-    part = await get_inspection_part(db=db, project_id=project_id, part_id=part_id)
+    # Every independently committed metadata mutation participates in the same
+    # row-lock discipline. This keeps a narrow patch (for example
+    # measurement_runs) from merging against a stale identity-mapped document
+    # and erasing annotations written by a concurrent request. Bulk callers
+    # using commit=False already own one encompassing transaction and may have
+    # unflushed identity-map changes that must not be refreshed away here.
+    part = await (
+        get_inspection_part_for_update(
+            db=db,
+            project_id=project_id,
+            part_id=part_id,
+        )
+        if commit
+        else get_inspection_part(
+            db=db,
+            project_id=project_id,
+            part_id=part_id,
+        )
+    )
     if not part:
         return None
 
@@ -586,6 +623,53 @@ async def update_inspection_part_metadata(
             {"project_id": str(project_id), "metadata_keys": sorted(metadata_patch.keys())},
         )
     return part
+
+
+async def mutate_inspection_part_metadata_locked(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    metadata_mutator: Callable[[Dict[str, Any]], tuple[Dict[str, Any], Any]],
+    updated_by: Optional[str] = None,
+) -> tuple[Optional[models.InspectionPart], Any]:
+    """Apply a metadata transformation to the freshly locked row and commit.
+
+    Use this when a patch cannot be computed safely before acquiring the row
+    lock, such as a source-images list transformation. The callback returns a
+    top-level metadata patch plus an arbitrary result needed by the caller.
+    """
+
+    part = await get_inspection_part_for_update(
+        db=db,
+        project_id=project_id,
+        part_id=part_id,
+    )
+    if not part:
+        return None, None
+
+    current_metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+    metadata_patch, mutation_result = metadata_mutator(dict(current_metadata))
+    if not isinstance(metadata_patch, dict):
+        raise TypeError("metadata_mutator must return a dictionary patch")
+    if metadata_patch:
+        part.metadata_json = {**current_metadata, **metadata_patch}
+
+    # Commit even for a no-op transformation so the row lock is released
+    # before the route performs its next source/target mutation.
+    await db.commit()
+    await db.refresh(part)
+    if metadata_patch:
+        log_db_operation(
+            "UPDATE",
+            "inspection_parts",
+            part.id,
+            updated_by or "system",
+            {
+                "project_id": str(project_id),
+                "metadata_keys": sorted(metadata_patch.keys()),
+            },
+        )
+    return part, mutation_result
 
 
 async def remove_image_from_inspection_parts(

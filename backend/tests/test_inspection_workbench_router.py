@@ -3,6 +3,7 @@ from unittest.mock import patch
 import base64
 import io
 import json
+import uuid
 
 from PIL import Image, ImageDraw
 
@@ -829,6 +830,363 @@ def test_part_annotations_support_progressive_users_with_audit_trail(client, pro
         )
         assert deleted_list_resp.status_code == 200, deleted_list_resp.text
         assert deleted_list_resp.json()["annotations"] == []
+
+
+def test_part_annotations_support_legacy_kind_and_valid_vista_segment_geometry(client):
+    headers = {
+        "X-User-Id": "segment-author@example.com",
+        "X-User-Groups": '["segment-authors"]',
+    }
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": "PT3 segment annotations",
+            "meta_group_id": "segment-authors",
+            "project_type": "PT3",
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+    part_resp = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={"serial_number": "PT3-SEGMENT-001", "display_name": "Segmented volume"},
+        headers=headers,
+    )
+    assert part_resp.status_code == 201, part_resp.text
+    part_id = part_resp.json()["id"]
+
+    legacy_resp = client.post(
+        f"/api/projects/{project_id}/parts/{part_id}/annotations",
+        json={
+            "defect_class": "scratch",
+            "modality": "visual",
+            "geometry": {"line": {"x1": 1, "y1": 2, "x2": 3, "y2": 4}},
+        },
+        headers=headers,
+    )
+    assert legacy_resp.status_code == 201, legacy_resp.text
+    assert legacy_resp.json()["annotation_kind"] == "measurement"
+    stored_legacy_annotation = dict(legacy_resp.json())
+    stored_legacy_annotation.pop("annotation_kind")
+    with patch(
+        "routers.inspection_workbench._part_annotations",
+        return_value=[stored_legacy_annotation],
+    ):
+        legacy_list_resp = client.get(
+            f"/api/projects/{project_id}/parts/{part_id}/annotations",
+            headers=headers,
+        )
+    assert legacy_list_resp.status_code == 200, legacy_list_resp.text
+    assert legacy_list_resp.json()["annotations"][0]["annotation_kind"] == "measurement"
+
+    legacy_segment_annotation = {
+        **stored_legacy_annotation,
+        "id": str(uuid.uuid4()),
+        "defect_class": "legacy helper segment",
+        "geometry": {
+            "segment": {
+                "axis": "coronal",
+                "slice_index": 4,
+                "imageWidth": 64,
+                "imageHeight": 48,
+                "areas": [],
+            },
+        },
+    }
+    with patch(
+        "routers.inspection_workbench._part_annotations",
+        return_value=[legacy_segment_annotation],
+    ):
+        legacy_segment_list_resp = client.get(
+            f"/api/projects/{project_id}/parts/{part_id}/annotations",
+            headers=headers,
+        )
+    assert legacy_segment_list_resp.status_code == 200, legacy_segment_list_resp.text
+    normalized_legacy_segment = legacy_segment_list_resp.json()["annotations"][0]
+    assert normalized_legacy_segment["annotation_kind"] == "vista_segment"
+    assert normalized_legacy_segment["geometry"]["segment"] == {
+        "axis": "coronal",
+        "slice_index": 4,
+        "imageWidth": 64,
+        "imageHeight": 48,
+        "areas": [],
+        "version": 1,
+        "min_slice": 4,
+        "max_slice": 4,
+        "image_width": 64,
+        "image_height": 48,
+    }
+
+    segment_geometry = {
+        "segment": {
+            "version": 1,
+            "axis": "axial",
+            "min_slice": 7,
+            "max_slice": 7,
+            "image_width": 512,
+            "image_height": 384,
+            "areas": [
+                {
+                    "id": "polygon-1",
+                    "tool": "polygon",
+                    "operation": "add",
+                    "points": [
+                        {"x": 10.5, "y": 12.25},
+                        {"x": 24, "y": 14},
+                        {"x": 18, "y": 31},
+                    ],
+                },
+                {
+                    "id": "rectangle-1",
+                    "tool": "rectangle",
+                    "operation": "subtract",
+                    "points": [],
+                    "start": {"x": 14, "y": 16},
+                    "end": {"x": 17, "y": 20},
+                },
+            ],
+        }
+    }
+    create_resp = client.post(
+        f"/api/projects/{project_id}/parts/{part_id}/annotations",
+        json={
+            "annotation_kind": "vista_segment",
+            "defect_class": "internal pore",
+            "modality": "volume",
+            "geometry": segment_geometry,
+            "metadata": {"annotation_color": "#22d3ee"},
+        },
+        headers=headers,
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    created = create_resp.json()
+    assert created["annotation_kind"] == "vista_segment"
+    assert created["geometry"] == segment_geometry
+    assert created["geometry"]["segment"]["min_slice"] == created["geometry"]["segment"]["max_slice"]
+
+    hidden_update_resp = client.patch(
+        f"/api/projects/{project_id}/parts/{part_id}/annotations/{created['id']}",
+        json={"hidden": True},
+        headers=headers,
+    )
+    assert hidden_update_resp.status_code == 200, hidden_update_resp.text
+    assert hidden_update_resp.json()["hidden"] is True
+    assert hidden_update_resp.json()["geometry"] == segment_geometry
+
+    mismatched_segment_kind_resp = client.post(
+        f"/api/projects/{project_id}/parts/{part_id}/annotations",
+        json={
+            "annotation_kind": "annotation",
+            "defect_class": "misclassified segment",
+            "modality": "volume",
+            "geometry": segment_geometry,
+        },
+        headers=headers,
+    )
+    assert mismatched_segment_kind_resp.status_code == 422, mismatched_segment_kind_resp.text
+    assert "geometry.segment requires annotation_kind vista_segment" in mismatched_segment_kind_resp.text
+
+    invalid_kind_resp = client.post(
+        f"/api/projects/{project_id}/parts/{part_id}/annotations",
+        json={
+            "annotation_kind": "segment",
+            "defect_class": "invalid kind",
+            "modality": "volume",
+        },
+        headers=headers,
+    )
+    assert invalid_kind_resp.status_code == 422, invalid_kind_resp.text
+
+    invalid_kind_update_resp = client.patch(
+        f"/api/projects/{project_id}/parts/{part_id}/annotations/{legacy_resp.json()['id']}",
+        json={"annotation_kind": "vista_segment"},
+        headers=headers,
+    )
+    assert invalid_kind_update_resp.status_code == 422, invalid_kind_update_resp.text
+    invalid_kind_detail = invalid_kind_update_resp.json()["detail"]
+    assert isinstance(invalid_kind_detail, list)
+    assert any(
+        "vista_segment annotations require geometry.segment" in entry["msg"]
+        for entry in invalid_kind_detail
+    )
+
+
+def test_part_annotations_reject_invalid_vista_segment_geometry_on_create_and_update(client):
+    headers = {
+        "X-User-Id": "segment-validator@example.com",
+        "X-User-Groups": '["segment-validators"]',
+    }
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": "PT3 segment validation",
+            "meta_group_id": "segment-validators",
+            "project_type": "PT3",
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+    part_resp = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={"serial_number": "PT3-SEGMENT-INVALID", "display_name": "Invalid segment cases"},
+        headers=headers,
+    )
+    assert part_resp.status_code == 201, part_resp.text
+    part_id = part_resp.json()["id"]
+
+    base_segment = {
+        "version": 1,
+        "axis": "coronal",
+        "min_slice": 2,
+        "max_slice": 5,
+        "image_width": 128,
+        "image_height": 96,
+        "areas": [{"tool": "polygon", "points": [{"x": 1, "y": 2}]}],
+    }
+    invalid_segments = [
+        {**base_segment, "version": 2},
+        {**base_segment, "version": 1.0},
+        {**base_segment, "axis": "oblique"},
+        {**base_segment, "min_slice": -1},
+        {**base_segment, "min_slice": 6, "max_slice": 5},
+        {**base_segment, "min_slice": 1.5},
+        {**base_segment, "image_width": 0},
+        {**base_segment, "areas": [None]},
+        {**base_segment, "areas": [{"points": [{"x": "NaN", "y": 2}]}]},
+        {**base_segment, "areas": [{}] * 513},
+        {
+            **base_segment,
+            "areas": [{"points": [{"x": index, "y": 1} for index in range(10_001)]}],
+        },
+    ]
+    for invalid_segment in invalid_segments:
+        response = client.post(
+            f"/api/projects/{project_id}/parts/{part_id}/annotations",
+            json={
+                "annotation_kind": "vista_segment",
+                "defect_class": "invalid segment",
+                "modality": "volume",
+                "geometry": {"segment": invalid_segment},
+            },
+            headers=headers,
+        )
+        assert response.status_code == 422, response.text
+
+    oversize_dimension_resp = client.post(
+        f"/api/projects/{project_id}/parts/{part_id}/annotations",
+        json={
+            "annotation_kind": "vista_segment",
+            "defect_class": "oversize segment dimension",
+            "modality": "volume",
+            "geometry": {
+                "segment": {**base_segment, "image_width": 65_537},
+            },
+        },
+        headers=headers,
+    )
+    assert oversize_dimension_resp.status_code == 422, oversize_dimension_resp.text
+    oversize_detail = oversize_dimension_resp.json()["detail"]
+    assert isinstance(oversize_detail, list)
+    assert oversize_detail[0]["loc"][0] == "body"
+    assert "geometry.segment.image_width must be at most 65536" in oversize_detail[0]["msg"]
+
+    from core.schemas import InspectionAnnotationCreate
+
+    with pytest.raises(ValueError, match="finite number"):
+        InspectionAnnotationCreate.model_validate({
+            "annotation_kind": "vista_segment",
+            "defect_class": "nonfinite segment",
+            "modality": "volume",
+            "geometry": {
+                "segment": {
+                    **base_segment,
+                    "areas": [{"points": [{"x": float("inf"), "y": 2}]}],
+                }
+            },
+        })
+
+    valid_resp = client.post(
+        f"/api/projects/{project_id}/parts/{part_id}/annotations",
+        json={
+            "annotation_kind": "vista_segment",
+            "defect_class": "valid before update",
+            "modality": "volume",
+            "geometry": {"segment": base_segment},
+        },
+        headers=headers,
+    )
+    assert valid_resp.status_code == 201, valid_resp.text
+    invalid_update_resp = client.patch(
+        f"/api/projects/{project_id}/parts/{part_id}/annotations/{valid_resp.json()['id']}",
+        json={
+            "geometry": {
+                "segment": {**base_segment, "min_slice": 9, "max_slice": 4},
+            }
+        },
+        headers=headers,
+    )
+    assert invalid_update_resp.status_code == 422, invalid_update_resp.text
+    invalid_update_detail = invalid_update_resp.json()["detail"]
+    assert isinstance(invalid_update_detail, list)
+    assert "geometry.segment.min_slice must be less than or equal to max_slice" in invalid_update_detail[0]["msg"]
+
+
+def test_part_annotation_collection_limits_have_exact_and_legacy_safe_boundaries(monkeypatch):
+    from fastapi import HTTPException
+    from routers import inspection_workbench
+
+    monkeypatch.setattr(inspection_workbench, "INSPECTION_MAX_ANNOTATIONS_PER_PART", 2)
+    inspection_workbench._validate_annotation_collection_limits([{}, {}])
+    with pytest.raises(HTTPException, match="at most 2 annotations") as count_error:
+        inspection_workbench._validate_annotation_collection_limits([{}, {}, {}])
+    assert count_error.value.status_code == 422
+
+    monkeypatch.setattr(inspection_workbench, "INSPECTION_MAX_ANNOTATIONS_PER_PART", 10)
+    monkeypatch.setattr(inspection_workbench, "INSPECTION_MAX_VISTA_SEGMENTS_PER_PART", 1)
+    legacy_segment = {"geometry": {"segment": {}}}
+    inspection_workbench._validate_annotation_collection_limits([legacy_segment])
+    with pytest.raises(HTTPException, match="at most 1 VISTA segment") as segment_error:
+        inspection_workbench._validate_annotation_collection_limits(
+            [legacy_segment, {"annotation_kind": "vista_segment"}]
+        )
+    assert segment_error.value.status_code == 422
+
+    collection = [{"comment": "exact utf-8 size: µ"}]
+    serialized_size = len(
+        json.dumps(
+            collection,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    monkeypatch.setattr(
+        inspection_workbench,
+        "INSPECTION_MAX_ANNOTATIONS_JSON_BYTES",
+        serialized_size,
+    )
+    inspection_workbench._validate_annotation_collection_limits(collection)
+    monkeypatch.setattr(
+        inspection_workbench,
+        "INSPECTION_MAX_ANNOTATIONS_JSON_BYTES",
+        serialized_size - 1,
+    )
+    with pytest.raises(HTTPException, match="serialized bytes") as size_error:
+        inspection_workbench._validate_annotation_collection_limits(collection)
+    assert size_error.value.status_code == 422
+
+    with pytest.raises(HTTPException, match="only JSON objects"):
+        inspection_workbench._validate_annotation_collection_limits(["invalid"])
+
+    with pytest.raises(HTTPException, match="JSON-compatible finite values"):
+        inspection_workbench._validate_annotation_collection_limits([{"value": float("nan")}])
+
+    circular_annotation = {}
+    circular_annotation["self"] = circular_annotation
+    with pytest.raises(HTTPException, match="JSON-compatible finite values"):
+        inspection_workbench._validate_annotation_collection_limits([circular_annotation])
 
 
 @pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
@@ -2407,6 +2765,118 @@ def test_overlay_assignment_maps_overlay_to_base_image(client):
     assert overlay_records[0]["side"] == "front"
 
 
+def test_overlay_hidden_patch_preserves_assigned_source_metadata(client):
+    project_id, headers = _create_project_for_part_image_tests(client, "Overlay visibility project")
+    base = _upload_part_test_image(
+        client,
+        project_id,
+        headers,
+        "visibility-base.png",
+        {"side": "front", "modality": "volume"},
+    )
+    overlay = _upload_part_test_image(
+        client,
+        project_id,
+        headers,
+        "visibility-overlay.png",
+        {
+            "modality": "mask",
+            "overlay": True,
+            "crop_subtitle": "legacy metadata must survive",
+            "pixel_dtype": "uint16",
+            "pixel_value_range": [0, 4095],
+            "signed": False,
+        },
+    )
+    part_resp = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={"serial_number": "PT3-OVERLAY-HIDDEN", "display_name": "Overlay visibility"},
+        headers=headers,
+    )
+    assert part_resp.status_code == 201, part_resp.text
+    part_id = part_resp.json()["id"]
+    assert client.post(
+        f"/api/projects/{project_id}/parts/image-assignments",
+        json={"filename": base["filename"], "image_id": base["id"], "to_part_id": part_id},
+        headers=headers,
+    ).status_code == 200
+    assert client.post(
+        f"/api/projects/{project_id}/parts/image-assignments",
+        json={"filename": overlay["filename"], "image_id": overlay["id"], "to_part_id": part_id},
+        headers=headers,
+    ).status_code == 200
+    assign_overlay_resp = client.post(
+        f"/api/projects/{project_id}/parts/overlay-assignments",
+        json={
+            "overlay_filename": overlay["filename"],
+            "overlay_image_id": overlay["id"],
+            "base_filename": base["filename"],
+            "base_image_id": base["id"],
+        },
+        headers=headers,
+    )
+    assert assign_overlay_resp.status_code == 200, assign_overlay_resp.text
+
+    before_resp = client.get(f"/api/projects/{project_id}/parts", headers=headers)
+    assert before_resp.status_code == 200, before_resp.text
+    before_overlay = next(
+        record
+        for record in before_resp.json()[0]["metadata"]["source_images"]
+        if record.get("image_id") == overlay["id"]
+    )
+    assert "hidden" not in before_overlay
+
+    patch_resp = client.patch(
+        f"/api/projects/{project_id}/parts/{part_id}/source-images/{overlay['id']}",
+        json={"hidden": True},
+        headers=headers,
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+    after_overlay = next(
+        record
+        for record in patch_resp.json()["metadata"]["source_images"]
+        if record.get("image_id") == overlay["id"]
+    )
+    assert after_overlay == {**before_overlay, "hidden": True}
+    assert after_overlay["overlay_base_image_id"] == base["id"]
+    assert after_overlay["crop_subtitle"] == "legacy metadata must survive"
+    assert after_overlay["metadata"]["pixel_value_range"] == [0, 4095]
+
+
+def test_overlay_hidden_patch_updates_analysis_output_when_no_source_image_record_exists(client):
+    project_id, headers = _create_project_for_part_image_tests(client, "Analysis output visibility project")
+    analysis_output = {
+        "filename": "analysis-only-overlay.png",
+        "image_id": "analysis-only-overlay-id",
+        "label": "Analysis-only overlay",
+        "overlay": True,
+        "analysis_output": True,
+        "overlay_base_image_id": "base-image-id",
+        "metadata": {"method": "watershed", "threshold": 17},
+    }
+    part_resp = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={
+            "serial_number": "ANALYSIS-OUTPUT-ONLY",
+            "display_name": "Analysis output visibility",
+            "metadata": {"analysis_outputs": [analysis_output]},
+        },
+        headers=headers,
+    )
+    assert part_resp.status_code == 201, part_resp.text
+    part_id = part_resp.json()["id"]
+
+    patch_resp = client.patch(
+        f"/api/projects/{project_id}/parts/{part_id}/source-images/{analysis_output['image_id']}",
+        json={"hidden": True},
+        headers=headers,
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+    updated_output = patch_resp.json()["metadata"]["analysis_outputs"][0]
+    assert updated_output == {**analysis_output, "hidden": True}
+    assert updated_output["metadata"] == analysis_output["metadata"]
+
+
 def test_overlay_assignment_can_unassign_overlay(client):
     project_id, headers = _create_project_for_part_image_tests(client, "Overlay unassignment project")
     base = _upload_part_test_image(client, project_id, headers, "base-unassign.png", {"side": "front"})
@@ -2482,6 +2952,231 @@ def test_duplicate_filename_assignment_and_overlay_use_image_ids(client):
     assert [record["image_id"] for record in base_records] == [base["id"]]
     assert [record["image_id"] for record in overlay_records] == [overlay["id"]]
     assert overlay_records[0]["overlay_base_image_id"] == base["id"]
+
+
+@pytest.mark.parametrize("assignment_kind", ["image", "overlay"])
+def test_part_image_assignments_transform_fresh_locked_source_records(
+    client,
+    monkeypatch,
+    assignment_kind,
+):
+    from routers import inspection_workbench
+
+    project_id, headers = _create_project_for_part_image_tests(
+        client,
+        f"Concurrent {assignment_kind} assignment project",
+    )
+    moving = _upload_part_test_image(
+        client,
+        project_id,
+        headers,
+        f"concurrent-{assignment_kind}.png",
+        (
+            {"modality": "mask", "overlay": True}
+            if assignment_kind == "overlay"
+            else {"side": "back", "modality": "visual"}
+        ),
+    )
+    base = None
+    if assignment_kind == "overlay":
+        base = _upload_part_test_image(
+            client,
+            project_id,
+            headers,
+            "concurrent-base.png",
+            {"side": "front", "modality": "visual"},
+        )
+    target_anchor = base or _upload_part_test_image(
+        client,
+        project_id,
+        headers,
+        "concurrent-target-anchor.png",
+        {"side": "front", "modality": "reference"},
+    )
+
+    part_ids = {}
+    seed_annotations = {}
+    for role in ("source", "target"):
+        seed_annotation = {
+            "id": f"seed-{role}",
+            "defect_class": f"seed {role} annotation",
+        }
+        part_resp = client.post(
+            f"/api/projects/{project_id}/parts",
+            json={
+                "serial_number": f"CONCURRENT-{assignment_kind.upper()}-{role.upper()}",
+                "display_name": f"Concurrent {role}",
+                "metadata": {
+                    "annotations": [seed_annotation],
+                    "unrelated_state": {"revision": "stale", "role": role},
+                },
+            },
+            headers=headers,
+        )
+        assert part_resp.status_code == 201, part_resp.text
+        part_ids[role] = part_resp.json()["id"]
+        seed_annotations[part_ids[role]] = seed_annotation
+
+    initial_moving_assignment = client.post(
+        f"/api/projects/{project_id}/parts/image-assignments",
+        json={
+            "filename": moving["filename"],
+            "image_id": moving["id"],
+            "to_part_id": part_ids["source"],
+        },
+        headers=headers,
+    )
+    assert initial_moving_assignment.status_code == 200, initial_moving_assignment.text
+    initial_anchor_assignment = client.post(
+        f"/api/projects/{project_id}/parts/image-assignments",
+        json={
+            "filename": target_anchor["filename"],
+            "image_id": target_anchor["id"],
+            "to_part_id": part_ids["target"],
+        },
+        headers=headers,
+    )
+    assert initial_anchor_assignment.status_code == 200, initial_anchor_assignment.text
+
+    original_update = inspection_workbench.crud.update_inspection_part_metadata
+    original_locked_mutation = (
+        inspection_workbench.crud.mutate_inspection_part_metadata_locked
+    )
+    injected_part_ids = set()
+
+    before_assignment_resp = client.get(
+        f"/api/projects/{project_id}/parts",
+        headers=headers,
+    )
+    assert before_assignment_resp.status_code == 200, before_assignment_resp.text
+    source_images_before = {
+        part["id"]: part["metadata"].get("source_images", [])
+        for part in before_assignment_resp.json()
+    }
+    role_by_part_id = {part_id: role for role, part_id in part_ids.items()}
+
+    async def mutate_after_concurrent_source_record_save(*args, **kwargs):
+        mutation_part_id = str(kwargs.get("part_id"))
+        if mutation_part_id in seed_annotations and mutation_part_id not in injected_part_ids:
+            injected_part_ids.add(mutation_part_id)
+            mutation_role = role_by_part_id[mutation_part_id]
+            concurrent_annotation = {
+                "id": f"concurrent-{mutation_part_id}",
+                "defect_class": "saved after assignment read",
+            }
+            concurrently_edited_source_images = []
+            for record in source_images_before[mutation_part_id]:
+                edited_record = dict(record)
+                if (
+                    mutation_role == "source"
+                    and record.get("image_id") == moving["id"]
+                ):
+                    edited_record.update(
+                        {
+                            "hidden": True,
+                            "concurrent_record_revision": "source-fresh",
+                        }
+                    )
+                if (
+                    mutation_role == "target"
+                    and record.get("image_id") == target_anchor["id"]
+                ):
+                    edited_record.update(
+                        {
+                            "hidden": True,
+                            "concurrent_record_revision": "target-fresh",
+                            "side": "fresh-front",
+                        }
+                    )
+                concurrently_edited_source_images.append(edited_record)
+            await original_update(
+                db=kwargs["db"],
+                project_id=kwargs["project_id"],
+                part_id=kwargs["part_id"],
+                metadata_patch={
+                    "annotations": [
+                        seed_annotations[mutation_part_id],
+                        concurrent_annotation,
+                    ],
+                    "unrelated_state": {
+                        "revision": "fresh",
+                        "writer": "annotation-save",
+                    },
+                    "source_images": concurrently_edited_source_images,
+                },
+                updated_by="concurrent-source-edit@example.com",
+            )
+        return await original_locked_mutation(*args, **kwargs)
+
+    monkeypatch.setattr(
+        inspection_workbench.crud,
+        "mutate_inspection_part_metadata_locked",
+        mutate_after_concurrent_source_record_save,
+    )
+
+    if assignment_kind == "image":
+        assignment_resp = client.post(
+            f"/api/projects/{project_id}/parts/image-assignments",
+            json={
+                "filename": moving["filename"],
+                "image_id": moving["id"],
+                "to_part_id": part_ids["target"],
+            },
+            headers=headers,
+        )
+    else:
+        assignment_resp = client.post(
+            f"/api/projects/{project_id}/parts/overlay-assignments",
+            json={
+                "overlay_filename": moving["filename"],
+                "overlay_image_id": moving["id"],
+                "base_filename": base["filename"],
+                "base_image_id": base["id"],
+            },
+            headers=headers,
+        )
+    assert assignment_resp.status_code == 200, assignment_resp.text
+    assert assignment_resp.json()["from_part_id"] == part_ids["source"]
+    assert assignment_resp.json()["to_part_id"] == part_ids["target"]
+    assert injected_part_ids == set(part_ids.values())
+
+    parts_resp = client.get(f"/api/projects/{project_id}/parts", headers=headers)
+    assert parts_resp.status_code == 200, parts_resp.text
+    parts_by_id = {part["id"]: part for part in parts_resp.json()}
+    for role, part_id in part_ids.items():
+        metadata = parts_by_id[part_id]["metadata"]
+        assert metadata["annotations"] == [
+            seed_annotations[part_id],
+            {
+                "id": f"concurrent-{part_id}",
+                "defect_class": "saved after assignment read",
+            },
+        ]
+        assert metadata["unrelated_state"] == {
+            "revision": "fresh",
+            "writer": "annotation-save",
+        }
+
+    source_records = parts_by_id[part_ids["source"]]["metadata"]["source_images"]
+    target_records = parts_by_id[part_ids["target"]]["metadata"]["source_images"]
+    assert all(record.get("image_id") != moving["id"] for record in source_records)
+    moved_record = next(
+        record for record in target_records
+        if record.get("image_id") == moving["id"]
+    )
+    assert moved_record["hidden"] is True
+    assert moved_record["concurrent_record_revision"] == "source-fresh"
+    target_anchor_record = next(
+        record for record in target_records
+        if record.get("image_id") == target_anchor["id"]
+    )
+    assert target_anchor_record["hidden"] is True
+    assert target_anchor_record["concurrent_record_revision"] == "target-fresh"
+    assert target_anchor_record["side"] == "fresh-front"
+    if assignment_kind == "overlay":
+        assert moved_record["overlay_base_image_id"] == base["id"]
+        assert moved_record["overlay"] is True
+        assert moved_record["side"] == "fresh-front"
 
 
 def _png_bytes(color):

@@ -17,6 +17,7 @@ from core.migrations import run_migrations  # legacy no-op
 from core.config import settings as _app_settings
 from utils.boto3_client import boto3_client, ensure_bucket_exists
 from middleware.cors_debug import add_cors_middleware, debug_exception_middleware
+from middleware.request_body_limits import InspectionAnnotationBodyLimitMiddleware
 from middleware.security_headers import SecurityHeadersMiddleware
 from routers import projects, images, users, image_classes, comments, project_metadata, api_keys, ml_analyses, reviews, export, groups, inspection_workbench, analyze, dashboard_settings
 
@@ -216,6 +217,11 @@ def create_app() -> FastAPI:
     # Add CORS middleware
     cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
     add_cors_middleware(app, cors_origins)
+
+    # Protect metadata-backed annotation parsing with a route-scoped byte cap.
+    # Register this before security headers so the outer security middleware
+    # also decorates early 413 responses.
+    app.add_middleware(InspectionAnnotationBodyLimitMiddleware)
 
     # Add security headers middleware
     app.add_middleware(SecurityHeadersMiddleware)

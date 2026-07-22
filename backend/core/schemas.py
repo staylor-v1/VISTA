@@ -435,6 +435,7 @@ class PT3RealSplatGenerationStatus(BaseModel):
 
 class InspectionPartSourceImageUpdateRequest(BaseModel):
     crop_subtitle: Optional[str] = Field(default=None, max_length=255)
+    hidden: Optional[bool] = None
 
 
 class InspectionPart(InspectionPartBase):
@@ -525,7 +526,399 @@ class InspectionWorkspaceStateResponse(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+INSPECTION_SEGMENT_MAX_AREAS = 64
+INSPECTION_SEGMENT_MAX_POINTS_PER_AREA = 10_000
+INSPECTION_SEGMENT_MAX_POINTS_TOTAL = 50_000
+
+# Persisted VISTA segments are API-facing, untrusted JSON.  These ceilings are
+# deliberately much larger than normal industrial CT data while keeping one
+# annotation from becoming an unbounded metadata/document payload.  A 65,536
+# pixel plane and one million slices both exceed practical volumes that fit
+# under VISTA's 2.5 GiB volume-load limit, including low-bit-depth scans.
+INSPECTION_SEGMENT_MAX_IMAGE_DIMENSION = 65_536
+INSPECTION_SEGMENT_MAX_SLICE_INDEX = 1_000_000
+INSPECTION_SEGMENT_MAX_MASK_RUNS_PER_AREA = 50_000
+INSPECTION_SEGMENT_MAX_MASK_RUNS_TOTAL = 50_000
+INSPECTION_SEGMENT_MAX_MASK_PATH_CHARS = 4 * 1024 * 1024
+INSPECTION_SEGMENT_MAX_OTHER_TEXT_CHARS = 4_096
+INSPECTION_SEGMENT_MAX_TEXT_CHARS_TOTAL = 5 * 1024 * 1024
+INSPECTION_SEGMENT_MAX_JSON_DEPTH = 12
+INSPECTION_SEGMENT_MAX_JSON_NODES = 550_000
+INSPECTION_SEGMENT_MAX_JSON_KEY_CHARS = 256
+
+# The annotation envelope is validated separately from geometry.segment.  Its
+# limits intentionally include the two envelope levels (geometry -> segment)
+# and a modest allowance for metadata, measurements, and bbox values.  Reusing
+# the segment ceilings here would make a segment at its documented depth or
+# node boundary fail only after it was wrapped in an otherwise-valid
+# annotation.
+INSPECTION_ANNOTATION_MAX_JSON_DEPTH = 16
+INSPECTION_ANNOTATION_MAX_JSON_NODES = 600_000
+INSPECTION_ANNOTATION_MAX_JSON_KEY_CHARS = 256
+INSPECTION_ANNOTATION_MAX_OTHER_TEXT_CHARS = 4_096
+INSPECTION_ANNOTATION_MAX_TEXT_CHARS_TOTAL = 6 * 1024 * 1024
+
+
+def _require_segment_integer(
+    value: Any,
+    field_name: str,
+    *,
+    minimum: int,
+    maximum: Optional[int] = None,
+) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"geometry.segment.{field_name} must be an integer")
+    if value < minimum:
+        qualifier = "positive" if minimum == 1 else "nonnegative"
+        raise ValueError(f"geometry.segment.{field_name} must be {qualifier}")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"geometry.segment.{field_name} must be at most {maximum}")
+    return value
+
+
+def _require_finite_segment_coordinate(value: Any, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} must be a finite number")
+    try:
+        numeric_value = float(value)
+    except (OverflowError, ValueError):
+        raise ValueError(f"{field_name} must be a finite number") from None
+    if not math.isfinite(numeric_value):
+        raise ValueError(f"{field_name} must be a finite number")
+
+
+def _validate_segment_point(value: Any, field_name: str) -> None:
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be an object with finite x and y coordinates")
+    if "x" not in value or "y" not in value:
+        raise ValueError(f"{field_name} must include x and y coordinates")
+    _require_finite_segment_coordinate(value["x"], f"{field_name}.x")
+    _require_finite_segment_coordinate(value["y"], f"{field_name}.y")
+
+
+def _validate_segment_json_complexity(value: Any, field_name: str) -> None:
+    """Bound arbitrary extension data without recursive Python traversal."""
+
+    is_segment_payload = field_name.startswith("geometry.segment")
+    scope_label = "geometry.segment" if is_segment_payload else "annotation payload"
+    max_json_nodes = (
+        INSPECTION_SEGMENT_MAX_JSON_NODES
+        if is_segment_payload
+        else INSPECTION_ANNOTATION_MAX_JSON_NODES
+    )
+    max_json_depth = (
+        INSPECTION_SEGMENT_MAX_JSON_DEPTH
+        if is_segment_payload
+        else INSPECTION_ANNOTATION_MAX_JSON_DEPTH
+    )
+    max_json_key_chars = (
+        INSPECTION_SEGMENT_MAX_JSON_KEY_CHARS
+        if is_segment_payload
+        else INSPECTION_ANNOTATION_MAX_JSON_KEY_CHARS
+    )
+    max_other_text_chars = (
+        INSPECTION_SEGMENT_MAX_OTHER_TEXT_CHARS
+        if is_segment_payload
+        else INSPECTION_ANNOTATION_MAX_OTHER_TEXT_CHARS
+    )
+    max_text_chars_total = (
+        INSPECTION_SEGMENT_MAX_TEXT_CHARS_TOTAL
+        if is_segment_payload
+        else INSPECTION_ANNOTATION_MAX_TEXT_CHARS_TOTAL
+    )
+    stack = [(value, field_name, 0)]
+    node_count = 0
+    text_char_count = 0
+
+    while stack:
+        current, current_name, depth = stack.pop()
+        node_count += 1
+        if node_count > max_json_nodes:
+            raise ValueError(
+                f"{scope_label} must contain at most "
+                f"{max_json_nodes} JSON values"
+            )
+        if depth > max_json_depth:
+            raise ValueError(
+                f"{scope_label} JSON nesting depth must be at most "
+                f"{max_json_depth}"
+            )
+
+        if isinstance(current, dict):
+            if len(current) > max_json_nodes:
+                raise ValueError(
+                    f"{scope_label} must contain at most "
+                    f"{max_json_nodes} JSON values"
+                )
+            for key, nested_value in current.items():
+                if not isinstance(key, str):
+                    raise ValueError(f"{current_name} keys must be strings")
+                if len(key) > max_json_key_chars:
+                    raise ValueError(
+                        f"{current_name} keys must contain at most "
+                        f"{max_json_key_chars} characters"
+                    )
+                text_char_count += len(key)
+                stack.append((nested_value, f"{current_name}.{key}", depth + 1))
+        elif isinstance(current, list):
+            if len(current) > max_json_nodes:
+                raise ValueError(
+                    f"{scope_label} must contain at most "
+                    f"{max_json_nodes} JSON values"
+                )
+            for index in range(len(current) - 1, -1, -1):
+                stack.append((current[index], f"{current_name}[{index}]", depth + 1))
+        elif isinstance(current, str):
+            is_segment_mask_path = (
+                current_name.endswith((".maskPath", ".mask_path"))
+                and (
+                    is_segment_payload
+                    or current_name.startswith("annotation.geometry.segment.")
+                )
+            )
+            individual_limit = (
+                INSPECTION_SEGMENT_MAX_MASK_PATH_CHARS
+                if is_segment_mask_path
+                else max_other_text_chars
+            )
+            if len(current) > individual_limit:
+                raise ValueError(
+                    f"{current_name} must contain at most {individual_limit} characters"
+                )
+            text_char_count += len(current)
+        elif isinstance(current, float) and not math.isfinite(current):
+            raise ValueError(f"{current_name} must contain only finite numbers")
+        elif current is not None and not isinstance(current, (bool, int, float)):
+            raise ValueError(f"{current_name} must contain JSON-compatible values")
+
+        if text_char_count > max_text_chars_total:
+            raise ValueError(
+                f"{scope_label} text must contain at most "
+                f"{max_text_chars_total} characters in total"
+            )
+
+
+def _segment_mask_run_value(run: Dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        if key in run:
+            return run[key]
+    return None
+
+
+def _validate_segment_mask_run(
+    value: Any,
+    field_name: str,
+    *,
+    image_width: int,
+    image_height: int,
+) -> None:
+    if isinstance(value, list):
+        if len(value) != 3:
+            raise ValueError(f"{field_name} must contain exactly [y, start, end]")
+        y, start, end = value
+    elif isinstance(value, dict):
+        y = _segment_mask_run_value(value, ("y", "row"))
+        start = _segment_mask_run_value(value, ("start", "x1", "x"))
+        end = _segment_mask_run_value(value, ("end", "x2"))
+        if y is None or start is None or end is None:
+            raise ValueError(
+                f"{field_name} must include y/row, start/x1/x, and end/x2 coordinates"
+            )
+    else:
+        raise ValueError(f"{field_name} must be a three-value array or coordinate object")
+
+    for coordinate, coordinate_name in ((y, "y"), (start, "start"), (end, "end")):
+        _require_finite_segment_coordinate(coordinate, f"{field_name}.{coordinate_name}")
+    y_value = float(y)
+    start_value = float(start)
+    end_value = float(end)
+    if y_value < 0 or y_value >= image_height:
+        raise ValueError(f"{field_name}.y must be within [0, image_height)")
+    if start_value < 0 or end_value > image_width:
+        raise ValueError(f"{field_name} horizontal coordinates must be within [0, image_width]")
+    if end_value <= start_value:
+        raise ValueError(f"{field_name}.end must be greater than start")
+
+
+def _validate_inspection_segment_geometry(segment: Any) -> None:
+    if not isinstance(segment, dict):
+        raise ValueError("geometry.segment must be an object")
+    _validate_segment_json_complexity(segment, "geometry.segment")
+    version = segment.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version != 1:
+        raise ValueError("geometry.segment.version must be the integer 1")
+    if segment.get("axis") not in {"axial", "coronal", "sagittal"}:
+        raise ValueError("geometry.segment.axis must be axial, coronal, or sagittal")
+
+    min_slice = _require_segment_integer(
+        segment.get("min_slice"),
+        "min_slice",
+        minimum=0,
+        maximum=INSPECTION_SEGMENT_MAX_SLICE_INDEX,
+    )
+    max_slice = _require_segment_integer(
+        segment.get("max_slice"),
+        "max_slice",
+        minimum=0,
+        maximum=INSPECTION_SEGMENT_MAX_SLICE_INDEX,
+    )
+    if min_slice > max_slice:
+        raise ValueError("geometry.segment.min_slice must be less than or equal to max_slice")
+    image_width = _require_segment_integer(
+        segment.get("image_width"),
+        "image_width",
+        minimum=1,
+        maximum=INSPECTION_SEGMENT_MAX_IMAGE_DIMENSION,
+    )
+    image_height = _require_segment_integer(
+        segment.get("image_height"),
+        "image_height",
+        minimum=1,
+        maximum=INSPECTION_SEGMENT_MAX_IMAGE_DIMENSION,
+    )
+
+    areas = segment.get("areas")
+    if not isinstance(areas, list):
+        raise ValueError("geometry.segment.areas must be an array")
+    if len(areas) > INSPECTION_SEGMENT_MAX_AREAS:
+        raise ValueError(
+            f"geometry.segment.areas must contain at most {INSPECTION_SEGMENT_MAX_AREAS} areas"
+        )
+
+    total_points = 0
+    total_mask_runs = 0
+    for area_index, area in enumerate(areas):
+        area_name = f"geometry.segment.areas[{area_index}]"
+        if not isinstance(area, dict):
+            raise ValueError(f"{area_name} must be an object")
+        points = area.get("points", [])
+        if not isinstance(points, list):
+            raise ValueError(f"{area_name}.points must be an array")
+        if len(points) > INSPECTION_SEGMENT_MAX_POINTS_PER_AREA:
+            raise ValueError(
+                f"{area_name}.points must contain at most "
+                f"{INSPECTION_SEGMENT_MAX_POINTS_PER_AREA} points"
+            )
+        total_points += len(points)
+        if total_points > INSPECTION_SEGMENT_MAX_POINTS_TOTAL:
+            raise ValueError(
+                "geometry.segment areas must contain at most "
+                f"{INSPECTION_SEGMENT_MAX_POINTS_TOTAL} points in total"
+            )
+        for point_index, point in enumerate(points):
+            _validate_segment_point(point, f"{area_name}.points[{point_index}]")
+        for point_field in ("start", "end", "center", "edge", "seed"):
+            if point_field in area:
+                _validate_segment_point(area[point_field], f"{area_name}.{point_field}")
+        if "bbox" in area:
+            bbox = area["bbox"]
+            if not isinstance(bbox, list) or len(bbox) != 4:
+                raise ValueError(f"{area_name}.bbox must contain four finite coordinates")
+            for coordinate_index, coordinate in enumerate(bbox):
+                _require_finite_segment_coordinate(
+                    coordinate,
+                    f"{area_name}.bbox[{coordinate_index}]",
+                )
+        for mask_path_field in ("maskPath", "mask_path"):
+            if mask_path_field not in area:
+                continue
+            mask_path = area[mask_path_field]
+            if not isinstance(mask_path, str):
+                raise ValueError(f"{area_name}.{mask_path_field} must be text")
+            if len(mask_path) > INSPECTION_SEGMENT_MAX_MASK_PATH_CHARS:
+                raise ValueError(
+                    f"{area_name}.{mask_path_field} must contain at most "
+                    f"{INSPECTION_SEGMENT_MAX_MASK_PATH_CHARS} characters"
+                )
+        for mask_runs_field in ("maskRuns", "mask_runs"):
+            if mask_runs_field not in area:
+                continue
+            mask_runs = area[mask_runs_field]
+            if not isinstance(mask_runs, list):
+                raise ValueError(f"{area_name}.{mask_runs_field} must be an array")
+            if len(mask_runs) > INSPECTION_SEGMENT_MAX_MASK_RUNS_PER_AREA:
+                raise ValueError(
+                    f"{area_name}.{mask_runs_field} must contain at most "
+                    f"{INSPECTION_SEGMENT_MAX_MASK_RUNS_PER_AREA} runs"
+                )
+            total_mask_runs += len(mask_runs)
+            if total_mask_runs > INSPECTION_SEGMENT_MAX_MASK_RUNS_TOTAL:
+                raise ValueError(
+                    "geometry.segment areas must contain at most "
+                    f"{INSPECTION_SEGMENT_MAX_MASK_RUNS_TOTAL} mask runs in total"
+                )
+            for run_index, mask_run in enumerate(mask_runs):
+                _validate_segment_mask_run(
+                    mask_run,
+                    f"{area_name}.{mask_runs_field}[{run_index}]",
+                    image_width=image_width,
+                    image_height=image_height,
+                )
+
+
+def _annotation_segment_from_geometry(geometry: Optional[Dict[str, Any]]) -> Any:
+    if not isinstance(geometry, dict) or "segment" not in geometry:
+        return None
+    return geometry["segment"]
+
+
+def _normalize_legacy_annotation_segment(segment: Any) -> Any:
+    if not isinstance(segment, dict):
+        return segment
+    normalized = dict(segment)
+    aliases = {
+        "version": ("version",),
+        "axis": ("axis",),
+        "min_slice": ("min_slice", "minSlice", "slice_index", "sliceIndex"),
+        "max_slice": ("max_slice", "maxSlice", "slice_index", "sliceIndex"),
+        "image_width": ("image_width", "imageWidth"),
+        "image_height": ("image_height", "imageHeight"),
+        "areas": ("areas",),
+    }
+    for canonical, candidates in aliases.items():
+        if canonical in normalized:
+            continue
+        for candidate in candidates:
+            if candidate in segment:
+                normalized[canonical] = segment[candidate]
+                break
+    normalized.setdefault("version", 1)
+    normalized.setdefault("areas", [])
+    return normalized
+
+
+def _normalize_annotation_discriminator(values: Any, *, partial: bool = False) -> Any:
+    if not isinstance(values, dict):
+        return values
+    normalized = dict(values)
+    geometry = normalized.get("geometry")
+    has_segment = isinstance(geometry, dict) and "segment" in geometry
+    has_explicit_kind = (
+        "annotation_kind" in normalized
+        and normalized.get("annotation_kind") not in (None, "")
+    )
+    explicit_kind = str(normalized.get("annotation_kind") or "").strip().lower()
+    if has_segment:
+        if has_explicit_kind and explicit_kind != "vista_segment":
+            raise ValueError("geometry.segment requires annotation_kind vista_segment")
+        normalized["annotation_kind"] = "vista_segment"
+        normalized["geometry"] = {
+            **geometry,
+            "segment": _normalize_legacy_annotation_segment(geometry.get("segment")),
+        }
+    elif not has_explicit_kind and not partial:
+        has_line = isinstance(geometry, dict) and isinstance(geometry.get("line"), dict)
+        defect_class = str(normalized.get("defect_class") or "").strip().lower()
+        normalized["annotation_kind"] = (
+            "measurement" if has_line or defect_class == "measurement" else "annotation"
+        )
+    elif not has_explicit_kind and partial and isinstance(geometry, dict) and isinstance(geometry.get("line"), dict):
+        normalized["annotation_kind"] = "measurement"
+    return normalized
+
+
 class InspectionAnnotationBase(BaseModel):
+    annotation_kind: Literal["annotation", "measurement", "vista_segment"] = "annotation"
     image_id: Optional[str] = Field(default=None, max_length=128)
     defect_class: str = Field(..., min_length=1, max_length=128)
     modality: str = Field(..., min_length=1, max_length=64)
@@ -537,12 +930,37 @@ class InspectionAnnotationBase(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     hidden: bool = False
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_kind_and_segment_aliases(cls, values):
+        return _normalize_annotation_discriminator(values)
+
+    @model_validator(mode="after")
+    def validate_vista_segment_geometry(self):
+        _validate_segment_json_complexity(
+            {
+                "geometry": self.geometry,
+                "metadata": self.metadata,
+                "measurements": self.measurements,
+                "bbox": self.bbox,
+            },
+            "annotation",
+        )
+        has_segment = isinstance(self.geometry, dict) and "segment" in self.geometry
+        segment = _annotation_segment_from_geometry(self.geometry)
+        if self.annotation_kind == "vista_segment" and not has_segment:
+            raise ValueError("vista_segment annotations require geometry.segment")
+        if has_segment:
+            _validate_inspection_segment_geometry(segment)
+        return self
+
 
 class InspectionAnnotationCreate(InspectionAnnotationBase):
     pass
 
 
 class InspectionAnnotationUpdate(BaseModel):
+    annotation_kind: Optional[Literal["annotation", "measurement", "vista_segment"]] = None
     image_id: Optional[str] = Field(default=None, max_length=128)
     defect_class: Optional[str] = Field(default=None, min_length=1, max_length=128)
     modality: Optional[str] = Field(default=None, min_length=1, max_length=64)
@@ -553,6 +971,29 @@ class InspectionAnnotationUpdate(BaseModel):
     bbox: Optional[Dict[str, float]] = None
     metadata: Optional[Dict[str, Any]] = None
     hidden: Optional[bool] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_supplied_kind_and_segment_aliases(cls, values):
+        return _normalize_annotation_discriminator(values, partial=True)
+
+    @model_validator(mode="after")
+    def validate_supplied_vista_segment_geometry(self):
+        _validate_segment_json_complexity(
+            {
+                "geometry": self.geometry,
+                "metadata": self.metadata,
+                "measurements": self.measurements,
+                "bbox": self.bbox,
+            },
+            "annotation",
+        )
+        segment = _annotation_segment_from_geometry(self.geometry)
+        if isinstance(self.geometry, dict) and "segment" in self.geometry:
+            _validate_inspection_segment_geometry(segment)
+        if self.annotation_kind == "vista_segment" and self.geometry is not None and segment is None:
+            raise ValueError("vista_segment annotations require geometry.segment")
+        return self
 
 
 class InspectionAnnotation(InspectionAnnotationBase):
