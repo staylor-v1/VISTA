@@ -4,8 +4,15 @@ import {
   getMprOverlayCompositeAlpha,
   getMprSliceCanvasCacheStats,
   getServerVolumePrefetchSources,
+  getAlignedVolumeOverlayRendererStacks,
+  getVolumeSummaryRepresentativeIndices,
+  getVolumeRendererSliceIndices,
   getVolumeOverlayStacks,
   getVolumeSourceImages,
+  getSemantic3dVolumeOverlayStacks,
+  isConfirmedRgbaVolumeOverlay,
+  mapWithConcurrency,
+  MPR_VOLUME_SLICE_RENDER_VERSION,
   rememberSliceCanvas,
   resetMprSliceCanvasCacheForTests,
 } from '../InspectionWorkbenchPanel';
@@ -77,7 +84,7 @@ describe('PT3 volume overlay stack mapping', () => {
       kind: 'server-volume',
       imageId: 'large-base-id',
       dimensions,
-      url: '/api/images/large-base-id/volume-slice?axis=axial&index=374',
+      url: `/api/images/large-base-id/volume-slice?axis=axial&index=374&renderer=${MPR_VOLUME_SLICE_RENDER_VERSION}`,
     }));
     expect(overlayVolume).toEqual(expect.objectContaining({
       kind: 'server-volume',
@@ -95,6 +102,38 @@ describe('PT3 volume overlay stack mapping', () => {
     );
     expect(baseSources.every((source) => source.url.startsWith('/api/images/large-base-id/volume-slice?'))).toBe(true);
     expect(overlaySources.every((source) => source.url.startsWith('/api/images/large-overlay-id/volume-slice?'))).toBe(true);
+  });
+
+  test('aligns sampled external overlay slices with the renderer base depth', () => {
+    const dimensions = { axial: 9, coronal: 5, sagittal: 4 };
+    const baseRendererStack = [0, 4, 8].map((sliceIndex) => ({
+      id: `base-${sliceIndex}`,
+      sliceIndex,
+      url: `/base/${sliceIndex}`,
+    }));
+    const overlayVolume = {
+      kind: 'server-volume',
+      id: 'segments',
+      imageId: 'segments',
+      dimensions,
+      channelCount: 4,
+      colorMode: 'rgba',
+    };
+
+    const [aligned] = getAlignedVolumeOverlayRendererStacks(
+      [overlayVolume],
+      baseRendererStack,
+      dimensions,
+    );
+
+    expect(aligned).toHaveLength(baseRendererStack.length);
+    expect(aligned.map((entry) => entry.sliceIndex)).toEqual([0, 4, 8]);
+    expect(aligned.map((entry) => entry.url)).toEqual([
+      `/api/images/segments/volume-slice?axis=axial&index=0&renderer=${MPR_VOLUME_SLICE_RENDER_VERSION}`,
+      `/api/images/segments/volume-slice?axis=axial&index=4&renderer=${MPR_VOLUME_SLICE_RENDER_VERSION}`,
+      `/api/images/segments/volume-slice?axis=axial&index=8&renderer=${MPR_VOLUME_SLICE_RENDER_VERSION}`,
+    ]);
+    expect(aligned.every((entry) => entry.colorMode === 'rgba' && entry.opacity === 1)).toBe(true);
   });
 
   test.each([
@@ -158,10 +197,169 @@ describe('PT3 volume overlay stack mapping', () => {
       colorMode: 'rgba',
       overlayBaseImageId: baseId,
     }));
-    expect(baseVolume.url).toBe(`/api/images/${baseId}/volume-slice?axis=axial&index=3`);
-    expect(overlayVolume.url).toBe(`/api/images/${overlayId}/volume-slice?axis=axial&index=3`);
+    expect(baseVolume.url).toBe(`/api/images/${baseId}/volume-slice?axis=axial&index=3&renderer=${MPR_VOLUME_SLICE_RENDER_VERSION}`);
+    expect(overlayVolume.url).toBe(`/api/images/${overlayId}/volume-slice?axis=axial&index=3&renderer=${MPR_VOLUME_SLICE_RENDER_VERSION}`);
     expect(baseVolume.url).not.toContain('/content');
     expect(overlayVolume.url).not.toContain('/content');
+  });
+
+  test('injects sparse semantic slices into aligned overlay slots without changing uniform base sampling', () => {
+    const baseAxialCount = 100;
+    const baseIndices = getVolumeRendererSliceIndices(baseAxialCount);
+    const baseRendererStack = baseIndices.map((sliceIndex) => ({
+      id: `base-${sliceIndex}`,
+      sliceIndex,
+      url: `/base/${sliceIndex}`,
+    }));
+    const overlayVolume = {
+      kind: 'server-volume',
+      imageId: 'sparse-segments',
+      filename: 'sparse-segments.npy',
+      dimensions: { axial: 25, coronal: 8, sagittal: 8 },
+      channelCount: 4,
+      colorMode: 'rgba',
+    };
+    const summaries = {
+      'sparse-segments': {
+        summary_version: 1,
+        channel_representatives: [
+          { channel: 0, axial_index: 23 },
+          { channel: 1, axial_index: 7 },
+          { channel: 2, axial_index: 18 },
+          { channel: 3, axial_index: 23 },
+        ],
+      },
+    };
+
+    const [aligned] = getAlignedVolumeOverlayRendererStacks(
+      [overlayVolume],
+      baseRendererStack,
+      { axial: baseAxialCount, coronal: 8, sagittal: 8 },
+      summaries,
+    );
+
+    expect(getVolumeRendererSliceIndices(baseAxialCount)).toEqual(baseIndices);
+    expect(aligned).toHaveLength(12);
+    expect(aligned.map((entry) => entry.sliceIndex)).toEqual(baseIndices);
+    expect(aligned.map((entry) => entry.sourceSliceIndex))
+      .toEqual(expect.arrayContaining([7, 18, 23]));
+    [
+      [7, 28.875],
+      [18, 74.25],
+      [23, 94.875],
+    ].forEach(([sourceSliceIndex, expectedVoxelSliceIndex]) => {
+      expect(aligned.find((entry) => entry.sourceSliceIndex === sourceSliceIndex)?.voxelSliceIndex)
+        .toBeCloseTo(expectedVoxelSliceIndex);
+    });
+    expect(aligned.find((entry) => entry.sourceSliceIndex === 23).url).toContain('index=23');
+  });
+
+  test('maps a sparse overlay source slice to base-coordinate Z when depths differ', () => {
+    const baseAxialCount = 749;
+    const baseRendererStack = getVolumeRendererSliceIndices(baseAxialCount).map((sliceIndex) => ({
+      id: `base-${sliceIndex}`,
+      sliceIndex,
+      url: `/base/${sliceIndex}`,
+    }));
+    const overlayVolume = {
+      kind: 'server-volume',
+      imageId: 'segments',
+      dimensions: { axial: 1001, coronal: 8, sagittal: 8 },
+      channelCount: 4,
+      colorMode: 'rgba',
+    };
+
+    const [aligned] = getAlignedVolumeOverlayRendererStacks(
+      [overlayVolume],
+      baseRendererStack,
+      { axial: baseAxialCount, coronal: 8, sagittal: 8 },
+      { segments: { summary_version: 1, representative_axial_indices: [700] } },
+    );
+    const injected = aligned.find((entry) => entry.sourceSliceIndex === 700);
+
+    expect(injected).toEqual(expect.objectContaining({
+      sourceSliceIndex: 700,
+      voxelSliceIndex: 523.6,
+    }));
+    expect(injected.url).toContain('index=700');
+    expect(aligned.map((entry) => entry.sliceIndex)).toEqual(
+      getVolumeRendererSliceIndices(baseAxialCount),
+    );
+  });
+
+  test.each([
+    [13, [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12]],
+    [23, [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]],
+  ])('uniformly spans all %s axial slices when no sparse summary is available', (
+    axialCount,
+    expected,
+  ) => {
+    const selected = getVolumeRendererSliceIndices(axialCount);
+
+    expect(selected).toEqual(expected);
+    expect(selected).toHaveLength(12);
+    expect(selected[0]).toBe(0);
+    expect(selected[selected.length - 1]).toBe(axialCount - 1);
+  });
+
+  test('bounds untrusted summary hints and renderer sampling to twelve valid slices', () => {
+    const channel_representatives = Array.from({ length: 40 }, (_, index) => ({
+      channel: index,
+      axial_index: index === 0 ? -1 : index * 3,
+    }));
+
+    const representatives = getVolumeSummaryRepresentativeIndices(
+      { summary_version: 1, channel_representatives },
+      100,
+    );
+    const selected = getVolumeRendererSliceIndices(100, 999);
+
+    expect(representatives).toEqual([3, 6, 9]);
+    expect(selected).toHaveLength(12);
+    expect(selected.every((index) => index >= 0 && index < 100)).toBe(true);
+  });
+
+  test('admits only confirmed RGBA overlays to semantic 3D rendering', () => {
+    expect(isConfirmedRgbaVolumeOverlay({
+      kind: 'server-volume', imageId: 'rgba', channelCount: 4, colorMode: 'rgba',
+    })).toBe(true);
+    expect(isConfirmedRgbaVolumeOverlay({
+      kind: 'server-volume', imageId: 'scalar', channelCount: 1, colorMode: 'scalar',
+    })).toBe(false);
+    expect(isConfirmedRgbaVolumeOverlay({
+      stack: [{ channelCount: 4, colorMode: 'rgba' }, { channelCount: 1, colorMode: 'scalar' }],
+    })).toBe(false);
+    const rgbaVolumes = Array.from({ length: 6 }, (_, index) => ({
+      kind: 'server-volume', imageId: `rgba-${index}`, channelCount: 4, colorMode: 'rgba',
+    }));
+    const scalarVolume = {
+      kind: 'server-volume', imageId: 'scalar-extra', channelCount: 1, colorMode: 'scalar',
+    };
+    expect(getSemantic3dVolumeOverlayStacks([scalarVolume, ...rgbaVolumes]).map((entry) => entry.imageId))
+      .toEqual(['rgba-0', 'rgba-1', 'rgba-2', 'rgba-3']);
+  });
+
+  test('bounds optional summary work to two concurrent requests', async () => {
+    let active = 0;
+    let maximumActive = 0;
+    const releases = [];
+    const work = mapWithConcurrency([0, 1, 2, 3], 2, async (value) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => { releases.push(resolve); });
+      active -= 1;
+      return value;
+    });
+
+    await Promise.resolve();
+    expect(maximumActive).toBe(2);
+    releases.splice(0).forEach((release) => release());
+    await Promise.resolve();
+    await Promise.resolve();
+    releases.splice(0).forEach((release) => release());
+
+    await expect(work).resolves.toEqual([0, 1, 2, 3]);
+    expect(maximumActive).toBe(2);
   });
 
   test('enforces one global 192 MiB canvas budget across volume caches', () => {

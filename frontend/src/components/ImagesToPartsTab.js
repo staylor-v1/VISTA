@@ -352,24 +352,39 @@ function VolumeSliceViewer({ viewer, onChange, onClose }) {
   const dimensions = useMemo(() => metadata?.dimensions || { axial: 1, coronal: 1, sagittal: 1 }, [metadata]);
   const slicePosition = viewer.slicePosition || { axial: 0, coronal: 0, sagittal: 0 };
   const axisMax = Math.max(0, Number(dimensions[axis] || 1) - 1);
-  const isServerBackedNpy = String(imageRef.filename || '').toLowerCase().endsWith('.npy');
+  const filename = String(imageRef.filename || '').toLowerCase();
+  const sourceKind = String(metadata?.source_kind || '').toLowerCase();
+  const isServerBackedVolume = /\.(npy|npz|inspiro)$/.test(filename)
+    || sourceKind === 'tiff';
+  const volumeColorLayout = useMemo(() => {
+    const channelCount = Number(metadata?.channel_count ?? imageRef?.metadata?.channel_count);
+    const colorMode = String(metadata?.color_mode ?? imageRef?.metadata?.color_mode ?? '').toLowerCase();
+    if (channelCount === 3 && colorMode === 'rgb') return { channelCount: 3, colorMode: 'rgb' };
+    if (channelCount === 4 && colorMode === 'rgba') return { channelCount: 4, colorMode: 'rgba' };
+    return { channelCount: 1, colorMode: 'scalar' };
+  }, [imageRef?.metadata?.channel_count, imageRef?.metadata?.color_mode, metadata?.channel_count, metadata?.color_mode]);
   const serverVolumeSource = useMemo(() => {
-    if (!isServerBackedNpy) return null;
+    if (!isServerBackedVolume) return null;
     const descriptor = {
       kind: MPR_SERVER_VOLUME_KIND,
       id: String(imageRef.id),
       imageId: String(imageRef.id),
       filename: imageRef.filename,
       dimensions,
+      ...volumeColorLayout,
       sliceIndex: Math.floor((Math.max(1, Number(dimensions.axial) || 1) - 1) / 2),
     };
     return { ...descriptor, url: getServerVolumeSliceUrl(descriptor, 'axial', descriptor.sliceIndex) };
-  }, [dimensions, imageRef.filename, imageRef.id, isServerBackedNpy]);
+  }, [dimensions, imageRef.filename, imageRef.id, isServerBackedVolume, volumeColorLayout]);
   const axialStack = useMemo(() => (
-    isServerBackedNpy
+    isServerBackedVolume
       ? []
-      : Array.from({ length: Math.max(1, Number(dimensions.axial) || 1) }, (_, index) => ({ id: `${imageRef.id}-${index}`, sliceIndex: index, url: `/api/images/${encodeURIComponent(imageRef.id)}/volume-slice?axis=axial&index=${index}` }))
-  ), [dimensions.axial, imageRef.id, isServerBackedNpy]);
+      : Array.from({ length: Math.max(1, Number(dimensions.axial) || 1) }, (_, index) => ({
+        id: `${imageRef.id}-${index}`,
+        sliceIndex: index,
+        url: getServerVolumeSliceUrl({ imageId: imageRef.id, dimensions }, 'axial', index),
+      }))
+  ), [dimensions, imageRef.id, isServerBackedVolume]);
   const previewSliceCache = usePreviewSliceCache(axialStack);
   const volumeCacheState = useMprVolumeCache(serverVolumeSource || previewSliceCache.imageStack, dimensions);
   const previewIsLoading = previewSliceCache.status === 'loading' || volumeCacheState.status === 'loading';

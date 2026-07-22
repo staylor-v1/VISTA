@@ -45,3 +45,16 @@ describe('full-height workbench layout CSS contracts', () => {
     expect(flexLayoutBody).not.toMatch(/min-height:\s*0\b/);
   });
 });
+
+describe('fullscreen 3D layout CSS contracts', () => {
+  test('keeps the annotation rail below a wrapped header at intermediate widths', () => {
+    const guardStart = appCss.indexOf('@media (min-width: 641px) and (max-width: 960px)');
+    const nextBreakpoint = appCss.indexOf('@media (max-width: 640px)', guardStart);
+
+    expect(guardStart).toBeGreaterThanOrEqual(0);
+    expect(nextBreakpoint).toBeGreaterThan(guardStart);
+    expect(appCss.slice(guardStart, nextBreakpoint)).toMatch(
+      /\.mpr-pane-volume-fullscreen \.mpr-3d-annotation-list\s*\{[\s\S]*?top:\s*108px;/,
+    );
+  });
+});

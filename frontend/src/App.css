@@ -6857,11 +6857,6 @@ ul li:hover {
   transform-origin: center;
 }
 
-.mpr-3d-annotation-toggle {
-  flex: 0 0 auto;
-  margin-left: auto;
-}
-
 .mpr-slice-canvas {
   position: absolute;
   inset: 0;
@@ -6998,6 +6993,9 @@ ul li:hover {
   min-height: 36px;
   margin-bottom: 10px;
   padding: 0 2px 0 4px;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 8px 12px;
 }
 
 .mpr-pane-volume-fullscreen .mpr-pane-header strong {
@@ -7006,8 +7004,37 @@ ul li:hover {
 
 .mpr-pane-volume-fullscreen .mpr-pane-header > span {
   margin-left: auto;
-  margin-right: 12px;
+  margin-right: 0;
   color: #bae6fd;
+}
+
+.mpr-3d-display-controls {
+  display: inline-flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px 14px;
+}
+
+.mpr-pane .mpr-3d-display-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  color: #cbd5e1;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mpr-3d-display-toggle input {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  margin: 0;
+  accent-color: #22d3ee;
 }
 
 .mpr-3d-fullscreen-close {
@@ -7033,7 +7060,7 @@ ul li:hover {
   top: 62px;
   right: 22px;
   width: min(280px, 34vw);
-  max-height: calc(100% - 130px);
+  max-height: min(calc(100% - 130px), 44%);
   overflow: auto;
   padding: 10px;
   border: 1px solid rgba(148, 163, 184, 0.42);
@@ -7061,8 +7088,22 @@ ul li:hover {
   grid-template-columns: 12px minmax(0, 1fr) auto;
   gap: 7px;
   align-items: center;
+  margin: 0;
+  padding: 7px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 5px;
+  background: rgba(2, 6, 23, 0.74);
+  box-shadow: none;
   color: #e2e8f0;
   font-size: 0.75rem;
+  transition: none;
+}
+
+.mpr-3d-annotation-list li:hover {
+  border-color: rgba(125, 211, 252, 0.48);
+  background: rgba(8, 47, 73, 0.82);
+  box-shadow: none;
+  transform: none;
 }
 
 .mpr-3d-annotation-list li > span:nth-child(2) {
@@ -7093,6 +7134,13 @@ ul li:hover {
   margin-top: 10px;
 }
 
+/* Keep the annotation rail below a two-row header while display controls wrap. */
+@media (min-width: 641px) and (max-width: 960px) {
+  .mpr-pane-volume-fullscreen .mpr-3d-annotation-list {
+    top: 108px;
+  }
+}
+
 @media (max-width: 640px) {
   .mpr-pane-volume-fullscreen {
     inset: 6px;
@@ -7103,10 +7151,16 @@ ul li:hover {
     font-size: 0.68rem;
   }
 
+  .mpr-3d-display-controls {
+    flex: 1 0 100%;
+    justify-content: flex-start;
+  }
+
   .mpr-3d-annotation-list {
-    top: 56px;
+    top: 108px;
     right: 12px;
     width: min(240px, 64vw);
+    max-height: 36%;
   }
 }
 
@@ -7883,6 +7937,11 @@ ul li:hover {
 .volume-slice-voxel {
   image-rendering: pixelated;
   border: 1px solid rgba(148,163,184,0.14);
+}
+
+.volume-slice-segment-overlay {
+  border: 0;
+  filter: none;
 }
 
 .unassigned-header-row {
@@ -9414,6 +9473,49 @@ ul li:hover {
   .pt3-gaussian-splat-viewer.pt3-has-segmentation .pt3-ray-march-controls {
     width: min(190px, calc(50% - 12px));
     max-height: 42%;
+  }
+}
+
+/* Fullscreen reconstruction controls occupy the left rail; annotations stay on the right. */
+.mpr-pane-volume-fullscreen .pt3-gaussian-splat-viewer .pt3-ray-march-controls,
+.mpr-pane-volume-fullscreen .pt3-gaussian-splat-viewer .pt3-real-optimization-controls {
+  right: auto;
+  left: 16px;
+}
+
+.mpr-pane-volume-fullscreen .pt3-real-splat-mode .pt3-splat-controls {
+  top: 126px;
+  right: auto;
+  bottom: auto;
+  left: 16px;
+}
+
+.mpr-pane-volume-fullscreen .pt3-gaussian-splat-viewer .pt3-segmentation-controls {
+  top: auto;
+  right: 16px;
+  bottom: 16px;
+  left: auto;
+  width: min(230px, calc(100% - 32px));
+  max-height: 40%;
+}
+
+@media (max-width: 640px) {
+  .mpr-pane-volume-fullscreen .pt3-gaussian-splat-viewer .pt3-ray-march-controls,
+  .mpr-pane-volume-fullscreen .pt3-gaussian-splat-viewer .pt3-real-optimization-controls,
+  .mpr-pane-volume-fullscreen .pt3-real-splat-mode .pt3-splat-controls {
+    left: 8px;
+    width: min(260px, calc(50% - 18px));
+  }
+
+  .mpr-pane-volume-fullscreen .pt3-gaussian-splat-viewer .pt3-segmentation-controls {
+    right: 8px;
+    bottom: 8px;
+    width: min(190px, calc(50% - 12px));
+    max-height: 34%;
+  }
+
+  .mpr-pane-volume-fullscreen .mpr-3d-annotation-list {
+    width: min(240px, calc(50% - 18px));
   }
 }
 

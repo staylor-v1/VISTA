@@ -11,6 +11,7 @@ import {
 import {
   createThreeMechanicalRenderer,
   DEFAULT_PT3_RECONSTRUCTION_OPTIONS,
+  loadVolumeTextureImages,
   normalizePt3ReconstructionOptions,
 } from './pt3ThreeRenderer';
 import { MECHANICAL_TRANSFER_PRESETS, getMechanicalCropBox, getMechanicalVolumeMetadata, makeMechanicalFallbackSplats } from './pt3MechanicalVisualization';
@@ -41,6 +42,7 @@ const QUALITY_PROFILES = { performance: { sampleStep: 2.5, scale: 0.65 }, balanc
 const SPLAT_FALLBACK_NOTE = 'Generated 3DGS asset unavailable. Showing deterministic mechanical fallback splats.';
 const DEFAULT_AXIS_MIRROR_SCALE = Object.freeze({ x: 1, y: 1, z: 1 });
 const EMPTY_VOLUME_IMAGE_STACK = Object.freeze([]);
+const EMPTY_VOLUME_OVERLAY_IMAGE_STACKS = Object.freeze([]);
 const EMPTY_VECTOR_ANNOTATIONS = Object.freeze([]);
 const VISUALLY_HIDDEN_STYLE = Object.freeze({
   position: 'absolute',
@@ -55,6 +57,7 @@ const VISUALLY_HIDDEN_STYLE = Object.freeze({
 });
 const EMPTY_SEGMENTATION_SEGMENTS = Object.freeze([]);
 export const REAL_SPLAT_BROWSER_MAX = 100000;
+export const MAX_EXTERNAL_VOLUME_OVERLAY_POINTS = 30000;
 const DEFAULT_REAL_SPLAT_BUDGET = 50000;
 export const DEFAULT_RAY_MARCH_SETTINGS = Object.freeze({
   opacityRampWidth: 0.52,
@@ -365,6 +368,88 @@ function drawProjectedGaussian(ctx, { x, y, sigmaMajor, sigmaMinor, angle, color
   return true;
 }
 
+function getExternalOverlayReservoirSlot(seenActive, retainedCount, maxPoints) {
+  if (retainedCount < maxPoints) return retainedCount;
+  const hashed = Math.imul(seenActive, 2654435761) >>> 0;
+  const candidate = hashed % seenActive;
+  return candidate < maxPoints ? candidate : -1;
+}
+
+export async function loadPt3ExternalVolumeOverlayPoints(
+  volumeOverlayImageStacks,
+  metadata,
+  { signal, maxPoints = MAX_EXTERNAL_VOLUME_OVERLAY_POINTS } = {},
+) {
+  const stacks = Array.isArray(volumeOverlayImageStacks)
+    ? volumeOverlayImageStacks.filter((stack) => Array.isArray(stack) && stack.length > 0)
+    : [];
+  if (stacks.length === 0 || maxPoints < 1) return null;
+  const normalizedMetadata = normalizeVolumeMetadata(metadata);
+  const [dimensionX, dimensionY, dimensionZ] = normalizedMetadata.dimensions;
+  const retainedPositions = [];
+  const retainedColors = [];
+  let seenActive = 0;
+  for (const stack of stacks) {
+    if (signal?.aborted) return null;
+    const { images, ordered } = await loadVolumeTextureImages(stack, { signal });
+    if (signal?.aborted) return null;
+    for (let z = 0; z < images.length; z += 1) {
+      if (signal?.aborted) return null;
+      const image = images[z];
+      const width = image?.naturalWidth || image?.width || 0;
+      const height = image?.naturalHeight || image?.height || 0;
+      if (!width || !height) continue;
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext?.('2d', { willReadFrequently: true });
+      if (!context) throw new Error('Canvas image decoding is unavailable');
+      context.clearRect(0, 0, width, height);
+      context.drawImage(image, 0, 0);
+      const pixels = context.getImageData(0, 0, width, height).data;
+      const voxelSliceIndex = Number(ordered[z]?.voxelSliceIndex);
+      const declaredSliceIndex = Number.isFinite(voxelSliceIndex)
+        ? voxelSliceIndex
+        : Number(ordered[z]?.sliceIndex);
+      const voxelZ = Number.isFinite(declaredSliceIndex)
+        ? Math.max(0, Math.min(dimensionZ - 1, declaredSliceIndex))
+        : (images.length <= 1 ? 0 : (z / (images.length - 1)) * (dimensionZ - 1));
+      for (let pixelIndex = 0; pixelIndex < width * height; pixelIndex += 1) {
+        const colorIndex = pixelIndex * 4;
+        const alpha = pixels[colorIndex + 3];
+        if (alpha <= 0) continue;
+        seenActive += 1;
+        const slot = getExternalOverlayReservoirSlot(
+          seenActive,
+          retainedPositions.length,
+          maxPoints,
+        );
+        if (slot < 0) continue;
+        const x = pixelIndex % width;
+        const y = Math.floor(pixelIndex / width);
+        const voxelPoint = [
+          width <= 1 ? 0 : (x / (width - 1)) * (dimensionX - 1),
+          height <= 1 ? 0 : (y / (height - 1)) * (dimensionY - 1),
+          voxelZ,
+        ];
+        retainedPositions[slot] = voxelToPhysical(voxelPoint, normalizedMetadata);
+        retainedColors[slot] = [
+          pixels[colorIndex],
+          pixels[colorIndex + 1],
+          pixels[colorIndex + 2],
+          alpha / 255,
+        ];
+      }
+    }
+  }
+  if (retainedPositions.length === 0) return null;
+  return {
+    positions: new Float32Array(retainedPositions.flat()),
+    colors: new Float32Array(retainedColors.flat()),
+    sourcePointCount: seenActive,
+  };
+}
+
 function renderPreview(ctx, {
   mode,
   metadata,
@@ -384,6 +469,7 @@ function renderPreview(ctx, {
   showReferenceFrame,
   projectionCache,
   segmentationSegments,
+  externalOverlayPoints,
   statsRef,
 }) {
   if (!ctx?.canvas) return;
@@ -497,6 +583,33 @@ function renderPreview(ctx, {
     });
     statsRef.current.renderedSplats = renderedSplatCount;
   }
+  if (externalOverlayPoints?.positions?.length) {
+    const pointCount = Math.floor(externalOverlayPoints.positions.length / 3);
+    const projectedOverlayPoints = [];
+    for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
+      const positionOffset = pointIndex * 3;
+      const [x, y, viewZ, pixelsPerWorldUnit] = project([
+        externalOverlayPoints.positions[positionOffset],
+        externalOverlayPoints.positions[positionOffset + 1],
+        externalOverlayPoints.positions[positionOffset + 2],
+      ]);
+      projectedOverlayPoints.push({ pointIndex, splatIndex: pointIndex, x, y, viewZ, pixelsPerWorldUnit });
+    }
+    sortSplatRenderEntriesBackToFront(projectedOverlayPoints);
+    projectedOverlayPoints.forEach(({ pointIndex, x, y, pixelsPerWorldUnit }) => {
+      const colorOffset = pointIndex * 4;
+      const alpha = Math.max(0, Math.min(1, externalOverlayPoints.colors[colorOffset + 3] || 0));
+      if (alpha <= 0) return;
+      const radius = Math.max(1.25, Math.min(4.5, 1.8 * pixelsPerWorldUnit / referencePixelsPerUnit));
+      const red = Math.round(externalOverlayPoints.colors[colorOffset] || 0);
+      const green = Math.round(externalOverlayPoints.colors[colorOffset + 1] || 0);
+      const blue = Math.round(externalOverlayPoints.colors[colorOffset + 2] || 0);
+      ctx.fillStyle = `rgba(${red},${green},${blue},${alpha})`;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
   if (showReferenceFrame && tunedSplatView) {
     const drawLoop = (points, color, lineWidth = 1, dash = []) => {
       const projected = points.map(project);
@@ -548,6 +661,7 @@ export default function Pt3GaussianSplatViewer({
   part,
   projectId,
   volumeImageStack = EMPTY_VOLUME_IMAGE_STACK,
+  volumeOverlayImageStacks = EMPTY_VOLUME_OVERLAY_IMAGE_STACKS,
   splatParameters,
   mode = VIEWER_MODES.hybrid,
   rotation = { x: -18, y: 32 },
@@ -564,6 +678,7 @@ export default function Pt3GaussianSplatViewer({
   onResetView,
   showRayMarchControls = false,
   showSplatControls = false,
+  showRealOptimizationControls = true,
   vectorAnnotations = EMPTY_VECTOR_ANNOTATIONS,
   showAnnotations = true,
 }) {
@@ -613,11 +728,13 @@ export default function Pt3GaussianSplatViewer({
     mode: null,
     metadata: null,
     volumeImageStack: null,
+    volumeOverlayImageStacks: null,
     segmentationLabelSlices: null,
-    type: 'canvas2d-fallback',
+    type: 'pending',
   });
   const [rayRendererFallback, setRayRendererFallback] = useState(null);
   const [splats, setSplats] = useState(null);
+  const [externalOverlayPoints, setExternalOverlayPoints] = useState(null);
   const [realMaxSplats, setRealMaxSplats] = useState(DEFAULT_REAL_SPLAT_BUDGET);
   const [realFitMode, setRealFitMode] = useState('voxel_direct');
   const [realGenerationVersion, setRealGenerationVersion] = useState(0);
@@ -640,10 +757,13 @@ export default function Pt3GaussianSplatViewer({
   const rendererMatchesCurrentVolume = rendererState.mode === mode
     && rendererState.metadata === metadata
     && rendererState.volumeImageStack === volumeImageStack
+    && rendererState.volumeOverlayImageStacks === volumeOverlayImageStacks
     && rendererState.segmentationLabelSlices === segmentationContract.labelSlices;
   const rendererType = rendererMatchesCurrentVolume
     ? rendererState.type
-    : 'canvas2d-fallback';
+    : isPureSplatMode ? 'canvas2d-fallback' : 'pending';
+  const rendererHasExternalOverlay = rendererMatchesCurrentVolume
+    && Boolean(rendererState.hasExternalOverlay);
   const rayMarchControlsAvailable = mode === VIEWER_MODES.volume && rendererType.startsWith('three-');
   const realSplatCameras = useMemo(() => getPt3RealSplatCameras(part), [part]);
   const [segmentationSegments, setSegmentationSegments] = useState(segmentationContract.segments);
@@ -815,6 +935,26 @@ export default function Pt3GaussianSplatViewer({
     return () => { cancelled = true; workerRef.current?.terminate(); };
   }, [asset, metadata, mode, part?.id, projectId, realFitMode, realGenerationVersion, realSplatCameras.length, splatParameters?.downsample, splatParameters?.intensityMax, splatParameters?.intensityMin, splatParameters?.maxSplats, splatParameters?.opacityMax, splatParameters?.opacityMin, splatParameters?.outputFormat, splatParameters?.threshold, volumeImageStack.length]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    setExternalOverlayPoints(null);
+    const shouldLoadCanvasOverlayPoints = isPureSplatMode
+      || rendererType === 'canvas2d-fallback';
+    if (!shouldLoadCanvasOverlayPoints
+      || !Array.isArray(volumeOverlayImageStacks)
+      || volumeOverlayImageStacks.length === 0) {
+      return () => controller.abort();
+    }
+    loadPt3ExternalVolumeOverlayPoints(volumeOverlayImageStacks, metadata, {
+      signal: controller.signal,
+    }).then((points) => {
+      if (!controller.signal.aborted) setExternalOverlayPoints(points);
+    }).catch(() => {
+      if (!controller.signal.aborted) setExternalOverlayPoints(null);
+    });
+    return () => controller.abort();
+  }, [isPureSplatMode, metadata, rendererType, volumeOverlayImageStacks]);
+
 
   useEffect(() => {
     const canvas = webglCanvasRef.current;
@@ -825,6 +965,7 @@ export default function Pt3GaussianSplatViewer({
         mode,
         metadata,
         volumeImageStack,
+        volumeOverlayImageStacks,
         segmentationLabelSlices: segmentationContract.labelSlices,
         type: 'canvas2d-fallback',
       });
@@ -836,8 +977,9 @@ export default function Pt3GaussianSplatViewer({
       mode,
       metadata,
       volumeImageStack,
+      volumeOverlayImageStacks,
       segmentationLabelSlices: segmentationContract.labelSlices,
-      type: 'canvas2d-fallback',
+      type: 'pending',
     });
     setRayRendererFallback(null);
     const showRendererFallback = (error) => {
@@ -848,6 +990,7 @@ export default function Pt3GaussianSplatViewer({
         mode,
         metadata,
         volumeImageStack,
+        volumeOverlayImageStacks,
         segmentationLabelSlices: segmentationContract.labelSlices,
         type: 'canvas2d-fallback',
       });
@@ -867,6 +1010,7 @@ export default function Pt3GaussianSplatViewer({
       metadata,
       mode,
       volumeImageStack,
+      volumeOverlayImageStacks,
       segmentationLabelSlices: segmentationContract.labelSlices,
       signal: initializationController.signal,
       onError: showRendererFallback,
@@ -882,8 +1026,10 @@ export default function Pt3GaussianSplatViewer({
           mode,
           metadata,
           volumeImageStack,
+          volumeOverlayImageStacks,
           segmentationLabelSlices: segmentationContract.labelSlices,
           type: renderer.rendererType || 'three-webgl',
+          hasExternalOverlay: Boolean(renderer.hasExternalOverlay),
         });
         setRayRendererFallback(null);
         if (mode === VIEWER_MODES.volume) setStatus('ready');
@@ -894,7 +1040,7 @@ export default function Pt3GaussianSplatViewer({
       initializationController.abort();
       disposeThreeRenderer(threeRendererRef, canvas);
     };
-  }, [isPureSplatMode, metadata, mode, segmentationContract.labelSlices, volumeImageStack]);
+  }, [isPureSplatMode, metadata, mode, segmentationContract.labelSlices, volumeImageStack, volumeOverlayImageStacks]);
 
   useEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return undefined;
@@ -927,6 +1073,7 @@ export default function Pt3GaussianSplatViewer({
         boundaryEnhancement,
         boundaryStrength,
         boundaryBandWidth,
+        showExternalOverlay: showAnnotations,
       });
       const ctx = canvas.getContext('2d');
       ctx.clearRect(0, 0, width, height);
@@ -950,6 +1097,7 @@ export default function Pt3GaussianSplatViewer({
           showReferenceFrame: mode !== VIEWER_MODES.hybrid || rendererType === 'canvas2d-fallback',
           projectionCache,
           segmentationSegments: renderableSegmentationSegments,
+          externalOverlayPoints: showAnnotations ? externalOverlayPoints : null,
           statsRef,
         });
       }
@@ -992,7 +1140,7 @@ export default function Pt3GaussianSplatViewer({
       resizeObserver?.disconnect();
       window.removeEventListener('resize', scheduleRender);
     };
-  }, [activeMirrorScale, activeSliceAxis, boundaryBandWidth, boundaryEnhancement, boundaryStrength, colorHigh, colorLow, cropEnabled, intensityThreshold, isPureSplatMode, isoThreshold, isoWidth, metadata, mode, opacityRampWidth, quality, reconstructionStyle, renderableSegmentationSegments, rendererType, rotation, showAnnotations, slicePosition, splatContrast, splatGuidesVisible, splatOpacity, splatPointSize, splats, vectorAnnotations, volumeOpacity, windowCenter, windowWidth, zoom]);
+  }, [activeMirrorScale, activeSliceAxis, boundaryBandWidth, boundaryEnhancement, boundaryStrength, colorHigh, colorLow, cropEnabled, externalOverlayPoints, intensityThreshold, isPureSplatMode, isoThreshold, isoWidth, metadata, mode, opacityRampWidth, quality, reconstructionStyle, renderableSegmentationSegments, rendererType, rotation, showAnnotations, slicePosition, splatContrast, splatGuidesVisible, splatOpacity, splatPointSize, splats, vectorAnnotations, volumeOpacity, windowCenter, windowWidth, zoom]);
 
   const updateRayMarchSetting = (key, value) => {
     onRayMarchSettingsChange?.({ ...activeRayMarchSettings, [key]: value });
@@ -1052,6 +1200,11 @@ export default function Pt3GaussianSplatViewer({
     : (stats.renderedSplats ?? 0);
   const loadedVoxelFit = String(splats?.metadata?.optimization_method || '').startsWith('voxel_direct')
     || splats?.metadata?.optimization_domain === 'voxel_field';
+  const externalOverlayPointCount = showAnnotations && externalOverlayPoints?.positions
+    ? Math.floor(externalOverlayPoints.positions.length / 3)
+    : 0;
+  const externalOverlayRendered = showAnnotations
+    && (rendererHasExternalOverlay || externalOverlayPointCount > 0);
   const modeLabel = mode === VIEWER_MODES.volume
     ? 'Ray march'
     : mode === VIEWER_MODES.realSplat
@@ -1089,12 +1242,15 @@ export default function Pt3GaussianSplatViewer({
     data-mirror-y={activeMirrorScale.y}
     data-mirror-z={activeMirrorScale.z}
     data-active-slice-axis={activeSliceAxis}
+    data-renderer-type={rendererType}
+    data-external-overlay-rendered={externalOverlayRendered}
+    data-external-overlay-points={externalOverlayPointCount}
   >
     <canvas
       ref={webglCanvasRef}
       className="pt3-gaussian-splat-webgl"
       aria-label="Three.js mechanical volume renderer"
-      hidden={isPureSplatMode || rendererType === 'canvas2d-fallback'}
+      hidden={isPureSplatMode || !rendererType.startsWith('three-')}
     />
     <canvas
       ref={canvasRef}
@@ -1105,7 +1261,7 @@ export default function Pt3GaussianSplatViewer({
     <span id={sliceLocatorDescriptionId} style={VISUALLY_HIDDEN_STYLE}>
       {sliceLocatorDescription}
     </span>
-    {mode === VIEWER_MODES.realSplat && (
+    {mode === VIEWER_MODES.realSplat && showRealOptimizationControls && (
       <fieldset
         className="pt3-real-optimization-controls"
         aria-label="Real 3DGS fitting"

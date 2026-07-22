@@ -2569,6 +2569,18 @@ _volume_slice_png_cache_lock = threading.RLock()
 _volume_slice_render_futures: dict[
     tuple[str, str, int, str], Future[bytes]
 ] = {}
+_VOLUME_RENDER_SUMMARY_VERSION = 1
+_VOLUME_RENDER_SUMMARY_CACHE_MAX_ITEMS = 128
+_VOLUME_RENDER_SUMMARY_SCAN_MAX_PIXELS = 256 * 1024
+_VOLUME_RENDER_SUMMARY_SCAN_CONCURRENCY = 2
+_volume_render_summary_cache: "OrderedDict[tuple[str, str, int], Dict[str, Any]]" = OrderedDict()
+_volume_render_summary_cache_lock = threading.RLock()
+_volume_render_summary_futures: dict[
+    tuple[str, str, int], Future[Dict[str, Any]]
+] = {}
+_PROCESS_VOLUME_RENDER_SUMMARY_SCAN_LIMITER = _ProcessWideStorageLimiter(
+    _VOLUME_RENDER_SUMMARY_SCAN_CONCURRENCY
+)
 
 
 def _volume_source_identity(db_image: models.DataInstance) -> VolumeSourceIdentity:
@@ -2609,6 +2621,119 @@ def _set_cached_volume_slice_png(cache_key: tuple[str, str, int, str], png: byte
             _volume_slice_png_cache.popitem(last=False)
 
 
+def _summarize_rgba_volume_for_rendering(array: np.ndarray) -> Dict[str, Any]:
+    """Find a bounded set of axial slices that represent active RGBA channels.
+
+    The source may be a very large read-only memmap, so the scan never creates
+    a full-volume boolean mask. Each temporary comparison is capped to a small
+    pixel chunk and the result contains at most one slice per channel.
+    """
+
+    volume = np.asarray(array)
+    if volume.ndim != 4 or volume.shape[-1] != 4:
+        return {
+            'summary_version': _VOLUME_RENDER_SUMMARY_VERSION,
+            'kind': 'unsupported-layout',
+            'active_channels': [],
+            'channel_representatives': [],
+            'representative_axial_indices': [],
+        }
+    if not (
+        np.issubdtype(volume.dtype, np.bool_)
+        or np.issubdtype(volume.dtype, np.integer)
+        or np.issubdtype(volume.dtype, np.floating)
+    ):
+        return {
+            'summary_version': _VOLUME_RENDER_SUMMARY_VERSION,
+            'kind': 'unsupported-layout',
+            'active_channels': [],
+            'channel_representatives': [],
+            'representative_axial_indices': [],
+        }
+
+    depth, height, width, _channels = (int(value) for value in volume.shape)
+    representative_by_channel: dict[int, int] = {}
+    max_chunk_pixels = _VOLUME_RENDER_SUMMARY_SCAN_MAX_PIXELS
+    for axial_index in range(depth):
+        plane = volume[axial_index]
+        if width <= max_chunk_pixels:
+            rows_per_chunk = max(1, max_chunk_pixels // max(1, width))
+            chunks = (
+                plane[row_start:row_start + rows_per_chunk, :, :]
+                for row_start in range(0, height, rows_per_chunk)
+            )
+        else:
+            chunks = (
+                plane[row_index:row_index + 1, column_start:column_start + max_chunk_pixels, :]
+                for row_index in range(height)
+                for column_start in range(0, width, max_chunk_pixels)
+            )
+        for chunk in chunks:
+            active_channels = np.any(np.asarray(chunk) != 0, axis=(0, 1))
+            for channel_index in np.flatnonzero(active_channels):
+                representative_by_channel.setdefault(int(channel_index), axial_index)
+            if len(representative_by_channel) == 4:
+                break
+        if len(representative_by_channel) == 4:
+            break
+
+    channel_representatives = [
+        {'channel': channel_index, 'axial_index': representative_by_channel[channel_index]}
+        for channel_index in sorted(representative_by_channel)
+    ]
+    return {
+        'summary_version': _VOLUME_RENDER_SUMMARY_VERSION,
+        'kind': 'rgba-channel-presence',
+        'active_channels': [entry['channel'] for entry in channel_representatives],
+        'channel_representatives': channel_representatives,
+        'representative_axial_indices': sorted({
+            entry['axial_index'] for entry in channel_representatives
+        }),
+    }
+
+
+async def _get_or_compute_volume_render_summary(
+    cache_key: tuple[str, str, int],
+    array: np.ndarray,
+) -> Dict[str, Any]:
+    """Coalesce and cache the optional sparse-volume renderer summary."""
+
+    with _volume_render_summary_cache_lock:
+        cached = _volume_render_summary_cache.get(cache_key)
+        if cached is not None:
+            _volume_render_summary_cache.move_to_end(cache_key)
+            return cached
+        summary_future = _volume_render_summary_futures.get(cache_key)
+        owns_summary = summary_future is None
+        if owns_summary:
+            summary_future = Future()
+            _volume_render_summary_futures[cache_key] = summary_future
+
+    if not owns_summary:
+        return await asyncio.shield(asyncio.wrap_future(summary_future))
+
+    try:
+        # Keep separate cache keys concurrent without allowing large memmap
+        # scans to saturate every worker in this process. The limiter's async
+        # facade is safe when requests originate from different event loops.
+        async with _PROCESS_VOLUME_RENDER_SUMMARY_SCAN_LIMITER.slot():
+            summary = await asyncio.to_thread(_summarize_rgba_volume_for_rendering, array)
+        with _volume_render_summary_cache_lock:
+            _volume_render_summary_cache[cache_key] = summary
+            _volume_render_summary_cache.move_to_end(cache_key)
+            while len(_volume_render_summary_cache) > _VOLUME_RENDER_SUMMARY_CACHE_MAX_ITEMS:
+                _volume_render_summary_cache.popitem(last=False)
+        summary_future.set_result(summary)
+        return summary
+    except BaseException as exc:
+        summary_future.set_exception(exc)
+        raise
+    finally:
+        with _volume_render_summary_cache_lock:
+            if _volume_render_summary_futures.get(cache_key) is summary_future:
+                _volume_render_summary_futures.pop(cache_key, None)
+
+
 async def _get_or_render_volume_slice_png(
     cache_key: tuple[str, str, int, str],
     array: np.ndarray,
@@ -2645,11 +2770,156 @@ async def _get_or_render_volume_slice_png(
                 _volume_slice_render_futures.pop(cache_key, None)
 
 
+_SEGMENT_CHANNEL_PALETTE = np.asarray(
+    [
+        (239, 68, 68),
+        (34, 197, 94),
+        (59, 130, 246),
+        (245, 158, 11),
+    ],
+    dtype=np.uint16,
+)
+_SEGMENT_CHANNEL_ALPHA = np.uint8(224)
+_RGBA_SEGMENT_SLICE_MAX_CHUNK_PIXELS = 256 * 1024
+
+
+def _iter_rgba_pixel_chunks(
+    array: np.ndarray,
+    max_chunk_pixels: int | None = None,
+):
+    """Yield spatially-addressed RGBA views capped to a pixel budget.
+
+    Volume slices can be non-contiguous (for example, a coronal view into a
+    memmap), so flattening the complete slice could silently allocate a copy.
+    Row/column windows keep any copy made by a NumPy operation bounded to the
+    configured chunk size.
+    """
+
+    arr = np.asarray(array)
+    if arr.ndim != 3 or arr.shape[-1] != 4:
+        raise ValueError("RGBA chunks require a channel-last four-channel array")
+
+    pixel_limit = int(
+        _RGBA_SEGMENT_SLICE_MAX_CHUNK_PIXELS
+        if max_chunk_pixels is None
+        else max_chunk_pixels
+    )
+    if pixel_limit <= 0:
+        raise ValueError("RGBA chunk pixel limit must be positive")
+
+    height, width, _channels = (int(value) for value in arr.shape)
+    if height == 0 or width == 0:
+        return
+
+    if width <= pixel_limit:
+        rows_per_chunk = max(1, pixel_limit // width)
+        for row_start in range(0, height, rows_per_chunk):
+            row_stop = min(height, row_start + rows_per_chunk)
+            yield (
+                slice(row_start, row_stop),
+                slice(0, width),
+                arr[row_start:row_stop, :, :],
+            )
+        return
+
+    for row_index in range(height):
+        for column_start in range(0, width, pixel_limit):
+            column_stop = min(width, column_start + pixel_limit)
+            yield (
+                slice(row_index, row_index + 1),
+                slice(column_start, column_stop),
+                arr[row_index:row_index + 1, column_start:column_stop, :],
+            )
+
+
+def _is_binary_segment_channel_slice(array: np.ndarray) -> bool:
+    """Identify four independent segment channels masquerading as literal RGBA."""
+
+    arr = np.asarray(array)
+    if arr.ndim != 3 or arr.shape[-1] != 4 or arr.size == 0:
+        return False
+    if np.issubdtype(arr.dtype, np.bool_):
+        return True
+    if not (
+        np.issubdtype(arr.dtype, np.integer)
+        or np.issubdtype(arr.dtype, np.floating)
+    ):
+        return False
+    is_float = np.issubdtype(arr.dtype, np.floating)
+    is_zero_or_one = True
+    is_zero_or_255 = True
+    is_one_hot_255 = True
+    has_active_255 = False
+
+    for _rows, _columns, chunk in _iter_rgba_pixel_chunks(arr):
+        if is_float and not np.all(np.isfinite(chunk)):
+            return False
+
+        if is_zero_or_one:
+            is_zero_or_one = bool(np.all((chunk == 0) | (chunk == 1)))
+
+        if is_zero_or_255:
+            chunk_is_zero_or_255 = bool(np.all((chunk == 0) | (chunk == 255)))
+            if not chunk_is_zero_or_255:
+                is_zero_or_255 = False
+            else:
+                active = chunk != 0
+                has_active_255 = has_active_255 or bool(np.any(active))
+                if is_one_hot_255:
+                    is_one_hot_255 = bool(
+                        np.all(np.count_nonzero(active, axis=-1) <= 1)
+                    )
+
+        if not is_zero_or_one and (not is_zero_or_255 or not is_one_hot_255):
+            return False
+
+    if is_zero_or_one:
+        return True
+
+    # A 0/255 RGBA image is normally literal color, so only treat it as a
+    # channel mask when every pixel is one-hot (or empty). This also covers a
+    # sparse slice on which only one semantic channel happens to be present,
+    # while ordinary opaque RGBA such as [255, 0, 0, 255] stays literal.
+    return is_zero_or_255 and is_one_hot_255 and has_active_255
+
+
+def _render_binary_segment_channels(array: np.ndarray) -> np.ndarray:
+    """Map four segment channels to visible RGBA, including channel index 3."""
+
+    arr = np.asarray(array)
+    if arr.ndim != 3 or arr.shape[-1] != 4:
+        raise ValueError("Segment channels require a channel-last RGBA array")
+
+    # The output necessarily spans the rendered image, but all masks, weights,
+    # counts, and color sums remain bounded to one pixel chunk at a time.
+    rendered = np.zeros(arr.shape, dtype=np.uint8)
+    for rows, columns, chunk in _iter_rgba_pixel_chunks(arr):
+        active = chunk != 0
+        weights = active.astype(np.uint16)
+        active_counts = np.sum(weights, axis=-1, dtype=np.uint16)
+        color_sums = weights @ _SEGMENT_CHANNEL_PALETTE
+        divisors = np.maximum(active_counts, 1)[..., np.newaxis]
+        target = rendered[rows, columns, :]
+        target[..., :3] = (
+            (color_sums + (divisors // 2)) // divisors
+        ).astype(np.uint8)
+        target[..., 3] = np.where(
+            active_counts > 0,
+            _SEGMENT_CHANNEL_ALPHA,
+            0,
+        )
+    return rendered
+
+
 def _normalize_array_slice_to_png(array: np.ndarray) -> bytes:
     arr = np.asarray(array)
     if arr.ndim == 3 and arr.shape[-1] in (3, 4):
-        arr = _scale_color_array_to_uint8(arr)
-        img = Image.fromarray(arr.astype(np.uint8), 'RGBA' if arr.shape[-1] == 4 else 'RGB')
+        if arr.shape[-1] == 4 and _is_binary_segment_channel_slice(arr):
+            arr = _render_binary_segment_channels(arr)
+        else:
+            arr = _scale_color_array_to_uint8(arr)
+        normalized = arr if arr.dtype == np.uint8 else arr.astype(np.uint8)
+        img = Image.fromarray(normalized, 'RGBA' if arr.shape[-1] == 4 else 'RGB')
     else:
         arr = _scale_array_to_uint8(arr)
         img = Image.fromarray(arr.astype(np.uint8), 'L')
@@ -3132,6 +3402,55 @@ async def get_image_volume_metadata(
         'metadata_bit_depth': metadata.get('bit_depth') or metadata.get('bits_per_sample'),
     })
     return meta
+
+
+@router.get("/images/{image_id}/volume-render-summary")
+async def get_image_volume_render_summary(
+    image_id: uuid.UUID,
+    include_deleted: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """Return optional, bounded slice hints for sparse NPY RGBA rendering."""
+
+    db_image = await _get_authorized_image(db, image_id, current_user, include_deleted)
+    kind = _volume_source_kind(db_image.filename or '')
+    if kind != 'npy':
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Render summaries are available only for NumPy .npy volumes',
+        )
+    identity = _volume_source_identity(db_image)
+    cache_key = (str(db_image.id), identity.version, _VOLUME_RENDER_SUMMARY_VERSION)
+    try:
+        handle = await get_npy_volume_handle(
+            identity,
+            lambda: _iter_authorized_npy_bytes(db_image),
+        )
+        summary = await _get_or_compute_volume_render_summary(cache_key, handle.array)
+    except VolumeSourceReadError as exc:
+        raise _storage_http_exception(exc) from exc
+    except InvalidVolumeSourceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Unable to summarize volume: {exc}',
+        ) from exc
+    except VolumeCacheError as exc:
+        raise _volume_cache_http_exception() from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Unable to summarize volume: {exc}',
+        ) from exc
+    return {
+        **summary,
+        'source_kind': kind,
+        'dimensions': {
+            'axial': int(handle.shape[0]),
+            'coronal': int(handle.shape[1]),
+            'sagittal': int(handle.shape[2]),
+        },
+    }
 
 
 @router.get("/images/{image_id}/volume-slice", response_class=StreamingResponse)

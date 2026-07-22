@@ -93,6 +93,7 @@ export function getPt3TextureSizeLimitError(dimensions, hardwareLimit) {
 
 export function getPt3TextureAllocationLimitError(dimensions, {
   includeSegmentation = false,
+  includeExternalOverlay = false,
   byteLimit = PT3_MAX_BROWSER_VOLUME_TEXTURE_BYTES,
 } = {}) {
   const observed = Array.from({ length: 3 }, (_unused, axis) => Math.max(
@@ -103,9 +104,12 @@ export function getPt3TextureAllocationLimitError(dimensions, {
   if (limit < 1) return null;
   const voxelCount = observed.reduce((product, dimension) => product * dimension, 1);
   // Volume and optional labels each have one CPU staging copy and one R8 GPU
-  // texture. Allow for the bounded decoded-image queue, Canvas backing store,
-  // and one ImageData copy at peak as well.
-  const residentVoxelCopies = includeSegmentation ? 4 : 2;
+  // texture. The composited external overlay keeps one decoded RGBA stack,
+  // one per-stack rollback-safe buffer, one CPU RGBA staging copy, and one
+  // RGBA GPU texture (sixteen bytes per voxel total). Allow for the bounded
+  // decode queue, Canvas backing store, and one ImageData copy at peak too.
+  const residentVoxelCopies = (includeSegmentation ? 4 : 2)
+    + (includeExternalOverlay ? 16 : 0);
   const sliceRgbaCopies = MPR_SERVER_SLICE_MAX_CONCURRENCY + 2;
   const requiredBytes = voxelCount * residentVoxelCopies
     + observed[0] * observed[1] * 4 * sliceRgbaCopies;
@@ -201,8 +205,137 @@ function createAbortError() {
   return error;
 }
 
+class VolumeSliceDimensionMismatchError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'VolumeSliceDimensionMismatchError';
+  }
+}
+
 function throwIfAborted(signal) {
   if (signal?.aborted) throw createAbortError();
+}
+
+function disposeOptionalTexture(texture) {
+  try {
+    texture?.dispose?.();
+  } catch (_error) {
+    // Optional renderer resources must never prevent the base resources from
+    // being released or the base-only renderer from continuing.
+  }
+}
+
+export class Pt3WebGlContextLossError extends Error {
+  constructor(message = 'PT3 volume GPU initialization lost the WebGL context') {
+    super(message);
+    this.name = 'Pt3WebGlContextLossError';
+  }
+}
+
+export async function createPt3ExternalOverlayTextureWithinBudget({
+  dimensions,
+  includeSegmentation = false,
+  hasOverlaySources = false,
+  byteLimit = PT3_MAX_BROWSER_VOLUME_TEXTURE_BYTES,
+  createTexture,
+  signal,
+} = {}) {
+  if (!hasOverlaySources || typeof createTexture !== 'function') return null;
+  const allocationError = getPt3TextureAllocationLimitError(dimensions, {
+    includeSegmentation,
+    includeExternalOverlay: true,
+    byteLimit,
+  });
+  if (allocationError) return null;
+
+  let texture;
+  try {
+    throwIfAborted(signal);
+    texture = await createTexture();
+    throwIfAborted(signal);
+    return texture || null;
+  } catch (error) {
+    disposeOptionalTexture(texture);
+    if (error?.name === 'AbortError') throw error;
+    return null;
+  }
+}
+
+export function initializePt3RendererWithExternalOverlayFallback({
+  initialize,
+  externalOverlayTexture,
+  disableExternalOverlay,
+  signal,
+} = {}) {
+  try {
+    throwIfAborted(signal);
+    initialize();
+    throwIfAborted(signal);
+    return externalOverlayTexture || null;
+  } catch (error) {
+    if (
+      error?.name === 'AbortError'
+      || error?.name === 'Pt3WebGlContextLossError'
+      || !externalOverlayTexture
+    ) throw error;
+    disableExternalOverlay(externalOverlayTexture);
+    throwIfAborted(signal);
+    initialize();
+    throwIfAborted(signal);
+    return null;
+  }
+}
+
+export async function recreatePt3BaseRendererAfterContextLoss({
+  disposeFailedRenderer,
+  restoreContext,
+  createBaseRenderer,
+  signal,
+} = {}) {
+  // Cleanup must happen even when cancellation raced with context loss.
+  disposeFailedRenderer?.();
+  throwIfAborted(signal);
+  await restoreContext?.();
+  throwIfAborted(signal);
+  return createBaseRenderer();
+}
+
+function waitForPt3WebGlContextRestoration(canvas, forceContextRestore, signal) {
+  if (typeof forceContextRestore !== 'function') return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    let timeoutId = null;
+    let settled = false;
+    const cleanup = () => {
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      canvas?.removeEventListener?.('webglcontextrestored', handleRestore);
+      signal?.removeEventListener?.('abort', handleAbort);
+    };
+    const settle = (callback) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const handleRestore = () => settle(resolve);
+    const handleAbort = () => settle(() => reject(createAbortError()));
+
+    if (signal?.aborted) {
+      handleAbort();
+      return;
+    }
+    canvas?.addEventListener?.('webglcontextrestored', handleRestore, { once: true });
+    signal?.addEventListener?.('abort', handleAbort, { once: true });
+    try {
+      forceContextRestore();
+    } catch (_error) {
+      settle(resolve);
+      return;
+    }
+    // Some browsers restore synchronously without dispatching an observable
+    // event. Bound the recovery wait, then let the new base-only renderer
+    // perform the authoritative context validation.
+    if (!settled) timeoutId = setTimeout(() => settle(resolve), 250);
+  });
 }
 
 function loadImage(source, signal) {
@@ -282,7 +415,7 @@ async function consumeVolumeTextureImages(volumeImageStack, {
           expectedHeight = height;
           await validateDimensions?.([width, height, ordered.length]);
         } else if (width !== expectedWidth || height !== expectedHeight) {
-          throw new Error(
+          throw new VolumeSliceDimensionMismatchError(
             `Volume slice ${source.filename || source.id || z} dimensions ${width}×${height} do not match the built-in consistent-stack requirement of ${expectedWidth}×${expectedHeight}`,
           );
         }
@@ -318,7 +451,7 @@ async function consumeVolumeTextureImages(volumeImageStack, {
         declaredDimensions
         && (declaredDimensions[0] !== expectedWidth || declaredDimensions[1] !== expectedHeight)
       ) {
-        throw new Error(
+        throw new VolumeSliceDimensionMismatchError(
           `Volume slice ${source.filename || source.id || index + 1} declared dimensions ${declaredDimensions[0]}×${declaredDimensions[1]} do not match the built-in consistent-stack requirement of ${expectedWidth}×${expectedHeight}`,
         );
       }
@@ -382,6 +515,118 @@ async function createVolumeTexture(THREE, volumeImageStack, validateDimensions, 
   texture.unpackAlignment = 1;
   texture.needsUpdate = true;
   return texture;
+}
+
+function compositeRgbaPixel(target, targetOffset, source, sourceOffset) {
+  const sourceAlpha = source[sourceOffset + 3] / 255;
+  if (sourceAlpha <= 0) return;
+  const targetAlpha = target[targetOffset + 3] / 255;
+  const retainedTargetAlpha = targetAlpha * (1 - sourceAlpha);
+  const outputAlpha = sourceAlpha + retainedTargetAlpha;
+  for (let channel = 0; channel < 3; channel += 1) {
+    target[targetOffset + channel] = Math.round(
+      (source[sourceOffset + channel] * sourceAlpha
+        + target[targetOffset + channel] * retainedTargetAlpha) / outputAlpha,
+    );
+  }
+  target[targetOffset + 3] = Math.round(outputAlpha * 255);
+}
+
+class ExternalOverlayDimensionMismatchError extends VolumeSliceDimensionMismatchError {
+  constructor(message) {
+    super(message);
+    this.name = 'ExternalOverlayDimensionMismatchError';
+  }
+}
+
+async function createExternalOverlayTexture(
+  THREE,
+  volumeOverlayImageStacks,
+  width,
+  height,
+  depth,
+  signal,
+) {
+  const overlayStacks = Array.isArray(volumeOverlayImageStacks)
+    ? volumeOverlayImageStacks.filter((stack) => Array.isArray(stack) && stack.length > 0)
+    : [];
+  if (overlayStacks.length === 0) return null;
+
+  const expectedDimensions = [width, height, depth];
+  let voxels;
+  let canvas;
+  let context;
+  try {
+    voxels = new Uint8Array(width * height * depth * 4);
+    canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    context = canvas.getContext('2d', { willReadFrequently: true });
+  } catch (error) {
+    if (error?.name === 'AbortError') throw error;
+    return null;
+  }
+  if (!context) return null;
+
+  let acceptedOverlayStackCount = 0;
+  for (let stackIndex = 0; stackIndex < overlayStacks.length; stackIndex += 1) {
+    throwIfAborted(signal);
+    try {
+      const stackVoxels = new Uint8Array(voxels.length);
+      const { images } = await loadVolumeTextureImages(overlayStacks[stackIndex], {
+        signal,
+        validateDimensions: (observedDimensions) => {
+          if (observedDimensions.some((dimension, axis) => dimension !== expectedDimensions[axis])) {
+            throw new ExternalOverlayDimensionMismatchError(
+              `External overlay stack ${stackIndex + 1} dimensions ${observedDimensions.join('×')} do not match volume dimensions ${expectedDimensions.join('×')}`,
+            );
+          }
+        },
+      });
+      images.forEach((image, z) => {
+        context.clearRect(0, 0, width, height);
+        context.drawImage(image, 0, 0);
+        const rgba = context.getImageData(0, 0, width, height).data;
+        const sliceOffset = z * width * height * 4;
+        for (let index = 0; index < width * height; index += 1) {
+          const pixelOffset = index * 4;
+          compositeRgbaPixel(
+            stackVoxels,
+            sliceOffset + pixelOffset,
+            rgba,
+            pixelOffset,
+          );
+        }
+      });
+      for (let pixelOffset = 0; pixelOffset < stackVoxels.length; pixelOffset += 4) {
+        compositeRgbaPixel(voxels, pixelOffset, stackVoxels, pixelOffset);
+      }
+      acceptedOverlayStackCount += 1;
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error;
+      // External uploads are optional. A corrupt, unavailable, or mismatched
+      // overlay must not take down an otherwise valid base reconstruction.
+      continue;
+    }
+  }
+
+  throwIfAborted(signal);
+  if (acceptedOverlayStackCount === 0) return null;
+  let texture;
+  try {
+    texture = new THREE.Data3DTexture(voxels, width, height, depth);
+    texture.format = THREE.RGBAFormat;
+    texture.type = THREE.UnsignedByteType;
+    texture.minFilter = THREE.NearestFilter;
+    texture.magFilter = THREE.NearestFilter;
+    texture.unpackAlignment = 1;
+    texture.needsUpdate = true;
+    return texture;
+  } catch (error) {
+    disposeOptionalTexture(texture);
+    if (error?.name === 'AbortError') throw error;
+    return null;
+  }
 }
 
 async function createSegmentationTexture(THREE, labelSlices, volumeImageStack, width, height, depth) {
@@ -462,10 +707,14 @@ export const PT3_VOLUME_FRAGMENT_SHADER = `
   precision highp float;
   precision highp sampler3D;
   uniform sampler3D volumeMap;
+#ifdef PT3_EXTERNAL_OVERLAY
+  uniform sampler3D externalOverlayMap;
+#endif
   uniform sampler3D segmentationMap;
   uniform sampler2D segmentationPalette;
   uniform sampler2D segmentationState;
   uniform bool hasSegmentation;
+  uniform bool hasExternalOverlay;
   uniform vec3 cameraLocal;
   uniform vec3 voxelStep;
   uniform vec3 physicalSize;
@@ -549,10 +798,29 @@ export const PT3_VOLUME_FRAGMENT_SHADER = `
     float xrayValueTotal = 0.0;
     float xraySampleCount = 0.0;
     vec4 segmentProjection = vec4(0.0);
+    vec4 externalOverlayProjection = vec4(0.0);
 
     for (int i = 0; i < ${PT3_MAX_RAY_MARCH_SAMPLES}; i++) {
-      if (any(lessThan(samplePoint, vec3(0.0))) || any(greaterThan(samplePoint, vec3(1.0))) || accumulated.a > 0.98) break;
+      bool outsideVolume = any(lessThan(samplePoint, vec3(0.0)))
+        || any(greaterThan(samplePoint, vec3(1.0)));
+      bool projectionsComplete = accumulated.a > 0.98
+        && (!hasExternalOverlay || externalOverlayProjection.a > 0.98);
+      if (outsideVolume || projectionsComplete) break;
       float value = texture(volumeMap, samplePoint).r;
+#ifdef PT3_EXTERNAL_OVERLAY
+      if (hasExternalOverlay) {
+        vec4 externalOverlaySample = texture(externalOverlayMap, samplePoint);
+        float externalOverlayAlpha = clamp(
+          1.0 - exp(-clamp(externalOverlaySample.a, 0.0, 1.0) * effectiveSampleStep),
+          0.0,
+          1.0
+        );
+        externalOverlayProjection.rgb += (1.0 - externalOverlayProjection.a)
+          * externalOverlayAlpha * externalOverlaySample.rgb;
+        externalOverlayProjection.a += (1.0 - externalOverlayProjection.a)
+          * externalOverlayAlpha;
+      }
+#endif
       float segmentState = 0.0;
       vec4 segmentColor = vec4(0.0);
       if (hasSegmentation) {
@@ -648,9 +916,10 @@ export const PT3_VOLUME_FRAGMENT_SHADER = `
       samplePoint += ray * marchStep;
     }
 
+    vec4 reconstructedColor = vec4(0.0);
     if (renderStyle == 1) {
       if (maximumValue < 0.0) {
-        outputColor = vec4(0.0);
+        reconstructedColor = vec4(0.0);
       } else {
         float transferResponse = smoothstep(
           intensityThreshold,
@@ -658,14 +927,14 @@ export const PT3_VOLUME_FRAGMENT_SHADER = `
           maximumValue
         );
         float alpha = boundedProjectionOpacity(transferResponse);
-        outputColor = addProjectionOverlay(
+        reconstructedColor = addProjectionOverlay(
           vec4(maximumColor * alpha, alpha),
           segmentProjection
         );
       }
     } else if (renderStyle == 2) {
       if (xraySampleCount < 0.5) {
-        outputColor = vec4(0.0);
+        reconstructedColor = vec4(0.0);
       } else {
         float averageValue = xrayValueTotal / xraySampleCount;
         vec3 color = mix(colorLow, colorHigh, smoothstep(intensityThreshold, 1.0, averageValue));
@@ -675,14 +944,15 @@ export const PT3_VOLUME_FRAGMENT_SHADER = `
           averageValue
         );
         float alpha = boundedProjectionOpacity(transferResponse);
-        outputColor = addProjectionOverlay(
+        reconstructedColor = addProjectionOverlay(
           vec4(color * alpha, alpha),
           segmentProjection
         );
       }
     } else {
-      outputColor = accumulated;
+      reconstructedColor = accumulated;
     }
+    outputColor = addProjectionOverlay(reconstructedColor, externalOverlayProjection);
   }
 `;
 
@@ -690,6 +960,7 @@ export async function createThreeMechanicalRenderer(canvas, {
   metadata,
   mode,
   volumeImageStack = [],
+  volumeOverlayImageStacks = [],
   segmentationLabelSlices = [],
   signal,
   onError,
@@ -709,6 +980,8 @@ export async function createThreeMechanicalRenderer(canvas, {
   const includeSegmentationTexture = segmentationLabelSlices.some((slice) => (
     Array.isArray(slice?.labels) || ArrayBuffer.isView(slice?.labels)
   ));
+  const includeExternalOverlayTexture = Array.isArray(volumeOverlayImageStacks)
+    && volumeOverlayImageStacks.some((stack) => Array.isArray(stack) && stack.length > 0);
   let volumeTexture;
   try {
     volumeTexture = await createVolumeTexture(THREE, volumeImageStack, (dimensions) => {
@@ -728,6 +1001,7 @@ export async function createThreeMechanicalRenderer(canvas, {
   const volumeHeight = volumeTexture.image?.height || 1;
   const volumeDepth = volumeTexture.image?.depth || volumeImageStack.length || 1;
   const textureDimensions = [volumeWidth, volumeHeight, volumeDepth];
+  let externalOverlayTexture;
   let segmentationTexture;
   let segmentationPaletteTexture;
   let segmentationStateTexture;
@@ -742,10 +1016,26 @@ export async function createThreeMechanicalRenderer(canvas, {
       volumeDepth,
     );
     throwIfAborted(signal);
+    externalOverlayTexture = await createPt3ExternalOverlayTextureWithinBudget({
+      dimensions: textureDimensions,
+      includeSegmentation: includeSegmentationTexture,
+      hasOverlaySources: includeExternalOverlayTexture,
+      signal,
+      createTexture: () => createExternalOverlayTexture(
+        THREE,
+        volumeOverlayImageStacks,
+        volumeWidth,
+        volumeHeight,
+        volumeDepth,
+        signal,
+      ),
+    });
+    throwIfAborted(signal);
     segmentationPaletteTexture = createSegmentationPaletteTexture(THREE);
     segmentationStateTexture = createSegmentationStateTexture(THREE);
   } catch (error) {
     volumeTexture.dispose();
+    disposeOptionalTexture(externalOverlayTexture);
     segmentationTexture?.dispose();
     segmentationPaletteTexture?.dispose();
     segmentationStateTexture?.dispose();
@@ -789,12 +1079,15 @@ export async function createThreeMechanicalRenderer(canvas, {
     glslVersion: THREE.GLSL3,
     ...PT3_VOLUME_MATERIAL_OPTIONS,
     side: THREE.FrontSide,
+    defines: externalOverlayTexture ? { PT3_EXTERNAL_OVERLAY: 1 } : {},
     uniforms: {
       volumeMap: { value: volumeTexture },
+      externalOverlayMap: { value: externalOverlayTexture || volumeTexture },
       segmentationMap: { value: segmentationTexture || volumeTexture },
       segmentationPalette: { value: segmentationPaletteTexture },
       segmentationState: { value: segmentationStateTexture },
       hasSegmentation: { value: Boolean(segmentationTexture) },
+      hasExternalOverlay: { value: Boolean(externalOverlayTexture) },
       cameraLocal: { value: new THREE.Vector3() },
       voxelStep: {
         value: new THREE.Vector3(
@@ -869,6 +1162,7 @@ export async function createThreeMechanicalRenderer(canvas, {
     sizeVector = new THREE.Vector3(...size);
   } catch (error) {
     volumeTexture.dispose();
+    disposeOptionalTexture(externalOverlayTexture);
     segmentationTexture?.dispose();
     segmentationPaletteTexture.dispose();
     segmentationStateTexture.dispose();
@@ -889,6 +1183,7 @@ export async function createThreeMechanicalRenderer(canvas, {
     if (resourcesDisposed) return;
     resourcesDisposed = true;
     volumeTexture.dispose();
+    disposeOptionalTexture(externalOverlayTexture);
     segmentationTexture?.dispose();
     segmentationPaletteTexture.dispose();
     segmentationStateTexture.dispose();
@@ -930,7 +1225,10 @@ export async function createThreeMechanicalRenderer(canvas, {
     ].filter(Boolean).join('\n').trim();
     shaderInitializationError = diagnostics || 'the volume shader could not be linked';
   };
-  try {
+  const initializeRenderer = () => {
+    shaderInitializationError = null;
+    contextLostDuringInitialization = false;
+    throwIfAborted(signal);
     // Force shader compilation and 3D texture upload before advertising the
     // renderer as ready so the caller can use its existing Canvas fallback.
     for (let index = 0; index < 8 && gl.getError() !== gl.NO_ERROR; index += 1) {
@@ -943,23 +1241,81 @@ export async function createThreeMechanicalRenderer(canvas, {
     volumeGroup.updateMatrixWorld();
     inverseMatrix.copy(volumeGroup.matrixWorld).invert();
     material.uniforms.cameraLocal.value.copy(camera.position).applyMatrix4(inverseMatrix).divide(sizeVector);
-    renderer.compile(scene, camera);
-    renderer.render(scene, camera);
+    try {
+      renderer.compile(scene, camera);
+      renderer.render(scene, camera);
+    } catch (error) {
+      const renderingError = gl.getError();
+      if (
+        contextLostDuringInitialization
+        || gl.isContextLost()
+        || renderingError === gl.CONTEXT_LOST_WEBGL
+      ) {
+        throw new Pt3WebGlContextLossError();
+      }
+      throw error;
+    }
     if (shaderInitializationError) {
       throw new Error(`PT3 volume shader compilation failed: ${shaderInitializationError}`);
     }
     if (contextLostDuringInitialization || gl.isContextLost()) {
-      throw new Error('PT3 volume GPU initialization lost the WebGL context');
+      throw new Pt3WebGlContextLossError();
     }
     const initializationError = gl.getError();
+    if (initializationError === gl.CONTEXT_LOST_WEBGL) {
+      throw new Pt3WebGlContextLossError();
+    }
     if (initializationError !== gl.NO_ERROR) {
       throw new Error(`PT3 volume GPU initialization failed with WebGL error ${getWebGlErrorLabel(gl, initializationError)}`);
     }
+  };
+  let externalOverlayContextLoss = null;
+  try {
+    externalOverlayTexture = initializePt3RendererWithExternalOverlayFallback({
+      initialize: initializeRenderer,
+      externalOverlayTexture,
+      signal,
+      disableExternalOverlay: (failedTexture) => {
+        externalOverlayTexture = null;
+        material.uniforms.externalOverlayMap.value = volumeTexture;
+        material.uniforms.hasExternalOverlay.value = false;
+        if (material.defines) delete material.defines.PT3_EXTERNAL_OVERLAY;
+        material.needsUpdate = true;
+        disposeOptionalTexture(failedTexture);
+      },
+    });
   } catch (error) {
-    disposeRendererResources();
-    throw error;
+    if (error?.name === 'Pt3WebGlContextLossError' && externalOverlayTexture) {
+      externalOverlayContextLoss = error;
+    } else {
+      disposeRendererResources();
+      throw error;
+    }
   } finally {
     renderer.debug.onShaderError = previousShaderErrorHandler;
+  }
+  if (externalOverlayContextLoss) {
+    const forceContextRestore = typeof renderer.forceContextRestore === 'function'
+      ? renderer.forceContextRestore.bind(renderer)
+      : null;
+    return recreatePt3BaseRendererAfterContextLoss({
+      signal,
+      disposeFailedRenderer: disposeRendererResources,
+      restoreContext: () => waitForPt3WebGlContextRestoration(
+        canvas,
+        forceContextRestore,
+        signal,
+      ),
+      createBaseRenderer: () => createThreeMechanicalRenderer(canvas, {
+        metadata,
+        mode,
+        volumeImageStack,
+        volumeOverlayImageStacks: [],
+        segmentationLabelSlices,
+        signal,
+        onError,
+      }),
+    });
   }
   initializationComplete = true;
 
@@ -971,6 +1327,7 @@ export async function createThreeMechanicalRenderer(canvas, {
 
   return {
     rendererType: 'three-webgl-raymarch',
+    hasExternalOverlay: Boolean(externalOverlayTexture),
     render({
       width,
       height,
@@ -992,6 +1349,7 @@ export async function createThreeMechanicalRenderer(canvas, {
       boundaryEnhancement,
       boundaryStrength,
       boundaryBandWidth,
+      showExternalOverlay = true,
     }) {
       if (resourcesDisposed) return;
       const safeWidth = Math.max(1, width || canvas.clientWidth || 1);
@@ -1024,6 +1382,9 @@ export async function createThreeMechanicalRenderer(canvas, {
       const safeSampleStep = Math.min(3, Math.max(0.5, Number(sampleStep) || 1.25));
       material.uniforms.sampleStep.value = safeSampleStep;
       material.uniforms.stepSize.value = safeSampleStep / Math.max(...textureDimensions, 1);
+      material.uniforms.hasExternalOverlay.value = Boolean(
+        externalOverlayTexture && showExternalOverlay,
+      );
       updateSegmentationPalette(segmentationPaletteTexture, segmentationStateTexture, segmentationPalette);
       const parseColor = (hex, fallback) => {
         const match = /^#?([0-9a-f]{6})$/i.exec(String(hex || ''));

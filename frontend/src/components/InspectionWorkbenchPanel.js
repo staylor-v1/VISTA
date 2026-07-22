@@ -108,6 +108,9 @@ const DEFAULT_MPR_PROJECTION_MIRROR = { axial: false, coronal: false, sagittal: 
 const MPR_VOLUME_CACHE_LIMIT = 4;
 const MPR_SLICE_CANVAS_CACHE_MAX_BYTES = 192 * 1024 * 1024;
 const MPR_SERVER_VOLUME_KIND = 'server-volume';
+const MPR_VOLUME_SLICE_RENDER_VERSION = 'rgba-segments-v2';
+const MPR_VOLUME_RENDER_SUMMARY_VERSION = 1;
+const MPR_VOLUME_RENDERER_MAX_SLICES = 12;
 const MPR_SERVER_SLICE_PREFETCH_RADIUS = 2;
 const MPR_SERVER_CURRENT_SLICE_DEBOUNCE_MS = 200;
 const DEFAULT_DISPLAY_VALUE_DOMAIN = { min: 0, max: 255, step: 1, label: '8-bit image' };
@@ -1148,7 +1151,12 @@ function getServerVolumeSliceUrl(volume, axis, index) {
   const dimensions = normalizeServerVolumeDimensions(volume.dimensions);
   const upper = Math.max(0, dimensions[safeAxis] - 1);
   const safeIndex = clampRange(Math.round(Number(index) || 0), 0, upper, 0);
-  return `/api/images/${encodeURIComponent(String(volume.imageId))}/volume-slice?axis=${safeAxis}&index=${safeIndex}`;
+  return `/api/images/${encodeURIComponent(String(volume.imageId))}/volume-slice?axis=${safeAxis}&index=${safeIndex}&renderer=${MPR_VOLUME_SLICE_RENDER_VERSION}`;
+}
+
+function getVolumeRenderSummaryUrl(volume) {
+  if (!volume?.imageId) return '';
+  return `/api/images/${encodeURIComponent(String(volume.imageId))}/volume-render-summary?summary=${MPR_VOLUME_RENDER_SUMMARY_VERSION}`;
 }
 
 function createServerVolumeDescriptor(entry, projectImageLookup = {}, extra = {}) {
@@ -1266,6 +1274,190 @@ function getVolumeOverlayStacks(part, projectImageLookup = {}) {
       stack: stack.sort((left, right) => left.sliceIndex - right.sliceIndex || left.filename.localeCompare(right.filename)),
     })),
   ];
+}
+
+function getAlignedVolumeOverlayRendererStacks(
+  overlayStacks,
+  volumeRendererImageStack,
+  dimensions = {},
+  summariesByImageId = {},
+) {
+  if (!Array.isArray(overlayStacks) || !Array.isArray(volumeRendererImageStack)
+    || volumeRendererImageStack.length === 0) return [];
+  const baseSliceIndices = volumeRendererImageStack.map((entry, index) => {
+    const sliceIndex = Number(entry?.sliceIndex);
+    return Number.isFinite(sliceIndex) ? Math.floor(sliceIndex) : index;
+  });
+  const axialCount = Math.max(1, Number(dimensions?.axial) || baseSliceIndices.length);
+
+  return overlayStacks.map((overlayEntry) => {
+    if (isServerVolumeDescriptor(overlayEntry)) {
+      const overlayAxialCount = Math.max(1, Number(overlayEntry.dimensions?.axial) || axialCount);
+      const assignments = baseSliceIndices.map((baseSliceIndex) => {
+        const normalizedIndex = axialCount <= 1 ? 0 : baseSliceIndex / (axialCount - 1);
+        const sourceSliceIndex = clampRange(
+          Math.round(normalizedIndex * Math.max(0, overlayAxialCount - 1)),
+          0,
+          overlayAxialCount - 1,
+          0,
+        );
+        return {
+          sourceSliceIndex,
+          voxelSliceIndex: baseSliceIndex,
+        };
+      });
+      const summary = summariesByImageId?.[String(overlayEntry.imageId)];
+      const representatives = getVolumeSummaryRepresentativeIndices(
+        summary,
+        overlayAxialCount,
+      );
+      const claimedSlots = new Set();
+      representatives.forEach((sourceSliceIndex) => {
+        const voxelSliceIndex = overlayAxialCount <= 1
+          ? 0
+          : (sourceSliceIndex / (overlayAxialCount - 1)) * Math.max(0, axialCount - 1);
+        const nearestSlot = baseSliceIndices
+          .map((baseSliceIndex, slotIndex) => ({
+            slotIndex,
+            distance: Math.abs(baseSliceIndex - voxelSliceIndex),
+          }))
+          .filter(({ slotIndex }) => !claimedSlots.has(slotIndex))
+          .sort((left, right) => left.distance - right.distance || left.slotIndex - right.slotIndex)[0];
+        if (!nearestSlot) return;
+        claimedSlots.add(nearestSlot.slotIndex);
+        assignments[nearestSlot.slotIndex] = { sourceSliceIndex, voxelSliceIndex };
+      });
+      return baseSliceIndices.map((baseSliceIndex, slotIndex) => {
+        const { sourceSliceIndex, voxelSliceIndex } = assignments[slotIndex];
+        return {
+          ...overlayEntry,
+          id: `${overlayEntry.imageId}:axial:${sourceSliceIndex}:slot:${slotIndex}`,
+          // Keep the stack sort key aligned with the immutable base slots.
+          sliceIndex: baseSliceIndex,
+          sourceSliceIndex,
+          voxelSliceIndex,
+          url: getServerVolumeSliceUrl(overlayEntry, 'axial', sourceSliceIndex),
+          depth: getMprFallbackModelCoordinate(
+            voxelSliceIndex,
+            axialCount,
+            MPR_FALLBACK_MODEL_SIZE.depth,
+          ),
+          opacity: 1,
+        };
+      });
+    }
+
+    const sourceStack = Array.isArray(overlayEntry?.stack)
+      ? overlayEntry.stack
+      : (Array.isArray(overlayEntry) ? overlayEntry : []);
+    if (sourceStack.length === 0) return [];
+    const ordered = [...sourceStack].sort((left, right) => (
+      Number(left?.sliceIndex || 0) - Number(right?.sliceIndex || 0)
+    ));
+    return baseSliceIndices.map((baseSliceIndex) => {
+      const exact = ordered.find((entry, index) => (
+        Number(entry?.sliceIndex ?? index) === baseSliceIndex
+      ));
+      const closest = exact || ordered.reduce((best, entry, index) => {
+        const distance = Math.abs(Number(entry?.sliceIndex ?? index) - baseSliceIndex);
+        return !best || distance < best.distance ? { entry, distance } : best;
+      }, null)?.entry;
+      if (!closest) return null;
+      const sourceSliceIndex = Number(closest?.sourceSliceIndex ?? closest?.sliceIndex);
+      return {
+        ...closest,
+        sliceIndex: baseSliceIndex,
+        sourceSliceIndex: Number.isFinite(sourceSliceIndex) ? sourceSliceIndex : baseSliceIndex,
+        voxelSliceIndex: baseSliceIndex,
+        depth: getMprFallbackModelCoordinate(
+          baseSliceIndex,
+          axialCount,
+          MPR_FALLBACK_MODEL_SIZE.depth,
+        ),
+        opacity: 1,
+      };
+    }).filter(Boolean);
+  }).filter((stack) => stack.length === volumeRendererImageStack.length);
+}
+
+function getVolumeSummaryRepresentativeIndices(summary, axialCount) {
+  if (Number(summary?.summary_version) !== MPR_VOLUME_RENDER_SUMMARY_VERSION) return [];
+  const safeAxialCount = Math.max(1, Math.floor(Number(axialCount) || 1));
+  const channelRepresentatives = Array.isArray(summary?.channel_representatives)
+    ? summary.channel_representatives.slice(0, 4).map((entry) => entry?.axial_index)
+    : [];
+  const candidates = channelRepresentatives.length > 0
+    ? channelRepresentatives
+    : (Array.isArray(summary?.representative_axial_indices)
+      ? summary.representative_axial_indices.slice(0, 4)
+      : []);
+  const representatives = [];
+  candidates.forEach((candidate) => {
+    const sourceSliceIndex = Math.round(Number(candidate));
+    if (
+      Number.isFinite(sourceSliceIndex)
+      && sourceSliceIndex >= 0
+      && sourceSliceIndex < safeAxialCount
+      && !representatives.includes(sourceSliceIndex)
+    ) representatives.push(sourceSliceIndex);
+  });
+  return representatives;
+}
+
+function isConfirmedRgbaVolumeOverlay(overlayEntry) {
+  if (isServerVolumeDescriptor(overlayEntry)) {
+    return overlayEntry.channelCount === 4 && overlayEntry.colorMode === 'rgba';
+  }
+  const stack = Array.isArray(overlayEntry?.stack)
+    ? overlayEntry.stack
+    : (Array.isArray(overlayEntry) ? overlayEntry : []);
+  return stack.length > 0 && stack.every((entry) => (
+    entry?.channelCount === 4 && entry?.colorMode === 'rgba'
+  ));
+}
+
+function getSemantic3dVolumeOverlayStacks(overlayStacks, maxStacks = 4) {
+  const safeLimit = Math.min(4, Math.max(0, Math.floor(Number(maxStacks) || 0)));
+  return (Array.isArray(overlayStacks) ? overlayStacks : [])
+    .filter(isConfirmedRgbaVolumeOverlay)
+    .slice(0, safeLimit);
+}
+
+async function mapWithConcurrency(items, concurrency, task) {
+  const source = Array.isArray(items) ? items : [];
+  if (source.length === 0) return [];
+  const results = new Array(source.length);
+  let cursor = 0;
+  const workerCount = Math.min(
+    source.length,
+    Math.max(1, Math.floor(Number(concurrency) || 1)),
+  );
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (cursor < source.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await task(source[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+function getVolumeRendererSliceIndices(
+  axialCount,
+  maxLayers = MPR_VOLUME_RENDERER_MAX_SLICES,
+) {
+  const safeAxialCount = Math.max(1, Math.floor(Number(axialCount) || 1));
+  const safeMaxLayers = Math.min(
+    MPR_VOLUME_RENDERER_MAX_SLICES,
+    Math.max(1, Math.floor(Number(maxLayers) || MPR_VOLUME_RENDERER_MAX_SLICES)),
+    safeAxialCount,
+  );
+  return safeMaxLayers <= 1
+    ? [Math.floor((safeAxialCount - 1) / 2)]
+    : Array.from({ length: safeMaxLayers }, (_unused, index) => Math.round(
+      (index * (safeAxialCount - 1)) / (safeMaxLayers - 1),
+    ));
 }
 
 function getNumericRangeFromCandidate(candidate) {
@@ -3364,6 +3556,8 @@ function InspectionWorkbenchPanel({
   const [mprRotation, setMprRotation] = useState({ x: -22, y: 32 });
   const [mprReconstructionMode, setMprReconstructionMode] = useState(MPR_RECONSTRUCTION_MODES.orientation);
   const [mprFullscreenOpen, setMprFullscreenOpen] = useState(false);
+  const [mprFullscreenAnnotationListVisible, setMprFullscreenAnnotationListVisible] = useState(true);
+  const [mprFullscreenReconstructionSettingsVisible, setMprFullscreenReconstructionSettingsVisible] = useState(true);
   const [rayMarchSettings, setRayMarchSettings] = useState(() => ({ ...DEFAULT_RAY_MARCH_SETTINGS }));
   const [splatViewSettings, setSplatViewSettings] = useState(() => ({ ...DEFAULT_SPLAT_VIEW_SETTINGS }));
   const [splatConfigModalOpen, setSplatConfigModalOpen] = useState(false);
@@ -3438,6 +3632,8 @@ function InspectionWorkbenchPanel({
   const [selectedImageRef, setSelectedImageRef] = useState('');
   const [projectImageLookup, setProjectImageLookup] = useState({});
   const volumeMetadataProbeCacheRef = useRef(new Map());
+  const volumeRenderSummaryCacheRef = useRef(new Map());
+  const [volumeRenderSummariesByImageId, setVolumeRenderSummariesByImageId] = useState({});
   const [volumeMetadataProbeState, setVolumeMetadataProbeState] = useState({ pending: false, warning: '' });
   const [deletingOverlayId, setDeletingOverlayId] = useState('');
   const [fullscreenImageModal, setFullscreenImageModal] = useState(null);
@@ -4296,6 +4492,59 @@ function InspectionWorkbenchPanel({
     () => (annotationsVisible ? volumeOverlayStacks.filter((entry) => entry?.hidden !== true) : []),
     [annotationsVisible, volumeOverlayStacks],
   );
+  const visibleSemantic3dVolumeOverlayStacks = useMemo(
+    () => getSemantic3dVolumeOverlayStacks(visibleVolumeOverlayStacks),
+    [visibleVolumeOverlayStacks],
+  );
+  const volumeRenderSummaryCandidates = useMemo(() => {
+    if (mprReconstructionMode === MPR_RECONSTRUCTION_MODES.orientation) return [];
+    const byImageId = new Map();
+    visibleSemantic3dVolumeOverlayStacks.forEach((volume) => {
+      if (
+        !isServerVolumeDescriptor(volume)
+        || !String(volume.filename || '').toLowerCase().endsWith('.npy')
+      ) return;
+      byImageId.set(String(volume.imageId), volume);
+    });
+    return Array.from(byImageId.values()).slice(0, 4);
+  }, [mprReconstructionMode, visibleSemantic3dVolumeOverlayStacks]);
+  useEffect(() => {
+    if (volumeRenderSummaryCandidates.length === 0) {
+      setVolumeRenderSummariesByImageId((previous) => (
+        Object.keys(previous).length > 0 ? {} : previous
+      ));
+      return undefined;
+    }
+    let cancelled = false;
+    mapWithConcurrency(volumeRenderSummaryCandidates, 2, async (volume) => {
+      const imageId = String(volume.imageId);
+      const cacheKey = `${String(projectId)}:${imageId}:${MPR_VOLUME_RENDER_SUMMARY_VERSION}`;
+      let request = volumeRenderSummaryCacheRef.current.get(cacheKey);
+      if (!request) {
+        request = fetch(getVolumeRenderSummaryUrl(volume)).then(async (response) => {
+          if (!response.ok) throw new Error(`render summary request failed (${response.status})`);
+          return response.json();
+        });
+        volumeRenderSummaryCacheRef.current.set(cacheKey, request);
+        request.catch(() => {
+          if (volumeRenderSummaryCacheRef.current.get(cacheKey) === request) {
+            volumeRenderSummaryCacheRef.current.delete(cacheKey);
+          }
+        });
+      }
+      try {
+        return [imageId, await request];
+      } catch (_error) {
+        return [imageId, null];
+      }
+    }).then((entries) => {
+      if (cancelled) return;
+      setVolumeRenderSummariesByImageId(Object.fromEntries(
+        entries.filter(([, summary]) => summary && typeof summary === 'object'),
+      ));
+    });
+    return () => { cancelled = true; };
+  }, [projectId, volumeRenderSummaryCandidates]);
   const volumeCacheState = useMprVolumeCache(volumeImageStack, mprDimensions);
   const volumeOverlayCacheStates = useMprVolumeCaches(visibleVolumeOverlayStacks, mprDimensions);
   const activeVolumeOverlayCaches = useMemo(
@@ -4310,13 +4559,13 @@ function InspectionWorkbenchPanel({
     [projectImageLookup, selectedPart],
   );
   const volumePreviewLayers = useMemo(() => {
-    const maxLayers = 12;
+    const maxLayers = MPR_VOLUME_RENDERER_MAX_SLICES;
     if (isServerVolumeDescriptor(volumeImageStack)) {
       const axialCount = Math.max(1, Number(volumeImageStack.dimensions?.axial) || 1);
-      const step = Math.max(1, Math.floor(axialCount / maxLayers));
-      return Array.from({ length: axialCount }, (_unused, sliceIndex) => sliceIndex)
-        .filter((sliceIndex) => sliceIndex % step === 0)
-        .slice(0, maxLayers)
+      return getVolumeRendererSliceIndices(
+        axialCount,
+        maxLayers,
+      )
         .map((sliceIndex, index, entries) => ({
           ...volumeImageStack,
           id: `${volumeImageStack.imageId}:axial:${sliceIndex}`,
@@ -4327,11 +4576,8 @@ function InspectionWorkbenchPanel({
         }));
     }
     if (!Array.isArray(volumeImageStack) || volumeImageStack.length === 0) return [];
-    const step = Math.max(1, Math.floor(volumeImageStack.length / maxLayers));
-    return volumeImageStack
-      .map((entry, sourceIndex) => ({ entry, sourceIndex }))
-      .filter(({ sourceIndex }) => sourceIndex % step === 0)
-      .slice(0, maxLayers)
+    return getVolumeRendererSliceIndices(volumeImageStack.length, maxLayers)
+      .map((sourceIndex) => ({ entry: volumeImageStack[sourceIndex], sourceIndex }))
       .map(({ entry, sourceIndex }, index, entries) => ({
         ...entry,
         depth: getMprFallbackModelCoordinate(
@@ -4342,9 +4588,16 @@ function InspectionWorkbenchPanel({
         opacity: entries.length <= 1 ? 0.86 : 0.18 + (index / (entries.length - 1)) * 0.26,
       }));
   }, [mprDimensions.axial, volumeImageStack]);
-  const volumeRendererImageStack = isServerVolumeDescriptor(volumeImageStack)
-    ? volumePreviewLayers
-    : getMprVolumeSourceEntries(volumeImageStack);
+  const volumeRendererImageStack = volumePreviewLayers;
+  const volumeRendererOverlayImageStacks = useMemo(
+    () => getAlignedVolumeOverlayRendererStacks(
+      visibleSemantic3dVolumeOverlayStacks,
+      volumeRendererImageStack,
+      mprDimensions,
+      volumeRenderSummariesByImageId,
+    ),
+    [mprDimensions, visibleSemantic3dVolumeOverlayStacks, volumeRendererImageStack, volumeRenderSummariesByImageId],
+  );
   const getMprAnnotationImage = useCallback((axis) => {
     if (isServerVolumeDescriptor(volumeImageStack)) {
       return volumeImageStack.imageId || selectedImageRef || null;
@@ -7308,14 +7561,37 @@ function InspectionWorkbenchPanel({
                   </button>
                 )}
                 {mprFullscreenOpen && (
-                  <label className="annotation-display-toggle mpr-3d-annotation-toggle" onClick={(event) => event.stopPropagation()}>
-                    <input
-                      type="checkbox"
-                      checked={annotationsVisible}
-                      onChange={(event) => setAnnotationsVisible(event.target.checked)}
-                    />
-                    Show annotations
-                  </label>
+                  <div
+                    className="mpr-3d-display-controls"
+                    role="group"
+                    aria-label="Fullscreen 3D display options"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <label className="mpr-3d-display-toggle">
+                      <input
+                        type="checkbox"
+                        checked={annotationsVisible}
+                        onChange={(event) => setAnnotationsVisible(event.target.checked)}
+                      />
+                      Render annotations
+                    </label>
+                    <label className="mpr-3d-display-toggle">
+                      <input
+                        type="checkbox"
+                        checked={mprFullscreenAnnotationListVisible}
+                        onChange={(event) => setMprFullscreenAnnotationListVisible(event.target.checked)}
+                      />
+                      Show annotations list
+                    </label>
+                    <label className="mpr-3d-display-toggle">
+                      <input
+                        type="checkbox"
+                        checked={mprFullscreenReconstructionSettingsVisible}
+                        onChange={(event) => setMprFullscreenReconstructionSettingsVisible(event.target.checked)}
+                      />
+                      Show reconstruction settings
+                    </label>
+                  </div>
                 )}
               </header>
               <div
@@ -7366,6 +7642,7 @@ function InspectionWorkbenchPanel({
                     part={selectedPart}
                     projectId={projectId}
                     volumeImageStack={volumeRendererImageStack}
+                    volumeOverlayImageStacks={volumeRendererOverlayImageStacks}
                     splatParameters={splatParameters}
                     mode={effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.volume3d
                       ? 'volume'
@@ -7382,8 +7659,9 @@ function InspectionWorkbenchPanel({
                     onRotationChange={setMprRotation}
                     onZoomChange={(nextZoom) => setViewportTransform((prev) => ({ ...prev, zoom: nextZoom }))}
                     onResetView={resetViewport}
-                    showRayMarchControls={mprFullscreenOpen}
-                    showSplatControls={mprFullscreenOpen}
+                    showRayMarchControls={mprFullscreenOpen && mprFullscreenReconstructionSettingsVisible}
+                    showSplatControls={mprFullscreenOpen && mprFullscreenReconstructionSettingsVisible}
+                    showRealOptimizationControls={!mprFullscreenOpen || mprFullscreenReconstructionSettingsVisible}
                     vectorAnnotations={vectorSegmentAnnotations}
                     showAnnotations={annotationLayerVisible}
                   />
@@ -7404,22 +7682,41 @@ function InspectionWorkbenchPanel({
                   }}
                 >
                   {effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.stack ? (
-                    volumePreviewLayers.map((layer) => (
-                      <MprWindowedImage
-                        key={`${layer.id}-${layer.sliceIndex}`}
-                        className="volume-slice-voxel"
-                        src={layer.url}
-                        alt={`Volume reconstruction slice ${layer.sliceIndex}`}
-                        draggable={false}
-                        onDragStart={preventMprNativeDrag}
-                        style={{
-                          '--slice-depth': `${layer.depth}px`,
-                          '--slice-opacity': layer.opacity,
-                        }}
-                        displayWindow={displayWindow}
-                        displayDomain={displayValueDomain}
-                      />
-                    ))
+                    <>
+                      {volumePreviewLayers.map((layer) => (
+                        <MprWindowedImage
+                          key={`${layer.id}-${layer.sliceIndex}`}
+                          className="volume-slice-voxel"
+                          src={layer.url}
+                          alt={`Volume reconstruction slice ${layer.sliceIndex}`}
+                          draggable={false}
+                          onDragStart={preventMprNativeDrag}
+                          style={{
+                            '--slice-depth': `${layer.depth}px`,
+                            '--slice-opacity': layer.opacity,
+                          }}
+                          displayWindow={displayWindow}
+                          displayDomain={displayValueDomain}
+                        />
+                      ))}
+                      {volumeRendererOverlayImageStacks.flatMap((stack, stackIndex) => (
+                        stack.map((layer, layerIndex) => (
+                          <img
+                            key={`volume-overlay-${stackIndex}-${layer.id}-${layer.sliceIndex}-${layerIndex}`}
+                            className="volume-slice-voxel volume-slice-segment-overlay"
+                            src={layer.url}
+                            alt=""
+                            aria-hidden="true"
+                            draggable={false}
+                            onDragStart={preventMprNativeDrag}
+                            style={{
+                              '--slice-depth': `${layer.depth}px`,
+                              '--slice-opacity': 1,
+                            }}
+                          />
+                        ))
+                      ))}
+                    </>
                   ) : !canShowStackReconstruction && !canShowShellReconstruction ? (
                     <span className="volume-reconstruction-empty">No 3D reference</span>
                   ) : null}
@@ -7440,7 +7737,7 @@ function InspectionWorkbenchPanel({
                   <span className="volume-reticle reticle-z" />
                 </div>}
               </div>
-              {mprFullscreenOpen && (
+              {mprFullscreenOpen && mprFullscreenAnnotationListVisible && (
                 <aside
                   className="mpr-3d-annotation-list"
                   aria-label="3D annotations"
@@ -10751,11 +11048,21 @@ function InspectionWorkbenchPanel({
 	  );
 }
 
-export { getVolumeSourceImages, getVolumeOverlayStacks };
+export {
+  getVolumeSourceImages,
+  getVolumeOverlayStacks,
+  getAlignedVolumeOverlayRendererStacks,
+  getVolumeSummaryRepresentativeIndices,
+  getVolumeRendererSliceIndices,
+  getSemantic3dVolumeOverlayStacks,
+  isConfirmedRgbaVolumeOverlay,
+  mapWithConcurrency,
+};
 export {
   MPR_AXES,
   MPR_AXIS_CONFIG,
   MPR_SERVER_VOLUME_KIND,
+  MPR_VOLUME_SLICE_RENDER_VERSION,
   MprSliceCanvas,
   getMprFallbackModelZoom,
   getMprAxisImageDimensions,

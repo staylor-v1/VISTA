@@ -2025,6 +2025,186 @@ def test_color_numpy_volume_metadata_and_axis_slices_preserve_uint8_channels(
     assert storage_reads == 1
 
 
+def test_binary_rgba_segment_volume_is_visible_on_every_axis(client, monkeypatch, tmp_path):
+    pid = _create_project(client, name="binary-rgba-segment-volume")
+    volume = np.zeros((2, 3, 4, 4), dtype=np.uint8)
+    volume[0, 0, 0, 0] = 1
+    volume[0, 0, 1, 1] = 1
+    volume[0, 1, 0, 2] = 1
+    volume[0, 2, 3, 3] = 1
+    volume[1, 0, 2, 3] = 1
+    volume[1, 2, 0, 3] = 1
+    payload = io.BytesIO()
+    np.save(payload, volume)
+    raw_payload = payload.getvalue()
+    payload.seek(0)
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("segments-rgba.npy", payload, "application/octet-stream")},
+    )
+    assert upload.status_code == 201, upload.text
+    image_id = upload.json()["id"]
+
+    async def stream_source(_db_image):
+        yield raw_payload
+
+    monkeypatch.setenv("VOLUME_CACHE_DIR", str(tmp_path / "segment-volume-cache"))
+    monkeypatch.setattr("routers.images._iter_authorized_npy_bytes", stream_source)
+
+    metadata = client.get(f"/api/images/{image_id}/volume-metadata")
+    assert metadata.status_code == 200
+    assert metadata.json()["channel_count"] == 4
+    assert metadata.json()["color_mode"] == "rgba"
+
+    expected = {
+        "axial": ((4, 3), (3, 2)),
+        "coronal": ((4, 2), (2, 1)),
+        "sagittal": ((3, 2), (2, 1)),
+    }
+    for axis, (expected_size, fourth_channel_pixel) in expected.items():
+        response = client.get(f"/api/images/{image_id}/volume-slice?axis={axis}&index=0")
+        assert response.status_code == 200, response.text
+        with Image.open(io.BytesIO(response.content)) as image:
+            assert image.mode == "RGBA"
+            assert image.size == expected_size
+            assert image.getchannel("A").getextrema() == (0, 224)
+            assert image.getpixel(fourth_channel_pixel) == (245, 158, 11, 224)
+
+
+def test_sparse_rgba_render_summary_is_bounded_cached_and_channel_representative(
+    client, monkeypatch, tmp_path,
+):
+    pid = _create_project(client, name="sparse-rgba-render-summary")
+    volume = np.zeros((25, 3, 5, 4), dtype=np.uint8)
+    volume[23, 1, 4, 0] = 1
+    volume[7, 2, 0, 1] = 1
+    volume[18, 0, 3, 2] = 1
+    volume[23, 2, 2, 3] = 1
+    payload = io.BytesIO()
+    np.save(payload, volume)
+    raw_payload = payload.getvalue()
+    payload.seek(0)
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("sparse-segments.npy", payload, "application/octet-stream")},
+    )
+    assert upload.status_code == 201, upload.text
+    image_id = upload.json()["id"]
+    storage_reads = 0
+    summary_calls = 0
+    original_summarize = images_router._summarize_rgba_volume_for_rendering
+
+    async def stream_source(_db_image):
+        nonlocal storage_reads
+        storage_reads += 1
+        yield raw_payload
+
+    def counted_summarize(array):
+        nonlocal summary_calls
+        summary_calls += 1
+        return original_summarize(array)
+
+    monkeypatch.setenv("VOLUME_CACHE_DIR", str(tmp_path / "sparse-summary-cache"))
+    monkeypatch.setattr(images_router, "_VOLUME_RENDER_SUMMARY_SCAN_MAX_PIXELS", 2)
+    monkeypatch.setattr(images_router, "_iter_authorized_npy_bytes", stream_source)
+    monkeypatch.setattr(images_router, "_summarize_rgba_volume_for_rendering", counted_summarize)
+
+    first = client.get(f"/api/images/{image_id}/volume-render-summary")
+    second = client.get(f"/api/images/{image_id}/volume-render-summary")
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert first.json() == second.json()
+    assert first.json() == {
+        "summary_version": 1,
+        "kind": "rgba-channel-presence",
+        "active_channels": [0, 1, 2, 3],
+        "channel_representatives": [
+            {"channel": 0, "axial_index": 23},
+            {"channel": 1, "axial_index": 7},
+            {"channel": 2, "axial_index": 18},
+            {"channel": 3, "axial_index": 23},
+        ],
+        "representative_axial_indices": [7, 18, 23],
+        "source_kind": "npy",
+        "dimensions": {"axial": 25, "coronal": 3, "sagittal": 5},
+    }
+    assert len(first.json()["representative_axial_indices"]) <= 4
+    assert storage_reads == 1
+    assert summary_calls == 1
+
+
+def test_volume_render_summary_scans_honor_process_concurrency_limit(monkeypatch):
+    assert images_router._PROCESS_VOLUME_RENDER_SUMMARY_SCAN_LIMITER.capacity == 2
+    limiter = images_router._ProcessWideStorageLimiter(2)
+    active_scans = 0
+    maximum_active_scans = 0
+    scan_lock = threading.Lock()
+    two_scans_started = threading.Event()
+    release_scans = threading.Event()
+    cache_prefix = f"scan-limit-{uuid.uuid4()}"
+
+    def blocked_summarize(array):
+        nonlocal active_scans, maximum_active_scans
+        with scan_lock:
+            active_scans += 1
+            maximum_active_scans = max(maximum_active_scans, active_scans)
+            if active_scans == 2:
+                two_scans_started.set()
+        try:
+            assert release_scans.wait(2), "summary scan was not released"
+            return {"marker": int(array[0])}
+        finally:
+            with scan_lock:
+                active_scans -= 1
+
+    async def exercise():
+        tasks = [
+            asyncio.create_task(
+                images_router._get_or_compute_volume_render_summary(
+                    (f"{cache_prefix}-{index}", "version", 1),
+                    np.asarray([index], dtype=np.uint8),
+                )
+            )
+            for index in range(4)
+        ]
+        assert await asyncio.to_thread(two_scans_started.wait, 2)
+        await asyncio.sleep(0.05)
+        with scan_lock:
+            assert active_scans == 2
+            assert maximum_active_scans == 2
+        release_scans.set()
+        return await asyncio.gather(*tasks)
+
+    monkeypatch.setattr(
+        images_router,
+        "_PROCESS_VOLUME_RENDER_SUMMARY_SCAN_LIMITER",
+        limiter,
+    )
+    monkeypatch.setattr(
+        images_router,
+        "_summarize_rgba_volume_for_rendering",
+        blocked_summarize,
+    )
+    try:
+        assert asyncio.run(exercise()) == [
+            {"marker": 0},
+            {"marker": 1},
+            {"marker": 2},
+            {"marker": 3},
+        ]
+    finally:
+        release_scans.set()
+        limiter.shutdown()
+        with images_router._volume_render_summary_cache_lock:
+            for key in list(images_router._volume_render_summary_cache):
+                if key[0].startswith(cache_prefix):
+                    images_router._volume_render_summary_cache.pop(key, None)
+            for key in list(images_router._volume_render_summary_futures):
+                if key[0].startswith(cache_prefix):
+                    images_router._volume_render_summary_futures.pop(key, None)
+
+
 def test_numpy_volume_metadata_fallback_reads_only_bounded_header(client, monkeypatch, tmp_path):
     pid = _create_project(client, name="volume-header-fallback")
     volume = np.arange(2 * 3 * 4, dtype=np.uint16).reshape((2, 3, 4))
@@ -2450,6 +2630,149 @@ def test_non_uint8_rgba_slice_normalizes_rgb_and_alpha_independently(array, expe
     with Image.open(io.BytesIO(png)) as image:
         assert image.mode == "RGBA"
         assert image.getpixel((0, 0)) == expected
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.int16, np.float32, np.bool_])
+def test_binary_rgba_segment_channels_render_as_visible_palette(dtype):
+    values = np.array(
+        [
+            [
+                [0, 0, 0, 0],
+                [1, 0, 0, 0],
+                [0, 1, 0, 0],
+                [0, 0, 1, 0],
+                [0, 0, 0, 1],
+                [1, 0, 1, 0],
+            ]
+        ],
+        dtype=dtype,
+    )
+
+    png = images_router._normalize_array_slice_to_png(values)
+
+    with Image.open(io.BytesIO(png)) as image:
+        assert image.mode == "RGBA"
+        assert list(image.getdata()) == [
+            (0, 0, 0, 0),
+            (239, 68, 68, 224),
+            (34, 197, 94, 224),
+            (59, 130, 246, 224),
+            (245, 158, 11, 224),
+            (149, 99, 157, 224),
+        ]
+
+
+def test_binary_rgba_segment_rendering_bounds_temporary_work_to_pixel_chunks(
+    monkeypatch,
+):
+    height = 513
+    width = 19
+    pixel_limit = 11
+    backing = np.zeros((height, width * 2, 4), dtype=np.float32)
+    values = backing[:, ::2, :]
+    assert not values.flags.c_contiguous
+
+    row_indices, column_indices = np.indices((height, width))
+    channels = (row_indices + column_indices) % 4
+    active = (row_indices * 3 + column_indices) % 5 != 0
+    for channel_index in range(4):
+        values[..., channel_index] = active & (channels == channel_index)
+
+    observed_chunk_pixels = []
+    original_iter_chunks = images_router._iter_rgba_pixel_chunks
+
+    def tracked_iter_chunks(array, max_chunk_pixels=None):
+        for rows, columns, chunk in original_iter_chunks(array, max_chunk_pixels):
+            observed_chunk_pixels.append(int(chunk.shape[0] * chunk.shape[1]))
+            yield rows, columns, chunk
+
+    monkeypatch.setattr(
+        images_router,
+        "_RGBA_SEGMENT_SLICE_MAX_CHUNK_PIXELS",
+        pixel_limit,
+    )
+    monkeypatch.setattr(images_router, "_iter_rgba_pixel_chunks", tracked_iter_chunks)
+
+    png = images_router._normalize_array_slice_to_png(values)
+
+    expected = np.zeros((height, width, 4), dtype=np.uint8)
+    for channel_index, color in enumerate(images_router._SEGMENT_CHANNEL_PALETTE):
+        channel_active = active & (channels == channel_index)
+        expected[channel_active, :3] = color.astype(np.uint8)
+        expected[channel_active, 3] = images_router._SEGMENT_CHANNEL_ALPHA
+
+    with Image.open(io.BytesIO(png)) as image:
+        rendered = np.asarray(image)
+
+    np.testing.assert_array_equal(rendered, expected)
+    assert len(observed_chunk_pixels) > 2
+    assert max(observed_chunk_pixels) <= pixel_limit
+
+
+def test_clearly_one_hot_255_rgba_segment_channels_render_visibly():
+    values = np.array(
+        [[[255, 0, 0, 0], [0, 0, 0, 255], [0, 0, 0, 0]]],
+        dtype=np.uint8,
+    )
+
+    png = images_router._normalize_array_slice_to_png(values)
+
+    with Image.open(io.BytesIO(png)) as image:
+        assert list(image.getdata()) == [
+            (239, 68, 68, 224),
+            (245, 158, 11, 224),
+            (0, 0, 0, 0),
+        ]
+
+
+def test_single_active_one_hot_255_rgba_channel_renders_as_segment():
+    values = np.array(
+        [[[0, 0, 0, 0], [0, 0, 255, 0], [0, 0, 255, 0]]],
+        dtype=np.uint8,
+    )
+
+    png = images_router._normalize_array_slice_to_png(values)
+
+    with Image.open(io.BytesIO(png)) as image:
+        assert list(image.getdata()) == [
+            (0, 0, 0, 0),
+            (59, 130, 246, 224),
+            (59, 130, 246, 224),
+        ]
+
+
+def test_non_one_hot_literal_rgba_is_not_recolored_as_segments():
+    values = np.array(
+        [[[255, 0, 0, 255], [0, 255, 0, 255]]],
+        dtype=np.uint8,
+    )
+
+    png = images_router._normalize_array_slice_to_png(values)
+
+    with Image.open(io.BytesIO(png)) as image:
+        assert list(image.getdata()) == [(255, 0, 0, 255), (0, 255, 0, 255)]
+
+
+def test_non_binary_literal_rgba_is_not_recolored_as_segments():
+    values = np.array(
+        [[[12, 34, 56, 78], [90, 120, 140, 160]]],
+        dtype=np.uint8,
+    )
+
+    png = images_router._normalize_array_slice_to_png(values)
+
+    with Image.open(io.BytesIO(png)) as image:
+        assert list(image.getdata()) == [(12, 34, 56, 78), (90, 120, 140, 160)]
+
+
+def test_all_zero_non_uint8_rgba_segment_slice_stays_transparent():
+    png = images_router._normalize_array_slice_to_png(
+        np.zeros((2, 3, 4), dtype=np.int64),
+    )
+
+    with Image.open(io.BytesIO(png)) as image:
+        assert image.mode == "RGBA"
+        assert image.getbbox() is None
 
 
 def test_simultaneous_slice_renders_coalesce_per_key_without_blocking_other_keys(monkeypatch):

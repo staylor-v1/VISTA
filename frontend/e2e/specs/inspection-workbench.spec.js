@@ -11,6 +11,10 @@ const projectDataLayoutScreenshotPath = path.resolve(__dirname, '../../artifacts
 const highVolumeUploadScreenshotPath = path.resolve(__dirname, '../../artifacts/high-volume-image-upload-progress.png');
 const pt3RealSplatScreenshotPath = path.resolve(__dirname, '../../artifacts/pt3-real-vs-simplified-3dgs.png');
 const largeNpyLazyMprScreenshotPath = path.resolve(__dirname, '../../artifacts/large-npy-lazy-mpr.png');
+const rgbaVolumePreviewScreenshotPath = path.resolve(__dirname, '../../artifacts/rgba-segment-volume-preview.png');
+const rgbaFullscreen2dScreenshotPath = path.resolve(__dirname, '../../artifacts/rgba-segment-fullscreen-2d.png');
+const rgbaFullscreen3dScreenshotPath = path.resolve(__dirname, '../../artifacts/rgba-segment-fullscreen-3d.png');
+const rgbaFullscreen3dNarrowScreenshotPath = path.resolve(__dirname, '../../artifacts/rgba-segment-fullscreen-3d-narrow.png');
 const simulatedUsers = ['basic', 'intermediate', 'advanced'];
 
 function readMultipartJsonFilePart(bodyBuffer, fieldName) {
@@ -435,6 +439,8 @@ test.describe('PT3 Real 3DGS mode', () => {
 
 test.describe('PT3 large NPY lazy MPR loading', () => {
   test('bounds slice requests and keeps a segmented overlay aligned with the base volume', async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.setViewportSize({ width: 1280, height: 860 });
     const dimensions = { axial: 749, coronal: 1010, sagittal: 984 };
     const baseImageId = 'large-npy-base';
     const overlayImageId = 'large-npy-segments';
@@ -525,6 +531,25 @@ test.describe('PT3 large NPY lazy MPR loading', () => {
       });
     });
 
+    await page.route(/\/api\/images\/large-npy-segments\/volume-render-summary(?:\?.*)?$/, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          summary_version: 1,
+          kind: 'rgba-channel-presence',
+          active_channels: [0, 1, 2, 3],
+          channel_representatives: [0, 1, 2, 3].map((channel) => ({
+            channel,
+            axial_index: 700,
+          })),
+          representative_axial_indices: [700],
+          source_kind: 'npy',
+          dimensions,
+        }),
+      });
+    });
+
     await page.route(/\/api\/images\/(large-npy-base|large-npy-segments)\/volume-slice\?/, async (route) => {
       const requestUrl = new URL(route.request().url());
       const imageId = requestUrl.pathname.split('/').at(-2);
@@ -548,6 +573,38 @@ test.describe('PT3 large NPY lazy MPR loading', () => {
     });
 
     await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
+    await page.getByRole('tab', { name: 'Project Data' }).click();
+    await page.getByRole('tab', { name: 'Images to Parts' }).click();
+    await page.getByRole('button', { name: 'nist_part_segments.npy', exact: true }).click();
+
+    const volumePreviewDialog = page.getByRole('dialog', { name: 'nist_part_segments.npy' });
+    const volumePreviewCanvas = volumePreviewDialog.locator('.mpr-slice-canvas');
+    await expect(volumePreviewDialog).toBeVisible();
+    await expect(volumePreviewCanvas).toHaveAttribute('data-volume-color-mode', 'rgba');
+    for (const axis of ['axial', 'coronal', 'sagittal']) {
+      await volumePreviewDialog.getByLabel('Slice axis').selectOption(axis);
+      await expect(volumePreviewCanvas).toHaveAttribute('data-mpr-axis', axis);
+      await expect(volumePreviewCanvas).toHaveAttribute('data-slice-load-status', 'ready');
+      await expect.poll(async () => volumePreviewCanvas.evaluate((canvas) => {
+        const context = canvas.getContext('2d');
+        if (!context || canvas.width < 1 || canvas.height < 1) return false;
+        const center = context.getImageData(
+          Math.floor(canvas.width / 2),
+          Math.floor(canvas.height / 2),
+          1,
+          1,
+        ).data;
+        return center[0] > center[1] + 35 && center[0] > center[2] + 35 && center[3] > 0;
+      })).toBe(true);
+    }
+    await volumePreviewDialog.screenshot({ path: rgbaVolumePreviewScreenshotPath });
+    await volumePreviewDialog.getByRole('button', { name: 'Close volume viewer' }).click();
+    await expect.poll(() => inFlightSliceRequests).toBe(0);
+
+    metadataRequests.length = 0;
+    sliceRequests.length = 0;
+    volumeContentRequests.length = 0;
+    maxInFlightSliceRequests = 0;
     await page.getByRole('tab', { name: 'Inspection' }).click();
 
     const mprPanel = page.getByTestId('mpr-panel');
@@ -659,6 +716,130 @@ test.describe('PT3 large NPY lazy MPR loading', () => {
         expect(isBrightNeutral(evidence.legacyBottomBaseEdge)).toBe(true);
       }
     }
+
+    for (const axis of ['axial', 'coronal', 'sagittal']) {
+      await page.getByTestId(`mpr-pane-${axis}`).locator('.mpr-pane-header').click();
+      const fullscreenSlice = page.getByTestId('fullscreen-mpr-slice');
+      await expect(fullscreenSlice).toBeVisible();
+      await expect(fullscreenSlice).toHaveAttribute('data-mpr-axis', axis);
+      await expect(fullscreenSlice).toHaveAttribute('data-overlay-color-modes', 'rgba');
+      await expect.poll(async () => fullscreenSlice.evaluate((canvas) => {
+        const context = canvas.getContext('2d');
+        if (!context || canvas.width < 1 || canvas.height < 1) return false;
+        const center = context.getImageData(
+          Math.floor(canvas.width / 2),
+          Math.floor(canvas.height / 2),
+          1,
+          1,
+        ).data;
+        return center[0] > center[1] + 35 && center[0] > center[2] + 35 && center[3] > 0;
+      })).toBe(true);
+      if (axis === 'axial') {
+        await page.locator('.inspection-fullscreen-modal-content').screenshot({ path: rgbaFullscreen2dScreenshotPath });
+      }
+      await page.getByRole('button', { name: 'Close fullscreen image' }).click();
+      await expect(fullscreenSlice).not.toBeVisible();
+    }
+
+    const reconstructionSelector = page.getByLabel('3D view');
+    await reconstructionSelector.selectOption('stack');
+    await expect.poll(() => page.locator('.volume-slice-segment-overlay').count()).toBeGreaterThan(0);
+    await expect.poll(() => sliceRequests.some((request) => (
+      request.imageId === overlayImageId
+      && request.axis === 'axial'
+      && request.index === 700
+    ))).toBe(true);
+    expect(sliceRequests).not.toContainEqual({ imageId: baseImageId, axis: 'axial', index: 700 });
+
+    await reconstructionSelector.selectOption('ray-march:composite');
+    const volumeViewer = page.getByTestId('pt3-gaussian-splat-viewer');
+    await expect(volumeViewer).toBeVisible();
+    await expect(volumeViewer).toHaveAttribute('data-external-overlay-rendered', 'true');
+    const activeVolumeRenderer = await volumeViewer.getAttribute('data-renderer-type');
+    expect(activeVolumeRenderer).toMatch(/^(three-|canvas2d-fallback$)/);
+    if (activeVolumeRenderer.startsWith('three-')) {
+      await expect(volumeViewer).toHaveAttribute('data-external-overlay-points', '0');
+    } else {
+      await expect.poll(async () => Number(await volumeViewer.getAttribute('data-external-overlay-points')))
+        .toBeGreaterThan(0);
+    }
+
+    await page.getByRole('button', { name: 'Open 3D part view fullscreen' }).click();
+    const fullscreen3d = page.getByRole('dialog', { name: '3D reconstruction' });
+    const displayOptions = fullscreen3d.getByRole('group', { name: 'Fullscreen 3D display options' });
+    const renderAnnotationsToggle = displayOptions.getByLabel('Render annotations');
+    const annotationListToggle = displayOptions.getByLabel('Show annotations list');
+    const reconstructionSettingsToggle = displayOptions.getByLabel('Show reconstruction settings');
+    const annotationList3d = fullscreen3d.getByRole('complementary', { name: '3D annotations' });
+    const rayMarchControls = fullscreen3d.getByRole('group', { name: 'Ray-march controls' });
+
+    await expect(fullscreen3d).toBeVisible();
+    await expect(renderAnnotationsToggle).toBeChecked();
+    await expect(annotationListToggle).toBeChecked();
+    await expect(reconstructionSettingsToggle).toBeChecked();
+    await expect(annotationList3d).toBeVisible();
+    await expect(rayMarchControls).toBeVisible();
+
+    const assertFullscreenRailsDoNotOverlap = async () => {
+      const settingsBox = await rayMarchControls.boundingBox();
+      const annotationsBox = await annotationList3d.boundingBox();
+      expect(settingsBox && annotationsBox).toBeTruthy();
+      expect(
+        settingsBox.x < annotationsBox.x + annotationsBox.width
+        && settingsBox.x + settingsBox.width > annotationsBox.x
+        && settingsBox.y < annotationsBox.y + annotationsBox.height
+        && settingsBox.y + settingsBox.height > annotationsBox.y,
+      ).toBe(false);
+      const sceneBox = await fullscreen3d.locator('.mpr-volume-scene').boundingBox();
+      expect(sceneBox && settingsBox && settingsBox.x < sceneBox.x + (sceneBox.width / 2)).toBeTruthy();
+      expect(sceneBox && annotationsBox && annotationsBox.x > sceneBox.x + (sceneBox.width / 2)).toBeTruthy();
+    };
+    await assertFullscreenRailsDoNotOverlap();
+    await fullscreen3d.screenshot({ path: rgbaFullscreen3dScreenshotPath });
+
+    await renderAnnotationsToggle.uncheck();
+    await expect(volumeViewer).toHaveAttribute('data-external-overlay-rendered', 'false');
+    await expect(volumeViewer).toHaveAttribute('data-external-overlay-points', '0');
+    await expect(annotationList3d).toBeVisible();
+    await expect(rayMarchControls).toBeVisible();
+    await renderAnnotationsToggle.check();
+    await expect(volumeViewer).toHaveAttribute('data-external-overlay-rendered', 'true');
+
+    await annotationListToggle.uncheck();
+    await expect(annotationList3d).not.toBeVisible();
+    await expect(rayMarchControls).toBeVisible();
+    await expect(volumeViewer).toHaveAttribute('data-external-overlay-rendered', 'true');
+    await annotationListToggle.check();
+    await expect(annotationList3d).toBeVisible();
+
+    await reconstructionSettingsToggle.uncheck();
+    await expect(rayMarchControls).not.toBeVisible();
+    await expect(annotationList3d).toBeVisible();
+    await expect(volumeViewer).toHaveAttribute('data-external-overlay-rendered', 'true');
+    await reconstructionSettingsToggle.check();
+    await expect(rayMarchControls).toBeVisible();
+
+    await page.setViewportSize({ width: 600, height: 720 });
+    await assertFullscreenRailsDoNotOverlap();
+    await fullscreen3d.screenshot({ path: rgbaFullscreen3dNarrowScreenshotPath });
+    await page.setViewportSize({ width: 1280, height: 860 });
+    await fullscreen3d.getByRole('button', { name: 'Close fullscreen 3D view' }).click();
+    await expect(fullscreen3d).not.toBeVisible();
+    // A zero in-flight count can occur briefly between the fullscreen renderer's
+    // current-slice and prefetch generations. Require a quiet window so those
+    // background requests are not attributed to the scrub measured below.
+    let previousSliceRequestCount = -1;
+    let quietSliceRequestPolls = 0;
+    await expect.poll(() => {
+      const currentCount = sliceRequests.length;
+      quietSliceRequestPolls = inFlightSliceRequests === 0
+        && currentCount === previousSliceRequestCount
+        ? quietSliceRequestPolls + 1
+        : 0;
+      previousSliceRequestCount = currentCount;
+      return quietSliceRequestPolls;
+    }, { timeout: 10_000, intervals: [100, 100, 100, 200] }).toBeGreaterThanOrEqual(3);
+    maxInFlightSliceRequests = 0;
 
     const requestsBeforeRapidScrub = sliceRequests.length;
     // Model the slow cold-slice path that originally exposed the backlog:

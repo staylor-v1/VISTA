@@ -1,6 +1,7 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import ImagesToPartsTab from '../ImagesToPartsTab';
+import { shouldApplyDisplayWindowToVolumeCache } from '../InspectionWorkbenchPanel';
 
 describe('ImagesToPartsTab', () => {
   beforeEach(() => {
@@ -685,6 +686,58 @@ test('opens a multi-image volume viewer with metadata, editable slice, and axis 
   fireEvent.change(screen.getByLabelText('Slice axis'), { target: { value: 'sagittal' } });
   fireEvent.change(screen.getByLabelText('Current slice'), { target: { value: '3' } });
   expect(screen.getByLabelText('Current slice')).toHaveValue(3);
+});
+
+test.each([
+  ['npy', 'segments.npy', 'voxel_array'],
+  ['npz', 'segments.npz', 'voxel_array'],
+  ['inspiro', 'segments.inspiro', 'voxel_array'],
+  ['tiff', 'segments.tif', 'stack_of_2d_images'],
+])('preserves RGBA layout metadata in the lazy %s volume preview', async (
+  sourceKind,
+  filename,
+  interpretation,
+) => {
+  const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      image_count: 5,
+      height: 12,
+      width: 10,
+      interpretation,
+      source_kind: sourceKind,
+      bit_depth: 8,
+      pixel_dtype: 'uint8',
+      channel_count: 4,
+      color_mode: 'rgba',
+      dimensions: { axial: 5, coronal: 12, sagittal: 10 },
+    }),
+  });
+
+  render(
+    <ImagesToPartsTab
+      projectId="proj-1"
+      parts={[{
+        id: 'part-rgba',
+        serial_number: 'RGBA-001',
+        display_name: 'RGBA segments',
+        metadata: { source_images: [{ filename, image_id: 'img-rgba-volume' }] },
+      }]}
+      images={[{
+        id: 'img-rgba-volume',
+        filename,
+        metadata: { load_mode: 'volume', frame_count: 5 },
+      }]}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole('button', { name: filename }));
+
+  const dialog = await screen.findByRole('dialog', { name: filename });
+  const sliceCanvas = await within(dialog).findByRole('img', { name: 'XY slice 2' });
+  expect(sliceCanvas).toHaveAttribute('data-volume-color-mode', 'rgba');
+  expect(shouldApplyDisplayWindowToVolumeCache({ colorMode: sliceCanvas.dataset.volumeColorMode })).toBe(false);
+  expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes('/volume-slice'))).toHaveLength(0);
 });
 
 describe('ImagesToPartsTab volume preview progress', () => {

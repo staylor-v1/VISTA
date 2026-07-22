@@ -7,12 +7,14 @@ import Pt3GaussianSplatViewer, {
   getPt3RealGaussianSplatAsset,
   getPt3RealSplatCameras,
   getRenderablePt3SegmentationSegments,
+  loadPt3ExternalVolumeOverlayPoints,
   normalizeRayMarchSettings,
   REAL_SPLAT_BROWSER_MAX,
 } from '../Pt3GaussianSplatViewer';
 import {
   createThreeMechanicalRenderer,
   DEFAULT_PT3_RECONSTRUCTION_OPTIONS,
+  loadVolumeTextureImages,
 } from '../pt3ThreeRenderer';
 import { renderPt3VectorAnnotations } from '../pt3VectorAnnotations';
 import { drawPt3SliceLocator } from '../pt3SliceLocator';
@@ -20,6 +22,7 @@ import { drawPt3SliceLocator } from '../pt3SliceLocator';
 jest.mock('../pt3ThreeRenderer', () => ({
   ...jest.requireActual('../pt3ThreeRenderer'),
   createThreeMechanicalRenderer: jest.fn(),
+  loadVolumeTextureImages: jest.fn(),
 }));
 
 jest.mock('../pt3VectorAnnotations', () => ({
@@ -40,8 +43,13 @@ const part = {
   },
 };
 
-function makeRenderer(type = 'three-webgl-raymarch') {
-  return { rendererType: type, render: jest.fn(), dispose: jest.fn() };
+function makeRenderer(type = 'three-webgl-raymarch', hasExternalOverlay = false) {
+  return {
+    rendererType: type,
+    hasExternalOverlay,
+    render: jest.fn(),
+    dispose: jest.fn(),
+  };
 }
 
 function enableMockRayMarchRenderer() {
@@ -75,6 +83,7 @@ describe('Pt3GaussianSplatViewer renderer degradation', () => {
   beforeEach(() => {
     createThreeMechanicalRenderer.mockReset();
     createThreeMechanicalRenderer.mockResolvedValue(null);
+    loadVolumeTextureImages.mockReset();
     drawPt3SliceLocator.mockClear();
   });
 
@@ -137,6 +146,199 @@ describe('Pt3GaussianSplatViewer renderer degradation', () => {
 
     resolveReplacementRenderer(makeRenderer());
     await waitFor(() => expect(webglCanvas).not.toHaveAttribute('hidden'));
+  });
+
+  test('passes aligned external overlay stacks to WebGL and gates pixels with annotation rendering', async () => {
+    const renderer = makeRenderer('three-webgl-raymarch', true);
+    createThreeMechanicalRenderer.mockResolvedValue(renderer);
+    const volumeImageStack = [{ id: 'base-0', url: '/base-0.png', sliceIndex: 0 }];
+    const volumeOverlayImageStacks = [[{
+      id: 'segments-0',
+      url: '/segments-0.png',
+      sliceIndex: 0,
+      colorMode: 'rgba',
+    }]];
+    const { rerender } = render(<Pt3GaussianSplatViewer
+      part={part}
+      mode="volume"
+      volumeImageStack={volumeImageStack}
+      volumeOverlayImageStacks={volumeOverlayImageStacks}
+      showAnnotations={false}
+    />);
+
+    await waitFor(() => expect(renderer.render).toHaveBeenCalled());
+    expect(createThreeMechanicalRenderer).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      volumeOverlayImageStacks,
+    }));
+    expect(renderer.render.mock.calls.at(-1)[0]).toEqual(expect.objectContaining({
+      showExternalOverlay: false,
+    }));
+    expect(screen.getByTestId('pt3-gaussian-splat-viewer'))
+      .toHaveAttribute('data-external-overlay-rendered', 'false');
+
+    rerender(<Pt3GaussianSplatViewer
+      part={part}
+      mode="volume"
+      volumeImageStack={volumeImageStack}
+      volumeOverlayImageStacks={volumeOverlayImageStacks}
+      showAnnotations
+    />);
+    await waitFor(() => expect(renderer.render.mock.calls.at(-1)[0]).toEqual(expect.objectContaining({
+      showExternalOverlay: true,
+    })));
+    expect(screen.getByTestId('pt3-gaussian-splat-viewer'))
+      .toHaveAttribute('data-external-overlay-rendered', 'true');
+    expect(screen.getByTestId('pt3-gaussian-splat-viewer'))
+      .toHaveAttribute('data-renderer-type', 'three-webgl-raymarch');
+    expect(createThreeMechanicalRenderer).toHaveBeenCalledTimes(1);
+  });
+
+  test('builds bounded visible canvas points from RGBA overlay alpha', async () => {
+    const image = { width: 2, height: 1 };
+    loadVolumeTextureImages.mockResolvedValue({
+      images: [image],
+      ordered: [{ id: 'segments-0', sliceIndex: 0 }],
+    });
+    const context = {
+      clearRect: jest.fn(),
+      drawImage: jest.fn(),
+      getImageData: jest.fn(() => ({
+        data: new Uint8ClampedArray([
+          0, 0, 0, 0,
+          245, 158, 11, 224,
+        ]),
+      })),
+    };
+    const getContext = jest.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockReturnValue(context);
+    try {
+      const points = await loadPt3ExternalVolumeOverlayPoints(
+        [[{ id: 'segments-0', url: '/segments-0.png', sliceIndex: 0 }]],
+        { dimensions: [2, 1, 1], spacing: [1, 1, 1], origin: [0, 0, 0] },
+        { maxPoints: 1 },
+      );
+
+      expect(points.sourcePointCount).toBe(1);
+      expect(Array.from(points.positions)).toEqual([1, 0, 0]);
+      expect(Array.from(points.colors.slice(0, 3))).toEqual([245, 158, 11]);
+      expect(points.colors[3]).toBeCloseTo(224 / 255);
+    } finally {
+      getContext.mockRestore();
+    }
+  });
+
+  test('decodes and processes external overlay stacks sequentially in voxel slice order', async () => {
+    let resolveFirstStack;
+    const order = [];
+    const firstImage = { id: 'first-image', width: 1, height: 1 };
+    const secondImage = { id: 'second-image', width: 1, height: 1 };
+    loadVolumeTextureImages
+      .mockImplementationOnce(() => {
+        order.push('decode-first');
+        return new Promise((resolve) => { resolveFirstStack = resolve; });
+      })
+      .mockImplementationOnce(async () => {
+        order.push('decode-second');
+        return {
+          images: [secondImage],
+          ordered: [{ sliceIndex: 1, voxelSliceIndex: 4 }],
+        };
+      });
+    let drawnImage = null;
+    const context = {
+      clearRect: jest.fn(),
+      drawImage: jest.fn((image) => { drawnImage = image; }),
+      getImageData: jest.fn(() => {
+        order.push(`process-${drawnImage.id}`);
+        return { data: new Uint8ClampedArray([59, 130, 246, 224]) };
+      }),
+    };
+    const getContext = jest.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockReturnValue(context);
+    try {
+      const pointsPromise = loadPt3ExternalVolumeOverlayPoints(
+        [
+          [{ id: 'first', url: '/first.png', sliceIndex: 0 }],
+          [{ id: 'second', url: '/second.png', sliceIndex: 1 }],
+        ],
+        { dimensions: [1, 1, 5], spacing: [1, 1, 1], origin: [0, 0, 0] },
+      );
+
+      expect(loadVolumeTextureImages).toHaveBeenCalledTimes(1);
+      resolveFirstStack({
+        images: [firstImage],
+        ordered: [{ sliceIndex: 0, voxelSliceIndex: 3 }],
+      });
+      const points = await pointsPromise;
+
+      expect(loadVolumeTextureImages).toHaveBeenCalledTimes(2);
+      expect(order).toEqual([
+        'decode-first',
+        'process-first-image',
+        'decode-second',
+        'process-second-image',
+      ]);
+      expect(Array.from(points.positions)).toEqual([0, 0, 3, 0, 0, 4]);
+    } finally {
+      getContext.mockRestore();
+    }
+  });
+
+  test('does not decode Canvas2D overlay points while WebGL is pending or active', async () => {
+    let resolveRenderer;
+    createThreeMechanicalRenderer.mockImplementation(() => new Promise((resolve) => {
+      resolveRenderer = resolve;
+    }));
+    const overlayStacks = [[{
+      id: 'segments-0',
+      url: '/segments-0.png',
+      sliceIndex: 0,
+      colorMode: 'rgba',
+    }]];
+    render(<Pt3GaussianSplatViewer
+      part={part}
+      mode="volume"
+      volumeImageStack={[{ id: 'base-0', url: '/base-0.png', sliceIndex: 0 }]}
+      volumeOverlayImageStacks={overlayStacks}
+    />);
+
+    expect(screen.getByLabelText('Three.js mechanical volume renderer')).toHaveAttribute('hidden');
+    expect(loadVolumeTextureImages).not.toHaveBeenCalled();
+
+    const webglBackend = makeRenderer();
+    resolveRenderer(webglBackend);
+    await waitFor(() => expect(screen.getByLabelText('Three.js mechanical volume renderer'))
+      .not.toHaveAttribute('hidden'));
+    expect(loadVolumeTextureImages).not.toHaveBeenCalled();
+    expect(screen.getByTestId('pt3-gaussian-splat-viewer'))
+      .toHaveAttribute('data-external-overlay-points', '0');
+  });
+
+  test('decodes Canvas2D overlay points only after WebGL confirms its fallback', async () => {
+    let rejectRenderer;
+    createThreeMechanicalRenderer.mockImplementation(() => new Promise((resolve, reject) => {
+      rejectRenderer = reject;
+    }));
+    loadVolumeTextureImages.mockResolvedValue({ images: [], ordered: [] });
+    render(<Pt3GaussianSplatViewer
+      part={part}
+      mode="volume"
+      volumeImageStack={[{ id: 'base-0', url: '/base-0.png', sliceIndex: 0 }]}
+      volumeOverlayImageStacks={[[{
+        id: 'segments-0',
+        url: '/segments-0.png',
+        sliceIndex: 0,
+        colorMode: 'rgba',
+      }]]}
+    />);
+
+    expect(loadVolumeTextureImages).not.toHaveBeenCalled();
+    rejectRenderer(new Error('WebGL unavailable'));
+
+    expect(await screen.findByText(/Showing deterministic volume bounds fallback/i))
+      .toBeInTheDocument();
+    await waitFor(() => expect(loadVolumeTextureImages).toHaveBeenCalledTimes(1));
+    expect(screen.getByLabelText('Three.js mechanical volume renderer')).toHaveAttribute('hidden');
   });
 
   test('shares renderer defaults and normalizes adversarial saved settings', () => {
@@ -634,6 +836,16 @@ describe('Pt3GaussianSplatViewer renderer degradation', () => {
     fireEvent.keyDown(strategy, { key: 'ArrowDown' });
     fireEvent.keyDown(budget, { key: 'ArrowRight' });
     expect(parentKeyDown).not.toHaveBeenCalled();
+  });
+
+  test('keeps Real 3DGS fitting visible by default and honors the explicit controls gate', () => {
+    const { rerender } = render(
+      <Pt3GaussianSplatViewer part={part} mode="real-splat" showRealOptimizationControls={false} />,
+    );
+    expect(screen.queryByRole('group', { name: 'Real 3DGS fitting' })).not.toBeInTheDocument();
+
+    rerender(<Pt3GaussianSplatViewer part={part} mode="real-splat" />);
+    expect(screen.getByRole('group', { name: 'Real 3DGS fitting' })).toBeInTheDocument();
   });
 
   test('shows an honest unavailable state without substituting simplified splats', async () => {

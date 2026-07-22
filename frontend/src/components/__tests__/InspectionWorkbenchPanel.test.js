@@ -1733,8 +1733,11 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('mpr-pane-axial')).toHaveTextContent(/99 \/ 199/);
     expect(screen.getByTestId('mpr-pane-coronal')).toHaveTextContent(/274 \/ 549/);
     expect(screen.getByTestId('mpr-pane-sagittal')).toHaveTextContent(/149 \/ 299/);
-    expect(screen.getByTestId('mpr-preview-axial').querySelector('canvas')).toHaveAttribute('width', '300');
-    expect(screen.getByTestId('mpr-preview-axial').querySelector('canvas')).toHaveAttribute('height', '550');
+    await waitFor(() => {
+      const axialCanvas = screen.getByTestId('mpr-preview-axial').querySelector('canvas');
+      expect(axialCanvas).toHaveAttribute('width', '300');
+      expect(axialCanvas).toHaveAttribute('height', '550');
+    });
   });
 
   test('probes legacy volume metadata once and renders an RGBA overlay over a scalar source', async () => {
@@ -1934,12 +1937,27 @@ describe('InspectionWorkbenchPanel', () => {
     expect(within(fullscreen).getByRole('application', { name: 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.' })).toBeInTheDocument();
     expect(document.querySelectorAll('.mpr-volume-scene')).toHaveLength(1);
     expect(within(fullscreen).getByRole('button', { name: 'Close fullscreen 3D view' })).toHaveFocus();
-    const fullscreenAnnotationToggle = within(fullscreen).getByLabelText('Show annotations');
-    expect(fullscreenAnnotationToggle).toBeChecked();
-    fireEvent.click(fullscreenAnnotationToggle);
-    expect(fullscreenAnnotationToggle).not.toBeChecked();
-    fireEvent.click(fullscreenAnnotationToggle);
-    expect(fullscreenAnnotationToggle).toBeChecked();
+    const renderAnnotationsToggle = within(fullscreen).getByLabelText('Render annotations');
+    const annotationsListToggle = within(fullscreen).getByLabelText('Show annotations list');
+    const reconstructionSettingsToggle = within(fullscreen).getByLabelText('Show reconstruction settings');
+    expect(renderAnnotationsToggle).toBeChecked();
+    expect(annotationsListToggle).toBeChecked();
+    expect(reconstructionSettingsToggle).toBeChecked();
+    expect(within(fullscreen).getByLabelText('3D annotations')).toBeInTheDocument();
+
+    fireEvent.click(renderAnnotationsToggle);
+    expect(renderAnnotationsToggle).not.toBeChecked();
+    expect(within(fullscreen).getByLabelText('3D annotations')).toBeInTheDocument();
+    expect(annotationsListToggle).toBeChecked();
+
+    fireEvent.click(annotationsListToggle);
+    expect(within(fullscreen).queryByLabelText('3D annotations')).not.toBeInTheDocument();
+    expect(renderAnnotationsToggle).not.toBeChecked();
+    fireEvent.click(renderAnnotationsToggle);
+    expect(renderAnnotationsToggle).toBeChecked();
+    expect(within(fullscreen).queryByLabelText('3D annotations')).not.toBeInTheDocument();
+    fireEvent.click(annotationsListToggle);
+    expect(within(fullscreen).getByLabelText('3D annotations')).toBeInTheDocument();
 
     expect(mprGrid).toHaveClass('mpr-grid-four');
     expect(mprGrid).not.toHaveClass('mpr-grid-single');
@@ -2104,6 +2122,12 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.queryByLabelText('Clip/crop')).not.toBeInTheDocument();
 
     fireEvent.change(modeSelect, { target: { value: 'ray-march:composite' } });
+    await waitFor(() => expect(screen.getByRole('group', { name: 'Ray-march controls' })).toBeEnabled());
+    const reconstructionSettingsToggle = screen.getByLabelText('Show reconstruction settings');
+    fireEvent.click(reconstructionSettingsToggle);
+    expect(screen.queryByRole('group', { name: 'Ray-march controls' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('3D annotations')).toBeInTheDocument();
+    fireEvent.click(reconstructionSettingsToggle);
     await waitFor(() => expect(screen.getByRole('group', { name: 'Ray-march controls' })).toBeEnabled());
     const density = screen.getByLabelText('Ray-march density');
     const threshold = screen.getByLabelText('Ray-march intensity threshold');
@@ -2423,8 +2447,14 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('mpr-pane-3d')).toHaveClass('mpr-pane-volume-fullscreen');
     fireEvent.keyDown(document, { key: 'Tab' });
     const fullscreenDialog = screen.getByRole('dialog', { name: '3D reconstruction' });
-    const fullscreenAnnotationToggle = within(fullscreenDialog).getByLabelText('Show annotations');
-    expect(fullscreenAnnotationToggle).toHaveFocus();
+    const renderAnnotationsToggle = within(fullscreenDialog).getByLabelText('Render annotations');
+    const annotationsListToggle = within(fullscreenDialog).getByLabelText('Show annotations list');
+    const reconstructionSettingsToggle = within(fullscreenDialog).getByLabelText('Show reconstruction settings');
+    expect(renderAnnotationsToggle).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(annotationsListToggle).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(reconstructionSettingsToggle).toHaveFocus();
     fireEvent.keyDown(document, { key: 'Tab' });
     const fullscreenScene = screen.getByRole('application', { name: 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.' });
     expect(fullscreenScene).toHaveFocus();
@@ -2435,9 +2465,9 @@ describe('InspectionWorkbenchPanel', () => {
     fireEvent.keyDown(fullscreenScene, { key: '+' });
     expect(screen.getByTestId('mpr-pane-3d').textContent).not.toBe(zoomBeforeKeyboard);
     fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
-    expect(fullscreenAnnotationToggle).toHaveFocus();
+    expect(reconstructionSettingsToggle).toHaveFocus();
     fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
-    expect(closeButton).toHaveFocus();
+    expect(annotationsListToggle).toHaveFocus();
     fireEvent.click(closeButton);
     await waitFor(() => expect(scene).toHaveFocus());
 
