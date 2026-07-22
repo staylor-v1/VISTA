@@ -1564,7 +1564,7 @@ describe('InspectionWorkbenchPanel', () => {
     expect(density).toHaveValue('1.25');
     expect(threshold).toHaveValue('0.08');
     expect(screen.queryByLabelText('Transfer function preset')).not.toBeInTheDocument();
-    expect(screen.getByTestId('ray-march-transfer-summary')).toHaveTextContent('alpha = smoothstep');
+    expect(screen.getByTestId('ray-march-transfer-summary')).toHaveTextContent('α(I) = ρ · smoothstep');
     expect(screen.getByLabelText('Ray-march opacity ramp width')).toHaveValue('0.52');
     expect(quality).toHaveValue('balanced');
     expect(guides).toBeChecked();
@@ -1586,7 +1586,7 @@ describe('InspectionWorkbenchPanel', () => {
     expect(density).toHaveValue('1.25');
     expect(threshold).toHaveValue('0.08');
     expect(screen.queryByLabelText('Transfer function preset')).not.toBeInTheDocument();
-    expect(screen.getByTestId('ray-march-transfer-summary')).toHaveTextContent('alpha = smoothstep');
+    expect(screen.getByTestId('ray-march-transfer-summary')).toHaveTextContent('α(I) = ρ · smoothstep');
     expect(screen.getByLabelText('Ray-march opacity ramp width')).toHaveValue('0.52');
     expect(quality).toHaveValue('balanced');
     expect(guides).toBeChecked();

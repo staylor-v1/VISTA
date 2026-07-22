@@ -895,7 +895,18 @@ export default function Pt3GaussianSplatViewer({
       >
         <legend>Ray march</legend>
         <div className="pt3-ray-march-transfer-summary" data-testid="ray-march-transfer-summary">
-          Transfer function: alpha = smoothstep(threshold, threshold + width, intensity) × density; color = mix(low, high, smoothstep(threshold, 1, intensity)).
+          <div>
+            Transfer function: α(I) = ρ · smoothstep(τ, τ + w, I); C(I) = mix(Cₗ, Cₕ, smoothstep(τ, 1, I)).
+          </div>
+          <dl>
+            <dt>I</dt><dd>normalized voxel intensity sampled by the ray marcher.</dd>
+            <dt>α(I)</dt><dd>opacity contributed by intensity I.</dd>
+            <dt>ρ</dt><dd>density multiplier from the Density control.</dd>
+            <dt>τ</dt><dd>intensity threshold from the Threshold control.</dd>
+            <dt>w</dt><dd>opacity ramp width.</dd>
+            <dt>C(I)</dt><dd>rendered color at intensity I.</dd>
+            <dt>Cₗ, Cₕ</dt><dd>low and high color coefficients.</dd>
+          </dl>
         </div>
         <label>
           Opacity ramp width <output aria-hidden="true">{Number(opacityRampWidth).toFixed(2)}</output>
