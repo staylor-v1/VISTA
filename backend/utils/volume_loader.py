@@ -12,7 +12,7 @@ import struct
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Iterable
+from typing import BinaryIO, Iterable, Literal
 
 import numpy as np
 from PIL import Image
@@ -121,11 +121,24 @@ class VolumeInfo:
     shape: tuple[int, int, int]
     source_files: tuple[str, ...]
     dtype: str | None = None
+    channel_count: int = 1
+    color_mode: Literal["scalar", "rgb", "rgba"] = "scalar"
+
+    @property
+    def array_shape(self) -> tuple[int, ...]:
+        """Return the decoded array shape while keeping ``shape`` spatial-only."""
+
+        if self.channel_count == 1:
+            return self.shape
+        return (*self.shape, self.channel_count)
 
 
 @dataclass(frozen=True)
 class _NpyHeader:
     shape: tuple[int, int, int]
+    array_shape: tuple[int, ...]
+    channel_count: int
+    color_mode: Literal["scalar", "rgb", "rgba"]
     dtype_text: str
     dtype: np.dtype
     data_offset: int
@@ -133,9 +146,39 @@ class _NpyHeader:
 
 
 def _checked_voxel_count(shape: tuple[int, int, int]) -> int:
-    if any(isinstance(value, bool) or value < 0 for value in shape):
-        raise ValueError("Volume dimensions must be non-negative integers")
+    if any(isinstance(value, bool) or value <= 0 for value in shape):
+        raise ValueError("Volume dimensions must be positive integers")
     return math.prod(shape)
+
+
+def _volume_layout_from_array_shape(
+    shape: tuple[int, ...],
+) -> tuple[tuple[int, int, int], int, Literal["scalar", "rgb", "rgba"]]:
+    if len(shape) == 3:
+        return (int(shape[0]), int(shape[1]), int(shape[2])), 1, "scalar"
+    if len(shape) == 4 and shape[-1] in {3, 4}:
+        channel_count = int(shape[-1])
+        color_mode: Literal["rgb", "rgba"] = "rgb" if channel_count == 3 else "rgba"
+        return (int(shape[0]), int(shape[1]), int(shape[2])), channel_count, color_mode
+    raise ValueError(
+        "NumPy volume must have shape [z, y, x], [z, y, x, 3] (RGB), "
+        "or [z, y, x, 4] (RGBA)"
+    )
+
+
+def _image_color_layout(
+    image: Image.Image,
+) -> tuple[int, Literal["scalar", "rgb", "rgba"]]:
+    if image.mode == "RGB":
+        return 3, "rgb"
+    if image.mode == "RGBA":
+        return 4, "rgba"
+    if len(image.getbands()) == 1:
+        return 1, "scalar"
+    raise ValueError(
+        f"Unsupported volume image pixel mode {image.mode!r}: expected a "
+        "single-band scalar, RGB, or RGBA image"
+    )
 
 
 def _enforce_source_size(path: Path, limits: VolumeReadLimits | None) -> None:
@@ -195,6 +238,9 @@ def load_slice_stack(
         )
 
     width = height = None
+    channel_count = 1
+    color_mode: Literal["scalar", "rgb", "rgba"] = "scalar"
+    expected_mode = None
     source_bytes = 0
     for slice_path in slices:
         if limits is not None:
@@ -207,13 +253,17 @@ def load_slice_stack(
         with Image.open(slice_path) as image:
             if width is None or height is None:
                 width, height = image.size
+                channel_count, color_mode = _image_color_layout(image)
+                expected_mode = image.mode
             elif image.size != (width, height):
                 raise ValueError("All image slices must share the same dimensions")
+            elif image.mode != expected_mode:
+                raise ValueError("All image slices must share the same pixel mode")
 
     shape = (len(slices), int(height), int(width))
     _enforce_decoded_limits(
         shape=shape,
-        decoded_bytes=math.prod(shape) * np.dtype(np.float64).itemsize,
+        decoded_bytes=math.prod(shape) * channel_count * np.dtype(np.float64).itemsize,
         limits=limits,
     )
 
@@ -222,6 +272,8 @@ def load_slice_stack(
         shape=shape,
         source_files=tuple(str(item) for item in slices),
         dtype="image",
+        channel_count=channel_count,
+        color_mode=color_mode,
     )
 
 
@@ -498,15 +550,17 @@ def _inspect_npy_header(
     descr = metadata.get("descr")
     if (
         not isinstance(shape, tuple)
-        or len(shape) != 3
         or any(isinstance(value, bool) or not isinstance(value, int) for value in shape)
     ):
-        raise ValueError("NumPy volume must have exactly three dimensions")
+        raise ValueError("NumPy volume has an invalid shape")
     if descr is None:
         raise ValueError("NumPy volume header is missing a dtype")
     if not isinstance(metadata.get("fortran_order"), bool):
         raise ValueError("NumPy volume header has an invalid fortran_order value")
-    normalized_shape = tuple(int(value) for value in shape)
+    normalized_array_shape = tuple(int(value) for value in shape)
+    normalized_shape, channel_count, color_mode = _volume_layout_from_array_shape(
+        normalized_array_shape
+    )
     _checked_voxel_count(normalized_shape)
     try:
         dtype = np.dtype(descr)
@@ -516,7 +570,9 @@ def _inspect_npy_header(
         raise ValueError("NumPy volume must use a scalar, non-object dtype")
     if dtype.kind not in {"b", "u", "i", "f"}:
         raise ValueError("NumPy volume dtype must be real numeric or boolean")
-    payload_bytes = _checked_voxel_count(normalized_shape) * int(dtype.itemsize)
+    payload_bytes = (
+        _checked_voxel_count(normalized_shape) * channel_count * int(dtype.itemsize)
+    )
     _enforce_decoded_limits(
         shape=normalized_shape,
         decoded_bytes=payload_bytes,
@@ -530,6 +586,9 @@ def _inspect_npy_header(
         raise ValueError("NumPy array payload is truncated")
     return _NpyHeader(
         shape=normalized_shape,
+        array_shape=normalized_array_shape,
+        channel_count=channel_count,
+        color_mode=color_mode,
         dtype_text=str(descr or "unknown"),
         dtype=dtype,
         data_offset=data_offset,
@@ -539,7 +598,7 @@ def _inspect_npy_header(
 
 def read_npy_header(file_obj: BinaryIO) -> tuple[tuple[int, ...], str]:
     header = _inspect_npy_header(file_obj)
-    return header.shape, header.dtype_text
+    return header.array_shape, header.dtype_text
 
 
 def _inspect_npz_archive(
@@ -611,22 +670,46 @@ def load_numpy_volume(
         shape=header.shape,
         source_files=(str(volume_path),),
         dtype=header.dtype_text,
+        channel_count=header.channel_count,
+        color_mode=header.color_mode,
     )
 
 
 def read_numpy_volume_array(
-    path: str | Path, *, limits: VolumeReadLimits
-) -> np.ndarray:
-    """Load one preflighted scalar NumPy volume without inflating an NPZ first."""
+    path: str | Path,
+    *,
+    limits: VolumeReadLimits,
+    sample_shape: tuple[int, int, int] | None = None,
+    sample_reduction: Literal["point", "maximum", "nonzero_extrema"] = "point",
+    return_source_flat_indices: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    """Load one preflighted scalar NumPy volume, optionally on a bounded grid.
+
+    Plain ``.npy`` sampling uses a read-only memory map after header preflight.
+    ``point`` selects an endpoint-preserving grid. ``maximum`` and
+    ``nonzero_extrema`` conservatively reduce every source block so sparse
+    signal is not skipped. Compressed ``.npz`` members cannot be sampled
+    without first inflating the member and are therefore rejected when a
+    sample is requested.
+    """
 
     volume_path = Path(path)
     _enforce_source_size(volume_path, limits)
     try:
         if volume_path.suffix.lower() == ".npz":
+            if sample_shape is not None:
+                raise ValueError(
+                    "Bounded NumPy sampling requires a plain .npy file; "
+                    "extract the .npz member first"
+                )
             with volume_path.open("rb") as file_obj:
                 preflight_zip_archive(file_obj, limits=limits)
                 with zipfile.ZipFile(file_obj) as archive:
                     selected, expected = _inspect_npz_archive(archive, limits=limits)
+                    if expected.channel_count != 1:
+                        raise ValueError(
+                            "Scalar NumPy volume operations do not support RGB or RGBA volumes"
+                        )
                     with archive.open(selected) as member:
                         loaded = np.lib.format.read_array(member, allow_pickle=False)
         else:
@@ -636,14 +719,227 @@ def read_numpy_volume_array(
                     limits=limits,
                     available_bytes=volume_path.stat().st_size,
                 )
-                file_obj.seek(0)
-                loaded = np.load(file_obj, allow_pickle=False)
+            if expected.channel_count != 1:
+                raise ValueError(
+                    "Scalar NumPy volume operations do not support RGB or RGBA volumes"
+                )
+            if sample_shape is None:
+                with volume_path.open("rb") as file_obj:
+                    loaded = np.load(file_obj, allow_pickle=False)
+            else:
+                loaded = np.load(volume_path, allow_pickle=False, mmap_mode="r")
     except (OSError, ValueError, zipfile.BadZipFile) as exc:
         raise ValueError(f"Could not safely read NumPy voxel source {volume_path.name}: {exc}") from exc
-    array = np.asarray(loaded)
-    if array.shape != expected.shape or array.dtype != expected.dtype:
+    source_array = np.asarray(loaded)
+    if source_array.shape != expected.array_shape or source_array.dtype != expected.dtype:
         raise ValueError("NumPy volume changed between preflight and decode")
-    return array
+    if sample_shape is None:
+        if return_source_flat_indices:
+            raise ValueError(
+                "Source-index metadata is only available for bounded NumPy samples"
+            )
+        return source_array
+
+    if (
+        not isinstance(sample_shape, tuple)
+        or len(sample_shape) != 3
+        or any(
+            isinstance(value, (bool, np.bool_))
+            or not isinstance(value, (int, np.integer))
+            for value in sample_shape
+        )
+    ):
+        raise ValueError("NumPy sample shape must contain three positive integers")
+    normalized_sample_shape = tuple(int(value) for value in sample_shape)
+    if (
+        len(normalized_sample_shape) != 3
+        or any(
+            value < 1 or value > dimension
+            for value, dimension in zip(normalized_sample_shape, expected.shape)
+        )
+    ):
+        raise ValueError(
+            "NumPy sample shape must contain three positive dimensions no larger than the source"
+        )
+    if sample_reduction == "point":
+        indices = tuple(
+            np.rint(np.linspace(0, dimension - 1, count)).astype(np.intp)
+            if count > 1
+            else np.zeros(1, dtype=np.intp)
+            for dimension, count in zip(expected.shape, normalized_sample_shape)
+        )
+        sampled = np.ascontiguousarray(source_array[np.ix_(*indices)])
+        if not return_source_flat_indices:
+            return sampled
+        source_flat_indices = np.ravel_multi_index(
+            np.ix_(*indices),
+            expected.shape,
+        )
+        return sampled, np.ascontiguousarray(source_flat_indices, dtype=np.int64)
+    return block_reduce_volume_array(
+        source_array,
+        normalized_sample_shape,
+        strategy=sample_reduction,
+        return_source_flat_indices=return_source_flat_indices,
+    )
+
+
+def block_reduce_volume_array(
+    source: np.ndarray,
+    sample_shape: tuple[int, int, int],
+    *,
+    strategy: Literal["maximum", "nonzero_extrema"],
+    return_source_flat_indices: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    """Reduce every source voxel into a bounded, contiguous 3D grid.
+
+    Blocks are non-overlapping and cover the complete source. ``maximum`` is
+    appropriate for thresholded density fields. ``nonzero_extrema`` retains
+    the value farthest from zero in each block, including negative-only signal.
+    Axis reductions are ordered to keep intermediate arrays small.
+    """
+
+    array = np.asarray(source)
+    if array.ndim != 3:
+        raise ValueError("Block-reduced NumPy sampling requires a three-dimensional array")
+    if strategy not in {"maximum", "nonzero_extrema"}:
+        raise ValueError("Unsupported NumPy block-reduction strategy")
+    if (
+        not isinstance(sample_shape, tuple)
+        or len(sample_shape) != 3
+        or any(
+            isinstance(value, (bool, np.bool_))
+            or not isinstance(value, (int, np.integer))
+            for value in sample_shape
+        )
+    ):
+        raise ValueError("NumPy sample shape must contain three positive integers")
+    normalized_shape = tuple(int(value) for value in sample_shape)
+    if any(
+        value < 1 or value > dimension
+        for value, dimension in zip(normalized_shape, array.shape)
+    ):
+        raise ValueError(
+            "NumPy sample shape must contain three positive dimensions no larger than the source"
+        )
+    if np.issubdtype(array.dtype, np.complexfloating):
+        raise ValueError("NumPy voxel sampling requires real-valued data")
+
+    starts_by_axis = {
+        axis: (np.arange(count, dtype=np.int64) * dimension // count).astype(np.intp)
+        for axis, (dimension, count) in enumerate(zip(array.shape, normalized_shape))
+    }
+    axis_order = sorted(
+        range(3),
+        key=lambda axis: array.shape[axis] / normalized_shape[axis],
+        reverse=True,
+    )
+
+    def reduce_with(ufunc: np.ufunc) -> np.ndarray:
+        reduced = array
+        for axis in axis_order:
+            if reduced.shape[axis] != normalized_shape[axis]:
+                reduced = ufunc.reduceat(reduced, starts_by_axis[axis], axis=axis)
+        return np.asarray(reduced)
+
+    maximum = reduce_with(np.maximum)
+    if strategy == "maximum" or np.issubdtype(array.dtype, np.unsignedinteger):
+        reduced = np.ascontiguousarray(maximum)
+    else:
+        minimum = reduce_with(np.minimum)
+        choose_minimum = np.abs(minimum.astype(np.float64)) > np.abs(
+            maximum.astype(np.float64)
+        )
+        reduced = np.ascontiguousarray(np.where(choose_minimum, minimum, maximum))
+    if not return_source_flat_indices:
+        return reduced
+    return reduced, _selected_source_flat_indices_for_blocks(
+        array,
+        reduced,
+        starts_by_axis=starts_by_axis,
+    )
+
+
+def _selected_source_flat_indices_for_blocks(
+    source: np.ndarray,
+    reduced: np.ndarray,
+    *,
+    starts_by_axis: dict[int, np.ndarray],
+) -> np.ndarray:
+    """Locate the first source voxel that supplied each reduced extremum.
+
+    The endpoint-preserving grid coordinate is preferred whenever it contains
+    the chosen extremum.  Flat blocks therefore retain the complete source
+    extent without a second source scan.  Remaining (off-grid) extrema are
+    located one z-plane at a time, so exact coordinates add only a small
+    plane-sized allocation instead of an index array the size of a
+    multi-gigabyte source. Remaining ties resolve to the lowest C-order index.
+    """
+
+    sample_shape = tuple(int(value) for value in reduced.shape)
+    sentinel = np.iinfo(np.int64).max
+    selected = np.full(math.prod(sample_shape), sentinel, dtype=np.int64)
+    selected_grid = selected.reshape(sample_shape)
+
+    endpoint_indices = tuple(
+        np.clip(
+            np.rint(np.linspace(0, dimension - 1, count)).astype(np.intp),
+            starts,
+            np.r_[starts[1:] - 1, dimension - 1],
+        )
+        for dimension, count, starts in zip(
+            source.shape,
+            sample_shape,
+            (starts_by_axis[0], starts_by_axis[1], starts_by_axis[2]),
+        )
+    )
+    endpoint_grid = np.ix_(*endpoint_indices)
+    endpoint_values = np.asarray(source[endpoint_grid])
+    endpoint_flat_indices = np.ravel_multi_index(endpoint_grid, source.shape)
+    endpoint_matches = np.equal(endpoint_values, reduced)
+    selected_grid[endpoint_matches] = endpoint_flat_indices[endpoint_matches]
+
+    assignments: list[np.ndarray] = []
+    for dimension, starts in zip(source.shape, (starts_by_axis[0], starts_by_axis[1], starts_by_axis[2])):
+        assignments.append(
+            np.searchsorted(starts, np.arange(dimension, dtype=np.intp), side="right")
+            - 1
+        )
+    z_blocks, y_blocks, x_blocks = assignments
+    source_height, source_width = int(source.shape[1]), int(source.shape[2])
+    sampled_height, sampled_width = sample_shape[1], sample_shape[2]
+
+    for z_index, z_block_value in enumerate(z_blocks):
+        z_block = int(z_block_value)
+        if not np.any(selected_grid[z_block] == sentinel):
+            continue
+        selected_for_source_plane = selected_grid[z_block][
+            y_blocks[:, None], x_blocks[None, :]
+        ]
+        unresolved = selected_for_source_plane == sentinel
+        if not np.any(unresolved):
+            continue
+        target = reduced[z_block][y_blocks[:, None], x_blocks[None, :]]
+        matches = unresolved & np.equal(np.asarray(source[z_index]), target)
+        matching_flat_in_plane = np.flatnonzero(matches)
+        if not len(matching_flat_in_plane):
+            continue
+        source_y = matching_flat_in_plane // source_width
+        source_x = matching_flat_in_plane % source_width
+        sampled_flat = (
+            (z_block * sampled_height + y_blocks[source_y]) * sampled_width
+            + x_blocks[source_x]
+        )
+        source_flat = (
+            z_index * source_height * source_width + matching_flat_in_plane
+        )
+        np.minimum.at(selected, sampled_flat, source_flat)
+
+    if np.any(selected == sentinel):
+        raise ValueError(
+            "Could not locate the source voxel selected by bounded NumPy sampling"
+        )
+    return np.ascontiguousarray(selected.reshape(sample_shape))
 
 
 def load_multipage_tiff(
@@ -661,21 +957,27 @@ def load_multipage_tiff(
                 f"{frame_count} frames, exceeding the {limits.max_container_members}-member limit"
             )
         width, height = image.size
+        expected_mode = image.mode
+        channel_count, color_mode = _image_color_layout(image)
         shape = (frame_count, int(height), int(width))
         _enforce_decoded_limits(
             shape=shape,
-            decoded_bytes=math.prod(shape) * np.dtype(np.float64).itemsize,
+            decoded_bytes=math.prod(shape) * channel_count * np.dtype(np.float64).itemsize,
             limits=limits,
         )
         for frame_index in range(frame_count):
             image.seek(frame_index)
             if image.size != (width, height):
                 raise ValueError("All TIFF frames must share the same dimensions")
+            if image.mode != expected_mode:
+                raise ValueError("All TIFF frames must share the same pixel mode")
     return VolumeInfo(
         format="multipage_tiff",
         shape=shape,
         source_files=(str(volume_path),),
         dtype="image",
+        channel_count=channel_count,
+        color_mode=color_mode,
     )
 
 

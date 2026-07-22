@@ -2,7 +2,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Actions, Layout, Model } from 'flexlayout-react';
 import 'flexlayout-react/style/light.css';
 import CalibrationManager from './CalibrationManager';
-import Pt3GaussianSplatViewer, { DEFAULT_RAY_MARCH_SETTINGS, DEFAULT_SPLAT_VIEW_SETTINGS } from './Pt3GaussianSplatViewer';
+import Pt3GaussianSplatViewer, {
+  DEFAULT_RAY_MARCH_SETTINGS,
+  DEFAULT_SPLAT_VIEW_SETTINGS,
+  normalizeRayMarchSettings,
+} from './Pt3GaussianSplatViewer';
 import { getMprAxisMirrorScale } from './pt3VolumeGeometry';
 import {
   buildPt3SegmentMask,
@@ -68,25 +72,38 @@ const MPR_DISPLAY_AXES_BY_VIEW = {
 const MPR_RECONSTRUCTION_MODES = {
   orientation: 'orientation',
   stack: 'stack',
-  shell: 'shell',
-  splat: 'splat',
   realSplat: 'real_splat',
   volume3d: 'volume3d',
-  hybrid3d: 'hybrid3d',
 };
 const MPR_RECONSTRUCTION_LABELS = {
   [MPR_RECONSTRUCTION_MODES.orientation]: 'Orientation only',
   [MPR_RECONSTRUCTION_MODES.stack]: 'Stack reconstruction',
-  [MPR_RECONSTRUCTION_MODES.shell]: 'Reference shell',
   [MPR_RECONSTRUCTION_MODES.realSplat]: 'Real 3DGS',
-  [MPR_RECONSTRUCTION_MODES.volume3d]: 'Ray-marched volume',
-  [MPR_RECONSTRUCTION_MODES.hybrid3d]: 'Hybrid part view',
+  [MPR_RECONSTRUCTION_MODES.volume3d]: 'Ray marching',
 };
+const RAY_MARCH_RECONSTRUCTION_OPTIONS = Object.freeze([
+  { value: 'composite', label: 'Composite' },
+  { value: 'mip', label: 'MIP' },
+  { value: 'xray', label: 'X-ray' },
+  { value: 'iso', label: 'Iso' },
+  { value: 'window', label: 'Window' },
+]);
+const RAY_MARCH_RECONSTRUCTION_IDS = new Set(
+  RAY_MARCH_RECONSTRUCTION_OPTIONS.map(({ value }) => value),
+);
+const RAY_MARCH_SELECTOR_PREFIX = 'ray-march:';
 const PT3_RENDERER_RECONSTRUCTION_MODES = [
   MPR_RECONSTRUCTION_MODES.volume3d,
   MPR_RECONSTRUCTION_MODES.realSplat,
-  MPR_RECONSTRUCTION_MODES.hybrid3d,
 ];
+
+function normalizeMprReconstructionMode(value) {
+  if (value === 'shell' || value === 'splat') return MPR_RECONSTRUCTION_MODES.orientation;
+  if (value === 'hybrid3d') return MPR_RECONSTRUCTION_MODES.volume3d;
+  return Object.values(MPR_RECONSTRUCTION_MODES).includes(value)
+    ? value
+    : MPR_RECONSTRUCTION_MODES.orientation;
+}
 const DEFAULT_MPR_PROJECTION_MIRROR = { axial: false, coronal: false, sagittal: false };
 const MPR_VOLUME_CACHE_LIMIT = 4;
 const MPR_SLICE_CANVAS_CACHE_MAX_BYTES = 192 * 1024 * 1024;
@@ -1036,6 +1053,28 @@ function normalizeServerVolumeDimensions(candidate = {}) {
   }, {});
 }
 
+function getServerVolumeColorLayout(entry, projectImageLookup = {}) {
+  const recordMetadata = getProjectImageRecord(projectImageLookup, entry)?.metadata || {};
+  const channelCount = Number(
+    entry?.channel_count
+      ?? entry?.metadata?.channel_count
+      ?? recordMetadata.channel_count,
+  );
+  const colorMode = String(
+    entry?.color_mode
+      ?? entry?.metadata?.color_mode
+      ?? recordMetadata.color_mode
+      ?? '',
+  ).toLowerCase();
+  if (channelCount === 3 && colorMode === 'rgb') return { channelCount: 3, colorMode: 'rgb' };
+  if (channelCount === 4 && colorMode === 'rgba') return { channelCount: 4, colorMode: 'rgba' };
+  return { channelCount: 1, colorMode: 'scalar' };
+}
+
+function shouldApplyDisplayWindowToVolumeCache(volumeCache) {
+  return volumeCache?.colorMode !== 'rgb' && volumeCache?.colorMode !== 'rgba';
+}
+
 function getServerVolumeSliceUrl(volume, axis, index) {
   if (!volume?.imageId) return '';
   const safeAxis = MPR_AXES.includes(axis) ? axis : 'axial';
@@ -1050,12 +1089,14 @@ function createServerVolumeDescriptor(entry, projectImageLookup = {}, extra = {}
   const volumeShape = getVolumeShapeFromEntry(entry, projectImageLookup);
   if (!imageId || !volumeShape || !isNpyVolumeFileEntry(entry, projectImageLookup)) return null;
   const dimensions = normalizeServerVolumeDimensions(volumeShape);
+  const colorLayout = getServerVolumeColorLayout(entry, projectImageLookup);
   const descriptor = {
     kind: MPR_SERVER_VOLUME_KIND,
     id: String(imageId),
     imageId: String(imageId),
     filename: String(entry?.filename || getProjectImageRecord(projectImageLookup, entry)?.filename || ''),
     dimensions,
+    ...colorLayout,
     sliceIndex: Math.floor((dimensions.axial - 1) / 2),
     ...extra,
   };
@@ -1789,7 +1830,7 @@ function getMprVolumeCacheKey(imageStack, dimensions = {}) {
   const resolvedDimensions = isServerVolumeDescriptor(imageStack) ? imageStack.dimensions : dimensions;
   const dimensionKey = MPR_AXES.map((axis) => `${axis}:${resolvedDimensions?.[axis] || 0}`).join(',');
   if (isServerVolumeDescriptor(imageStack)) {
-    return `${dimensionKey}|${MPR_SERVER_VOLUME_KIND}:${imageStack.imageId}`;
+    return `${dimensionKey}|${MPR_SERVER_VOLUME_KIND}:${imageStack.imageId}:${imageStack.channelCount || 1}:${imageStack.colorMode || 'scalar'}`;
   }
   return `${dimensionKey}|${imageStack
     .map((entry) => `${entry.id}:${entry.sliceIndex}:${entry.url}`)
@@ -2932,7 +2973,9 @@ const MprSliceCanvas = React.forwardRef(function MprSliceCanvas({
     canvas.height = sliceCanvas.height || 1;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(sliceCanvas, 0, 0, canvas.width, canvas.height);
-    applyDisplayWindowToCanvasContext(ctx, canvas.width, canvas.height, displayWindow, displayDomain);
+    if (shouldApplyDisplayWindowToVolumeCache(volumeCache)) {
+      applyDisplayWindowToCanvasContext(ctx, canvas.width, canvas.height, displayWindow, displayDomain);
+    }
     overlayCaches.forEach((overlayCache) => {
       const overlaySliceCanvas = getCachedMprSliceCanvas(axis, slicePosition, dimensions, overlayCache);
       if (!overlaySliceCanvas) return;
@@ -3244,6 +3287,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const [slicePosition, setSlicePosition] = useState({ axial: 0, coronal: 0, sagittal: 0 });
   const [viewportTransform, setViewportTransform] = useState({ zoom: 1, panX: 0, panY: 0 });
   const [activeMprPane, setActiveMprPane] = useState('axial');
+  const [lastActiveMprAxis, setLastActiveMprAxis] = useState('axial');
   const [mprRotation, setMprRotation] = useState({ x: -22, y: 32 });
   const [mprReconstructionMode, setMprReconstructionMode] = useState(MPR_RECONSTRUCTION_MODES.orientation);
   const [mprFullscreenOpen, setMprFullscreenOpen] = useState(false);
@@ -3406,6 +3450,10 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   const mprOverlayCanvasRef = useRef(null);
   const [mprFallbackOverlaySize, setMprFallbackOverlaySize] = useState({ width: 0, height: 0 });
   const appliedLaunchFiltersSignatureRef = useRef('');
+
+  useEffect(() => {
+    if (MPR_AXES.includes(activeMprPane)) setLastActiveMprAxis(activeMprPane);
+  }, [activeMprPane]);
 
   const inspectionHierarchy = useMemo(() => {
     const normalized = normalizeInspectionHierarchy(hierarchy || {});
@@ -4197,17 +4245,21 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       mprReconstructionMode === MPR_RECONSTRUCTION_MODES.stack && canShowStackReconstruction
     )
       ? MPR_RECONSTRUCTION_MODES.stack
-      : (
-        mprReconstructionMode === MPR_RECONSTRUCTION_MODES.shell && canShowShellReconstruction
-      )
-        ? MPR_RECONSTRUCTION_MODES.shell
-        : MPR_RECONSTRUCTION_MODES.orientation;
+      : MPR_RECONSTRUCTION_MODES.orientation;
 
-  useEffect(() => {
-    if (mprReconstructionMode !== effectiveMprReconstructionMode) {
-      setMprReconstructionMode(effectiveMprReconstructionMode);
-    }
-  }, [effectiveMprReconstructionMode, mprReconstructionMode]);
+  const activeRayMarchReconstructionStyle = RAY_MARCH_RECONSTRUCTION_IDS.has(
+    rayMarchSettings?.reconstructionStyle,
+  )
+    ? rayMarchSettings.reconstructionStyle
+    : DEFAULT_RAY_MARCH_SETTINGS.reconstructionStyle;
+  const mprReconstructionSelectorValue = mprReconstructionMode === MPR_RECONSTRUCTION_MODES.volume3d
+    ? `${RAY_MARCH_SELECTOR_PREFIX}${activeRayMarchReconstructionStyle}`
+    : mprReconstructionMode;
+  const effectiveMprReconstructionLabel = effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.volume3d
+    ? `Ray marching — ${RAY_MARCH_RECONSTRUCTION_OPTIONS.find(
+      ({ value }) => value === activeRayMarchReconstructionStyle,
+    )?.label || 'Composite'}`
+    : MPR_RECONSTRUCTION_LABELS[effectiveMprReconstructionMode];
 
   const clearMprVolumeDrag = useCallback((suppressSceneClick = false) => {
     const drag = mprDragRef.current;
@@ -4310,13 +4362,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
       panX: clampRange(savedViewport.panX, -200, 200, 0),
       panY: clampRange(savedViewport.panY, -200, 200, 0),
     });
-    // `splat` is the persisted legacy value and now explicitly selects the
-    // simplified voxel-derived renderer.
-    setMprReconstructionMode(
-      Object.values(MPR_RECONSTRUCTION_MODES).includes(savedMpr.reconstruction_mode)
-        ? savedMpr.reconstruction_mode
-        : MPR_RECONSTRUCTION_MODES.orientation,
-    );
     setMprProjectionMirror(normalizeMprProjectionMirror(savedMpr.projection_mirror));
     const displayDomain = getNormalizedDisplayDomain(displayValueDomain);
     const displayDomainKey = `${displayDomain.min}:${displayDomain.max}:${displayDomain.step}`;
@@ -4366,6 +4411,19 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     setSegmentationRun(getLatestRunFromMetadata(selectedPart, 'segmentation_runs'));
     setMeasurementRun(getLatestRunFromMetadata(selectedPart, 'measurement_runs'));
   }, [selectedPart, projectType, projectId, mprDimensions, workspaceHydration, workspaceStateLoaded, displayValueDomain]);
+
+  useEffect(() => {
+    if (projectType !== 'PT3' || !workspaceStateLoaded) return;
+    const savedMpr = workspaceHydration?.mpr || {};
+    // Removed legacy scene modes normalize to a supported view instead of
+    // leaving the controlled selector without a matching option.
+    setMprReconstructionMode(normalizeMprReconstructionMode(savedMpr.reconstruction_mode));
+    setRayMarchSettings(normalizeRayMarchSettings(
+      savedMpr.reconstruction_mode === 'hybrid3d'
+        ? DEFAULT_RAY_MARCH_SETTINGS
+        : savedMpr.ray_march_settings,
+    ));
+  }, [projectId, projectType, workspaceHydration, workspaceStateLoaded]);
 
   useEffect(() => {
     const savedInspector = workspaceHydration?.inspector || {};
@@ -4474,6 +4532,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   slice_position: slicePosition,
                   viewport_transform: viewportTransform,
                   reconstruction_mode: mprReconstructionMode,
+                  ray_march_settings: rayMarchSettings,
                   projection_mirror: mprProjectionMirror,
                   display_window: displayWindow,
                   active_overlay_ids: activeOverlayIds,
@@ -4517,6 +4576,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
     projectType,
     mprReconstructionMode,
     mprProjectionMirror,
+    rayMarchSettings,
     selectedBatchId,
     selectedPart,
     slicePosition,
@@ -6689,24 +6749,40 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
               3D view
               <select
                 id="mpr-reconstruction-mode"
-                value={mprReconstructionMode}
-                onChange={(event) => setMprReconstructionMode(event.target.value)}
+                value={mprReconstructionSelectorValue}
+                onChange={(event) => {
+                  const selectedValue = event.target.value;
+                  if (selectedValue.startsWith(RAY_MARCH_SELECTOR_PREFIX)) {
+                    const reconstructionStyle = selectedValue.slice(RAY_MARCH_SELECTOR_PREFIX.length);
+                    if (RAY_MARCH_RECONSTRUCTION_IDS.has(reconstructionStyle)) {
+                      setMprReconstructionMode(MPR_RECONSTRUCTION_MODES.volume3d);
+                      setRayMarchSettings((current) => ({
+                        ...current,
+                        reconstructionStyle,
+                      }));
+                    }
+                    return;
+                  }
+                  setMprReconstructionMode(normalizeMprReconstructionMode(selectedValue));
+                }}
               >
                 <option value={MPR_RECONSTRUCTION_MODES.orientation}>Orientation only</option>
                 <option value={MPR_RECONSTRUCTION_MODES.stack} disabled={!canShowStackReconstruction}>
                   Stack reconstruction
                 </option>
-                <option value={MPR_RECONSTRUCTION_MODES.shell} disabled={!canShowShellReconstruction}>
-                  Reference shell
-                </option>
-                <option value={MPR_RECONSTRUCTION_MODES.volume3d} disabled={!canShowGaussianSplatPreview}>
-                  Ray-marched volume
-                </option>
+                <optgroup label="Ray marching">
+                  {RAY_MARCH_RECONSTRUCTION_OPTIONS.map(({ value, label }) => (
+                    <option
+                      key={value}
+                      value={`${RAY_MARCH_SELECTOR_PREFIX}${value}`}
+                      disabled={!canShowGaussianSplatPreview}
+                    >
+                      {label}
+                    </option>
+                  ))}
+                </optgroup>
                 <option value={MPR_RECONSTRUCTION_MODES.realSplat} disabled={!canShowGaussianSplatPreview}>
                   Real 3DGS
-                </option>
-                <option value={MPR_RECONSTRUCTION_MODES.hybrid3d} disabled={!canShowGaussianSplatPreview}>
-                  Hybrid part view
                 </option>
               </select>
             </label>
@@ -7023,7 +7099,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
               <header className="mpr-pane-header">
                 <strong id={mprFullscreenOpen ? 'mpr-3d-fullscreen-title' : undefined}>{mprFullscreenOpen ? '3D reconstruction' : '3D'}</strong>
                 <span id={mprFullscreenOpen ? 'mpr-3d-fullscreen-mode' : undefined}>
-                  {mprFullscreenOpen ? `${MPR_RECONSTRUCTION_LABELS[effectiveMprReconstructionMode]} • ` : ''}Zoom {viewportTransform.zoom.toFixed(2)}x
+                  {mprFullscreenOpen ? `${effectiveMprReconstructionLabel} • ` : ''}Zoom {viewportTransform.zoom.toFixed(2)}x
                 </span>
                 {mprFullscreenOpen && (
                   <button
@@ -7101,13 +7177,12 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                     splatParameters={splatParameters}
                     mode={effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.volume3d
                       ? 'volume'
-                      : effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.realSplat
-                        ? 'real-splat'
-                        : 'hybrid'}
+                      : 'real-splat'}
                     rotation={mprRotation}
                     zoom={viewportTransform.zoom}
                     mirrorScale={mprAxisMirrorScale}
                     slicePosition={slicePosition}
+                    activeSliceAxis={lastActiveMprAxis}
                     rayMarchSettings={rayMarchSettings}
                     splatViewSettings={splatViewSettings}
                     onRayMarchSettingsChange={setRayMarchSettings}
@@ -7149,19 +7224,6 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                           '--slice-depth': `${layer.depth}px`,
                           '--slice-opacity': layer.opacity,
                         }}
-                        displayWindow={displayWindow}
-                        displayDomain={displayValueDomain}
-                      />
-                    ))
-                  ) : effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.shell ? (
-                    shellImageLayers.map((layer) => (
-                      <MprWindowedImage
-                        key={`${layer.id}-${layer.viewName}`}
-                        className={`volume-shell-image shell-view-${layer.viewName}`}
-                        src={layer.url}
-                        alt={`Fallback visual hull shell ${layer.viewName} view`}
-                        draggable={false}
-                        onDragStart={preventMprNativeDrag}
                         displayWindow={displayWindow}
                         displayDomain={displayValueDomain}
                       />
@@ -10511,8 +10573,11 @@ export {
   getServerVolumeSliceUrl,
   projectMprPointToOverlay,
   drawServerMprSliceImage,
+  createServerVolumeDescriptor,
+  getMprVolumeCacheKey,
   rememberSliceCanvas,
   resetMprSliceCanvasCacheForTests,
+  shouldApplyDisplayWindowToVolumeCache,
   useMprVolumeCache,
 };
 export default InspectionWorkbenchPanel;

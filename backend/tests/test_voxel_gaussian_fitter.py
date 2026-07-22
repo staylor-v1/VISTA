@@ -5,10 +5,12 @@ import numpy as np
 import pytest
 from PIL import Image
 
+import utils.voxel_gaussian_fitter as voxel_gaussian_fitter
 from utils.real_gaussian_splat_optimizer import validate_canonical_real_splat_json
 from utils.volume_loader import VolumeInfo, load_slice_stack
 from utils.voxel_gaussian_fitter import (
     _CANDIDATE_EDGE_DTYPE,
+    _bounded_file_sample_shape,
     _bounded_candidate_edges,
     VoxelGaussianFitError,
     VoxelGaussianFitParameters,
@@ -22,6 +24,24 @@ def _volume_info(shape):
 
 def _payload(result):
     return json.loads(open(result["asset_path"], encoding="utf-8").read())
+
+
+def test_real_fitter_rejects_explicit_color_volume(tmp_path):
+    volume = VolumeInfo(
+        format="numpy",
+        shape=(2, 3, 4),
+        source_files=("unused.npy",),
+        dtype="uint8",
+        channel_count=4,
+        color_mode="rgba",
+    )
+
+    with pytest.raises(VoxelGaussianFitError, match="supports scalar volumes only.*RGBA"):
+        fit_voxel_gaussian_splat_asset(
+            volume,
+            volume_stack_id="color-volume",
+            output_dir=tmp_path,
+        )
 
 
 def _covariance_from_scale_rotation(scales, quaternion):
@@ -117,6 +137,134 @@ def test_reference_fitter_rejects_unsafe_active_voxel_count_before_grouping(tmp_
             volume_stack_id="too-large-for-reference",
             output_dir=tmp_path,
             voxel_data=volume,
+        )
+
+
+def test_reported_large_npy_shape_has_a_bounded_sampling_plan():
+    sampled_shape = _bounded_file_sample_shape((749, 1010, 984))
+
+    assert sampled_shape == (75, 101, 99)
+    assert math.prod(sampled_shape) == 749_925
+    assert math.prod(sampled_shape) <= 1_000_000
+
+
+def test_file_backed_numpy_fit_samples_before_float64_and_preserves_extent(
+    tmp_path,
+    monkeypatch,
+):
+    source_path = tmp_path / "large-for-test.npy"
+    source = np.ones((4, 4, 4), dtype=np.uint16)
+    np.save(source_path, source)
+    info = VolumeInfo(
+        format="numpy",
+        shape=source.shape,
+        source_files=(str(source_path),),
+        dtype=str(source.dtype),
+    )
+    monkeypatch.setattr(voxel_gaussian_fitter, "MAX_REFERENCE_ACTIVE_VOXELS", 8)
+
+    result = fit_voxel_gaussian_splat_asset(
+        info,
+        volume_stack_id="sample-before-float64",
+        output_dir=tmp_path / "assets",
+        spacing=(2.0, 3.0, 4.0),
+        parameters={"max_splats": 1, "scalar_similarity": 1.0},
+    )
+    payload = _payload(result)
+
+    assert payload["metadata"]["source_dimensions"] == [4, 4, 4]
+    assert payload["metadata"]["fitted_dimensions"] == [2, 2, 2]
+    sampling = dict(payload["metadata"]["sampling"])
+    selected_index_digest = sampling.pop("selected_source_index_digest")
+    assert len(selected_index_digest) == 64
+    assert sampling == {
+        "strategy": "conservative_block_reduction",
+        "reducer": "nonzero_extrema",
+        "applied": True,
+        "source_dimensions": [4, 4, 4],
+        "fitted_dimensions": [2, 2, 2],
+        "source_voxel_count": 64,
+        "fitted_voxel_count": 8,
+        "maximum_fitted_voxels": 8,
+        "source_index_scale_zyx": [3.0, 3.0, 3.0],
+        "coordinate_mapping": "selected_source_voxel",
+    }
+    assert payload["metadata"]["source_physical_space"]["spacing"] == [2.0, 3.0, 4.0]
+    assert payload["metadata"]["physical_space"]["spacing"] == [6.0, 9.0, 12.0]
+    # Uniform block ties retain the endpoint grid, preserving the full source
+    # extent while still deriving the mean from real source voxels.
+    assert payload["means"][0] == pytest.approx([3.0, 4.5, 6.0])
+    assert payload["group_sizes"] == [8]
+
+
+def test_file_backed_sampling_preserves_selected_source_geometry_and_segment(
+    tmp_path,
+    monkeypatch,
+):
+    source_path = tmp_path / "sparse.npy"
+    source = np.zeros((4, 4, 4), dtype=np.uint16)
+    source[1, 1, 1] = 42
+    source[0, 0, 0] = 1
+    source[3, 3, 3] = 50
+    labels = np.zeros_like(source, dtype=np.uint8)
+    labels[1, 1, 1] = 3
+    # A larger label in the same coarse block must not be detached from its
+    # lower-density voxel and assigned to the selected value at [1, 1, 1].
+    labels[0, 0, 0] = 9
+    labels[3, 3, 3] = 9
+    np.save(source_path, source)
+    info = VolumeInfo(
+        format="numpy",
+        shape=source.shape,
+        source_files=(str(source_path),),
+        dtype=str(source.dtype),
+    )
+    monkeypatch.setattr(voxel_gaussian_fitter, "MAX_REFERENCE_ACTIVE_VOXELS", 8)
+
+    result = fit_voxel_gaussian_splat_asset(
+        info,
+        volume_stack_id="off-grid-signal",
+        output_dir=tmp_path / "assets",
+        segmentation_labels=labels,
+        spacing=(2.0, 3.0, 4.0),
+        origin=(10.0, 20.0, 30.0),
+        parameters={"max_splats": 2},
+    )
+    payload = _payload(result)
+
+    assert result["splat_count"] == 2
+    assert payload["scalar_values"] == [42.0, 50.0]
+    assert payload["segment_ids"] == [3, 9]
+    assert np.asarray(payload["means"]) == pytest.approx(
+        np.asarray([[12.0, 23.0, 34.0], [16.0, 29.0, 42.0]])
+    )
+    # A singleton Gaussian retains source-voxel covariance.  Eigenvalues are
+    # sorted descending, so scales correspond to z, y, x spacing here.
+    assert np.asarray(payload["scales"]) == pytest.approx(
+        np.asarray([
+            [4.0 / math.sqrt(12.0), 3.0 / math.sqrt(12.0), 2.0 / math.sqrt(12.0)],
+            [4.0 / math.sqrt(12.0), 3.0 / math.sqrt(12.0), 2.0 / math.sqrt(12.0)],
+        ])
+    )
+
+
+def test_large_npz_is_rejected_before_unbounded_decode(tmp_path, monkeypatch):
+    source_path = tmp_path / "large.npz"
+    source = np.ones((4, 4, 4), dtype=np.uint8)
+    np.savez_compressed(source_path, voxels=source)
+    info = VolumeInfo(
+        format="numpy",
+        shape=source.shape,
+        source_files=(str(source_path),),
+        dtype=str(source.dtype),
+    )
+    monkeypatch.setattr(voxel_gaussian_fitter, "MAX_REFERENCE_ACTIVE_VOXELS", 8)
+
+    with pytest.raises(VoxelGaussianFitError, match=r"compressed \.npz"):
+        fit_voxel_gaussian_splat_asset(
+            info,
+            volume_stack_id="bounded-npz",
+            output_dir=tmp_path / "assets",
         )
 
 

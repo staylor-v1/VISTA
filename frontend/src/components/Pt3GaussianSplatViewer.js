@@ -17,6 +17,11 @@ import { MECHANICAL_TRANSFER_PRESETS, getMechanicalCropBox, getMechanicalVolumeM
 import { getSegmentDisplayStyle, normalizePt3Segmentation, segmentColorToRgba } from './pt3Segmentation';
 import { renderPt3VectorAnnotations } from './pt3VectorAnnotations';
 import {
+  buildPt3SliceLocatorGeometry,
+  drawPt3SliceLocator,
+  getPt3SliceLocatorDescription,
+} from './pt3SliceLocator';
+import {
   DEFAULT_SPLAT_VIEW_SETTINGS,
   evaluateGraphdecoSphericalHarmonics,
   getCanvasSplatSampleIndices,
@@ -37,6 +42,17 @@ const SPLAT_FALLBACK_NOTE = 'Generated 3DGS asset unavailable. Showing determini
 const DEFAULT_AXIS_MIRROR_SCALE = Object.freeze({ x: 1, y: 1, z: 1 });
 const EMPTY_VOLUME_IMAGE_STACK = Object.freeze([]);
 const EMPTY_VECTOR_ANNOTATIONS = Object.freeze([]);
+const VISUALLY_HIDDEN_STYLE = Object.freeze({
+  position: 'absolute',
+  width: '1px',
+  height: '1px',
+  padding: 0,
+  margin: '-1px',
+  overflow: 'hidden',
+  clip: 'rect(0, 0, 0, 0)',
+  whiteSpace: 'nowrap',
+  border: 0,
+});
 const EMPTY_SEGMENTATION_SEGMENTS = Object.freeze([]);
 export const REAL_SPLAT_BROWSER_MAX = 100000;
 const DEFAULT_REAL_SPLAT_BUDGET = 50000;
@@ -538,6 +554,7 @@ export default function Pt3GaussianSplatViewer({
   zoom = 1,
   mirrorScale = DEFAULT_AXIS_MIRROR_SCALE,
   slicePosition = { axial: 0, coronal: 0, sagittal: 0 },
+  activeSliceAxis = 'axial',
   rayMarchSettings = DEFAULT_RAY_MARCH_SETTINGS,
   splatViewSettings = DEFAULT_SPLAT_VIEW_SETTINGS,
   onRayMarchSettingsChange,
@@ -558,6 +575,7 @@ export default function Pt3GaussianSplatViewer({
   const rayMarchSummaryId = useId();
   const rayMarchAvailabilityId = useId();
   const boundaryInactiveId = useId();
+  const sliceLocatorDescriptionId = useId();
   const activeMirrorScale = useMemo(
     () => normalizeAxisMirrorScale(mirrorScale),
     [mirrorScale],
@@ -610,6 +628,14 @@ export default function Pt3GaussianSplatViewer({
   const splatContrast = isPureSplatMode ? configuredSplatContrast : 1;
   const splatGuidesVisible = isPureSplatMode ? configuredSplatGuides : showSliceGuides;
   const metadata = useMemo(() => buildMetadata(part), [part]);
+  const sliceLocatorGeometry = useMemo(() => buildPt3SliceLocatorGeometry({
+    metadata,
+    width: 1,
+    height: 1,
+    slicePosition,
+    activeSliceAxis,
+  }), [activeSliceAxis, metadata, slicePosition]);
+  const sliceLocatorDescription = getPt3SliceLocatorDescription(sliceLocatorGeometry);
   const segmentationContract = useMemo(() => normalizePt3Segmentation(part), [part]);
   const rendererMatchesCurrentVolume = rendererState.mode === mode
     && rendererState.metadata === metadata
@@ -891,7 +917,7 @@ export default function Pt3GaussianSplatViewer({
         intensityThreshold,
         sampleStep: profile.sampleStep,
         slicePosition,
-        showSliceGuides,
+        showSliceGuides: false,
         segmentationPalette: renderableSegmentationSegments,
         reconstructionStyle,
         windowCenter,
@@ -919,7 +945,7 @@ export default function Pt3GaussianSplatViewer({
           splatPointSize,
           splatContrast,
           slicePosition,
-          showSliceGuides: splatGuidesVisible,
+          showSliceGuides: false,
           tunedSplatView: isPureSplatMode || rendererType === 'canvas2d-fallback',
           showReferenceFrame: mode !== VIEWER_MODES.hybrid || rendererType === 'canvas2d-fallback',
           projectionCache,
@@ -937,6 +963,18 @@ export default function Pt3GaussianSplatViewer({
         width,
         height,
       });
+      if (splatGuidesVisible) {
+        drawPt3SliceLocator(ctx, {
+          metadata,
+          width,
+          height,
+          rotation,
+          zoom,
+          mirrorScale: activeMirrorScale,
+          slicePosition,
+          activeSliceAxis,
+        });
+      }
       const renderDuration = Math.max(0.1, performance.now() - startedAt);
       statsRef.current.fps = Math.min(999, Math.max(1, Math.round(1000 / renderDuration)));
     };
@@ -954,7 +992,7 @@ export default function Pt3GaussianSplatViewer({
       resizeObserver?.disconnect();
       window.removeEventListener('resize', scheduleRender);
     };
-  }, [activeMirrorScale, boundaryBandWidth, boundaryEnhancement, boundaryStrength, colorHigh, colorLow, cropEnabled, intensityThreshold, isPureSplatMode, isoThreshold, isoWidth, metadata, mode, opacityRampWidth, quality, reconstructionStyle, renderableSegmentationSegments, rendererType, rotation, showAnnotations, showSliceGuides, slicePosition, splatContrast, splatGuidesVisible, splatOpacity, splatPointSize, splats, vectorAnnotations, volumeOpacity, windowCenter, windowWidth, zoom]);
+  }, [activeMirrorScale, activeSliceAxis, boundaryBandWidth, boundaryEnhancement, boundaryStrength, colorHigh, colorLow, cropEnabled, intensityThreshold, isPureSplatMode, isoThreshold, isoWidth, metadata, mode, opacityRampWidth, quality, reconstructionStyle, renderableSegmentationSegments, rendererType, rotation, showAnnotations, slicePosition, splatContrast, splatGuidesVisible, splatOpacity, splatPointSize, splats, vectorAnnotations, volumeOpacity, windowCenter, windowWidth, zoom]);
 
   const updateRayMarchSetting = (key, value) => {
     onRayMarchSettingsChange?.({ ...activeRayMarchSettings, [key]: value });
@@ -1050,6 +1088,7 @@ export default function Pt3GaussianSplatViewer({
     data-mirror-x={activeMirrorScale.x}
     data-mirror-y={activeMirrorScale.y}
     data-mirror-z={activeMirrorScale.z}
+    data-active-slice-axis={activeSliceAxis}
   >
     <canvas
       ref={webglCanvasRef}
@@ -1057,7 +1096,15 @@ export default function Pt3GaussianSplatViewer({
       aria-label="Three.js mechanical volume renderer"
       hidden={isPureSplatMode || rendererType === 'canvas2d-fallback'}
     />
-    <canvas ref={canvasRef} className="pt3-gaussian-splat-canvas" aria-label="Mechanical 3DGS preview" />
+    <canvas
+      ref={canvasRef}
+      className="pt3-gaussian-splat-canvas"
+      aria-label="Mechanical 3DGS preview"
+      aria-describedby={sliceLocatorDescriptionId}
+    />
+    <span id={sliceLocatorDescriptionId} style={VISUALLY_HIDDEN_STYLE}>
+      {sliceLocatorDescription}
+    </span>
     {mode === VIEWER_MODES.realSplat && (
       <fieldset
         className="pt3-real-optimization-controls"

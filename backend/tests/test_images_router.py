@@ -497,6 +497,8 @@ def test_pt3_upload_numpy_volume_autoassigns_part_named_for_file(client):
             "voxel_dtype": "uint16",
             "bit_depth": 16,
             "bits_per_sample": 16,
+            "channel_count": 1,
+            "color_mode": "scalar",
             "metadata": {
                 "load_mode": "volume",
                 "frame_count": 3,
@@ -505,6 +507,8 @@ def test_pt3_upload_numpy_volume_autoassigns_part_named_for_file(client):
                 "voxel_dtype": "uint16",
                 "bit_depth": 16,
                 "bits_per_sample": 16,
+                "channel_count": 1,
+                "color_mode": "scalar",
             },
         }
     ]
@@ -570,6 +574,38 @@ def test_upload_numpy_voxel_data_accepts_3d_arrays(client):
     )
     assert r.status_code == 201
     assert r.json()["filename"] == "volume.npy"
+
+
+@pytest.mark.parametrize(
+    "extension,channel_count,color_mode",
+    [
+        ("npy", 3, "rgb"),
+        ("npz", 4, "rgba"),
+        ("inspiro", 3, "rgb"),
+    ],
+)
+def test_upload_color_voxel_data_records_spatial_shape_and_color_layout(
+    client, extension, channel_count, color_mode
+):
+    pid = _create_project(client, name=f"color-{extension}-{color_mode}")
+    array = np.zeros((2, 3, 4, channel_count), dtype=np.uint8)
+    payload = io.BytesIO()
+    if extension == "npy":
+        np.save(payload, array)
+    else:
+        np.savez(payload, voxels=array)
+    payload.seek(0)
+
+    response = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": (f"volume.{extension}", payload, "application/octet-stream")},
+    )
+
+    assert response.status_code == 201, response.text
+    metadata = response.json().get("metadata") or {}
+    assert metadata["volume_shape"] == {"axial": 2, "coronal": 3, "sagittal": 4}
+    assert metadata["channel_count"] == channel_count
+    assert metadata["color_mode"] == color_mode
 
 
 @pytest.mark.parametrize(
@@ -648,6 +684,22 @@ def test_upload_numpy_voxel_data_rejects_non_3d_arrays(client):
     assert "Invalid 3D voxel data" in str(r.json())
 
 
+@pytest.mark.parametrize("shape", [(0, 3, 4), (2, 0, 4), (2, 3, 0), (2, 3, 0, 4)])
+def test_upload_numpy_voxel_data_rejects_zero_spatial_dimensions(client, shape):
+    pid = _create_project(client, name="zero-dimensional-volume")
+    payload = io.BytesIO()
+    np.save(payload, np.zeros(shape, dtype=np.uint8))
+    payload.seek(0)
+
+    response = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("zero.npy", payload, "application/octet-stream")},
+    )
+
+    assert response.status_code == 400
+    assert "Volume dimensions must be positive integers" in response.json()["detail"]
+
+
 def test_upload_tiff_marks_2d_load_mode(client):
     pr = client.post("/api/projects/", json={"name": "Tiff2D", "description": None, "meta_group_id": "g"})
     pid = pr.json()["id"]
@@ -676,6 +728,35 @@ def test_upload_tiff_marks_3d_load_mode(client):
     metadata = r.json().get("metadata") or {}
     assert metadata.get("tiff_dimensionality") == "3d"
     assert metadata.get("load_mode") == "volume"
+
+
+@pytest.mark.parametrize("mode,color", [("LA", (10, 20)), ("CMYK", (1, 2, 3, 4))])
+def test_upload_and_volume_decode_reject_unsupported_multiband_tiff_modes(
+    client, mode, color
+):
+    from routers.images import _load_tiff_volume
+
+    pid = _create_project(client, name=f"unsupported-{mode}-tiff")
+    payload = io.BytesIO()
+    frames = [Image.new(mode, (4, 3), color=color) for _ in range(2)]
+    frames[0].save(
+        payload,
+        format="TIFF",
+        save_all=True,
+        append_images=frames[1:],
+    )
+    raw_payload = payload.getvalue()
+    payload.seek(0)
+
+    response = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": (f"unsupported-{mode}.tiff", payload, "image/tiff")},
+    )
+
+    assert response.status_code == 400
+    assert f"Unsupported volume image pixel mode '{mode}'" in response.json()["detail"]
+    with pytest.raises(ValueError, match=rf"pixel mode '{mode}'.*scalar, RGB, or RGBA"):
+        _load_tiff_volume(raw_payload)
 
 
 def test_convert_uint16_tiff_to_web_format_preserves_relative_contrast():
@@ -1893,6 +1974,57 @@ def test_numpy_volume_metadata_and_axis_slice_endpoints(client, monkeypatch, tmp
     assert out_of_range.status_code == 400
 
 
+@pytest.mark.parametrize(
+    "channel_count,color_mode,pixel",
+    [
+        (3, "rgb", (11, 22, 33)),
+        (4, "rgba", (11, 22, 33, 44)),
+    ],
+)
+def test_color_numpy_volume_metadata_and_axis_slices_preserve_uint8_channels(
+    client, monkeypatch, tmp_path, channel_count, color_mode, pixel
+):
+    pid = _create_project(client, name=f"volume-{color_mode}-slices")
+    volume = np.empty((2, 3, 4, channel_count), dtype=np.uint8)
+    volume[...] = pixel
+    payload = io.BytesIO()
+    np.save(payload, volume)
+    raw_payload = payload.getvalue()
+    payload.seek(0)
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": (f"volume-{color_mode}.npy", payload, "application/octet-stream")},
+    )
+    assert upload.status_code == 201, upload.text
+    image_id = upload.json()["id"]
+    storage_reads = 0
+
+    async def stream_source(_db_image):
+        nonlocal storage_reads
+        storage_reads += 1
+        yield raw_payload
+
+    monkeypatch.setenv("VOLUME_CACHE_DIR", str(tmp_path / f"volume-cache-{color_mode}"))
+    monkeypatch.setattr("routers.images._iter_authorized_npy_bytes", stream_source)
+
+    metadata = client.get(f"/api/images/{image_id}/volume-metadata")
+    assert metadata.status_code == 200
+    assert metadata.json()["dimensions"] == {"axial": 2, "coronal": 3, "sagittal": 4}
+    assert metadata.json()["channel_count"] == channel_count
+    assert metadata.json()["color_mode"] == color_mode
+    assert storage_reads == 0
+
+    expected_sizes = {"axial": (4, 3), "coronal": (4, 2), "sagittal": (3, 2)}
+    for axis in ("axial", "coronal", "sagittal"):
+        response = client.get(f"/api/images/{image_id}/volume-slice?axis={axis}&index=0")
+        assert response.status_code == 200, response.text
+        with Image.open(io.BytesIO(response.content)) as image:
+            assert image.mode == color_mode.upper()
+            assert image.size == expected_sizes[axis]
+            assert image.getpixel((0, 0)) == pixel
+    assert storage_reads == 1
+
+
 def test_numpy_volume_metadata_fallback_reads_only_bounded_header(client, monkeypatch, tmp_path):
     pid = _create_project(client, name="volume-header-fallback")
     volume = np.arange(2 * 3 * 4, dtype=np.uint16).reshape((2, 3, 4))
@@ -1954,12 +2086,32 @@ def test_numpy_volume_metadata_fallback_reads_only_bounded_header(client, monkey
         {"volume_shape": {"axial": 10**40, "coronal": 3, "sagittal": 4}, "voxel_dtype": "uint8"},
         {"volume_shape": {"axial": 2, "coronal": 3, "sagittal": 4}, "voxel_dtype": "object"},
         {"volume_shape": {"axial": 2, "coronal": 3, "sagittal": 4}, "voxel_dtype": "complex64"},
+        {
+            "volume_shape": {"axial": 2, "coronal": 3, "sagittal": 4},
+            "voxel_dtype": "uint8",
+            "channel_count": 3,
+            "color_mode": "rgba",
+        },
     ],
 )
 def test_persisted_npy_metadata_rejects_unsafe_fast_path(metadata):
     from routers.images import _persisted_npy_volume_meta
 
     assert _persisted_npy_volume_meta(metadata) is None
+
+
+def test_legacy_persisted_npy_metadata_defaults_to_scalar_layout():
+    from routers.images import _persisted_npy_volume_meta
+
+    meta = _persisted_npy_volume_meta(
+        {
+            "volume_shape": {"axial": 2, "coronal": 3, "sagittal": 4},
+            "voxel_dtype": "uint8",
+        }
+    )
+
+    assert meta["channel_count"] == 1
+    assert meta["color_mode"] == "scalar"
 
 
 def test_invalid_persisted_npy_metadata_falls_back_to_header(client, monkeypatch, tmp_path):
@@ -2234,6 +2386,76 @@ def test_volume_slice_cache_reuses_rendered_png_for_repeated_slice(client, monke
     assert calls["count"] == 1
     assert handle_calls["count"] == 1
     assert render_calls["count"] == 1
+
+
+@pytest.mark.parametrize(
+    "array,expected",
+    [
+        (
+            np.array([[[0, 32768, 65535, 32768]]], dtype=np.uint16),
+            (0, 128, 255, 128),
+        ),
+        (
+            np.array([[[0.2, 0.4, 0.6, 0.25]]], dtype=np.float32),
+            (51, 102, 153, 64),
+        ),
+        (
+            np.array([[[10.0, 30.0, 50.0, 0.5]]], dtype=np.float32),
+            (0, 127, 255, 128),
+        ),
+    ],
+)
+def test_non_uint8_rgba_slice_normalizes_rgb_and_alpha_independently(array, expected):
+    from routers.images import _normalize_array_slice_to_png
+
+    png = _normalize_array_slice_to_png(array)
+
+    with Image.open(io.BytesIO(png)) as image:
+        assert image.mode == "RGBA"
+        assert image.getpixel((0, 0)) == expected
+
+
+def test_simultaneous_slice_renders_coalesce_per_key_without_blocking_other_keys(monkeypatch):
+    from routers import images as images_router
+
+    blocked_started = threading.Event()
+    blocked_release = threading.Event()
+    render_values = []
+
+    def controlled_render(array):
+        value = int(np.asarray(array).flat[0])
+        render_values.append(value)
+        if value == 1:
+            blocked_started.set()
+            assert blocked_release.wait(2)
+        return f"png-{value}".encode()
+
+    monkeypatch.setattr(images_router, "_normalize_array_slice_to_png", controlled_render)
+    unique = str(uuid.uuid4())
+    blocked_key = (unique, "axial", 0, "same-version")
+    unrelated_key = (unique, "axial", 1, "same-version")
+
+    async def exercise():
+        first = asyncio.create_task(
+            images_router._get_or_render_volume_slice_png(blocked_key, np.array([[1]]))
+        )
+        assert await asyncio.to_thread(blocked_started.wait, 2)
+        duplicate = asyncio.create_task(
+            images_router._get_or_render_volume_slice_png(blocked_key, np.array([[1]]))
+        )
+        unrelated = await asyncio.wait_for(
+            images_router._get_or_render_volume_slice_png(unrelated_key, np.array([[2]])),
+            timeout=1,
+        )
+        assert unrelated == b"png-2"
+        assert render_values.count(1) == 1
+        blocked_release.set()
+        return await asyncio.gather(first, duplicate)
+
+    first_png, duplicate_png = asyncio.run(exercise())
+
+    assert first_png == duplicate_png == b"png-1"
+    assert render_values == [1, 2]
 
 
 def test_float_volume_slice_ignores_nan_and_infinity_for_visible_pixels():

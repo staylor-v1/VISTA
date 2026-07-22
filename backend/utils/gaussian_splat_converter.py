@@ -154,6 +154,11 @@ def convert_volume_to_splat_asset(
     segmentation: Mapping[str, Any] | None = None,
 ) -> SplatAsset:
     """Materialize a cached splat asset for a supported PT3 volume."""
+    if volume_info.channel_count != 1:
+        raise ValueError(
+            "Simplified 3DGS conversion supports scalar volumes only; "
+            f"received {volume_info.color_mode.upper()} volume data"
+        )
     conversion_params = params or SplatConversionParams()
     _validate_params(conversion_params)
     segmentation_labels = normalize_inline_pt3_segmentation_labels(segmentation, volume_info.shape)

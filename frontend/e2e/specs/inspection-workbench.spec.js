@@ -371,6 +371,15 @@ test.describe('PT3 Real 3DGS mode', () => {
     const viewSelector = page.getByLabel('3D view');
     await expect(viewSelector).toBeVisible();
     await expect(viewSelector.locator('option[value="splat"]')).toHaveCount(0);
+    await expect(viewSelector.locator('option[value="shell"]')).toHaveCount(0);
+    await expect(viewSelector.locator('option[value="hybrid3d"]')).toHaveCount(0);
+    await expect(viewSelector.locator('optgroup[label="Ray marching"] option')).toHaveText([
+      'Composite',
+      'MIP',
+      'X-ray',
+      'Iso',
+      'Window',
+    ]);
     await expect(viewSelector.locator('option[value="real_splat"]')).toHaveText('Real 3DGS');
 
     await viewSelector.selectOption('real_splat');

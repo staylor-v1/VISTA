@@ -231,10 +231,8 @@ def _validate_materialized_npy(
     try:
         info = load_numpy_volume(path, limits=REFERENCE_VOLUME_READ_LIMITS)
         array = np.load(path, mmap_mode="r", allow_pickle=False)
-        if tuple(array.shape) != tuple(info.shape):
+        if tuple(array.shape) != tuple(info.array_shape):
             raise ValueError("NumPy header shape changed during validation")
-        if array.ndim != 3:
-            raise ValueError("NumPy volume must have exactly three dimensions")
     except ValueError as exc:
         raise InvalidVolumeSourceError(f"Invalid NumPy volume: {exc}") from exc
     except (OSError, MemoryError) as exc:
@@ -617,11 +615,14 @@ def _open_cached_memmap(path: Path) -> np.ndarray:
             array = np.load(path, mmap_mode="r", allow_pickle=False)
         except (OSError, ValueError, MemoryError) as exc:
             raise VolumeCacheError(f"Could not memory-map NumPy volume: {exc}") from exc
-        if array.ndim != 3:
+        if array.ndim not in {3, 4} or (array.ndim == 4 and array.shape[-1] not in {3, 4}):
             mmap_object = getattr(array, "_mmap", None)
             if mmap_object is not None:
                 mmap_object.close()
-            raise VolumeCacheError("NumPy volume must have exactly three dimensions")
+            raise VolumeCacheError(
+                "NumPy volume must be scalar [z, y, x], RGB [z, y, x, 3], "
+                "or RGBA [z, y, x, 4]"
+            )
         _memmap_cache[key] = array
         _memmap_cache.move_to_end(key)
         try:

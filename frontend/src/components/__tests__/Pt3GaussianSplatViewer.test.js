@@ -1,8 +1,9 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import Pt3GaussianSplatViewer, {
   DEFAULT_RAY_MARCH_SETTINGS,
+  DEFAULT_SPLAT_VIEW_SETTINGS,
   getPt3RealGaussianSplatAsset,
   getPt3RealSplatCameras,
   getRenderablePt3SegmentationSegments,
@@ -14,6 +15,7 @@ import {
   DEFAULT_PT3_RECONSTRUCTION_OPTIONS,
 } from '../pt3ThreeRenderer';
 import { renderPt3VectorAnnotations } from '../pt3VectorAnnotations';
+import { drawPt3SliceLocator } from '../pt3SliceLocator';
 
 jest.mock('../pt3ThreeRenderer', () => ({
   ...jest.requireActual('../pt3ThreeRenderer'),
@@ -23,6 +25,11 @@ jest.mock('../pt3ThreeRenderer', () => ({
 jest.mock('../pt3VectorAnnotations', () => ({
   ...jest.requireActual('../pt3VectorAnnotations'),
   renderPt3VectorAnnotations: jest.fn(),
+}));
+
+jest.mock('../pt3SliceLocator', () => ({
+  ...jest.requireActual('../pt3SliceLocator'),
+  drawPt3SliceLocator: jest.fn(),
 }));
 
 const part = {
@@ -68,6 +75,7 @@ describe('Pt3GaussianSplatViewer renderer degradation', () => {
   beforeEach(() => {
     createThreeMechanicalRenderer.mockReset();
     createThreeMechanicalRenderer.mockResolvedValue(null);
+    drawPt3SliceLocator.mockClear();
   });
 
   test('shows an explicit aligned 3DGS fallback when the Hybrid ray layer fails', async () => {
@@ -433,6 +441,82 @@ describe('Pt3GaussianSplatViewer renderer degradation', () => {
       boundaryStrength: 0.85,
       boundaryBandWidth: 0.06,
     }));
+  });
+
+  test('draws the shared active-plane locator above WebGL without legacy duplicate guides', async () => {
+    const renderer = makeRenderer();
+    createThreeMechanicalRenderer.mockResolvedValue(renderer);
+    render(<Pt3GaussianSplatViewer
+      part={part}
+      mode="volume"
+      activeSliceAxis="coronal"
+      slicePosition={{ axial: 0, coronal: 0, sagittal: 64 }}
+      volumeImageStack={[{ id: 'slice-1', url: '/slice.png', sliceIndex: 0 }]}
+      rayMarchSettings={{ ...DEFAULT_RAY_MARCH_SETTINGS, showSliceGuides: true }}
+    />);
+
+    await waitFor(() => expect(renderer.render).toHaveBeenCalled());
+    await waitFor(() => expect(drawPt3SliceLocator).toHaveBeenCalled());
+    expect(renderer.render.mock.calls.at(-1)[0]).toEqual(expect.objectContaining({
+      showSliceGuides: false,
+    }));
+    expect(drawPt3SliceLocator).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      activeSliceAxis: 'coronal',
+      slicePosition: { axial: 0, coronal: 0, sagittal: 64 },
+    }));
+    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveAttribute(
+      'data-active-slice-axis',
+      'coronal',
+    );
+    const overlayCanvas = screen.getByLabelText('Mechanical 3DGS preview');
+    const descriptionId = overlayCanvas.getAttribute('aria-describedby');
+    expect(overlayCanvas).toHaveAccessibleName('Mechanical 3DGS preview');
+    expect(document.getElementById(descriptionId)).toHaveTextContent(
+      'Active plane XZ • Y 0 / 0. X 64 / 127; Y 0 / 0; Z 0 / 0.',
+    );
+  });
+
+  test.each([
+    ['real 3DGS', 'real-splat', null],
+    ['Canvas2D volume fallback', 'volume', new Error('WebGL intentionally unavailable')],
+  ])('routes %s guides only through the shared locator and honors toggle-off', async (
+    _label,
+    mode,
+    rendererResult,
+  ) => {
+    if (rendererResult instanceof Error) createThreeMechanicalRenderer.mockRejectedValue(rendererResult);
+    const commonProps = {
+      part,
+      mode,
+      activeSliceAxis: 'sagittal',
+      slicePosition: { axial: 0, coronal: 0, sagittal: 64 },
+      volumeImageStack: [{ id: 'slice-1', url: '/slice.png', sliceIndex: 0 }],
+    };
+    const enabledSettings = mode === 'real-splat'
+      ? { splatViewSettings: { ...DEFAULT_SPLAT_VIEW_SETTINGS, showSliceGuides: true } }
+      : { rayMarchSettings: { ...DEFAULT_RAY_MARCH_SETTINGS, showSliceGuides: true } };
+    const disabledSettings = mode === 'real-splat'
+      ? { splatViewSettings: { ...DEFAULT_SPLAT_VIEW_SETTINGS, showSliceGuides: false } }
+      : { rayMarchSettings: { ...DEFAULT_RAY_MARCH_SETTINGS, showSliceGuides: false } };
+
+    const { rerender } = render(<Pt3GaussianSplatViewer {...commonProps} {...enabledSettings} />);
+    if (mode === 'volume') {
+      expect(await screen.findByText(/Showing deterministic volume bounds fallback/i)).toBeInTheDocument();
+    }
+    await waitFor(() => expect(drawPt3SliceLocator).toHaveBeenCalled());
+    drawPt3SliceLocator.mock.calls.forEach(([, options]) => {
+      expect(options).toEqual(expect.objectContaining({
+        activeSliceAxis: 'sagittal',
+        slicePosition: { axial: 0, coronal: 0, sagittal: 64 },
+      }));
+    });
+
+    drawPt3SliceLocator.mockClear();
+    rerender(<Pt3GaussianSplatViewer {...commonProps} {...disabledSettings} />);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+    expect(drawPt3SliceLocator).not.toHaveBeenCalled();
   });
 
   test('renders malformed legacy settings with normalized RAF arguments', async () => {

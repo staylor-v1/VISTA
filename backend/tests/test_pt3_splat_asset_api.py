@@ -2,18 +2,21 @@ import json
 import base64
 import asyncio
 import io
+import os
+import stat
 import threading
 from types import SimpleNamespace
 import uuid
 from pathlib import Path
 
 import numpy as np
+from fastapi import BackgroundTasks, HTTPException
 from PIL import Image
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import models
+from core import models, schemas
 from routers import inspection_workbench
 
 
@@ -22,6 +25,348 @@ def test_pt3_cache_root_honors_configured_cache_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("CACHE_DIR", str(configured_root))
 
     assert inspection_workbench._pt3_cache_root() == configured_root.resolve()
+    assert all(
+        (configured_root / namespace).is_dir()
+        for namespace in inspection_workbench.PT3_CACHE_NAMESPACES
+    )
+    assert stat.S_IMODE(configured_root.stat().st_mode) == 0o700
+    assert all(
+        stat.S_IMODE((configured_root / namespace).stat().st_mode) == 0o700
+        for namespace in inspection_workbench.PT3_CACHE_NAMESPACES
+    )
+
+
+def test_pt3_cache_directory_repairs_service_owned_read_only_descendants(
+    monkeypatch,
+    tmp_path,
+):
+    configured_root = tmp_path / "writable-cache"
+    monkeypatch.setenv("CACHE_DIR", str(configured_root))
+    inspection_workbench._pt3_cache_root()
+    descendants = [
+        configured_root / "pt3_volume_stacks" / "project-id",
+        configured_root / "pt3_volume_stacks" / "project-id" / "part-id",
+        configured_root
+        / "pt3_volume_stacks"
+        / "project-id"
+        / "part-id"
+        / "job-id",
+    ]
+    descendants[-1].mkdir(parents=True)
+    for directory in reversed(descendants):
+        directory.chmod(0o555)
+
+    prepared = inspection_workbench._prepare_pt3_cache_directory(
+        "pt3_volume_stacks",
+        "project-id",
+        "part-id",
+        "job-id",
+    )
+
+    assert prepared == descendants[-1]
+    assert all(stat.S_IMODE(directory.stat().st_mode) == 0o700 for directory in descendants)
+
+
+def test_pt3_cache_directory_rejects_stale_job_symlink_without_touching_target(
+    monkeypatch,
+    tmp_path,
+):
+    configured_root = tmp_path / "writable-cache"
+    monkeypatch.setenv("CACHE_DIR", str(configured_root))
+    inspection_workbench._pt3_cache_root()
+    part_root = configured_root / "pt3_volume_stacks" / "project-id" / "part-id"
+    part_root.mkdir(parents=True)
+    external = tmp_path / "external-job"
+    external.mkdir()
+    marker = external / "must-remain.txt"
+    marker.write_text("outside cache", encoding="utf-8")
+    stale_job = part_root / "job-id"
+    stale_job.symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(OSError):
+        inspection_workbench._prepare_pt3_cache_directory(
+            "pt3_volume_stacks",
+            "project-id",
+            "part-id",
+            "job-id",
+        )
+
+    assert stale_job.is_symlink()
+    assert marker.read_text(encoding="utf-8") == "outside cache"
+
+
+def test_pt3_cache_cleanup_does_not_follow_symlinked_stale_part(
+    monkeypatch,
+    tmp_path,
+):
+    configured_root = tmp_path / "writable-cache"
+    monkeypatch.setenv("CACHE_DIR", str(configured_root))
+    inspection_workbench._pt3_cache_root()
+    project_id = uuid.uuid4()
+    part_id = uuid.uuid4()
+    job_id = "stale-job"
+    project_root = configured_root / "pt3_volume_stacks" / str(project_id)
+    project_root.mkdir()
+    external_part = tmp_path / "external-part"
+    external_job = external_part / job_id
+    external_job.mkdir(parents=True)
+    marker = external_job / "must-remain.txt"
+    marker.write_text("outside cache", encoding="utf-8")
+    (project_root / str(part_id)).symlink_to(external_part, target_is_directory=True)
+
+    inspection_workbench._cleanup_pt3_real_splat_job_cache(
+        project_id=project_id,
+        part_id=part_id,
+        job_id=job_id,
+        remove_output=False,
+    )
+
+    assert marker.read_text(encoding="utf-8") == "outside cache"
+
+
+def test_backend_startup_repairs_stale_directory_modes_without_following_links():
+    script = (
+        Path(inspection_workbench.__file__).resolve().parents[1]
+        / "scripts"
+        / "start_dev_server.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "find -P" in script
+    assert "-exec chown --no-dereference appuser:appuser {} +" in script
+    assert "-exec chmod 0700 {} +" in script
+
+
+def test_pt3_cache_root_falls_back_when_concrete_namespace_is_not_writable(
+    monkeypatch,
+    tmp_path,
+):
+    configured_root = tmp_path / "configured"
+    configured_root.mkdir()
+    (configured_root / "pt3_volume_stacks").write_text("not a directory", encoding="utf-8")
+    fallback_parent = tmp_path / "temporary"
+    monkeypatch.setenv("CACHE_DIR", str(configured_root))
+    monkeypatch.setattr(inspection_workbench.tempfile, "gettempdir", lambda: str(fallback_parent))
+
+    cache_root = inspection_workbench._pt3_cache_root()
+
+    assert cache_root == (
+        fallback_parent / f"vista-pt3-cache-{os.getuid()}"
+    ).resolve()
+    assert all(
+        (cache_root / namespace).is_dir()
+        for namespace in inspection_workbench.PT3_CACHE_NAMESPACES
+    )
+    assert stat.S_IMODE(cache_root.stat().st_mode) == 0o700
+    assert all(
+        stat.S_IMODE((cache_root / namespace).stat().st_mode) == 0o700
+        for namespace in inspection_workbench.PT3_CACHE_NAMESPACES
+    )
+
+
+@pytest.mark.parametrize("link_location", ["root", "namespace", "namespace-within-root"])
+def test_pt3_cache_root_rejects_symbolic_links(
+    monkeypatch,
+    tmp_path,
+    link_location,
+):
+    configured_root = tmp_path / "configured"
+    linked_target = tmp_path / "linked-target"
+    linked_target.mkdir()
+    if link_location == "root":
+        configured_root.symlink_to(linked_target, target_is_directory=True)
+    else:
+        configured_root.mkdir()
+        target = (
+            configured_root / "pt3_real_splat_assets"
+            if link_location == "namespace-within-root"
+            else linked_target
+        )
+        if link_location == "namespace-within-root":
+            target.mkdir()
+        (configured_root / "pt3_volume_stacks").symlink_to(
+            target,
+            target_is_directory=True,
+        )
+    fallback_parent = tmp_path / "temporary"
+    monkeypatch.setenv("CACHE_DIR", str(configured_root))
+    monkeypatch.setattr(
+        inspection_workbench.tempfile,
+        "gettempdir",
+        lambda: str(fallback_parent),
+    )
+
+    cache_root = inspection_workbench._pt3_cache_root()
+
+    assert cache_root == (
+        fallback_parent / f"vista-pt3-cache-{os.getuid()}"
+    ).resolve()
+    assert stat.S_IMODE(cache_root.stat().st_mode) == 0o700
+
+
+def test_pt3_cache_root_falls_back_from_parent_symlink_loop(monkeypatch, tmp_path):
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop, target_is_directory=True)
+    fallback_parent = tmp_path / "temporary"
+    monkeypatch.setenv("CACHE_DIR", str(loop / "cache"))
+    monkeypatch.setattr(
+        inspection_workbench.tempfile,
+        "gettempdir",
+        lambda: str(fallback_parent),
+    )
+
+    cache_root = inspection_workbench._pt3_cache_root()
+
+    assert cache_root == (
+        fallback_parent / f"vista-pt3-cache-{os.getuid()}"
+    ).resolve()
+
+
+def test_pt3_cache_root_reports_sanitized_error_when_fallback_is_unavailable(
+    monkeypatch,
+    tmp_path,
+):
+    configured_root = tmp_path / "configured"
+    fallback_parent = tmp_path / "temporary"
+    configured_root.write_text("not a directory", encoding="utf-8")
+    fallback_parent.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv("CACHE_DIR", str(configured_root))
+    monkeypatch.setattr(inspection_workbench.tempfile, "gettempdir", lambda: str(fallback_parent))
+
+    with pytest.raises(
+        inspection_workbench._PT3CacheUnavailableError,
+        match="job directories are not writable",
+    ) as exc_info:
+        inspection_workbench._pt3_cache_root()
+
+    assert str(configured_root) not in str(exc_info.value)
+    assert str(fallback_parent) not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_volume_materialization_translates_cache_failure_to_sanitized_503(
+    monkeypatch,
+):
+    private_path = "/private/root-owned/pt3_volume_stacks"
+
+    def unavailable_cache():
+        raise PermissionError(private_path)
+
+    monkeypatch.setattr(inspection_workbench, "_pt3_cache_root", unavailable_cache)
+    part = SimpleNamespace(
+        id=uuid.uuid4(),
+        metadata_json={
+            "source_images": [
+                {
+                    "image_id": str(uuid.uuid4()),
+                    "filename": "source.npy",
+                    "slice_index": 0,
+                }
+            ]
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await inspection_workbench._materialize_part_volume_stack(
+            project_id=uuid.uuid4(),
+            part=part,
+            db=object(),
+            materialization_key="job-id",
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == (
+        "PT3 fitting cache is unavailable because a writable job directory "
+        "could not be prepared"
+    )
+    assert private_path not in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_real_splat_create_preserves_sanitized_503_when_cleanup_cache_is_unavailable(
+    monkeypatch,
+):
+    project_id = uuid.uuid4()
+    part_id = uuid.uuid4()
+    private_path = "/private/root-owned/pt3_volume_stacks"
+
+    async def project_with_access(**_kwargs):
+        return SimpleNamespace(project_type="PT3")
+
+    async def inspection_part(**_kwargs):
+        return SimpleNamespace(
+            id=part_id,
+            metadata_json={
+                "source_images": [
+                    {
+                        "image_id": str(uuid.uuid4()),
+                        "filename": "source.npy",
+                        "slice_index": 0,
+                    }
+                ]
+            },
+        )
+
+    class FakeDB:
+        async def rollback(self):
+            return None
+
+    def unavailable_cache():
+        raise inspection_workbench._PT3CacheUnavailableError(private_path)
+
+    monkeypatch.setattr(
+        inspection_workbench,
+        "_get_project_with_access_check",
+        project_with_access,
+    )
+    monkeypatch.setattr(
+        inspection_workbench.crud,
+        "get_inspection_part",
+        inspection_part,
+    )
+    monkeypatch.setattr(inspection_workbench, "_pt3_cache_root", unavailable_cache)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await inspection_workbench.create_pt3_real_gaussian_splat_asset(
+            project_id=project_id,
+            part_id=part_id,
+            payload=schemas.PT3RealSplatOptimizationRequest(),
+            background_tasks=BackgroundTasks(),
+            db=FakeDB(),
+            current_user=SimpleNamespace(email="cache-test@example.com"),
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == (
+        "PT3 fitting cache is unavailable because a writable job directory "
+        "could not be prepared"
+    )
+    assert private_path not in exc_info.value.detail
+    # Both cleanup variants are deliberately safe to call in the same outage.
+    inspection_workbench._cleanup_pt3_simplified_splat_job_input(
+        project_id=project_id,
+        part_id=part_id,
+        job_id="cleanup-test",
+    )
+
+
+def test_public_real_splat_error_redacts_arbitrary_absolute_provider_paths(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    private_error = RuntimeError(
+        "/opt/private-models/weights.pt: permission denied; "
+        "'C:\\private models\\weights.bin'; "
+        "'\\\\server\\share\\model.bin'"
+    )
+
+    public_error = inspection_workbench._public_pt3_real_splat_error(private_error)
+
+    assert "permission denied" in public_error
+    assert public_error.count("<path>") == 3
+    assert "/opt/private-models" not in public_error
+    assert "C:\\private models" not in public_error
+    assert "\\\\server\\share" not in public_error
 
 
 def test_pending_real_splat_status_hides_internal_fallback_path_and_resolves_old_cache_key():
@@ -491,6 +836,47 @@ async def test_stale_identity_mapped_worker_cannot_reclaim_newer_recompute(
 
 
 @pytest.mark.asyncio
+async def test_progress_update_cannot_reopen_a_completed_real_splat_job():
+    asset = {
+        "job_id": "completed-job",
+        "status": "ready",
+        "stage": "ready",
+        "progress_percent": 100,
+    }
+    part = SimpleNamespace(metadata_json={"pt3_real_splat_asset": asset})
+
+    class Result:
+        def scalar_one_or_none(self):
+            return part
+
+    class FakeDB:
+        committed = False
+
+        async def rollback(self):
+            return None
+
+        async def execute(self, _statement):
+            return Result()
+
+        async def commit(self):
+            self.committed = True
+
+    job_db = FakeDB()
+    published = await inspection_workbench._update_pt3_real_splat_job_progress(
+        project_id=uuid.uuid4(),
+        part_id=uuid.uuid4(),
+        job_id="completed-job",
+        progress_percent=80,
+        stage="late-progress",
+        job_db=job_db,
+    )
+
+    assert published is False
+    assert job_db.committed is False
+    assert part.metadata_json["pt3_real_splat_asset"] == asset
+
+
+@pytest.mark.asyncio
 async def test_superseding_running_job_makes_progress_callback_abort_compute(
     db_session, monkeypatch, tmp_path
 ):
@@ -590,6 +976,100 @@ async def test_superseding_running_job_makes_progress_callback_abort_compute(
 
 
 @pytest.mark.asyncio
+async def test_real_splat_progress_timeout_cancels_update_before_publication(
+    db_session,
+    monkeypatch,
+    tmp_path,
+):
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("CACHE_DIR", str(cache_root))
+    project_id = uuid.uuid4()
+    part_id = uuid.uuid4()
+    job_id = "progress-timeout-job"
+    project = models.Project(
+        id=project_id,
+        name="PT3 progress timeout regression",
+        meta_group_id="pt3-progress-timeout",
+        project_type="PT3",
+    )
+    part = models.InspectionPart(
+        id=part_id,
+        project_id=project_id,
+        serial_number="PT3-PROGRESS-TIMEOUT-001",
+        metadata_json={
+            "volume_stack_id": "progress-timeout-volume",
+            "pt3_real_splat_asset": {
+                "job_id": job_id,
+                "status": "pending",
+                "stage": "queued",
+                "progress_percent": 0,
+            },
+        },
+    )
+    db_session.add_all([project, part])
+    await db_session.commit()
+    input_path, output_path = inspection_workbench._pt3_real_splat_job_cache_paths(
+        project_id=project_id,
+        part_id=part_id,
+        job_id=job_id,
+    )
+    input_path.mkdir(parents=True)
+    source_path = input_path / "volume.npy"
+    np.save(source_path, np.ones((1, 1, 1), dtype=np.uint8))
+    progress_started = asyncio.Event()
+    progress_cancelled = asyncio.Event()
+
+    async def blocked_progress_update(**_kwargs):
+        progress_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            progress_cancelled.set()
+            raise
+
+    def optimizer_with_stalled_progress(**kwargs):
+        kwargs["progress_callback"](10, "stalled-progress")
+        raise AssertionError("optimizer continued after a timed-out progress update")
+
+    monkeypatch.setattr(
+        inspection_workbench,
+        "_update_pt3_real_splat_job_progress_in_session",
+        blocked_progress_update,
+    )
+    monkeypatch.setattr(
+        inspection_workbench,
+        "PT3_REAL_SPLAT_PROGRESS_TIMEOUT_SECONDS",
+        0.05,
+    )
+    monkeypatch.setattr(
+        inspection_workbench,
+        "optimize_real_gaussian_splat_asset",
+        optimizer_with_stalled_progress,
+    )
+    payload_data = inspection_workbench.schemas.PT3RealSplatOptimizationRequest(
+        parameters={"max_splats": 1}
+    ).model_dump(mode="json")
+
+    async with AsyncSession(bind=db_session.bind, expire_on_commit=False) as job_db:
+        await inspection_workbench._run_pt3_real_splat_optimization_job(
+            project_id=project_id,
+            part_id=part_id,
+            source_path_text=str(source_path),
+            payload_data=payload_data,
+            job_id=job_id,
+            requested_by="progress-timeout@example.com",
+            job_db=job_db,
+        )
+
+    await asyncio.wait_for(progress_started.wait(), timeout=1)
+    await asyncio.wait_for(progress_cancelled.wait(), timeout=1)
+    await db_session.refresh(part)
+    assert part.metadata_json["pt3_real_splat_asset"]["status"] == "failed"
+    assert not input_path.exists()
+    assert not output_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_real_splat_compute_slot_serializes_jobs():
     await inspection_workbench._acquire_pt3_real_splat_compute_slot()
     waiter = asyncio.create_task(
@@ -657,6 +1137,8 @@ async def test_create_real_splat_reloads_locked_part_after_materialization_for_f
             return current_part
 
     class Database:
+        bind = object()
+
         async def rollback(self):
             events.append("rollback")
 
@@ -743,6 +1225,9 @@ async def test_create_real_splat_reloads_locked_part_after_materialization_for_f
     assert events[3][0] == "locked_reload"
     assert "FOR UPDATE" in events[3][1]
     assert len(tasks.calls) == 1
+    assert tasks.calls[0][0] is inspection_workbench._run_pt3_real_splat_optimization_job_in_session
+    assert tasks.calls[0][1]["session_bind"] is Database.bind
+    assert "job_db" not in tasks.calls[0][1]
     assert tasks.calls[0][1]["payload_data"]["source_image_ids"] == [source_id]
     assert tasks.calls[0][1]["payload_data"]["camera_view_binding"] == (
         "generated_from_voxel_volume"
@@ -1303,6 +1788,79 @@ def test_real_3dgs_direct_voxel_fit_runs_without_cameras_or_provider(client, mon
     assert asset["scalar_values"] == [160.0, 160.0]
 
 
+def test_real_3dgs_route_rejects_rgb_slice_stack_without_grayscale_fallback(
+    client, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setattr(inspection_workbench.settings, "PT3_REAL_3DGS_PROVIDER", None)
+    headers = {"X-User-Id": "pt3-rgb@example.com", "X-User-Groups": '["pt3-rgb-group"]'}
+    project = client.post(
+        "/api/projects",
+        headers=headers,
+        json={
+            "name": "PT3 RGB rejection",
+            "description": "",
+            "meta_group_id": "pt3-rgb-group",
+            "project_type": "PT3",
+        },
+    ).json()
+
+    image = Image.new("RGB", (2, 2), color=(10, 20, 30))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    image_bytes = buffer.getvalue()
+    upload = client.post(
+        f"/api/projects/{project['id']}/images",
+        headers=headers,
+        files={"file": ("rgb-z000.png", io.BytesIO(image_bytes), "image/png")},
+        data={
+            "metadata": json.dumps(
+                {
+                    "volume_stack_id": "rgb-stack",
+                    "slice_index": 0,
+                    "analysis_inline_image_base64": base64.b64encode(image_bytes).decode("ascii"),
+                }
+            )
+        },
+    )
+    assert upload.status_code == 201, upload.text
+    image_record = upload.json()
+    part = client.post(
+        f"/api/projects/{project['id']}/parts",
+        headers=headers,
+        json={
+            "serial_number": "PT3-RGB-001",
+            "metadata": {
+                "volume_stack_id": "rgb-stack",
+                "source_images": [
+                    {
+                        "filename": "rgb-z000.png",
+                        "image_id": image_record["id"],
+                        "slice_index": 0,
+                    }
+                ],
+            },
+        },
+    ).json()
+
+    created = client.post(
+        f"/api/projects/{project['id']}/parts/{part['id']}/real-gaussian-splat-assets",
+        headers=headers,
+        json={"fit_mode": "voxel_direct", "parameters": {"max_splats": 2}},
+    )
+    assert created.status_code == 202, created.text
+
+    status_response = client.get(
+        f"/api/projects/{project['id']}/parts/{part['id']}/real-gaussian-splat-assets/status",
+        headers=headers,
+    )
+    assert status_response.status_code == 200
+    failed = status_response.json()
+    assert failed["status"] == "failed"
+    assert "supports scalar volumes only" in failed["error"]
+    assert "received RGB volume data" in failed["error"]
+
+
 def test_real_3dgs_preserves_numpy_volume_format_and_prunes_recompute_jobs(client, monkeypatch, tmp_path):
     cache_root = tmp_path / "cache"
     monkeypatch.setenv("CACHE_DIR", str(cache_root))
@@ -1529,7 +2087,6 @@ def test_real_3dgs_preserves_multipage_tiff_frames(client, monkeypatch, tmp_path
         json={
             "serial_number": "PT3-TIFF-001",
             "metadata": {
-                "volume_stack_id": "tiff-stack",
                 "source_images": [{"filename": "volume.tiff", "image_id": image_record["id"], "slice_index": 0}],
             },
         },
@@ -1539,6 +2096,7 @@ def test_real_3dgs_preserves_multipage_tiff_frames(client, monkeypatch, tmp_path
     assert created.status_code == 202, created.text
     fitted = client.get(f"{endpoint}/status", headers=headers).json()
     assert fitted["status"] == "ready", fitted
+    assert fitted["volume_stack_id"] == part["id"]
     assert fitted["metadata"]["dimensions"] == [3, 2, 2]
 
 

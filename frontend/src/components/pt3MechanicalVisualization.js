@@ -7,14 +7,66 @@ export const MECHANICAL_TRANSFER_PRESETS = {
 };
 
 export function getMechanicalVolumeMetadata(part) {
-  const shape = part?.metadata?.volume_shape || part?.metadata?.mpr?.volume_shape;
+  const partMetadata = part?.metadata && typeof part.metadata === 'object'
+    ? part.metadata
+    : {};
+  const sourceRecord = (Array.isArray(partMetadata.source_images)
+    ? partMetadata.source_images
+    : []
+  ).find((record) => (
+    record
+    && record.overlay !== true
+    && (record.volume_shape || record.metadata?.volume_shape)
+  ));
+  const sourceShape = sourceRecord?.volume_shape || sourceRecord?.metadata?.volume_shape;
+  const realAsset = partMetadata.pt3_real_splat_asset
+    && typeof partMetadata.pt3_real_splat_asset === 'object'
+    ? partMetadata.pt3_real_splat_asset
+    : {};
+  const sourceDimensions = Array.isArray(realAsset.source_dimensions)
+    && realAsset.source_dimensions.length === 3
+    ? realAsset.source_dimensions
+    : null;
+  const shape = partMetadata.volume_shape || partMetadata.mpr?.volume_shape || sourceShape;
+  const fallbackDimensions = sourceDimensions
+    ? [sourceDimensions[2], sourceDimensions[1], sourceDimensions[0]]
+    : [128, 96, 64];
+  const dimensions = shape
+    ? [
+      shape.sagittal ?? fallbackDimensions[0],
+      shape.coronal ?? fallbackDimensions[1],
+      shape.axial ?? fallbackDimensions[2],
+    ]
+    : fallbackDimensions;
+  const declaredGeometry = partMetadata.pt3_volume_geometry
+    && typeof partMetadata.pt3_volume_geometry === 'object'
+    ? partMetadata.pt3_volume_geometry
+    : {};
+  const fittedSourceGeometry = realAsset.source_physical_space
+    && typeof realAsset.source_physical_space === 'object'
+    ? realAsset.source_physical_space
+    : {};
+  const authoritativeVolume = Boolean(sourceRecord || sourceDimensions);
   return normalizeVolumeMetadata({
-    dimensions: [shape?.sagittal || 128, shape?.coronal || 96, shape?.axial || 64],
-    spacing: part?.metadata?.spacing || part?.metadata?.voxel_spacing || [0.08, 0.08, 0.12],
-    origin: part?.metadata?.origin || [0, 0, 0],
-    direction: part?.metadata?.direction,
-    scalarRange: part?.metadata?.scalar_range || part?.metadata?.intensity_range || [0, 255],
-    modality: part?.metadata?.modality || 'industrial_ct',
+    dimensions,
+    spacing: declaredGeometry.spacing
+      || partMetadata.spacing
+      || partMetadata.voxel_spacing
+      || fittedSourceGeometry.spacing
+      || (authoritativeVolume ? [1, 1, 1] : [0.08, 0.08, 0.12]),
+    origin: declaredGeometry.origin
+      || partMetadata.origin
+      || fittedSourceGeometry.origin
+      || [0, 0, 0],
+    direction: declaredGeometry.direction
+      || partMetadata.direction
+      || fittedSourceGeometry.direction,
+    scalarRange: declaredGeometry.scalar_range
+      || partMetadata.scalar_range
+      || partMetadata.intensity_range
+      || realAsset.scalar_range
+      || [0, 255],
+    modality: partMetadata.modality || 'industrial_ct',
     sourceId: part?.id || 'mechanical-local-preview',
   });
 }

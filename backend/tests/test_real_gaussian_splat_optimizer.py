@@ -199,6 +199,30 @@ def _volume_geometry():
     }
 
 
+@pytest.mark.parametrize(("channel_count", "color_mode"), [(3, "rgb"), (4, "rgba")])
+def test_voxel_direct_optimizer_preserves_color_layout_and_rejects_non_scalar_volume(
+    tmp_path, channel_count, color_mode
+):
+    geometry = {
+        **_volume_geometry(),
+        "channel_count": channel_count,
+        "color_mode": color_mode,
+    }
+
+    with pytest.raises(ValueError, match=rf"supports scalar volumes only.*{color_mode.upper()}"):
+        optimize_real_gaussian_splat_asset(
+            provider_path="",
+            volume_stack_id=f"{color_mode}-stack",
+            source_image_ids=["slice-0", "slice-1"],
+            source_files=["slice-0.png", "slice-1.png"],
+            cameras=[],
+            parameters={"max_splats": 2},
+            output_dir=tmp_path,
+            fit_mode="voxel_direct",
+            volume_geometry=geometry,
+        )
+
+
 _PROVIDER_SEGMENTATIONS = []
 _PROVIDER_SEGMENTATION_CONTRACTS = []
 

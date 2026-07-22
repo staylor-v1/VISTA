@@ -72,6 +72,97 @@ class VoxelGaussianFitError(ValueError):
     """Raised when a voxel field cannot satisfy the fitting contract."""
 
 
+def _bounded_file_sample_shape(
+    source_shape: Sequence[int],
+    *,
+    max_voxels: int | None = None,
+) -> tuple[int, int, int]:
+    """Return an endpoint-preserving uniform-grid shape within the fit budget."""
+
+    shape = _validate_volume_shape(source_shape)
+    if max_voxels is None:
+        budget = MAX_REFERENCE_ACTIVE_VOXELS
+    elif isinstance(max_voxels, bool) or not isinstance(max_voxels, int):
+        raise VoxelGaussianFitError("sample voxel budget must be a positive integer")
+    else:
+        budget = max_voxels
+    if budget < 1:
+        raise VoxelGaussianFitError("sample voxel budget must be positive")
+    if math.prod(shape) <= budget:
+        return shape
+    minimum_shape = tuple(2 if dimension > 1 else 1 for dimension in shape)
+    if math.prod(minimum_shape) > budget:
+        raise VoxelGaussianFitError(
+            "sample voxel budget is too small to preserve every non-singleton axis"
+        )
+
+    def shape_for_stride(stride: int) -> tuple[int, int, int]:
+        return tuple(
+            max(minimum, (dimension + stride - 1) // stride)
+            for dimension, minimum in zip(shape, minimum_shape)
+        )
+
+    low, high = 1, max(shape)
+    while low < high:
+        stride = (low + high) // 2
+        if math.prod(shape_for_stride(stride)) <= budget:
+            high = stride
+        else:
+            low = stride + 1
+    sampled_shape = shape_for_stride(low)
+    if math.prod(sampled_shape) > budget:  # defensive guard for future changes
+        raise VoxelGaussianFitError("could not construct a bounded voxel sampling grid")
+    return sampled_shape
+
+
+def _sampled_spacing_xyz(
+    spacing_xyz: np.ndarray,
+    *,
+    source_shape_zyx: tuple[int, int, int],
+    sampled_shape_zyx: tuple[int, int, int],
+) -> np.ndarray:
+    index_scale_zyx = np.asarray(
+        [
+            (source - 1) / (sampled - 1) if sampled > 1 else 1.0
+            for source, sampled in zip(source_shape_zyx, sampled_shape_zyx)
+        ],
+        dtype=np.float64,
+    )
+    return spacing_xyz * index_scale_zyx[::-1]
+
+
+def _sampling_metadata(
+    *,
+    source_shape: tuple[int, int, int],
+    sampled_shape: tuple[int, int, int],
+    reducer: str | None = None,
+) -> dict[str, Any]:
+    index_scale_zyx = [
+        (source - 1) / (sampled - 1) if sampled > 1 else 1.0
+        for source, sampled in zip(source_shape, sampled_shape)
+    ]
+    return {
+        "strategy": (
+            "conservative_block_reduction"
+            if sampled_shape != source_shape
+            else "exact"
+        ),
+        "reducer": reducer if sampled_shape != source_shape else None,
+        "applied": sampled_shape != source_shape,
+        "source_dimensions": list(source_shape),
+        "fitted_dimensions": list(sampled_shape),
+        "source_voxel_count": math.prod(source_shape),
+        "fitted_voxel_count": math.prod(sampled_shape),
+        "maximum_fitted_voxels": MAX_REFERENCE_ACTIVE_VOXELS,
+        "source_index_scale_zyx": index_scale_zyx,
+        "coordinate_mapping": (
+            "selected_source_voxel"
+            if sampled_shape != source_shape
+            else "identity_grid"
+        ),
+    }
+
+
 class _DisjointSet:
     def __init__(self, size: int) -> None:
         self.parent = np.arange(size, dtype=np.int64)
@@ -137,33 +228,113 @@ def fit_voxel_gaussian_splat_asset(
         Includes ``optimized_parameters`` plus density and approximation data.
     """
 
+    if volume_info.channel_count != 1:
+        raise VoxelGaussianFitError(
+            "Real 3DGS fitting supports scalar volumes only; "
+            f"received {volume_info.color_mode.upper()} volume data"
+        )
+
     fit_parameters = _coerce_parameters(parameters)
     spacing_vector = _finite_vector(spacing, length=3, field="spacing")
     if np.any(spacing_vector <= 0):
         raise VoxelGaussianFitError("spacing values must be positive")
     origin_vector = _finite_vector(origin, length=3, field="origin")
     direction_matrix = _direction_matrix(direction)
-    shape = _validate_volume_shape(volume_info.shape)
-    if math.prod(shape) > MAX_REFERENCE_TOTAL_VOXELS:
+    source_shape = _validate_volume_shape(volume_info.shape)
+    if math.prod(source_shape) > MAX_REFERENCE_TOTAL_VOXELS:
         raise VoxelGaussianFitError(
             "The built-in analytic fitter is limited to "
             f"{MAX_REFERENCE_TOTAL_VOXELS} total voxels; downsample the volume "
             "or configure a scalable provider"
         )
     _validate_physical_geometry(
-        shape=shape,
+        shape=source_shape,
         spacing=spacing_vector,
         origin=origin_vector,
         direction=direction_matrix,
     )
 
+    # Large, plain .npy fields can be conservatively block-reduced from a
+    # memory map before a float64 working volume is allocated. Archives cannot
+    # provide bounded random access and are rejected above the direct-fit
+    # budget instead of being inflated into multi-gigabyte arrays.
+    numpy_source_path = (
+        Path(volume_info.source_files[0])
+        if voxel_data is None
+        and volume_info.format == "numpy"
+        and len(volume_info.source_files) == 1
+        else None
+    )
+    scalable_npy = (
+        numpy_source_path is not None
+        and numpy_source_path.suffix.lower() == ".npy"
+    )
+    if (
+        numpy_source_path is not None
+        and numpy_source_path.suffix.lower() == ".npz"
+        and math.prod(source_shape) > MAX_REFERENCE_ACTIVE_VOXELS
+    ):
+        raise VoxelGaussianFitError(
+            "The built-in analytic fitter cannot safely sample a compressed .npz "
+            f"volume above {MAX_REFERENCE_ACTIVE_VOXELS} voxels; extract it to a "
+            "plain .npy file or configure a scalable provider"
+        )
+    shape = _bounded_file_sample_shape(source_shape) if scalable_npy else source_shape
+    sample_reducer = (
+        "maximum"
+        if fit_parameters.density_threshold is not None
+        else "nonzero_extrema"
+    )
+    fitted_spacing_vector = _sampled_spacing_xyz(
+        spacing_vector,
+        source_shape_zyx=source_shape,
+        sampled_shape_zyx=shape,
+    )
+    _validate_physical_geometry(
+        shape=shape,
+        spacing=fitted_spacing_vector,
+        origin=origin_vector,
+        direction=direction_matrix,
+    )
+    sampling = _sampling_metadata(
+        source_shape=source_shape,
+        sampled_shape=shape,
+        reducer=sample_reducer,
+    )
+
     _progress(progress_callback, 0.0, "loading_voxels")
-    volume = _load_voxel_array(volume_info, voxel_data)
+    volume, sampled_source_flat_indices = _load_voxel_array(
+        volume_info,
+        voxel_data,
+        sample_shape=shape if shape != source_shape else None,
+        sample_reduction=sample_reducer,
+    )
     if volume.shape != shape:
         raise VoxelGaussianFitError(
             f"voxel_data shape {volume.shape} does not match VolumeInfo shape {shape}"
         )
-    labels = _validated_segmentation_labels(segmentation_labels, shape)
+    if sampled_source_flat_indices is not None:
+        selected_source_index_digest = hashlib.sha256(
+            np.asarray(sampled_source_flat_indices, dtype="<i8").tobytes(order="C")
+        ).hexdigest()
+        sampling = {
+            **sampling,
+            "selected_source_index_digest": selected_source_index_digest,
+        }
+        sample_local_points = _selected_source_local_points(
+            sampled_source_flat_indices,
+            source_shape=source_shape,
+            source_spacing=spacing_vector,
+            direction=direction_matrix,
+        )
+    else:
+        sample_local_points = None
+    labels, source_segmentation_digest = _validated_segmentation_labels(
+        segmentation_labels,
+        source_shape=source_shape,
+        sampled_shape=shape,
+        sampled_source_flat_indices=sampled_source_flat_indices,
+    )
     _progress(progress_callback, 10.0, "validating_volume")
 
     scalar_min = float(np.min(volume))
@@ -209,8 +380,9 @@ def fit_voxel_gaussian_splat_asset(
         groups,
         shape=shape,
         normalized_volume=normalized_volume,
-        spacing=spacing_vector,
+        spacing=fitted_spacing_vector,
         direction=direction_matrix,
+        sample_local_points=sample_local_points,
         target_splats=min(fit_parameters.max_splats, len(active_zyx)),
         progress_callback=progress_callback,
     )
@@ -221,15 +393,22 @@ def fit_voxel_gaussian_splat_asset(
         volume=volume,
         normalized_volume=normalized_volume,
         labels=labels,
-        spacing=spacing_vector,
+        spacing=fitted_spacing_vector,
+        voxel_spacing=spacing_vector,
         origin=origin_vector,
         direction=direction_matrix,
+        sample_local_points=sample_local_points,
         parameters=fit_parameters,
         progress_callback=progress_callback,
     )
     splat_count = len(payload_arrays["means"])
 
     geometry = {
+        "spacing": fitted_spacing_vector.tolist(),
+        "origin": origin_vector.tolist(),
+        "direction": direction_matrix.reshape(-1).tolist(),
+    }
+    source_geometry = {
         "spacing": spacing_vector.tolist(),
         "origin": origin_vector.tolist(),
         "direction": direction_matrix.reshape(-1).tolist(),
@@ -242,6 +421,9 @@ def fit_voxel_gaussian_splat_asset(
         volume=volume,
         labels=labels,
         geometry=geometry,
+        sampling=sampling,
+        source_segmentation_digest=source_segmentation_digest,
+        sampled_source_flat_indices=sampled_source_flat_indices,
     )
     metadata = {
         "asset_type": "gaussian_splat",
@@ -256,7 +438,11 @@ def fit_voxel_gaussian_splat_asset(
         "source_image_ids": [str(item) for item in (source_image_ids or ())],
         "source_files": [Path(str(item)).name for item in volume_info.source_files],
         "dimensions": list(shape),
+        "source_dimensions": list(source_shape),
+        "fitted_dimensions": list(shape),
         "physical_space": geometry,
+        "source_physical_space": source_geometry,
+        "sampling": sampling,
         "scalar_range": [scalar_min, scalar_max],
         "density_mapping": {
             "threshold": effective_threshold,
@@ -473,7 +659,14 @@ def _validate_physical_geometry(
                 )
 
 
-def _load_voxel_array(volume_info: VolumeInfo, voxel_data: Any | None) -> np.ndarray:
+def _load_voxel_array(
+    volume_info: VolumeInfo,
+    voxel_data: Any | None,
+    *,
+    sample_shape: tuple[int, int, int] | None = None,
+    sample_reduction: str = "point",
+) -> tuple[np.ndarray, np.ndarray | None]:
+    sampled_source_flat_indices: np.ndarray | None = None
     if voxel_data is not None:
         raw = voxel_data
     elif volume_info.format == "slice_stack":
@@ -514,9 +707,17 @@ def _load_voxel_array(volume_info: VolumeInfo, voxel_data: Any | None) -> np.nda
             raise VoxelGaussianFitError("numpy VolumeInfo must name exactly one source file")
         source_path = Path(volume_info.source_files[0])
         try:
-            raw = read_numpy_volume_array(
-                source_path, limits=REFERENCE_VOLUME_READ_LIMITS
+            loaded = read_numpy_volume_array(
+                source_path,
+                limits=REFERENCE_VOLUME_READ_LIMITS,
+                sample_shape=sample_shape,
+                sample_reduction=sample_reduction,
+                return_source_flat_indices=sample_shape is not None,
             )
+            if isinstance(loaded, tuple):
+                raw, sampled_source_flat_indices = loaded
+            else:
+                raw = loaded
         except (OSError, ValueError) as exc:
             raise VoxelGaussianFitError(
                 f"Could not read NumPy voxel source {source_path.name}: {exc}"
@@ -547,7 +748,16 @@ def _load_voxel_array(volume_info: VolumeInfo, voxel_data: Any | None) -> np.nda
         raise VoxelGaussianFitError("voxel_data must be a numeric three-dimensional array") from exc
     if not np.all(np.isfinite(volume)):
         raise VoxelGaussianFitError("voxel_data must contain only finite values")
-    return np.ascontiguousarray(volume)
+    if sampled_source_flat_indices is not None:
+        sampled_source_flat_indices = np.ascontiguousarray(
+            sampled_source_flat_indices,
+            dtype=np.int64,
+        )
+        if sampled_source_flat_indices.shape != volume.shape:
+            raise VoxelGaussianFitError(
+                "bounded NumPy sample coordinates do not match the sampled volume"
+            )
+    return np.ascontiguousarray(volume), sampled_source_flat_indices
 
 
 def _image_scalar_array(path: Path) -> np.ndarray:
@@ -558,25 +768,75 @@ def _image_scalar_array(path: Path) -> np.ndarray:
         raise VoxelGaussianFitError(f"Could not read voxel slice {path}") from exc
 
 
-def _validated_segmentation_labels(labels: Any | None, shape: tuple[int, int, int]) -> np.ndarray:
+def _validated_segmentation_labels(
+    labels: Any | None,
+    *,
+    source_shape: tuple[int, int, int],
+    sampled_shape: tuple[int, int, int],
+    sampled_source_flat_indices: np.ndarray | None = None,
+) -> tuple[np.ndarray, str | None]:
     if labels is None:
-        return np.zeros(shape, dtype=np.uint8)
+        return np.zeros(sampled_shape, dtype=np.uint8), None
     raw = np.asarray(labels)
-    if raw.shape != shape:
+    if raw.shape != source_shape:
         raise VoxelGaussianFitError(
-            f"segmentation_labels shape {raw.shape} does not match VolumeInfo shape {shape}"
+            "segmentation_labels shape "
+            f"{raw.shape} does not match VolumeInfo shape {source_shape}"
         )
     if np.issubdtype(raw.dtype, np.bool_):
         raise VoxelGaussianFitError("segmentation_labels must contain integer IDs from 0 through 255")
-    try:
-        numeric = raw.astype(np.float64)
-    except (TypeError, ValueError) as exc:
-        raise VoxelGaussianFitError("segmentation_labels must contain integer IDs from 0 through 255") from exc
-    if not np.all(np.isfinite(numeric)) or not np.all(numeric == np.floor(numeric)):
+    if np.issubdtype(raw.dtype, np.integer):
+        dtype_bounds = np.iinfo(raw.dtype)
+        if dtype_bounds.min < 0 and int(np.min(raw)) < 0:
+            raise VoxelGaussianFitError(
+                "segmentation_labels must contain integer IDs from 0 through 255"
+            )
+        if dtype_bounds.max > 255 and int(np.max(raw)) > 255:
+            raise VoxelGaussianFitError(
+                "segmentation_labels must contain integer IDs from 0 through 255"
+            )
+    else:
+        try:
+            numeric = raw.astype(np.float64)
+        except (TypeError, ValueError) as exc:
+            raise VoxelGaussianFitError(
+                "segmentation_labels must contain integer IDs from 0 through 255"
+            ) from exc
+        if (
+            not np.all(np.isfinite(numeric))
+            or not np.all(numeric == np.floor(numeric))
+            or np.any(numeric < 0)
+            or np.any(numeric > 255)
+        ):
+            raise VoxelGaussianFitError(
+                "segmentation_labels must contain integer IDs from 0 through 255"
+            )
+
+    canonical_source = np.ascontiguousarray(raw, dtype=np.uint8)
+    source_digest = hashlib.sha256(canonical_source.tobytes(order="C")).hexdigest()
+    source_segment_ids = set(int(value) for value in np.unique(canonical_source) if value)
+    if sampled_shape != source_shape:
+        if sampled_source_flat_indices is None:
+            raise VoxelGaussianFitError(
+                "bounded NumPy segmentation requires source-voxel coordinates"
+            )
+        raw = canonical_source.reshape(-1)[sampled_source_flat_indices.reshape(-1)]
+        raw = raw.reshape(sampled_shape)
+        sampled_segment_ids = set(int(value) for value in np.unique(raw) if value)
+        missing_segment_ids = sorted(source_segment_ids - sampled_segment_ids)
+        if missing_segment_ids:
+            missing_text = ", ".join(str(value) for value in missing_segment_ids[:8])
+            suffix = "..." if len(missing_segment_ids) > 8 else ""
+            raise VoxelGaussianFitError(
+                "Bounded sampling cannot preserve every segmentation ID "
+                f"({missing_text}{suffix}); reduce the source volume or configure "
+                "a scalable provider"
+            )
+    else:
+        raw = canonical_source
+    if raw.shape != sampled_shape:
         raise VoxelGaussianFitError("segmentation_labels must contain integer IDs from 0 through 255")
-    if np.any(numeric < 0) or np.any(numeric > 255):
-        raise VoxelGaussianFitError("segmentation_labels must contain integer IDs from 0 through 255")
-    return np.ascontiguousarray(numeric, dtype=np.uint8)
+    return np.ascontiguousarray(raw, dtype=np.uint8), source_digest
 
 
 def _group_active_voxels(
@@ -712,6 +972,7 @@ def _refine_groups_to_budget(
     normalized_volume: np.ndarray,
     spacing: np.ndarray,
     direction: np.ndarray,
+    sample_local_points: np.ndarray | None,
     target_splats: int,
     progress_callback: ProgressCallback | None = None,
 ) -> list[np.ndarray]:
@@ -744,6 +1005,7 @@ def _refine_groups_to_budget(
                 normalized_flat=normalized_flat,
                 spacing=spacing,
                 direction=direction,
+                sample_local_points=sample_local_points,
             )
             heapq.heappush(candidates, (-error, int(group[0]), group_id))
 
@@ -764,6 +1026,7 @@ def _refine_groups_to_budget(
             normalized_flat=normalized_flat,
             spacing=spacing,
             direction=direction,
+            sample_local_points=sample_local_points,
         )
         add_group(left)
         add_group(right)
@@ -780,13 +1043,30 @@ def _refine_groups_to_budget(
     return sorted(active_groups.values(), key=lambda group: int(group[0]))
 
 
+def _selected_source_local_points(
+    sampled_source_flat_indices: np.ndarray,
+    *,
+    source_shape: tuple[int, int, int],
+    source_spacing: np.ndarray,
+    direction: np.ndarray,
+) -> np.ndarray:
+    source_zyx = np.column_stack(
+        np.unravel_index(sampled_source_flat_indices.reshape(-1), source_shape)
+    ).astype(np.float64)
+    source_xyz = source_zyx[:, [2, 1, 0]] * source_spacing
+    return np.ascontiguousarray((direction @ source_xyz.T).T)
+
+
 def _physical_points_for_flat_indices(
     flat_indices: np.ndarray,
     *,
     shape: tuple[int, int, int],
     spacing: np.ndarray,
     direction: np.ndarray,
+    sample_local_points: np.ndarray | None = None,
 ) -> np.ndarray:
+    if sample_local_points is not None:
+        return sample_local_points[flat_indices]
     zyx = np.column_stack(np.unravel_index(flat_indices, shape)).astype(np.float64)
     xyz = zyx[:, [2, 1, 0]] * spacing
     return (direction @ xyz.T).T
@@ -799,9 +1079,14 @@ def _group_spatial_sse(
     normalized_flat: np.ndarray,
     spacing: np.ndarray,
     direction: np.ndarray,
+    sample_local_points: np.ndarray | None,
 ) -> float:
     points = _physical_points_for_flat_indices(
-        flat_indices, shape=shape, spacing=spacing, direction=direction
+        flat_indices,
+        shape=shape,
+        spacing=spacing,
+        direction=direction,
+        sample_local_points=sample_local_points,
     )
     weights = np.maximum(normalized_flat[flat_indices], np.finfo(np.float64).eps)
     mean = np.sum(points * weights[:, None], axis=0) / float(np.sum(weights))
@@ -815,11 +1100,16 @@ def _split_connected_group(
     normalized_flat: np.ndarray,
     spacing: np.ndarray,
     direction: np.ndarray,
+    sample_local_points: np.ndarray | None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return two connected children oriented by largest physical extent."""
 
     points = _physical_points_for_flat_indices(
-        flat_indices, shape=shape, spacing=spacing, direction=direction
+        flat_indices,
+        shape=shape,
+        spacing=spacing,
+        direction=direction,
+        sample_local_points=sample_local_points,
     )
     weights = np.maximum(normalized_flat[flat_indices], np.finfo(np.float64).eps)
     weight_sum = float(np.sum(weights))
@@ -860,7 +1150,7 @@ def _split_connected_group(
         if distance > distances[local_index] + 1e-12 or owner != int(owners[local_index]):
             continue
         z, y, x = np.unravel_index(int(flat_indices[local_index]), shape)
-        for dz, dy, dx, step_cost in neighbor_steps:
+        for dz, dy, dx, uniform_step_cost in neighbor_steps:
             nz, ny, nx = z + dz, y + dy, x + dx
             if nz < 0 or ny < 0 or nx < 0 or nz >= shape[0] or ny >= shape[1] or nx >= shape[2]:
                 continue
@@ -868,6 +1158,11 @@ def _split_connected_group(
             neighbor_index = local_by_flat.get(neighbor_flat)
             if neighbor_index is None:
                 continue
+            step_cost = (
+                float(np.linalg.norm(points[neighbor_index] - points[local_index]))
+                if sample_local_points is not None
+                else uniform_step_cost
+            )
             candidate_distance = distance + step_cost
             old_distance = float(distances[neighbor_index])
             old_owner = int(owners[neighbor_index])
@@ -897,8 +1192,10 @@ def _fit_groups(
     normalized_volume: np.ndarray,
     labels: np.ndarray,
     spacing: np.ndarray,
+    voxel_spacing: np.ndarray,
     origin: np.ndarray,
     direction: np.ndarray,
+    sample_local_points: np.ndarray | None,
     parameters: VoxelGaussianFitParameters,
     progress_callback: ProgressCallback | None = None,
 ) -> tuple[dict[str, list[Any]], dict[str, Any]]:
@@ -906,7 +1203,12 @@ def _fit_groups(
     volume_flat = volume.reshape(-1)
     normalized_flat = normalized_volume.reshape(-1)
     labels_flat = labels.reshape(-1)
-    voxel_covariance = direction @ np.diag(np.square(spacing) / 12.0) @ direction.T
+    # A conservative sample represents the selected source voxel, not the
+    # entire coarse block.  Its intrinsic covariance therefore stays at source
+    # voxel scale even though neighboring selected samples may be far apart.
+    voxel_covariance = (
+        direction @ np.diag(np.square(voxel_spacing) / 12.0) @ direction.T
+    )
 
     means: list[list[float]] = []
     scales: list[list[float]] = []
@@ -927,9 +1229,13 @@ def _fit_groups(
 
     progress_interval = max(1, len(groups) // 10)
     for group_index, flat_indices in enumerate(groups):
-        zyx = np.column_stack(np.unravel_index(flat_indices, shape)).astype(np.float64)
-        xyz_indices = zyx[:, [2, 1, 0]]
-        local_points = (direction @ (xyz_indices * spacing).T).T
+        local_points = _physical_points_for_flat_indices(
+            flat_indices,
+            shape=shape,
+            spacing=spacing,
+            direction=direction,
+            sample_local_points=sample_local_points,
+        )
         normalized_values = normalized_flat[flat_indices]
         raw_values = volume_flat[flat_indices]
 
@@ -1116,6 +1422,9 @@ def _build_cache_key(
     volume: np.ndarray,
     labels: np.ndarray,
     geometry: Mapping[str, Any],
+    sampling: Mapping[str, Any],
+    source_segmentation_digest: str | None,
+    sampled_source_flat_indices: np.ndarray | None,
 ) -> str:
     contract = {
         "version": 1,
@@ -1126,12 +1435,18 @@ def _build_cache_key(
         "shape": list(volume.shape),
         "parameters": asdict(parameters),
         "geometry": dict(geometry),
+        "sampling": dict(sampling),
+        "source_segmentation_digest": source_segmentation_digest,
     }
     digest = hashlib.sha256(
         json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
     )
     digest.update(np.asarray(volume, dtype="<f8").tobytes(order="C"))
     digest.update(np.asarray(labels, dtype=np.uint8).tobytes(order="C"))
+    if sampled_source_flat_indices is not None:
+        digest.update(
+            np.asarray(sampled_source_flat_indices, dtype="<i8").tobytes(order="C")
+        )
     return f"pt3-voxel-direct-{digest.hexdigest()}"
 
 

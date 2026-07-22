@@ -55,6 +55,7 @@ from utils.volume_loader import (
     MAX_NPY_HEADER_BYTES,
     MAX_VOLUME_LOAD_BYTES,
     REFERENCE_VOLUME_READ_LIMITS,
+    _image_color_layout,
     _inspect_npy_header,
     _inspect_npz_archive,
     preflight_zip_archive,
@@ -532,6 +533,8 @@ def _inspect_voxel_upload_metadata(
         "coronal": int(header.shape[1]),
         "sagittal": int(header.shape[2]),
     }
+    metadata["channel_count"] = header.channel_count
+    metadata["color_mode"] = header.color_mode
     metadata["frame_count"] = int(header.shape[0])
     metadata["load_mode"] = "volume"
     return metadata
@@ -606,7 +609,23 @@ def _image_intensity_metadata(file: UploadFile) -> Dict[str, Any]:
 
 def _tiff_dimensionality_metadata_from_open_image(image: Image.Image) -> Dict[str, Any]:
     frame_count = max(1, int(getattr(image, "n_frames", 1) or 1))
+    image.seek(0)
     width, height = image.size
+    expected_mode = image.mode
+    expected_bands = image.getbands()
+    # Single-frame TIFFs remain ordinary images and may use Pillow-supported
+    # modes such as CMYK. Multi-frame TIFFs are voxel volumes, for which the
+    # scalar/RGB/RGBA channel contract must be enforced consistently.
+    if frame_count > 1:
+        _image_color_layout(image)
+    for frame_index in range(1, frame_count):
+        image.seek(frame_index)
+        if image.size != (width, height):
+            raise ValueError("All TIFF frames must share the same dimensions")
+        if image.mode != expected_mode or image.getbands() != expected_bands:
+            raise ValueError("All TIFF frames must share the same pixel mode")
+        _image_color_layout(image)
+    image.seek(0)
     metadata: Dict[str, Any] = {
         "tiff_dimensionality": "3d" if frame_count > 1 else "2d",
         "load_mode": "volume" if frame_count > 1 else "single_image",
@@ -619,6 +638,18 @@ def _tiff_dimensionality_metadata_from_open_image(image: Image.Image) -> Dict[st
             "sagittal": int(width),
         }
     return metadata
+
+
+def _image_color_metadata_from_open_image(image: Image.Image) -> Dict[str, Any]:
+    try:
+        channel_count, color_mode = _image_color_layout(image)
+    except ValueError:
+        # Upload metadata must not narrow Pillow's established ordinary-image
+        # support. Unsupported layouts are still rejected when they are used
+        # as multi-frame/voxel volumes by the dimensionality validator above.
+        channel_count = max(1, len(image.getbands()))
+        color_mode = str(image.mode or "unknown").strip().lower()
+    return {"channel_count": channel_count, "color_mode": color_mode}
 
 
 def _tiff_dimensionality_metadata(file: UploadFile) -> Dict[str, Any]:
@@ -653,7 +684,9 @@ def _inspect_upload_image_metadata(
     try:
         file.file.seek(0)
         with Image.open(file.file) as image:
-            metadata = _tiff_dimensionality_metadata_from_open_image(image) if is_tiff else {}
+            metadata = _image_color_metadata_from_open_image(image) if (is_tiff or is_png) else {}
+            if is_tiff:
+                metadata.update(_tiff_dimensionality_metadata_from_open_image(image))
             if is_tiff or is_png:
                 try:
                     metadata.update(_image_intensity_metadata_from_open_image(image))
@@ -787,6 +820,8 @@ def _source_image_entry_from_data_instance(image: models.DataInstance) -> Dict[s
         "intensity_range",
         "display_range",
         "signed",
+        "channel_count",
+        "color_mode",
     )
     for key in volume_keys:
         if key in image_metadata:
@@ -2530,6 +2565,10 @@ def convert_to_web_format(image_data: bytes, content_type: str) -> tuple[bytes, 
 
 _VOLUME_SLICE_CACHE_MAX_ITEMS = 256
 _volume_slice_png_cache: "OrderedDict[tuple[str, str, int, str], bytes]" = OrderedDict()
+_volume_slice_png_cache_lock = threading.RLock()
+_volume_slice_render_futures: dict[
+    tuple[str, str, int, str], Future[bytes]
+] = {}
 
 
 def _volume_source_identity(db_image: models.DataInstance) -> VolumeSourceIdentity:
@@ -2555,24 +2594,61 @@ def _volume_slice_cache_key(
 
 
 def _get_cached_volume_slice_png(cache_key: tuple[str, str, int, str]) -> Optional[bytes]:
-    cached = _volume_slice_png_cache.get(cache_key)
-    if cached is not None:
-        _volume_slice_png_cache.move_to_end(cache_key)
-    return cached
+    with _volume_slice_png_cache_lock:
+        cached = _volume_slice_png_cache.get(cache_key)
+        if cached is not None:
+            _volume_slice_png_cache.move_to_end(cache_key)
+        return cached
 
 
 def _set_cached_volume_slice_png(cache_key: tuple[str, str, int, str], png: bytes) -> None:
-    _volume_slice_png_cache[cache_key] = png
-    _volume_slice_png_cache.move_to_end(cache_key)
-    while len(_volume_slice_png_cache) > _VOLUME_SLICE_CACHE_MAX_ITEMS:
-        _volume_slice_png_cache.popitem(last=False)
+    with _volume_slice_png_cache_lock:
+        _volume_slice_png_cache[cache_key] = png
+        _volume_slice_png_cache.move_to_end(cache_key)
+        while len(_volume_slice_png_cache) > _VOLUME_SLICE_CACHE_MAX_ITEMS:
+            _volume_slice_png_cache.popitem(last=False)
+
+
+async def _get_or_render_volume_slice_png(
+    cache_key: tuple[str, str, int, str],
+    array: np.ndarray,
+) -> bytes:
+    """Coalesce one in-flight render per slice without serializing other keys."""
+
+    with _volume_slice_png_cache_lock:
+        cached = _volume_slice_png_cache.get(cache_key)
+        if cached is not None:
+            _volume_slice_png_cache.move_to_end(cache_key)
+            return cached
+        render_future = _volume_slice_render_futures.get(cache_key)
+        owns_render = render_future is None
+        if owns_render:
+            render_future = Future()
+            _volume_slice_render_futures[cache_key] = render_future
+
+    if not owns_render:
+        # A disconnected waiter must not cancel the shared render for the
+        # owner or for other requests awaiting the same slice.
+        return await asyncio.shield(asyncio.wrap_future(render_future))
+
+    try:
+        png = await asyncio.to_thread(_normalize_array_slice_to_png, array)
+        _set_cached_volume_slice_png(cache_key, png)
+        render_future.set_result(png)
+        return png
+    except BaseException as exc:
+        render_future.set_exception(exc)
+        raise
+    finally:
+        with _volume_slice_png_cache_lock:
+            if _volume_slice_render_futures.get(cache_key) is render_future:
+                _volume_slice_render_futures.pop(cache_key, None)
 
 
 def _normalize_array_slice_to_png(array: np.ndarray) -> bytes:
     arr = np.asarray(array)
     if arr.ndim == 3 and arr.shape[-1] in (3, 4):
-        if arr.dtype != np.uint8:
-            arr = _scale_array_to_uint8(arr)
+        arr = _scale_color_array_to_uint8(arr)
         img = Image.fromarray(arr.astype(np.uint8), 'RGBA' if arr.shape[-1] == 4 else 'RGB')
     else:
         arr = _scale_array_to_uint8(arr)
@@ -2580,6 +2656,41 @@ def _normalize_array_slice_to_png(array: np.ndarray) -> bytes:
     output = io.BytesIO()
     img.save(output, format='PNG')
     return output.getvalue()
+
+
+def _scale_color_component_to_uint8(array: np.ndarray) -> np.ndarray:
+    """Convert color or alpha samples without borrowing the other channels' range."""
+
+    arr = np.asarray(array)
+    if arr.dtype == np.uint8:
+        return arr
+    if np.issubdtype(arr.dtype, np.bool_):
+        return arr.astype(np.uint8) * 255
+    if np.issubdtype(arr.dtype, np.integer):
+        info = np.iinfo(arr.dtype)
+        denominator = float(info.max) - float(info.min)
+        scaled = (arr.astype(np.float64) - float(info.min)) * (255.0 / denominator)
+        return np.rint(np.clip(scaled, 0, 255)).astype(np.uint8)
+    if np.issubdtype(arr.dtype, np.floating):
+        finite = np.isfinite(arr)
+        finite_values = arr[finite]
+        if finite_values.size and np.all((finite_values >= 0.0) & (finite_values <= 1.0)):
+            scaled = np.where(finite, np.clip(arr, 0.0, 1.0) * 255.0, 0.0)
+            return np.rint(scaled).astype(np.uint8)
+    return _scale_array_to_uint8(arr)
+
+
+def _scale_color_array_to_uint8(array: np.ndarray) -> np.ndarray:
+    arr = np.asarray(array)
+    if arr.ndim != 3 or arr.shape[-1] not in (3, 4):
+        raise ValueError("Color volume slices must use channel-last RGB or RGBA layout")
+    if arr.dtype == np.uint8:
+        return arr
+    scaled = np.empty(arr.shape, dtype=np.uint8)
+    scaled[..., :3] = _scale_color_component_to_uint8(arr[..., :3])
+    if arr.shape[-1] == 4:
+        scaled[..., 3] = _scale_color_component_to_uint8(arr[..., 3])
+    return scaled
 
 
 def _scale_array_to_uint8(array: np.ndarray) -> np.ndarray:
@@ -2607,18 +2718,26 @@ def _scale_array_to_uint8(array: np.ndarray) -> np.ndarray:
 
 def _axis_slice(array: np.ndarray, axis: str, index: int) -> np.ndarray:
     if axis == 'axial':
-        return array[index, :, :]
+        return array[index, :, :, ...]
     if axis == 'coronal':
-        return array[:, index, :]
+        return array[:, index, :, ...]
     if axis == 'sagittal':
-        return array[:, :, index]
+        return array[:, :, index, ...]
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Axis must be axial, coronal, or sagittal')
 
 
 def _volume_meta_from_shape(shape: tuple[int, ...], dtype: np.dtype, *, source_kind: str) -> Dict[str, Any]:
-    if len(shape) < 3:
+    if len(shape) == 3:
+        spatial_shape = shape
+        channel_count = 1
+        color_mode = 'scalar'
+    elif len(shape) == 4 and shape[-1] in {3, 4}:
+        spatial_shape = shape[:3]
+        channel_count = int(shape[-1])
+        color_mode = 'rgb' if channel_count == 3 else 'rgba'
+    else:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Image is not a multi-image volume')
-    depth, height, width = int(shape[0]), int(shape[1]), int(shape[2])
+    depth, height, width = (int(value) for value in spatial_shape)
     return {
         'source_kind': source_kind,
         'interpretation': 'voxel_array' if source_kind in {'npy', 'npz', 'inspiro'} else 'stack_of_2d_images',
@@ -2629,6 +2748,8 @@ def _volume_meta_from_shape(shape: tuple[int, ...], dtype: np.dtype, *, source_k
         'pixel_dtype': np.dtype(dtype).name,
         'voxel_dtype': np.dtype(dtype).name,
         'bit_depth': int(np.dtype(dtype).itemsize * 8),
+        'channel_count': channel_count,
+        'color_mode': color_mode,
     }
 
 
@@ -2650,7 +2771,7 @@ def _load_numpy_volume(payload: bytes, filename: str) -> np.ndarray:
         source.seek(0)
         loaded = np.lib.format.read_array(source, allow_pickle=False)
         array = np.asarray(loaded)
-        if array.shape != expected.shape or array.dtype != expected.dtype:
+        if array.shape != expected.array_shape or array.dtype != expected.dtype:
             raise ValueError("NumPy volume changed between preflight and decode")
         return array
     source = io.BytesIO(payload)
@@ -2664,7 +2785,7 @@ def _load_numpy_volume(payload: bytes, filename: str) -> np.ndarray:
         with archive.open(selected) as member:
             loaded = np.lib.format.read_array(member, allow_pickle=False)
     array = np.asarray(loaded)
-    if array.shape != expected.shape or array.dtype != expected.dtype:
+    if array.shape != expected.array_shape or array.dtype != expected.dtype:
         raise ValueError("NumPy volume changed between preflight and decode")
     return array
 
@@ -2689,7 +2810,7 @@ def _load_tiff_volume(payload: bytes) -> np.ndarray:
         width, height = image.size
         expected_mode = image.mode
         expected_bands = image.getbands()
-        band_count = max(1, len(expected_bands))
+        band_count, _color_mode = _image_color_layout(image)
         voxel_count = frame_count * int(height) * int(width)
         if voxel_count > limits.max_voxels:
             raise ValueError(
@@ -2851,10 +2972,22 @@ async def _read_authorized_npy_header(db_image: models.DataInstance) -> tuple[tu
     return read_npy_header(io.BytesIO(prefix))
 
 
-def _validated_npy_shape_dtype(shape: tuple[int, ...], dtype: np.dtype) -> tuple[tuple[int, int, int], np.dtype]:
-    if (
-        len(shape) != 3
-        or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in shape)
+def _validated_npy_shape_dtype(
+    shape: tuple[int, ...], dtype: np.dtype
+) -> tuple[tuple[int, int, int], np.dtype, int, str]:
+    if len(shape) == 3:
+        spatial_shape = shape
+        channel_count = 1
+        color_mode = 'scalar'
+    elif len(shape) == 4 and shape[-1] in {3, 4}:
+        spatial_shape = shape[:3]
+        channel_count = int(shape[-1])
+        color_mode = 'rgb' if channel_count == 3 else 'rgba'
+    else:
+        raise ValueError('NumPy volume must be scalar [z, y, x], RGB [z, y, x, 3], or RGBA [z, y, x, 4]')
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        for value in spatial_shape
     ):
         raise ValueError('NumPy volume dimensions must be positive integers')
     safe_dtype = np.dtype(dtype)
@@ -2865,9 +2998,9 @@ def _validated_npy_shape_dtype(shape: tuple[int, ...], dtype: np.dtype) -> tuple
         or safe_dtype.kind not in {'b', 'u', 'i', 'f'}
     ):
         raise ValueError('NumPy volume must use a scalar real numeric or boolean dtype')
-    safe_shape = tuple(int(value) for value in shape)
+    safe_shape = tuple(int(value) for value in spatial_shape)
     voxel_count = math.prod(safe_shape)
-    decoded_bytes = voxel_count * int(safe_dtype.itemsize)
+    decoded_bytes = voxel_count * channel_count * int(safe_dtype.itemsize)
     if voxel_count > REFERENCE_VOLUME_READ_LIMITS.max_voxels:
         raise ValueError(
             f'NumPy volume exceeds the {REFERENCE_VOLUME_READ_LIMITS.max_voxels}-voxel limit'
@@ -2876,7 +3009,7 @@ def _validated_npy_shape_dtype(shape: tuple[int, ...], dtype: np.dtype) -> tuple
         raise ValueError(
             f'NumPy volume exceeds the {REFERENCE_VOLUME_READ_LIMITS.max_decoded_bytes}-byte decoded limit'
         )
-    return safe_shape, safe_dtype
+    return safe_shape, safe_dtype, channel_count, color_mode
 
 
 def _persisted_npy_volume_meta(metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -2892,12 +3025,30 @@ def _persisted_npy_volume_meta(metadata: Dict[str, Any]) -> Optional[Dict[str, A
     dtype_text = metadata.get('voxel_dtype') or metadata.get('pixel_dtype')
     if not dtype_text:
         return None
+    persisted_channel_count = metadata.get('channel_count')
+    persisted_color_mode = metadata.get('color_mode')
+    if persisted_channel_count is None and persisted_color_mode is None:
+        persisted_channel_count = 1
+        persisted_color_mode = 'scalar'
+    valid_layouts = {(1, 'scalar'), (3, 'rgb'), (4, 'rgba')}
+    if (persisted_channel_count, persisted_color_mode) not in valid_layouts:
+        return None
     try:
         dtype = np.dtype(dtype_text)
-        safe_shape, dtype = _validated_npy_shape_dtype(tuple(dimensions), dtype)
+        array_shape = tuple(dimensions) + (
+            (int(persisted_channel_count),) if persisted_channel_count != 1 else ()
+        )
+        safe_shape, dtype, channel_count, color_mode = _validated_npy_shape_dtype(array_shape, dtype)
     except (TypeError, ValueError):
         return None
-    return _volume_meta_from_shape(safe_shape, dtype, source_kind='npy')
+    meta = _volume_meta_from_shape(
+        safe_shape + ((channel_count,) if channel_count != 1 else ()),
+        dtype,
+        source_kind='npy',
+    )
+    if meta['color_mode'] != color_mode:
+        return None
+    return meta
 
 
 def _read_npy_header_from_path(path: Path) -> tuple[tuple[int, ...], str]:
@@ -2950,8 +3101,11 @@ async def get_image_volume_metadata(
                         raise VolumeCacheError("Could not read cached volume metadata") from exc
                 else:
                     shape, dtype_text = await _read_authorized_npy_header(db_image)
-                safe_shape, safe_dtype = _validated_npy_shape_dtype(shape, np.dtype(dtype_text))
-                meta = _volume_meta_from_shape(safe_shape, safe_dtype, source_kind=kind)
+                safe_shape, safe_dtype, channel_count, _color_mode = _validated_npy_shape_dtype(
+                    shape, np.dtype(dtype_text)
+                )
+                array_shape = safe_shape + ((channel_count,) if channel_count != 1 else ())
+                meta = _volume_meta_from_shape(array_shape, safe_dtype, source_kind=kind)
         else:
             payload = await _read_authorized_image_bytes(db_image)
             volume = _load_tiff_volume(payload) if kind == 'tiff' else _load_numpy_volume(payload, db_image.filename or '')
@@ -3009,11 +3163,10 @@ async def get_image_volume_slice(
             dimensions = meta['dimensions']
             if index >= int(dimensions[safe_axis]):
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Slice index is outside the selected axis')
-            png = await asyncio.to_thread(
-                _normalize_array_slice_to_png,
+            png = await _get_or_render_volume_slice_png(
+                cache_key,
                 _axis_slice(volume, safe_axis, index),
             )
-            _set_cached_volume_slice_png(cache_key, png)
     except HTTPException:
         raise
     except VolumeSourceReadError as exc:

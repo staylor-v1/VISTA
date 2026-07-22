@@ -63,6 +63,41 @@ async def test_concurrent_cold_requests_stream_once_and_share_read_only_memmap(m
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("channel_count", [3, 4])
+async def test_color_volume_uses_same_streamed_read_only_memmap_path(
+    monkeypatch, tmp_path, channel_count
+):
+    monkeypatch.setenv("VOLUME_CACHE_DIR", str(tmp_path / "volumes"))
+    source = np.arange(2 * 3 * 4 * channel_count, dtype=np.uint8).reshape(
+        (2, 3, 4, channel_count)
+    )
+    payload = _npy_payload(source)
+    identity = build_volume_source_identity(
+        image_id=f"image-color-{channel_count}",
+        storage_key=f"project/color-{channel_count}.npy",
+        size_bytes=len(payload),
+    )
+    downloads = 0
+
+    async def stream_source():
+        nonlocal downloads
+        downloads += 1
+        yield payload
+
+    first, second = await asyncio.gather(
+        get_npy_volume_handle(identity, stream_source),
+        get_npy_volume_handle(identity, stream_source),
+    )
+
+    assert downloads == 1
+    assert first.array is second.array
+    assert isinstance(first.array, np.memmap)
+    assert first.array.flags.writeable is False
+    assert first.shape == source.shape
+    np.testing.assert_array_equal(first.array, source)
+
+
+@pytest.mark.asyncio
 async def test_truncated_download_is_not_published_and_can_retry(monkeypatch, tmp_path):
     cache_root = tmp_path / "volumes"
     monkeypatch.setenv("VOLUME_CACHE_DIR", str(cache_root))

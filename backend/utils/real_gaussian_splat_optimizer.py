@@ -414,6 +414,8 @@ def optimize_real_gaussian_splat_asset(
                 shape=geometry["shape_zyx"],
                 source_files=tuple(str(item) for item in source_files),
                 dtype=geometry.get("dtype"),
+                channel_count=geometry["channel_count"],
+                color_mode=geometry["color_mode"],
             ),
             volume_stack_id=volume_stack_id,
             source_image_ids=source_image_ids,
@@ -626,10 +628,22 @@ def _validated_voxel_geometry(
         )
     if not source_files:
         raise RealGaussianSplatOptimizationError("Real 3DGS fitting requires source voxel files")
+    channel_count = geometry.get("channel_count", 1)
+    color_mode = geometry.get("color_mode", "scalar")
+    if type(channel_count) is not int or (channel_count, color_mode) not in {
+        (1, "scalar"),
+        (3, "rgb"),
+        (4, "rgba"),
+    }:
+        raise RealGaussianSplatOptimizationError(
+            "Real 3DGS volume geometry must declare scalar, RGB, or RGBA channel layout"
+        )
     return {
         **geometry,
         "format": source_format,
         "shape_zyx": shape_zyx,
+        "channel_count": channel_count,
+        "color_mode": color_mode,
         "spacing_xyz": geometry.get("spacing_xyz") or (1.0, 1.0, 1.0),
         "origin_xyz": geometry.get("origin_xyz") or (0.0, 0.0, 0.0),
         "direction": geometry.get("direction") or (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0),

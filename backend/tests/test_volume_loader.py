@@ -156,6 +156,70 @@ def test_loads_implicit_python_voxel_array_npy(tmp_path):
     assert volume.dtype == "|u1"
 
 
+@pytest.mark.parametrize(
+    "channel_count,color_mode",
+    [(3, "rgb"), (4, "rgba")],
+)
+def test_loads_color_numpy_volume_with_spatial_shape(
+    tmp_path, channel_count, color_mode
+):
+    npy_path = tmp_path / f"volume-{color_mode}.npy"
+    array = np.zeros((2, 3, 4, channel_count), dtype=np.uint8)
+    np.save(npy_path, array)
+
+    volume = load_volume(npy_path)
+
+    assert volume.shape == (2, 3, 4)
+    assert volume.array_shape == array.shape
+    assert volume.channel_count == channel_count
+    assert volume.color_mode == color_mode
+
+
+@pytest.mark.parametrize("shape", [(0, 3, 4), (2, 0, 4), (2, 3, 0), (2, 0, 4, 3)])
+def test_rejects_zero_spatial_dimensions_in_numpy_header_preflight(tmp_path, shape):
+    path = tmp_path / "zero-dimension.npy"
+    np.save(path, np.zeros(shape, dtype=np.uint8))
+
+    with pytest.raises(ValueError, match="dimensions must be positive integers"):
+        load_volume(path)
+
+
+def test_rejects_channel_first_and_unsupported_color_numpy_shapes(tmp_path):
+    for name, shape in (
+        ("channel-first.npy", (3, 2, 5, 7)),
+        ("two-channel.npy", (2, 3, 4, 2)),
+    ):
+        path = tmp_path / name
+        np.save(path, np.zeros(shape, dtype=np.uint8))
+        with pytest.raises(ValueError, match=r"\[z, y, x, 3\].*RGBA"):
+            load_volume(path)
+
+
+def test_color_numpy_limits_count_spatial_voxels_and_all_channel_bytes(tmp_path):
+    npy_path = tmp_path / "rgba.npy"
+    np.save(npy_path, np.zeros((2, 2, 2, 4), dtype=np.uint8))
+
+    volume = load_volume(
+        npy_path,
+        limits=_limits(max_voxels=8, max_decoded_bytes=32),
+    )
+    assert volume.shape == (2, 2, 2)
+
+    with pytest.raises(ValueError, match="32 decoded bytes.*31-byte limit"):
+        load_volume(
+            npy_path,
+            limits=_limits(max_voxels=8, max_decoded_bytes=31),
+        )
+
+
+def test_scalar_numpy_reader_rejects_color_volume(tmp_path):
+    npy_path = tmp_path / "rgb.npy"
+    np.save(npy_path, np.zeros((2, 3, 4, 3), dtype=np.uint8))
+
+    with pytest.raises(ValueError, match="do not support RGB or RGBA"):
+        read_numpy_volume_array(npy_path, limits=_limits(max_voxels=24))
+
+
 def test_common_3d_cube_formats_are_documented():
     assert ".npy" in supported_volume_extensions()
     assert ".tiff" in supported_volume_extensions()
@@ -189,6 +253,55 @@ def test_loads_multipage_tiff_volume(tmp_path):
 
     assert volume.format == "multipage_tiff"
     assert volume.shape == (3, 11, 9)
+
+
+@pytest.mark.parametrize(
+    "mode,color,channel_count,color_mode",
+    [
+        ("RGB", (10, 20, 30), 3, "rgb"),
+        ("RGBA", (10, 20, 30, 40), 4, "rgba"),
+    ],
+)
+def test_color_slice_stacks_and_tiffs_report_spatial_shape_and_channels(
+    tmp_path, mode, color, channel_count, color_mode
+):
+    stack_dir = tmp_path / f"{color_mode}-stack"
+    stack_dir.mkdir()
+    for index in range(2):
+        Image.new(mode, (4, 3), color=color).save(stack_dir / f"z{index}.png")
+    stack = load_volume(stack_dir)
+
+    tiff_path = tmp_path / f"{color_mode}.tiff"
+    frames = [Image.new(mode, (4, 3), color=color) for _ in range(2)]
+    frames[0].save(tiff_path, save_all=True, append_images=frames[1:])
+    tiff = load_volume(tiff_path)
+
+    for volume in (stack, tiff):
+        assert volume.shape == (2, 3, 4)
+        assert volume.array_shape == (2, 3, 4, channel_count)
+        assert volume.channel_count == channel_count
+        assert volume.color_mode == color_mode
+
+
+@pytest.mark.parametrize("mode,color", [("1", 1), ("L", 7), ("P", 2), ("I", 1024), ("F", 0.5)])
+def test_single_band_scalar_tiff_modes_remain_valid(tmp_path, mode, color):
+    path = tmp_path / f"scalar-{mode.replace(';', '-')}.tiff"
+    Image.new(mode, (4, 3), color=color).save(path)
+
+    volume = load_volume(path)
+
+    assert volume.shape == (1, 3, 4)
+    assert volume.channel_count == 1
+    assert volume.color_mode == "scalar"
+
+
+@pytest.mark.parametrize("mode,color", [("LA", (10, 20)), ("CMYK", (1, 2, 3, 4))])
+def test_rejects_unsupported_multiband_tiff_modes(tmp_path, mode, color):
+    path = tmp_path / f"unsupported-{mode}.tiff"
+    Image.new(mode, (4, 3), color=color).save(path)
+
+    with pytest.raises(ValueError, match=rf"pixel mode '{mode}'.*scalar, RGB, or RGBA"):
+        load_volume(path)
 
 
 def test_loads_300_slice_300px_multipage_tiff_volume(tmp_path):
@@ -388,6 +501,97 @@ def test_preflighted_npz_array_reader_decodes_only_selected_bounded_array(tmp_pa
     actual = read_numpy_volume_array(archive_path, limits=_limits())
 
     assert np.array_equal(actual, expected)
+
+
+def test_npy_array_reader_materializes_only_endpoint_preserving_sample(tmp_path):
+    volume_path = tmp_path / "sampled.npy"
+    source = np.arange(4 * 5 * 6, dtype=np.uint16).reshape((4, 5, 6))
+    np.save(volume_path, source)
+
+    actual = read_numpy_volume_array(
+        volume_path,
+        limits=_limits(max_voxels=1_000, max_decoded_bytes=10_000),
+        sample_shape=(2, 3, 2),
+    )
+
+    expected = source[np.ix_([0, 3], [0, 2, 4], [0, 5])]
+    assert actual.flags.c_contiguous
+    assert np.array_equal(actual, expected)
+
+
+def test_npy_block_reduction_preserves_off_grid_positive_and_negative_signal(tmp_path):
+    volume_path = tmp_path / "block-sampled.npy"
+    source = np.zeros((4, 4, 4), dtype=np.int16)
+    source[1, 1, 1] = 7
+    source[2, 2, 2] = -9
+    np.save(volume_path, source)
+
+    actual, selected_source_flat_indices = read_numpy_volume_array(
+        volume_path,
+        limits=_limits(max_voxels=1_000, max_decoded_bytes=10_000),
+        sample_shape=(2, 2, 2),
+        sample_reduction="nonzero_extrema",
+        return_source_flat_indices=True,
+    )
+
+    assert actual[0, 0, 0] == 7
+    assert actual[1, 1, 1] == -9
+    assert selected_source_flat_indices[0, 0, 0] == np.ravel_multi_index(
+        (1, 1, 1), source.shape
+    )
+    assert selected_source_flat_indices[1, 1, 1] == np.ravel_multi_index(
+        (2, 2, 2), source.shape
+    )
+
+
+def test_npy_block_reduction_prefers_endpoint_grid_for_tied_extrema(tmp_path):
+    volume_path = tmp_path / "flat-blocks.npy"
+    source = np.ones((4, 4, 4), dtype=np.uint16)
+    np.save(volume_path, source)
+
+    actual, selected_source_flat_indices = read_numpy_volume_array(
+        volume_path,
+        limits=_limits(max_voxels=1_000, max_decoded_bytes=10_000),
+        sample_shape=(2, 2, 2),
+        sample_reduction="maximum",
+        return_source_flat_indices=True,
+    )
+
+    endpoint_indices = np.array([0, 3], dtype=np.intp)
+    expected_source_flat_indices = np.ravel_multi_index(
+        np.ix_(endpoint_indices, endpoint_indices, endpoint_indices),
+        source.shape,
+    )
+    assert np.array_equal(actual, np.ones((2, 2, 2), dtype=np.uint16))
+    assert np.array_equal(
+        selected_source_flat_indices,
+        expected_source_flat_indices,
+    )
+
+
+def test_npz_array_reader_rejects_sampling_before_member_decode(tmp_path):
+    archive_path = tmp_path / "sampled.npz"
+    np.savez_compressed(archive_path, voxels=np.ones((4, 4, 4), dtype=np.uint8))
+
+    with pytest.raises(ValueError, match=r"plain \.npy"):
+        read_numpy_volume_array(
+            archive_path,
+            limits=_limits(max_voxels=1_000, max_decoded_bytes=10_000),
+            sample_shape=(2, 2, 2),
+        )
+
+
+@pytest.mark.parametrize("sample_shape", [(0, 1, 1), (5, 1, 1), (True, 1, 1)])
+def test_npy_array_reader_rejects_invalid_sample_shapes(tmp_path, sample_shape):
+    volume_path = tmp_path / "sampled.npy"
+    np.save(volume_path, np.ones((4, 5, 6), dtype=np.uint8))
+
+    with pytest.raises(ValueError, match="sample shape"):
+        read_numpy_volume_array(
+            volume_path,
+            limits=_limits(max_voxels=1_000, max_decoded_bytes=10_000),
+            sample_shape=sample_shape,
+        )
 
 
 def test_tiff_shape_is_rejected_before_frame_decode_allocation(tmp_path):

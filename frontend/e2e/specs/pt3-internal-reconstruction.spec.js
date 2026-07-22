@@ -10,6 +10,14 @@ const windowBoundaryScreenshotPath = path.resolve(
   __dirname,
   '../../artifacts/pt3-internal-window-boundary.png',
 );
+const windowGuidesFullscreenScreenshotPath = path.resolve(
+  __dirname,
+  '../../artifacts/pt3-internal-window-guides-fullscreen.png',
+);
+const windowGuidesCompactScreenshotPath = path.resolve(
+  __dirname,
+  '../../artifacts/pt3-internal-window-guides-compact.png',
+);
 
 function createInternalFeatureDataset(depth = 28) {
   const volumeShape = { axial: depth, coronal: 72, sagittal: 72 };
@@ -113,6 +121,38 @@ async function captureWebglSignature(page, canvas) {
       occupiedFraction: occupied / (columns * rows),
     };
   }, screenshot.toString('base64'));
+}
+
+async function captureOverlayCanvasStats(canvas) {
+  return canvas.evaluate((element) => {
+    const context = element.getContext('2d');
+    const pixels = context.getImageData(0, 0, element.width, element.height).data;
+    let paintedPixels = 0;
+    let chromaticPixels = 0;
+    const axisPixels = { blue: 0, amber: 0, green: 0 };
+    for (let offset = 0; offset < pixels.length; offset += 4) {
+      const red = pixels[offset];
+      const green = pixels[offset + 1];
+      const blue = pixels[offset + 2];
+      const alpha = pixels[offset + 3];
+      if (alpha > 0) paintedPixels += 1;
+      if (alpha > 0 && Math.max(red, green, blue) - Math.min(red, green, blue) >= 24) {
+        chromaticPixels += 1;
+      }
+      if (alpha > 0 && blue - red > 70 && blue - green > 60) axisPixels.blue += 1;
+      if (alpha > 0 && red - green > 45 && green - blue > 70) axisPixels.amber += 1;
+      if (alpha > 0 && green - red > 70 && green - blue > 30) axisPixels.green += 1;
+    }
+    const pixelCount = Math.max(1, element.width * element.height);
+    return {
+      width: element.width,
+      height: element.height,
+      paintedPixels,
+      paintedFraction: paintedPixels / pixelCount,
+      chromaticPixels,
+      axisPixels,
+    };
+  });
 }
 
 function getSignatureRegionStats(signature, predicate) {
@@ -239,7 +279,19 @@ test.describe('PT3 internal-detail reconstruction', () => {
     await page.getByRole('tab', { name: 'Inspection' }).click();
     await expect(page.getByTestId('mpr-panel')).toBeVisible();
 
-    await page.getByLabel('3D view').selectOption('volume3d');
+    const mprViewSelector = page.getByLabel('3D view');
+    await expect(mprViewSelector.locator('optgroup[label="Ray marching"] option')).toHaveText([
+      'Composite',
+      'MIP',
+      'X-ray',
+      'Iso',
+      'Window',
+    ]);
+    for (const style of ['composite', 'mip', 'xray', 'iso', 'window']) {
+      await mprViewSelector.selectOption(`ray-march:${style}`);
+      await expect(mprViewSelector).toHaveValue(`ray-march:${style}`);
+    }
+    await mprViewSelector.selectOption('ray-march:composite');
     const viewer = page.getByTestId('pt3-gaussian-splat-viewer');
     await expect(viewer).toBeVisible();
     await expect(viewer.locator('.pt3-gaussian-splat-status')).toContainText('three-webgl-raymarch');
@@ -251,7 +303,30 @@ test.describe('PT3 internal-detail reconstruction', () => {
     const controls = page.getByRole('group', { name: 'Ray-march controls' });
     const styleSelector = page.getByLabel('Ray-march reconstruction style');
     const boundaryToggle = page.getByLabel('Ray-march boundary enhancement');
+    const guidesToggle = page.getByLabel('Show slice guides');
     const webglCanvas = viewer.getByLabel('Three.js mechanical volume renderer');
+    const overlayCanvas = viewer.getByLabel('Mechanical 3DGS preview');
+    const activeAxis = await viewer.getAttribute('data-active-slice-axis');
+    const sliceReadouts = {};
+    for (const axis of ['axial', 'coronal', 'sagittal']) {
+      const slider = page.locator(`#mpr-slice-${axis}`);
+      sliceReadouts[axis] = {
+        index: Number(await slider.inputValue()),
+        max: Number(await slider.getAttribute('max')),
+      };
+    }
+    const axisDescription = {
+      axial: { plane: 'XY', letter: 'Z' },
+      coronal: { plane: 'XZ', letter: 'Y' },
+      sagittal: { plane: 'YZ', letter: 'X' },
+    }[activeAxis];
+    const locatorDescriptionId = await overlayCanvas.getAttribute('aria-describedby');
+    const expectedLocatorDescription = `Active plane ${axisDescription.plane} • ${axisDescription.letter} ${sliceReadouts[activeAxis].index} / ${sliceReadouts[activeAxis].max}. `
+      + `X ${sliceReadouts.sagittal.index} / ${sliceReadouts.sagittal.max}; `
+      + `Y ${sliceReadouts.coronal.index} / ${sliceReadouts.coronal.max}; `
+      + `Z ${sliceReadouts.axial.index} / ${sliceReadouts.axial.max}.`;
+    await expect(overlayCanvas).toHaveAttribute('aria-describedby', locatorDescriptionId);
+    await expect(page.locator(`[id="${locatorDescriptionId}"]`)).toHaveText(expectedLocatorDescription);
     await expect(fullscreen3d).toBeVisible();
     await expect(controls).toBeVisible();
     await page.getByLabel('Ray-march quality profile').selectOption('performance');
@@ -262,7 +337,7 @@ test.describe('PT3 internal-detail reconstruction', () => {
       'composite',
     );
     await expect(boundaryToggle).toBeEnabled();
-    await page.getByLabel('Show slice guides').uncheck();
+    await guidesToggle.uncheck();
     await waitForRenderedFrames(page);
     const signatures = {
       composite: await captureWebglSignature(page, webglCanvas),
@@ -341,8 +416,44 @@ test.describe('PT3 internal-detail reconstruction', () => {
     ).toBeGreaterThan(0.2);
     expect(windowInterior.meanLuminance).toBeGreaterThan(0.03);
     expect(windowInterior.meanLuminance).toBeGreaterThan(windowShell.meanLuminance * 1.5);
+
+    await guidesToggle.check();
+    await waitForRenderedFrames(page, 3);
+    const fullscreenGuidesOn = await captureOverlayCanvasStats(overlayCanvas);
+    expect(fullscreenGuidesOn.paintedFraction, 'fullscreen guide overlay should paint visible pixels')
+      .toBeGreaterThan(0.002);
+    expect(fullscreenGuidesOn.chromaticPixels, 'fullscreen guide overlay should retain axis colors')
+      .toBeGreaterThan(100);
+    for (const [axisColor, count] of Object.entries(fullscreenGuidesOn.axisPixels)) {
+      expect(count, `fullscreen guide overlay should contain ${axisColor} axis pixels`)
+        .toBeGreaterThan(10);
+    }
+    await resetViewerAncestorsAfterRangeInput(page, viewer);
+    await viewer.screenshot({ path: windowGuidesFullscreenScreenshotPath });
+
+    await guidesToggle.uncheck();
+    await waitForRenderedFrames(page, 3);
+    const fullscreenGuidesOff = await captureOverlayCanvasStats(overlayCanvas);
+    expect(fullscreenGuidesOff.paintedPixels).toBe(0);
+    expect(fullscreenGuidesOff.axisPixels).toEqual({ blue: 0, amber: 0, green: 0 });
+    expect(fullscreenGuidesOn.paintedPixels).toBeGreaterThan(fullscreenGuidesOff.paintedPixels + 100);
+    await guidesToggle.check();
+    await waitForRenderedFrames(page, 3);
+
     await page.getByRole('button', { name: 'Close fullscreen 3D view' }).click();
     await expect(fullscreen3d).not.toBeVisible();
+    await waitForRenderedFrames(page, 3);
+    const compactGuidesOn = await captureOverlayCanvasStats(overlayCanvas);
+    expect(compactGuidesOn.paintedFraction, 'compact guide overlay should paint visible pixels')
+      .toBeGreaterThan(0.002);
+    expect(compactGuidesOn.chromaticPixels, 'compact guide overlay should retain axis colors')
+      .toBeGreaterThan(40);
+    for (const [axisColor, count] of Object.entries(compactGuidesOn.axisPixels)) {
+      expect(count, `compact guide overlay should contain ${axisColor} axis pixels`)
+        .toBeGreaterThan(4);
+    }
+    await page.getByTestId('mpr-pane-3d').screenshot({ path: windowGuidesCompactScreenshotPath });
+
     await page.getByRole('button', { name: 'Open 3D part view fullscreen' }).click();
     await expect(styleSelector).toHaveValue('window');
     await expect(boundaryToggle).toBeChecked();

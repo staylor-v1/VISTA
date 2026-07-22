@@ -11,7 +11,25 @@ from utils.gaussian_splat_converter import (
     build_splat_cache_key,
     convert_volume_to_splat_asset,
 )
-from utils.volume_loader import load_volume
+from utils.volume_loader import VolumeInfo, load_volume
+
+
+def test_simplified_converter_rejects_explicit_color_volume(tmp_path):
+    volume = VolumeInfo(
+        format="numpy",
+        shape=(2, 3, 4),
+        source_files=("unused.npy",),
+        dtype="uint8",
+        channel_count=3,
+        color_mode="rgb",
+    )
+
+    with pytest.raises(ValueError, match="supports scalar volumes only.*RGB"):
+        convert_volume_to_splat_asset(
+            volume,
+            volume_stack_id="color-volume",
+            output_dir=tmp_path / "assets",
+        )
 
 
 def test_converts_slice_stack_pixels_to_ply_splats(tmp_path):

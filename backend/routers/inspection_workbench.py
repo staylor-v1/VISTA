@@ -6,6 +6,7 @@ import mimetypes
 import re
 import base64
 import os
+import stat
 import shutil
 import sys
 import tempfile
@@ -120,6 +121,7 @@ PT3_REAL_3DGS_MATERIALIZATION_LIMIT_BYTES = int(2.5 * 1024 * 1024 * 1024)
 PT3_MAX_MATERIALIZED_FILE_BYTES = PT3_REAL_3DGS_MATERIALIZATION_LIMIT_BYTES
 PT3_MAX_MATERIALIZED_STACK_BYTES = PT3_REAL_3DGS_MATERIALIZATION_LIMIT_BYTES
 PT3_DOWNLOAD_CHUNK_BYTES = 64 * 1024
+PT3_REAL_SPLAT_PROGRESS_TIMEOUT_SECONDS = 15.0
 # Both bundled splat fitters are CPU- and memory-intensive. Keep one PT3 splat
 # compute in flight per backend worker; deployments can scale workers
 # deliberately instead of allowing an unbounded request burst in one process.
@@ -144,25 +146,186 @@ async def _acquire_pt3_real_splat_compute_slot() -> None:
 
     await _acquire_pt3_splat_compute_slot()
 PT3_SIMPLIFIED_SPLAT_EXTENSIONS = {".json", ".ply", ".splat"}
+PT3_CACHE_NAMESPACES = (
+    "pt3_volume_stacks",
+    "pt3_splat_assets",
+    "pt3_real_splat_assets",
+)
+
+
+class _PT3CacheUnavailableError(RuntimeError):
+    """Raised when neither configured nor temporary PT3 cache is writable."""
+
+
+def _prepare_pt3_cache_root(root: Path) -> Path:
+    """Create and verify every namespace used by PT3 fitting jobs."""
+
+    if root.is_symlink():
+        raise OSError("PT3 cache root must not be a symbolic link")
+    root = root.resolve()
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    root_fd = os.open(root, directory_flags)
+    try:
+        root_stat = os.fstat(root_fd)
+        if not stat.S_ISDIR(root_stat.st_mode) or root_stat.st_uid != os.geteuid():
+            raise OSError("PT3 cache root must be a directory owned by the service user")
+        os.fchmod(root_fd, 0o700)
+
+        for namespace in PT3_CACHE_NAMESPACES:
+            try:
+                os.mkdir(namespace, mode=0o700, dir_fd=root_fd)
+            except FileExistsError:
+                pass
+            namespace_fd = os.open(namespace, directory_flags, dir_fd=root_fd)
+            try:
+                namespace_stat = os.fstat(namespace_fd)
+                if (
+                    not stat.S_ISDIR(namespace_stat.st_mode)
+                    or namespace_stat.st_uid != os.geteuid()
+                ):
+                    raise OSError(
+                        "PT3 cache namespaces must be directories owned by the service user"
+                    )
+                os.fchmod(namespace_fd, 0o700)
+
+                # Use an exclusive, no-follow probe relative to the already-open
+                # namespace. Concurrent callers cannot collide or redirect it.
+                probe_name = f".pt3-write-probe-{uuid.uuid4().hex}"
+                probe_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                probe_flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+                probe_fd = os.open(
+                    probe_name,
+                    probe_flags,
+                    0o600,
+                    dir_fd=namespace_fd,
+                )
+                os.close(probe_fd)
+                os.unlink(probe_name, dir_fd=namespace_fd)
+            finally:
+                os.close(namespace_fd)
+    finally:
+        os.close(root_fd)
+    return root
+
+
+def _prepare_pt3_cache_candidate(candidate: Path) -> Path:
+    """Resolve one cache candidate without accepting a link at its root."""
+
+    if candidate.is_symlink():
+        raise OSError("PT3 cache root must not be a symbolic link")
+    return _prepare_pt3_cache_root(candidate.resolve())
 
 
 def _pt3_cache_root() -> Path:
-    """Return the configured writable cache root, with a stable repo fallback."""
+    """Return a cache whose concrete PT3 namespaces are all writable."""
     configured = os.getenv("CACHE_DIR", "").strip()
     root = Path(configured).expanduser() if configured else REPO_ROOT / ".cache"
     if not root.is_absolute():
         root = REPO_ROOT / root
-    root = root.resolve()
     try:
-        root.mkdir(parents=True, exist_ok=True)
-        probe = root / ".pt3-write-probe"
-        probe.touch(exist_ok=True)
-        probe.unlink(missing_ok=True)
-        return root
-    except OSError:
-        fallback = Path(tempfile.gettempdir()) / "vista-pt3-cache"
-        fallback.mkdir(parents=True, exist_ok=True)
-        return fallback.resolve()
+        return _prepare_pt3_cache_candidate(root)
+    except (OSError, RuntimeError):
+        fallback = Path(tempfile.gettempdir()) / f"vista-pt3-cache-{os.getuid()}"
+        try:
+            return _prepare_pt3_cache_candidate(fallback)
+        except (OSError, RuntimeError) as fallback_error:
+            raise _PT3CacheUnavailableError(
+                "PT3 fitting cache is unavailable because its job directories are not writable"
+            ) from fallback_error
+
+
+def _pt3_cache_component(value: object) -> str:
+    """Return one safe cache path component without accepting traversal."""
+
+    component = str(value).strip()
+    separators = {os.sep}
+    if os.altsep:
+        separators.add(os.altsep)
+    if (
+        not component
+        or component in {".", ".."}
+        or "\x00" in component
+        or any(separator in component for separator in separators)
+    ):
+        raise OSError("PT3 cache path contains an invalid component")
+    return component
+
+
+def _pt3_cache_directory(
+    namespace: str,
+    *components: object,
+    create: bool,
+    repair_mode: bool,
+) -> Path:
+    """Open a cache descendant one component at a time without following links.
+
+    Persistent cache volumes can contain directories created by an older root
+    process. Privileged startup repairs their ownership and mode; this runtime
+    check also repairs service-owned read-only directories and refuses any
+    symbolic-link or foreign-owned descendant before returning a path.
+    """
+
+    if namespace not in PT3_CACHE_NAMESPACES:
+        raise OSError("Unknown PT3 cache namespace")
+    safe_components = [_pt3_cache_component(value) for value in components]
+    root = _pt3_cache_root()
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    root_fd = os.open(root, directory_flags)
+    current_fd: Optional[int] = None
+    try:
+        current_fd = os.open(namespace, directory_flags, dir_fd=root_fd)
+        current_path = root / namespace
+        for component in safe_components:
+            if create:
+                try:
+                    os.mkdir(component, mode=0o700, dir_fd=current_fd)
+                except FileExistsError:
+                    pass
+            child_fd = os.open(component, directory_flags, dir_fd=current_fd)
+            try:
+                child_stat = os.fstat(child_fd)
+                if (
+                    not stat.S_ISDIR(child_stat.st_mode)
+                    or child_stat.st_uid != os.geteuid()
+                ):
+                    raise OSError(
+                        "PT3 cache descendants must be directories owned by the service user"
+                    )
+                if repair_mode:
+                    os.fchmod(child_fd, 0o700)
+            except Exception:
+                os.close(child_fd)
+                raise
+            os.close(current_fd)
+            current_fd = child_fd
+            current_path = current_path / component
+        return current_path
+    finally:
+        if current_fd is not None:
+            os.close(current_fd)
+        os.close(root_fd)
+
+
+def _prepare_pt3_cache_directory(namespace: str, *components: object) -> Path:
+    return _pt3_cache_directory(
+        namespace,
+        *components,
+        create=True,
+        repair_mode=True,
+    )
+
+
+def _existing_pt3_cache_directory(namespace: str, *components: object) -> Path:
+    return _pt3_cache_directory(
+        namespace,
+        *components,
+        create=False,
+        repair_mode=False,
+    )
 
 
 async def _get_project_with_access_check(
@@ -2287,13 +2450,25 @@ async def _materialize_part_volume_stack(
         return (index, str(item.get("filename") or ""))
 
     stack_records = sorted(stack_records, key=sort_key)
-    stack_dir = _pt3_cache_root() / "pt3_volume_stacks" / str(project_id) / str(part.id)
-    if materialization_key:
-        stack_dir = stack_dir / str(materialization_key)
-    stack_dir.mkdir(parents=True, exist_ok=True)
-    for existing in stack_dir.iterdir():
-        if existing.is_file():
-            existing.unlink()
+    try:
+        cache_components: list[object] = [project_id, part.id]
+        if materialization_key:
+            cache_components.append(materialization_key)
+        stack_dir = _prepare_pt3_cache_directory(
+            "pt3_volume_stacks",
+            *cache_components,
+        )
+        for existing in stack_dir.iterdir():
+            if existing.is_file():
+                existing.unlink()
+    except (_PT3CacheUnavailableError, OSError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "PT3 fitting cache is unavailable because a writable job "
+                "directory could not be prepared"
+            ),
+        ) from exc
 
     source_image_ids: list[str] = []
     materialized_paths: list[Path] = []
@@ -2391,12 +2566,18 @@ def _pt3_simplified_splat_job_input_path(
 def _cleanup_pt3_simplified_splat_job_input(
     *, project_id: uuid.UUID, part_id: uuid.UUID, job_id: str
 ) -> None:
-    input_path = _pt3_simplified_splat_job_input_path(
-        project_id=project_id,
-        part_id=part_id,
-        job_id=job_id,
-    )
-    _remove_direct_child_cache_path(input_path, parent=input_path.parent)
+    try:
+        input_parent = _existing_pt3_cache_directory(
+            "pt3_volume_stacks",
+            project_id,
+            part_id,
+        )
+        input_path = input_parent / _pt3_cache_component(job_id)
+        _remove_direct_child_cache_path(input_path, parent=input_parent)
+    except (OSError, RuntimeError):
+        # Cleanup is best effort and must never replace the request/job error
+        # that caused it, especially a sanitized cache-unavailable response.
+        return
 
 
 def _prune_stale_pt3_simplified_splat_output(
@@ -2416,12 +2597,11 @@ def _prune_stale_pt3_simplified_splat_output(
     if current_asset.get("status") == "pending":
         return
     try:
-        expected_root = (
-            _pt3_cache_root()
-            / "pt3_splat_assets"
-            / str(project_id)
-            / str(part_id)
-        ).resolve()
+        expected_root = _existing_pt3_cache_directory(
+            "pt3_splat_assets",
+            project_id,
+            part_id,
+        )
         candidate = asset_path.resolve()
         referenced_path_text = str(current_asset.get("asset_path") or "").strip()
         referenced_path = (
@@ -2452,12 +2632,11 @@ def _prune_pt3_simplified_splat_outputs(
     """Prune prior content keys after publishing the sole current part asset."""
 
     try:
-        output_root = (
-            _pt3_cache_root()
-            / "pt3_splat_assets"
-            / str(project_id)
-            / str(part_id)
-        ).resolve()
+        output_root = _existing_pt3_cache_directory(
+            "pt3_splat_assets",
+            project_id,
+            part_id,
+        )
         keep_path = keep_asset_path.resolve()
     except (OSError, RuntimeError):
         return
@@ -2486,13 +2665,27 @@ def _cleanup_pt3_real_splat_job_cache(
     remove_input: bool = True,
     remove_output: bool = True,
 ) -> None:
-    input_path, output_path = _pt3_real_splat_job_cache_paths(
-        project_id=project_id, part_id=part_id, job_id=job_id
+    cache_targets = (
+        (remove_input, "pt3_volume_stacks"),
+        (remove_output, "pt3_real_splat_assets"),
     )
-    if remove_input:
-        _remove_direct_child_cache_path(input_path, parent=input_path.parent)
-    if remove_output:
-        _remove_direct_child_cache_path(output_path, parent=output_path.parent)
+    for should_remove, namespace in cache_targets:
+        if not should_remove:
+            continue
+        try:
+            parent = _existing_pt3_cache_directory(
+                namespace,
+                project_id,
+                part_id,
+            )
+            _remove_direct_child_cache_path(
+                parent / _pt3_cache_component(job_id),
+                parent=parent,
+            )
+        except (OSError, RuntimeError):
+            # Preserve the original API/provider failure if one cache namespace
+            # disappeared or became unsafe while this job was being cleaned up.
+            continue
 
 
 def _prune_pt3_real_splat_job_cache(
@@ -2500,7 +2693,11 @@ def _prune_pt3_real_splat_job_cache(
 ) -> None:
     """Prune superseded outputs while retaining the published asset."""
 
-    output_root = (_pt3_cache_root() / "pt3_real_splat_assets" / str(project_id) / str(part_id)).resolve()
+    output_root = _existing_pt3_cache_directory(
+        "pt3_real_splat_assets",
+        project_id,
+        part_id,
+    )
     if output_root.is_dir():
         for candidate in output_root.iterdir():
             if candidate.is_dir() and candidate.name != keep_output_job_id:
@@ -2536,14 +2733,22 @@ def _contained_pt3_real_splat_asset_path(
     ):
         return None
     try:
-        expected_root = (
-            _pt3_cache_root()
-            / "pt3_real_splat_assets"
-            / str(project_id)
-            / str(part_id)
-        ).resolve()
+        expected_root = _existing_pt3_cache_directory(
+            "pt3_real_splat_assets",
+            project_id,
+            part_id,
+        )
         asset_path = Path(raw_path).expanduser().resolve()
-        expected_job_root = (expected_root / job_id).resolve() if job_id else None
+        expected_job_root = (
+            _existing_pt3_cache_directory(
+                "pt3_real_splat_assets",
+                project_id,
+                part_id,
+                job_id,
+            )
+            if job_id
+            else None
+        )
     except (OSError, RuntimeError):
         return None
     if (
@@ -2623,12 +2828,28 @@ def _pt3_real_splat_asset_for_cache(asset: object, cache_key: str) -> dict:
 
 def _public_pt3_real_splat_error(exc: Exception) -> str:
     message = str(exc).strip() or exc.__class__.__name__
-    replacements = (
-        (str(_pt3_cache_root().resolve()), "<cache>"),
-        (str(REPO_ROOT.resolve()), "<repository>"),
-    )
+    replacements = [(str(REPO_ROOT.resolve()), "<repository>")]
+    try:
+        replacements.insert(0, (str(_pt3_cache_root().resolve()), "<cache>"))
+    except (_PT3CacheUnavailableError, OSError, RuntimeError):
+        pass
     for private_path, label in replacements:
         message = message.replace(private_path, label)
+
+    # Trusted providers can still raise an OSError or validation error naming
+    # a model/data path outside VISTA's repository and cache. Keep the useful
+    # error text while removing quoted and tokenized POSIX, Windows, and UNC
+    # absolute paths before it reaches status polling clients.
+    message = re.sub(
+        r"(?P<quote>['\"])(?:/|[A-Za-z]:[\\/]|\\\\)[^'\"]+(?P=quote)",
+        lambda match: f"{match.group('quote')}<path>{match.group('quote')}",
+        message,
+    )
+    message = re.sub(
+        r"(^|[\s(=\"'])(?:/[^\s'\"<>]+|[A-Za-z]:[\\/][^\s'\"<>]+|\\\\[^\s'\"<>]+)",
+        lambda match: f"{match.group(1)}<path>",
+        message,
+    )
     return message[:1000]
 
 
@@ -2655,12 +2876,11 @@ def _contained_pt3_simplified_splat_asset_path(
     if not raw_path:
         return None
     try:
-        expected_root = (
-            _pt3_cache_root()
-            / "pt3_splat_assets"
-            / str(project_id)
-            / str(part_id)
-        ).resolve()
+        expected_root = _existing_pt3_cache_directory(
+            "pt3_splat_assets",
+            project_id,
+            part_id,
+        )
         asset_path = Path(raw_path).expanduser().resolve()
     except (OSError, RuntimeError):
         return None
@@ -2753,7 +2973,7 @@ async def _run_pt3_splat_generation_job(
     compute_slot_acquired = False
     generated_asset_path: Optional[Path] = None
     try:
-        # Refresh under a row lock before doing any CPU work. The request-scoped
+        # Refresh under a row lock before doing any CPU work. The task-owned
         # session retains identity-mapped rows, so populate_existing is required
         # to observe a newer recompute that superseded this background task.
         await job_db.rollback()
@@ -2822,13 +3042,15 @@ async def _run_pt3_splat_generation_job(
             volume_stack_id = (
                 payload.volume_stack_id
                 or metadata.get("volume_stack_id")
-                or str(part.id)
+                # rollback() expires ORM instances even when the session uses
+                # expire_on_commit=False. Keep background work on the immutable
+                # function argument instead of triggering an async lazy load.
+                or str(part_id)
             )
-            output_dir = (
-                _pt3_cache_root()
-                / "pt3_splat_assets"
-                / str(project_id)
-                / str(part_id)
+            output_dir = _prepare_pt3_cache_directory(
+                "pt3_splat_assets",
+                project_id,
+                part_id,
             )
             asset = await asyncio.to_thread(
                 convert_volume_to_splat_asset,
@@ -2934,6 +3156,34 @@ async def _run_pt3_splat_generation_job(
             project_id=project_id,
             part_id=part_id,
             job_id=job_id,
+        )
+
+
+async def _run_pt3_splat_generation_job_in_session(
+    *,
+    session_bind: Any,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    source_path_text: str,
+    payload_data: dict,
+    job_id: str,
+    requested_by: str,
+) -> None:
+    """Run a Simplified fit in a session owned by the background task."""
+
+    async with AsyncSession(
+        bind=session_bind,
+        expire_on_commit=False,
+        autoflush=False,
+    ) as job_db:
+        await _run_pt3_splat_generation_job(
+            project_id=project_id,
+            part_id=part_id,
+            source_path_text=source_path_text,
+            payload_data=payload_data,
+            job_id=job_id,
+            requested_by=requested_by,
+            job_db=job_db,
         )
 
 
@@ -3049,14 +3299,14 @@ async def create_pt3_volume_splat_asset(
         raise
 
     background_tasks.add_task(
-        _run_pt3_splat_generation_job,
+        _run_pt3_splat_generation_job_in_session,
+        session_bind=db.bind,
         project_id=project_id,
         part_id=part_id,
         source_path_text=source_path,
         payload_data=conversion_parameters,
         job_id=job_id,
         requested_by=current_user.email,
-        job_db=db,
     )
     return _splat_status_from_metadata(
         project_id,
@@ -3152,6 +3402,8 @@ def _pt3_voxel_geometry(volume_info, metadata: dict) -> dict:
         "format": volume_info.format,
         "shape_zyx": list(volume_info.shape),
         "dtype": volume_info.dtype,
+        "channel_count": volume_info.channel_count,
+        "color_mode": volume_info.color_mode,
         "spacing_xyz": list(spacing),
         "origin_xyz": list(origin),
         "direction": list(direction),
@@ -3172,9 +3424,8 @@ async def _update_pt3_real_splat_job_progress(
         safe_progress = min(99.0, max(0.0, float(progress_percent)))
     except (TypeError, ValueError):
         return False
-    # This request-scoped session is intentionally reused by the background
-    # task and uses expire_on_commit=False. End any earlier read transaction and
-    # force the locked SELECT to overwrite its identity-mapped InspectionPart;
+    # Progress sessions use expire_on_commit=False. End any earlier transaction
+    # and force the locked SELECT to overwrite its identity-mapped InspectionPart;
     # otherwise an older worker can keep seeing its own stale job_id after a
     # newer recompute has already published pending metadata.
     await job_db.rollback()
@@ -3190,7 +3441,11 @@ async def _update_pt3_real_splat_job_progress(
         return False
     metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
     asset = metadata.get("pt3_real_splat_asset")
-    if not isinstance(asset, dict) or asset.get("job_id") != job_id:
+    if (
+        not isinstance(asset, dict)
+        or asset.get("job_id") != job_id
+        or str(asset.get("status") or "").strip().lower() != "pending"
+    ):
         await job_db.rollback()
         return False
     part.metadata_json = {
@@ -3205,6 +3460,32 @@ async def _update_pt3_real_splat_job_progress(
     }
     await job_db.commit()
     return True
+
+
+async def _update_pt3_real_splat_job_progress_in_session(
+    *,
+    session_bind: Any,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    job_id: str,
+    progress_percent: float,
+    stage: str,
+) -> bool:
+    """Publish one progress update in an independent, short-lived session."""
+
+    async with AsyncSession(
+        bind=session_bind,
+        expire_on_commit=False,
+        autoflush=False,
+    ) as progress_db:
+        return await _update_pt3_real_splat_job_progress(
+            project_id=project_id,
+            part_id=part_id,
+            job_id=job_id,
+            progress_percent=progress_percent,
+            stage=stage,
+            job_db=progress_db,
+        )
 
 
 async def _run_pt3_real_splat_optimization_job(
@@ -3283,23 +3564,46 @@ async def _run_pt3_real_splat_optimization_job(
             limits=REFERENCE_VOLUME_READ_LIMITS,
         )
         volume_geometry = _pt3_voxel_geometry(volume_info, metadata)
-        volume_stack_id = payload.volume_stack_id or metadata.get("volume_stack_id") or str(part.id)
-        output_dir = _pt3_cache_root() / "pt3_real_splat_assets" / str(project_id) / str(part_id) / job_id
+        # The admission rollback expires ``part``. Reading its ORM attributes
+        # here can attempt async IO outside SQLAlchemy's greenlet bridge, so use
+        # the immutable task argument as the canonical fallback identifier.
+        volume_stack_id = (
+            payload.volume_stack_id
+            or metadata.get("volume_stack_id")
+            or str(part_id)
+        )
+        output_dir = _prepare_pt3_cache_directory(
+            "pt3_real_splat_assets",
+            project_id,
+            part_id,
+            job_id,
+        )
         loop = asyncio.get_running_loop()
+        session_bind = job_db.bind
 
         def report_progress(progress_percent: float, stage: str = "optimizing") -> None:
             future = asyncio.run_coroutine_threadsafe(
-                _update_pt3_real_splat_job_progress(
+                _update_pt3_real_splat_job_progress_in_session(
+                    session_bind=session_bind,
                     project_id=project_id,
                     part_id=part_id,
                     job_id=job_id,
                     progress_percent=progress_percent,
                     stage=stage,
-                    job_db=job_db,
                 ),
                 loop,
             )
-            if future.result(timeout=15) is not True:
+            try:
+                progress_published = future.result(
+                    timeout=PT3_REAL_SPLAT_PROGRESS_TIMEOUT_SECONDS
+                )
+            except TimeoutError:
+                # Do not leave a timed-out update running after the optimizer
+                # unwinds into final publication. Its independent session makes
+                # cancellation safe even if the database call is slow to stop.
+                future.cancel()
+                raise
+            if progress_published is not True:
                 raise _PT3RealSplatJobSuperseded()
 
         asset = await asyncio.to_thread(
@@ -3427,6 +3731,34 @@ async def _run_pt3_real_splat_optimization_job(
     else:
         _cleanup_pt3_real_splat_job_cache(
             project_id=project_id, part_id=part_id, job_id=job_id
+        )
+
+
+async def _run_pt3_real_splat_optimization_job_in_session(
+    *,
+    session_bind: Any,
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    source_path_text: str,
+    payload_data: dict,
+    job_id: str,
+    requested_by: str,
+) -> None:
+    """Run a Real 3DGS fit in a session owned by the background task."""
+
+    async with AsyncSession(
+        bind=session_bind,
+        expire_on_commit=False,
+        autoflush=False,
+    ) as job_db:
+        await _run_pt3_real_splat_optimization_job(
+            project_id=project_id,
+            part_id=part_id,
+            source_path_text=source_path_text,
+            payload_data=payload_data,
+            job_id=job_id,
+            requested_by=requested_by,
+            job_db=job_db,
         )
 
 
@@ -3564,14 +3896,14 @@ async def create_pt3_real_gaussian_splat_asset(
         )
         raise
     background_tasks.add_task(
-        _run_pt3_real_splat_optimization_job,
+        _run_pt3_real_splat_optimization_job_in_session,
+        session_bind=db.bind,
         project_id=project_id,
         part_id=part_id,
         source_path_text=source_path,
         payload_data=payload_data,
         job_id=job_id,
         requested_by=current_user.email,
-        job_db=db,
     )
     return _real_splat_status_from_metadata(
         project_id,

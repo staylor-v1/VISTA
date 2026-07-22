@@ -1,6 +1,6 @@
 # PT3 local CT 3D viewer
 
-Vista's PT3 3D pane uses one shared patient-space model for ray marching, simplified 3DGS, real 3DGS, and hybrid modes. The original scalar volume remains authoritative; Gaussian splats are derived visualization assets.
+Vista's selectable PT3 3D pane uses one shared patient-space model for ray marching and real 3DGS. The original scalar volume remains authoritative; Gaussian splats are derived visualization assets. The legacy simplified-splat conversion path remains available to existing API assets but is not a selectable MPR view.
 
 ```text
 medical source
@@ -20,7 +20,7 @@ authoritative scalar volume bundle
 canonical Gaussian asset
   -> 3DGS renderer
 
-volume renderer + 3DGS renderer
+volume renderer or 3DGS renderer
   -> shared camera, transforms, clipping, and UI
   -> local web viewer
 ```
@@ -33,22 +33,23 @@ npm install
 npm start
 ```
 
-Open a PT3 inspection workbench and select **Ray-marched volume**, **Simplified 3DGS**, **Real 3DGS**, or **Hybrid part view** in the 3D view selector. The 2D MPR slice panes continue to display the same source 2D slices. Saved legacy `splat` selections remain mapped to the simplified renderer.
+Open a PT3 inspection workbench and use the 3D view selector to choose **Real 3DGS** or one of the five options nested under **Ray marching**: **Composite**, **MIP**, **X-ray**, **Iso**, and **Window**. The 2D MPR slice panes continue to display the same source 2D slices. Removed legacy `shell` and `splat` workspace values safely normalize to Orientation; `hybrid3d` normalizes to Composite ray marching.
 
 ## Geometry and data contract
 
-Viewer metadata is normalized as `dimensions`, `spacing`, `origin`, `direction`, `scalarType`, `scalarRange`, `modality`, `rescaleSlope`, `rescaleIntercept`, and a non-PHI `sourceId`. Index coordinates are transformed to physical patient coordinates by scaling with voxel spacing, applying the 3x3 direction matrix, and then adding origin. This keeps anisotropic spacing and orientation consistent across volume, splat, clipping, camera, and hybrid composition.
+Viewer metadata is normalized as `dimensions`, `spacing`, `origin`, `direction`, `scalarType`, `scalarRange`, `modality`, `rescaleSlope`, `rescaleIntercept`, and a non-PHI `sourceId`. Index coordinates are transformed to physical patient coordinates by scaling with voxel spacing, applying the 3x3 direction matrix, and then adding origin. This keeps anisotropic spacing and orientation consistent across volume, splat, clipping, and camera rendering.
+
+Server volume arrays use an explicit channel-last contract: scalar NumPy data is `[z, y, x]`, RGB is `[z, y, x, 3]`, and RGBA is `[z, y, x, 4]`. Channel-first and other four-dimensional layouts are rejected rather than guessed. TIFF and image stacks accept single-band scalar pixels plus RGB or RGBA; ambiguous multi-band modes such as LA and CMYK are rejected. Rendered non-`uint8` color slices map integer samples by their dtype range and map finite floating-point samples in `[0, 1]` directly to `[0, 255]`; RGBA alpha is converted independently so it cannot alter RGB contrast.
 
 ## Rendering paths
 
 - **Volume** uses the shared CT transfer-function controls, window/level presets (bone, soft tissue, lung), opacity, quality profiles, bounding box, orientation labels, and crop/clipping state. The current implementation is a browser-local renderer scaffold that preserves geometry and UI contracts while avoiding new large dependencies.
-- **Simplified 3DGS** is the existing slice-derived splat process. PLY and JSON `.splat` assets are parsed in a Web Worker so asset decoding does not block the main UI.
+- **Simplified 3DGS** is the retained legacy slice-derived asset process, not an MPR selector option. PLY and JSON `.splat` assets are parsed in a Web Worker so existing asset decoding does not block the main UI.
 - **Real 3DGS** is separate from the simplified slice-derived process and offers three fitting strategies. **Direct voxel fit** (`voxel_direct`) is the default: VISTA's built-in deterministic fitter works in physical voxel space and needs neither cameras nor an external provider. It groups spatially local, scalar-similar voxels, matches their physical first and second moments, and emits anisotropic covariance/scales, rotations, opacity, and degree-0 spherical harmonics. Scalar voxel values are view independent, so higher-order, view-dependent SH terms have no observable target in this mode. **Synthetic/camera views** (`synthetic_views`) and **Hybrid provider fit** (`hybrid`) require a trusted provider plus at least two calibrated or generated camera views; those provider modes may jointly optimize means, covariance/scales, rotations, opacity, spherical harmonics, and camera poses. In `hybrid`, the provider currently owns both voxel-native initialization and view refinement; the core adapter does not synthesize images or pass it a direct-fit seed. Configure the trusted server import as `PT3_REAL_3DGS_PROVIDER=package.module.function`. Real mode never substitutes a simplified asset.
-- **Hybrid** draws the translucent volume first and derived splats second in the same coordinate frame. This is a documented approximation rather than full order-independent transparency.
 
 ### Direct-volume reconstruction controls
 
-Open the ray-marched 3D view fullscreen to choose how the browser preview volume is projected. The renderer decodes the browser-ready slice images to normalized 0–1 luminance, so Window and Iso values are preview-luminance thresholds rather than original CT scalar units such as Hounsfield units. This is a visualization control over the decoded preview stack, not scalar-aware CT window/level processing.
+Choose a reconstruction directly from the **Ray marching** group in the MPR 3D view selector. Fullscreen retains the detailed controls for the active reconstruction. The renderer decodes the browser-ready slice images to normalized 0–1 luminance, so Window and Iso values are preview-luminance thresholds rather than original CT scalar units such as Hounsfield units. This is a visualization control over the decoded preview stack, not scalar-aware CT window/level processing.
 
 - **Composite** preserves the original front-to-back transfer function and is the backward-compatible default. Dense exterior material can occlude internal detail.
 - **MIP** keeps the maximum intensity along each ray. It highlights dense inclusions but discards depth and may still favor a dense outer shell.
@@ -62,7 +63,7 @@ All strategies publish canonical `pt3_real_3dgs/v1` JSON with patient-physical `
 
 Provider cameras are undistorted pinhole views. Their row-major `intrinsics` is the pixel-space `K` matrix. `rotation_quaternion` is `[w, x, y, z]` for the patient-physical-to-camera rotation `R_pc`, and physical-unit `translation` satisfies `x_camera = R_pc x_patient + t`; camera axes are right-handed with +X right, +Y down, and +Z forward. SH view directions are expressed in patient axes from camera center to Gaussian mean. This fixed convention prevents a provider model trained in a normalized or camera-local frame from being silently overlaid on the patient volume.
 
-Real mode presents a fitting-strategy selector and a 1,000–100,000 splat-budget slider (50,000 default). The JSON/reference implementation is intentionally capped at 100,000 splats, 16,000,000 total voxels, and 1,000,000 active voxels until a binary, scalable GPU path replaces it. Adjusting either control does not start work: the user explicitly clicks **Fit voxel splats** for direct mode or **Train 3DGS splats** for provider modes, after which the current stage and estimated percentage are shown. Direct voxel fit is available whenever the PT3 voxel source can be materialized as an image stack, one NumPy volume, or one multi-page TIFF; larger fields require thresholding, downsampling, or a provider. For `synthetic_views` or `hybrid`, attach at least two calibrated/generated cameras at `part.metadata.pt3_real_3dgs.cameras` (the legacy `pt3_camera_calibrations` and `camera_calibrations` array keys are also read). Every PT3 source—including a directory of image slices—is treated as an authoritative voxel volume: server-inferred source IDs stay fixed, while generated exterior views may use their own unique camera IDs. Exact camera/source ID matches remain backward compatible, but client IDs never override the server-selected source files.
+Real mode presents a fitting-strategy selector and a 1,000–100,000 splat-budget slider (50,000 default). The JSON/reference implementation is intentionally capped at 100,000 splats and 1,000,000 fitted sample voxels until a binary, scalable GPU path replaces it. Large file-backed `.npy` volumes are reduced deterministically to that bounded working set before float64 conversion: every source block contributes its threshold maximum (or its farthest-from-zero value when zero denotes empty), so sparse off-grid signal is not silently skipped. Patient-space bounds are preserved, and the canonical asset records source dimensions, fitted dimensions, reducer, and sampling plan. Compressed `.npz` volumes above that working budget must first be extracted to `.npy`, because bounded random-access sampling cannot occur without inflating the archive member. Adjusting either control does not start work: the user explicitly clicks **Fit voxel splats** for direct mode or **Train 3DGS splats** for provider modes, after which the current stage and estimated percentage are shown. Direct voxel fit is available whenever the PT3 voxel source can be materialized as an image stack, one NumPy volume, or one multi-page TIFF. For `synthetic_views` or `hybrid`, attach at least two calibrated/generated cameras at `part.metadata.pt3_real_3dgs.cameras` (the legacy `pt3_camera_calibrations` and `camera_calibrations` array keys are also read). Every PT3 source—including a directory of image slices—is treated as an authoritative voxel volume: server-inferred source IDs stay fixed, while generated exterior views may use their own unique camera IDs. Exact camera/source ID matches remain backward compatible, but client IDs never override the server-selected source files.
 
 Source downloads are streamed and atomically published under a 2.5 GiB per-file/whole-stack cap. Project-part APIs reject client filesystem paths and materialize only the part's server-owned sources. Simplified assets are content-keyed, written atomically, and capped at 100,000 splats; their two-pass sampler retains only the output budget rather than first allocating one Python object per active voxel. NPY, NPZ, and TIFF metadata is preflighted before decode; the reference path also caps decoded or NPZ-uncompressed data at 2.5 GiB and archives/stacks at 4,096 members, preventing compressed inputs from bypassing the voxel limit before allocation. CPU fitting/conversion jobs share a per-worker admission slot and recheck job ownership after waiting. The direct fitter's worst-case merge candidates use an in-place 48 MiB numeric buffer at the 1,000,000-active-voxel limit, and a superseded job aborts at its next progress boundary.
 
@@ -100,7 +101,6 @@ Performance, Balanced, and Quality profiles adjust render resolution and volume 
 - Existing baked 3DGS assets do not support arbitrary CT window/level remapping; use scalar-aware exports for that.
 - VISTA bundles a deterministic analytic voxel-domain reference fitter, not a global CUDA gradient/EM optimizer. It records closed-form/derived parameter provenance and does not claim to minimize the documented global reconstruction loss. Synthetic-view and hybrid refinement still require a configured trusted provider, and VISTA neither infers camera calibration from the slice stack nor synthesizes provider training views. Hybrid initialization/refinement is currently provider-owned.
 - The Canvas reference rasterizer uses full covariance projection and view-dependent SH but deterministically samples at most 6,000 Gaussians per frame. A future binary WebGL/CUDA rasterizer is needed for lossless interactive display of the full 100,000-splat cap.
-- Hybrid composition is volume-then-splat alpha blending, not exact order-independent transparency.
 - Direct DICOM browser import is not added here; use the existing local backend/synthetic fixtures and future preprocessing to produce browser-ready bundles.
 
 ## Checks

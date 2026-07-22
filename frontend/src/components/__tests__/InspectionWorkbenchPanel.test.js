@@ -1,9 +1,12 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import InspectionWorkbenchPanel, {
+  createServerVolumeDescriptor,
   getMprFallbackModelZoom,
+  getMprVolumeCacheKey,
   getMprSliceCachingMessage,
   projectMprPointToOverlay,
+  shouldApplyDisplayWindowToVolumeCache,
 } from '../InspectionWorkbenchPanel';
 import ImagesToPartsTab from '../ImagesToPartsTab';
 import * as pt3ThreeRenderer from '../pt3ThreeRenderer';
@@ -1686,6 +1689,40 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('mpr-preview-axial').querySelector('canvas')).toHaveAttribute('height', '550');
   });
 
+  test('carries RGB and RGBA server volume layout through cache identity and windowing', () => {
+    const rgb = createServerVolumeDescriptor({
+      filename: 'rgb.npy',
+      image_id: 'rgb-image',
+      volume_shape: { axial: 2, coronal: 3, sagittal: 4 },
+      channel_count: 3,
+      color_mode: 'rgb',
+    });
+    const rgba = createServerVolumeDescriptor({
+      filename: 'rgba.npy',
+      image_id: 'rgba-image',
+      metadata: {
+        volume_shape: { axial: 2, coronal: 3, sagittal: 4 },
+        channel_count: 4,
+        color_mode: 'rgba',
+      },
+    });
+    const legacyScalar = createServerVolumeDescriptor({
+      filename: 'legacy.npy',
+      image_id: 'legacy-image',
+      volume_shape: { axial: 2, coronal: 3, sagittal: 4 },
+    });
+
+    expect(rgb).toMatchObject({ channelCount: 3, colorMode: 'rgb' });
+    expect(rgba).toMatchObject({ channelCount: 4, colorMode: 'rgba' });
+    expect(legacyScalar).toMatchObject({ channelCount: 1, colorMode: 'scalar' });
+    expect(getMprVolumeCacheKey(rgb)).toContain('rgb-image:3:rgb');
+    expect(getMprVolumeCacheKey(rgba)).toContain('rgba-image:4:rgba');
+    expect(shouldApplyDisplayWindowToVolumeCache(rgb)).toBe(false);
+    expect(shouldApplyDisplayWindowToVolumeCache(rgba)).toBe(false);
+    expect(shouldApplyDisplayWindowToVolumeCache(legacyScalar)).toBe(true);
+    expect(shouldApplyDisplayWindowToVolumeCache({})).toBe(true);
+  });
+
   test('opens the 3D pane as an accessible fullscreen view without mounting a duplicate scene', async () => {
     mockWorkbenchFetch(scenarioByUser[2]);
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
@@ -1832,18 +1869,32 @@ describe('InspectionWorkbenchPanel', () => {
       render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
 
     await screen.findByTestId('mpr-panel');
-    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'volume3d' } });
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'ray-march:composite' } });
     expect(screen.queryByRole('group', { name: 'Ray-march controls' })).not.toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole('button', { name: 'Open 3D part view fullscreen' }), { key: 'Enter' });
 
     const modeSelect = screen.getByLabelText('3D view');
+    const rayMarchGroup = modeSelect.querySelector('optgroup[label="Ray marching"]');
+    expect(rayMarchGroup).not.toBeNull();
+    expect(Array.from(rayMarchGroup.querySelectorAll('option')).map((option) => [option.value, option.textContent])).toEqual([
+      ['ray-march:composite', 'Composite'],
+      ['ray-march:mip', 'MIP'],
+      ['ray-march:xray', 'X-ray'],
+      ['ray-march:iso', 'Iso'],
+      ['ray-march:window', 'Window'],
+    ]);
+    const modeLabels = Array.from(modeSelect.options).map((option) => option.textContent);
+    expect(modeLabels).not.toContain('Reference shell');
+    expect(modeLabels).not.toContain('Hybrid part view');
     const cases = [
       ['orientation', 'Orientation only'],
       ['stack', 'Stack reconstruction'],
-      ['shell', 'Reference shell'],
-      ['volume3d', 'Ray-marched volume'],
+      ['ray-march:composite', 'Ray marching — Composite'],
+      ['ray-march:mip', 'Ray marching — MIP'],
+      ['ray-march:xray', 'Ray marching — X-ray'],
+      ['ray-march:iso', 'Ray marching — Iso'],
+      ['ray-march:window', 'Ray marching — Window'],
       ['real_splat', 'Real 3DGS'],
-      ['hybrid3d', 'Hybrid part view'],
     ];
 
     cases.forEach(([value, label]) => {
@@ -1851,12 +1902,13 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toHaveTextContent(label);
       expect(document.querySelectorAll('.mpr-volume-scene')).toHaveLength(1);
       expect(screen.queryAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(
-        ['volume3d', 'real_splat', 'hybrid3d'].includes(value) ? 1 : 0,
+        value === 'real_splat' || value.startsWith('ray-march:') ? 1 : 0,
       );
-      expect(screen.queryByRole('group', { name: 'Ray-march controls' }) !== null).toBe(value === 'volume3d');
-      expect(screen.queryByRole('group', { name: '3DGS controls' }) !== null).toBe(['real_splat'].includes(value));
+      expect(screen.queryByRole('group', { name: 'Ray-march controls' }) !== null).toBe(value.startsWith('ray-march:'));
+      expect(screen.queryByRole('group', { name: '3DGS controls' }) !== null).toBe(value === 'real_splat');
     });
 
+    fireEvent.change(modeSelect, { target: { value: 'ray-march:composite' } });
     expect(screen.getAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(1);
     expect(document.querySelector('.mpr-volume-model')).not.toBeInTheDocument();
     expect(document.querySelector('.mpr-volume-overlay')).not.toBeInTheDocument();
@@ -1864,11 +1916,8 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.queryByLabelText('3DGS opacity')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Volume opacity')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Clip/crop')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Reset view' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Zoom +' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Zoom -' })).not.toBeInTheDocument();
 
-    fireEvent.change(modeSelect, { target: { value: 'volume3d' } });
+    fireEvent.change(modeSelect, { target: { value: 'ray-march:composite' } });
     await waitFor(() => expect(screen.getByRole('group', { name: 'Ray-march controls' })).toBeEnabled());
     const density = screen.getByLabelText('Ray-march density');
     const threshold = screen.getByLabelText('Ray-march intensity threshold');
@@ -2070,7 +2119,7 @@ describe('InspectionWorkbenchPanel', () => {
     expectCssMirror({ x: -1, y: -1, z: -1 });
     expectSingleStableScene();
 
-    fireEvent.change(modeSelect, { target: { value: 'volume3d' } });
+    fireEvent.change(modeSelect, { target: { value: 'ray-march:composite' } });
     const pt3Viewer = screen.getByTestId('pt3-gaussian-splat-viewer');
     expectMirrorAttributes(pt3Viewer, { x: -1, y: -1, z: -1 });
     expect(screen.getAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(1);
@@ -2100,7 +2149,7 @@ describe('InspectionWorkbenchPanel', () => {
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
 
     await screen.findByTestId('mpr-panel');
-    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'volume3d' } });
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'ray-march:composite' } });
 
     await waitFor(() => {
       expect(screen.getByText(/Showing deterministic volume bounds fallback/i)).toBeInTheDocument();
@@ -4396,6 +4445,100 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.queryByTestId('splat-config-button')).not.toBeInTheDocument();
   });
 
+  test('keeps the last active 2D MPR axis highlighted in the 3D slice locator', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+    await screen.findByTestId('mpr-panel');
+
+    fireEvent.click(screen.getByTestId('mpr-pane-sagittal'));
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'ray-march:composite' } });
+    await waitFor(() => expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveAttribute(
+      'data-active-slice-axis',
+      'sagittal',
+    ));
+
+    fireEvent.wheel(screen.getByTestId('mpr-pane-3d'), { deltaY: -80 });
+    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveAttribute(
+      'data-active-slice-axis',
+      'sagittal',
+    );
+    fireEvent.click(screen.getByTestId('mpr-pane-coronal'));
+    await waitFor(() => expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveAttribute(
+      'data-active-slice-axis',
+      'coronal',
+    ));
+  });
+
+  test.each([
+    ['shell', 'orientation'],
+    ['splat', 'orientation'],
+    ['hybrid3d', 'ray-march:composite'],
+    ['unknown-mode', 'orientation'],
+  ])('normalizes removed saved 3D mode %s to %s', async (savedMode, expectedSelection) => {
+    mockWorkbenchFetch({
+      ...scenarioByUser[2],
+      workspaceState: {
+        selected_batch_id: 'batch-adv-a',
+        selected_part_id: 'part-adv-1',
+        mpr: { reconstruction_mode: savedMode },
+      },
+    });
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await waitFor(() => expect(screen.getByLabelText('3D view')).toHaveValue(expectedSelection));
+  });
+
+  test('hydrates, persists, and retains ray style across part changes', async () => {
+    const fetchState = mockWorkbenchFetch({
+      ...scenarioByUser[2],
+      workspaceState: {
+        selected_batch_id: 'batch-adv-a',
+        selected_part_id: 'part-adv-1',
+        mpr: {
+          reconstruction_mode: 'volume3d',
+          ray_march_settings: { reconstructionStyle: 'mip' },
+        },
+      },
+    });
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    const modeSelect = await screen.findByLabelText('3D view');
+    await waitFor(() => expect(modeSelect).toHaveValue('ray-march:mip'));
+    fireEvent.change(modeSelect, { target: { value: 'ray-march:xray' } });
+    await waitFor(() => expect(fetchState.getWorkspaceSaves()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          state: expect.objectContaining({
+            mpr: expect.objectContaining({
+              reconstruction_mode: 'volume3d',
+              ray_march_settings: expect.objectContaining({ reconstructionStyle: 'xray' }),
+            }),
+          }),
+        }),
+      ]),
+    ));
+
+    fireEvent.change(screen.getByTestId('mpr-part-selector'), { target: { value: 'part-adv-2' } });
+    expect(modeSelect).toHaveValue('ray-march:xray');
+  });
+
+  test('legacy hybrid hydration always resets ray style to Composite', async () => {
+    mockWorkbenchFetch({
+      ...scenarioByUser[2],
+      workspaceState: {
+        selected_batch_id: 'batch-adv-a',
+        selected_part_id: 'part-adv-1',
+        mpr: {
+          reconstruction_mode: 'hybrid3d',
+          ray_march_settings: { reconstructionStyle: 'xray' },
+        },
+      },
+    });
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await waitFor(() => expect(screen.getByLabelText('3D view')).toHaveValue('ray-march:composite'));
+  });
+
   test('defaults PT3 to focused four-quadrant MPR with modal access and wheel controls', async () => {
     mockWorkbenchFetch(scenarioByUser[2]);
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
@@ -4427,7 +4570,7 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getAllByRole('img', { name: /Volume reconstruction slice/ })[0]).toHaveAttribute('draggable', 'false');
 
     expect(screen.queryByTestId('pt3-gaussian-splat-viewer')).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'volume3d' } });
+    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'ray-march:composite' } });
     expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('Ray march loading');
     expect(screen.queryByLabelText('3DGS opacity')).not.toBeInTheDocument();
     expect(global.fetch.mock.calls.some((call) => call[0].includes('/volume-splat-assets'))).toBe(false);
@@ -4656,7 +4799,7 @@ describe('InspectionWorkbenchPanel', () => {
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
 
     const annotationList = await screen.findByTestId('annotation-list');
-    expect(within(annotationList).getByText('PT3 bounding box')).toBeInTheDocument();
+    expect(await within(annotationList).findByText('PT3 bounding box')).toBeInTheDocument();
     expect(within(annotationList).getByRole('button', { name: 'Edit annotation PT3 bounding box' })).toBeInTheDocument();
     expect(within(annotationList).queryByRole('button', { name: 'Crop annotation PT3 bounding box' })).not.toBeInTheDocument();
   });
@@ -4679,7 +4822,7 @@ describe('InspectionWorkbenchPanel', () => {
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
 
     const annotationList = await screen.findByTestId('annotation-list');
-    expect(within(annotationList).getByText('Internal pore')).toBeInTheDocument();
+    expect(await within(annotationList).findByText('Internal pore')).toBeInTheDocument();
     expect(within(annotationList).getByText('External: Assigned pore volume')).toBeInTheDocument();
 
     const annotationUrl = '/api/projects/proj-1/parts/part-adv-1/annotations/vista-segment-1';
@@ -5246,7 +5389,7 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.queryByRole('button', { name: /Copy link to current view/i })).not.toBeInTheDocument();
   });
 
-  test('renders a fast visual shell fallback for PT3 parts without volume metadata', async () => {
+  test('keeps projection fallbacks for 2D panes without exposing shell reconstruction', async () => {
     mockWorkbenchFetch(scenarioByUser[0]);
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
 
@@ -5266,9 +5409,9 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.queryByTestId('fullscreen-mpr-slice')).not.toBeInTheDocument();
     fireEvent.click(screen.getByLabelText('Close fullscreen image'));
 
-    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'shell' } });
-    expect(screen.getByRole('img', { name: /Fallback visual hull shell front view/i })).toBeInTheDocument();
-    expect(screen.queryByText('No stack')).not.toBeInTheDocument();
+    const modeSelect = screen.getByLabelText('3D view');
+    expect(Array.from(modeSelect.options).map((option) => option.value)).not.toContain('shell');
+    expect(screen.queryByRole('img', { name: /Fallback visual hull shell front view/i })).not.toBeInTheDocument();
   });
 
 });
