@@ -21,6 +21,8 @@ from PIL import Image
 SLICE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 IMPLICIT_VOLUME_EXTENSIONS = {".npy", ".npz", ".tif", ".tiff"}
 MAX_NPY_HEADER_BYTES = 64 * 1024
+MAX_VOLUME_LOAD_BYTES = int(2.5 * 1024 * 1024 * 1024)
+MAX_VOLUME_LOAD_VOXELS = MAX_VOLUME_LOAD_BYTES
 
 
 @dataclass(frozen=True)
@@ -50,9 +52,9 @@ class VolumeReadLimits:
 
 
 REFERENCE_VOLUME_READ_LIMITS = VolumeReadLimits(
-    max_voxels=16_000_000,
-    max_decoded_bytes=128 * 1024 * 1024,
-    max_source_bytes=128 * 1024 * 1024,
+    max_voxels=MAX_VOLUME_LOAD_VOXELS,
+    max_decoded_bytes=MAX_VOLUME_LOAD_BYTES,
+    max_source_bytes=MAX_VOLUME_LOAD_BYTES,
     max_container_members=4_096,
 )
 COMMON_VOLUME_FORMATS = {
