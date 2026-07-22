@@ -1145,6 +1145,41 @@ def _replace_source_image_record(
     return [*retained, dict(entry)]
 
 
+_ASSIGNED_SOURCE_IMAGE_METADATA_FIELDS = (
+    "load_mode",
+    "tiff_dimensionality",
+    "frame_count",
+    "volume_shape",
+    "pixel_dtype",
+    "voxel_dtype",
+    "bit_depth",
+    "bits_per_sample",
+    "pixel_value_range",
+    "data_value_range",
+    "voxel_value_range",
+    "scalar_range",
+    "value_range",
+    "intensity_range",
+    "display_range",
+    "signed",
+    "channel_count",
+    "color_mode",
+)
+
+
+def _assigned_source_image_metadata(image_metadata: dict) -> dict:
+    """Keep persisted volume/layout fields self-contained on part assignments."""
+
+    copied = {
+        key: image_metadata[key]
+        for key in _ASSIGNED_SOURCE_IMAGE_METADATA_FIELDS
+        if key in image_metadata
+    }
+    if not copied:
+        return {}
+    return {**copied, "metadata": dict(copied)}
+
+
 def _metadata_for_overlay_assignment(image: models.DataInstance) -> dict:
     image_metadata = image.metadata_json if isinstance(image.metadata_json, dict) else {}
     return {
@@ -1154,7 +1189,82 @@ def _metadata_for_overlay_assignment(image: models.DataInstance) -> dict:
         "modality": str(image_metadata.get("modality") or "overlay").strip().lower() or "overlay",
         "overlay": True,
         "content_type": image.content_type,
+        "slice_axis": image_metadata.get("slice_axis"),
+        "slice_index": image_metadata.get("slice_index"),
+        **_assigned_source_image_metadata(image_metadata),
     }
+
+
+_ASSIGNED_SOURCE_IMAGE_RECORD_FIELDS = (
+    "filename",
+    "image_id",
+    "side",
+    "modality",
+    "overlay",
+    "content_type",
+    "slice_axis",
+    "slice_index",
+    *_ASSIGNED_SOURCE_IMAGE_METADATA_FIELDS,
+)
+
+
+def _metadata_for_source_assignment(image: models.DataInstance) -> dict:
+    image_metadata = image.metadata_json if isinstance(image.metadata_json, dict) else {}
+    entry = {
+        "filename": image.filename,
+        "image_id": str(image.id),
+        "side": str(image_metadata.get("side") or "").strip().lower(),
+        "modality": str(image_metadata.get("modality") or "").strip().lower(),
+        "overlay": bool(image_metadata.get("overlay")),
+        "content_type": image.content_type,
+        "slice_axis": image_metadata.get("slice_axis"),
+        "slice_index": image_metadata.get("slice_index"),
+    }
+    for metadata_key in (
+        "crop_child_image",
+        "parent_image_id",
+        "parent_image_filename",
+        "crop_annotation_id",
+        "crop_title",
+        "crop_subtitle",
+        "crop_bbox",
+    ):
+        if metadata_key in image_metadata:
+            entry[metadata_key] = image_metadata.get(metadata_key)
+    entry.update(_assigned_source_image_metadata(image_metadata))
+    return entry
+
+
+def _refresh_assigned_source_image_record(existing: Optional[dict], authoritative: dict) -> dict:
+    """Refresh file metadata while retaining assignment and visibility state."""
+
+    refreshed = dict(existing) if isinstance(existing, dict) else {}
+    for key in _ASSIGNED_SOURCE_IMAGE_RECORD_FIELDS:
+        if key not in authoritative:
+            refreshed.pop(key, None)
+    refreshed.update(authoritative)
+
+    existing_metadata = (
+        existing.get("metadata")
+        if isinstance(existing, dict) and isinstance(existing.get("metadata"), dict)
+        else {}
+    )
+    authoritative_metadata = (
+        authoritative.get("metadata")
+        if isinstance(authoritative.get("metadata"), dict)
+        else {}
+    )
+    merged_metadata = {
+        key: value
+        for key, value in existing_metadata.items()
+        if key not in _ASSIGNED_SOURCE_IMAGE_METADATA_FIELDS
+    }
+    merged_metadata.update(authoritative_metadata)
+    if merged_metadata:
+        refreshed["metadata"] = merged_metadata
+    else:
+        refreshed.pop("metadata", None)
+    return refreshed
 
 
 def _record_matches_filename(record: object, filename: str) -> bool:
@@ -4072,6 +4182,21 @@ async def assign_image_to_part(
     all_parts = await crud.list_inspection_parts(db=db, project_id=project_id)
     filename = payload.filename.strip()
     payload_image_id = payload.image_id
+    if payload_image_id:
+        image = await _get_active_project_image_by_id(
+            db=db,
+            project_id=project_id,
+            image_id=payload_image_id,
+        )
+    else:
+        image = await _get_active_project_image_by_filename(
+            db=db,
+            project_id=project_id,
+            filename=filename,
+        )
+    if not image:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+    filename = image.filename
     source_entry = None
     from_part_id = None
 
@@ -4104,66 +4229,10 @@ async def assign_image_to_part(
                 source_entry = removed_entry
                 from_part_id = part.id
 
-    if source_entry is None:
-        if payload_image_id:
-            image = await _get_active_project_image_by_id(db=db, project_id=project_id, image_id=payload_image_id)
-        else:
-            image = await _get_active_project_image_by_filename(db=db, project_id=project_id, filename=filename)
-        if not image:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
-        filename = image.filename
-        image_metadata = image.metadata_json if isinstance(image.metadata_json, dict) else {}
-        source_entry = {
-            "filename": filename,
-            "image_id": str(image.id),
-            "side": str(image_metadata.get("side") or "").strip().lower(),
-            "modality": str(image_metadata.get("modality") or "").strip().lower(),
-            "overlay": bool(image_metadata.get("overlay")),
-            "slice_axis": image_metadata.get("slice_axis"),
-            "slice_index": image_metadata.get("slice_index"),
-        }
-        for metadata_key in (
-            "crop_child_image",
-            "parent_image_id",
-            "parent_image_filename",
-            "crop_annotation_id",
-            "crop_title",
-            "crop_subtitle",
-            "crop_bbox",
-            "pixel_dtype",
-            "voxel_dtype",
-            "bit_depth",
-            "bits_per_sample",
-            "pixel_value_range",
-            "data_value_range",
-            "voxel_value_range",
-            "scalar_range",
-            "value_range",
-            "intensity_range",
-            "display_range",
-            "signed",
-        ):
-            if metadata_key in image_metadata:
-                source_entry[metadata_key] = image_metadata.get(metadata_key)
-        if any(key in image_metadata for key in ("pixel_value_range", "value_range", "intensity_range", "pixel_dtype", "voxel_dtype", "bit_depth")):
-            source_entry["metadata"] = {
-                key: image_metadata.get(key)
-                for key in (
-                    "pixel_dtype",
-                    "voxel_dtype",
-                    "bit_depth",
-                    "bits_per_sample",
-                    "pixel_value_range",
-                    "data_value_range",
-                    "voxel_value_range",
-                    "scalar_range",
-                    "value_range",
-                    "intensity_range",
-                    "display_range",
-                    "signed",
-                )
-                if key in image_metadata
-            }
+    source_entry = _refresh_assigned_source_image_record(
+        source_entry,
+        _metadata_for_source_assignment(image),
+    )
 
     if target_part:
         persisted_target, _ = await _mutate_part_source_images_locked(
@@ -4256,8 +4325,10 @@ async def assign_overlay_to_base_image(
                 overlay_entry = removed_entry
                 from_part_id = part.id
 
-    if overlay_entry is None:
-        overlay_entry = _metadata_for_overlay_assignment(overlay_image)
+    overlay_entry = _refresh_assigned_source_image_record(
+        overlay_entry,
+        _metadata_for_overlay_assignment(overlay_image),
+    )
     overlay_entry = {**overlay_entry, "overlay": True}
 
     target_part = None

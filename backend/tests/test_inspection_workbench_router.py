@@ -5,6 +5,7 @@ import io
 import json
 import uuid
 
+import numpy as np
 from PIL import Image, ImageDraw
 
 
@@ -2623,6 +2624,21 @@ def _upload_part_test_image(client, project_id, headers, filename="part-image.pn
     return response.json()
 
 
+def _upload_part_test_volume(client, project_id, headers, filename, array, metadata=None):
+    buffer = io.BytesIO()
+    np.save(buffer, np.asarray(array), allow_pickle=False)
+    buffer.seek(0)
+    data = {"metadata": json.dumps(metadata)} if metadata is not None else None
+    response = client.post(
+        f"/api/projects/{project_id}/images",
+        files={"file": (filename, buffer, "application/octet-stream")},
+        data=data,
+        headers=headers,
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
 def test_image_assignment_can_move_image_back_to_unassigned(client):
     project_id, headers = _create_project_for_part_image_tests(client, "Unassign image project")
     uploaded = _upload_part_test_image(client, project_id, headers, "assignable.png")
@@ -2763,6 +2779,208 @@ def test_overlay_assignment_maps_overlay_to_base_image(client):
     assert overlay_records[0]["overlay_base_filename"] == "base.png"
     assert overlay_records[0]["overlay_base_image_id"] == base["id"]
     assert overlay_records[0]["side"] == "front"
+
+
+def test_volume_assignment_preserves_scalar_source_and_rgba_overlay_layout(client):
+    project_id, headers = _create_project_for_part_image_tests(
+        client,
+        "Scalar source with RGBA overlay project",
+    )
+    base = _upload_part_test_volume(
+        client,
+        project_id,
+        headers,
+        "base-volume.npy",
+        np.arange(2 * 3 * 4, dtype=np.uint16).reshape((2, 3, 4)),
+        {"side": "axial", "modality": "volume"},
+    )
+    overlay_array = np.zeros((2, 3, 4, 4), dtype=np.uint8)
+    overlay_array[..., 0] = 255
+    overlay_array[..., 3] = 128
+    overlay = _upload_part_test_volume(
+        client,
+        project_id,
+        headers,
+        "segments-rgba.npy",
+        overlay_array,
+        {"modality": "segments", "overlay": True},
+    )
+    part_response = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={"serial_number": "PT3-RGBA", "display_name": "RGBA overlay target"},
+        headers=headers,
+    )
+    assert part_response.status_code == 201, part_response.text
+    part_id = part_response.json()["id"]
+
+    assign_base = client.post(
+        f"/api/projects/{project_id}/parts/image-assignments",
+        json={
+            "filename": base["filename"],
+            "image_id": base["id"],
+            "to_part_id": part_id,
+        },
+        headers=headers,
+    )
+    assert assign_base.status_code == 200, assign_base.text
+    assign_overlay = client.post(
+        f"/api/projects/{project_id}/parts/overlay-assignments",
+        json={
+            "overlay_filename": overlay["filename"],
+            "overlay_image_id": overlay["id"],
+            "base_filename": base["filename"],
+            "base_image_id": base["id"],
+        },
+        headers=headers,
+    )
+    assert assign_overlay.status_code == 200, assign_overlay.text
+
+    parts_response = client.get(f"/api/projects/{project_id}/parts", headers=headers)
+    assert parts_response.status_code == 200, parts_response.text
+    source_images = parts_response.json()[0]["metadata"]["source_images"]
+    base_record = next(record for record in source_images if record["image_id"] == base["id"])
+    overlay_record = next(record for record in source_images if record["image_id"] == overlay["id"])
+
+    assert base_record["volume_shape"] == {"axial": 2, "coronal": 3, "sagittal": 4}
+    assert base_record["channel_count"] == 1
+    assert base_record["color_mode"] == "scalar"
+    assert base_record["metadata"]["color_mode"] == "scalar"
+    assert overlay_record["volume_shape"] == {"axial": 2, "coronal": 3, "sagittal": 4}
+    assert overlay_record["channel_count"] == 4
+    assert overlay_record["color_mode"] == "rgba"
+    assert overlay_record["metadata"]["channel_count"] == 4
+    assert overlay_record["overlay"] is True
+    assert overlay_record["overlay_base_image_id"] == base["id"]
+
+
+def test_reassignment_refreshes_legacy_volume_layout_and_keeps_assignment_state(client):
+    project_id, headers = _create_project_for_part_image_tests(
+        client,
+        "Refresh legacy volume assignment metadata",
+    )
+    base = _upload_part_test_volume(
+        client,
+        project_id,
+        headers,
+        "fresh-scalar.npy",
+        np.zeros((2, 3, 4), dtype=np.uint16),
+        {"side": "axial", "modality": "volume"},
+    )
+    overlay_array = np.zeros((2, 3, 4, 4), dtype=np.uint8)
+    overlay_array[..., 1] = 255
+    overlay_array[..., 3] = 160
+    overlay = _upload_part_test_volume(
+        client,
+        project_id,
+        headers,
+        "fresh-segments.npy",
+        overlay_array,
+        {
+            "modality": "segments",
+            "overlay": True,
+            "slice_axis": "axial",
+            "slice_index": 1,
+        },
+    )
+    stale_shape = {"axial": 9, "coronal": 9, "sagittal": 9}
+    source_part = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={
+            "serial_number": "LEGACY-SOURCE",
+            "metadata": {
+                "source_images": [
+                    {
+                        "filename": base["filename"],
+                        "image_id": base["id"],
+                        "overlay": False,
+                        "hidden": True,
+                        "assignment_note": "keep base state",
+                        "volume_shape": stale_shape,
+                        "channel_count": 4,
+                        "color_mode": "rgba",
+                        "metadata": {
+                            "volume_shape": stale_shape,
+                            "channel_count": 4,
+                            "color_mode": "rgba",
+                            "assignment_detail": "keep nested base state",
+                        },
+                    },
+                    {
+                        "filename": overlay["filename"],
+                        "image_id": overlay["id"],
+                        "overlay": True,
+                        "hidden": True,
+                        "assignment_note": "keep overlay state",
+                        "volume_shape": stale_shape,
+                        "channel_count": 1,
+                        "color_mode": "scalar",
+                        "slice_axis": "coronal",
+                        "slice_index": 9,
+                        "metadata": {
+                            "volume_shape": stale_shape,
+                            "channel_count": 1,
+                            "color_mode": "scalar",
+                            "assignment_detail": "keep nested overlay state",
+                        },
+                    },
+                ],
+            },
+        },
+        headers=headers,
+    )
+    assert source_part.status_code == 201, source_part.text
+    target_part = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={"serial_number": "LEGACY-TARGET"},
+        headers=headers,
+    )
+    assert target_part.status_code == 201, target_part.text
+    target_part_id = target_part.json()["id"]
+
+    move_base = client.post(
+        f"/api/projects/{project_id}/parts/image-assignments",
+        json={
+            "filename": base["filename"],
+            "image_id": base["id"],
+            "to_part_id": target_part_id,
+        },
+        headers=headers,
+    )
+    assert move_base.status_code == 200, move_base.text
+    move_overlay = client.post(
+        f"/api/projects/{project_id}/parts/overlay-assignments",
+        json={
+            "overlay_filename": overlay["filename"],
+            "overlay_image_id": overlay["id"],
+            "base_filename": base["filename"],
+            "base_image_id": base["id"],
+        },
+        headers=headers,
+    )
+    assert move_overlay.status_code == 200, move_overlay.text
+
+    parts = client.get(f"/api/projects/{project_id}/parts", headers=headers).json()
+    target_records = next(part for part in parts if part["id"] == target_part_id)["metadata"]["source_images"]
+    refreshed_base = next(record for record in target_records if record["image_id"] == base["id"])
+    refreshed_overlay = next(record for record in target_records if record["image_id"] == overlay["id"])
+
+    assert refreshed_base["volume_shape"] == {"axial": 2, "coronal": 3, "sagittal": 4}
+    assert refreshed_base["channel_count"] == 1
+    assert refreshed_base["color_mode"] == "scalar"
+    assert refreshed_base["hidden"] is True
+    assert refreshed_base["assignment_note"] == "keep base state"
+    assert refreshed_base["metadata"]["assignment_detail"] == "keep nested base state"
+    assert refreshed_base["metadata"]["color_mode"] == "scalar"
+    assert refreshed_overlay["volume_shape"] == {"axial": 2, "coronal": 3, "sagittal": 4}
+    assert refreshed_overlay["channel_count"] == 4
+    assert refreshed_overlay["color_mode"] == "rgba"
+    assert refreshed_overlay["hidden"] is True
+    assert refreshed_overlay["assignment_note"] == "keep overlay state"
+    assert refreshed_overlay["metadata"]["assignment_detail"] == "keep nested overlay state"
+    assert refreshed_overlay["metadata"]["color_mode"] == "rgba"
+    assert refreshed_overlay["slice_axis"] == "axial"
+    assert refreshed_overlay["slice_index"] == 1
+    assert refreshed_overlay["overlay_base_image_id"] == base["id"]
 
 
 def test_overlay_hidden_patch_preserves_assigned_source_metadata(client):

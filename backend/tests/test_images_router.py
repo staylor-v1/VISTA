@@ -2100,7 +2100,7 @@ def test_persisted_npy_metadata_rejects_unsafe_fast_path(metadata):
     assert _persisted_npy_volume_meta(metadata) is None
 
 
-def test_legacy_persisted_npy_metadata_defaults_to_scalar_layout():
+def test_legacy_persisted_npy_metadata_without_layout_requires_header_probe():
     from routers.images import _persisted_npy_volume_meta
 
     meta = _persisted_npy_volume_meta(
@@ -2110,8 +2110,45 @@ def test_legacy_persisted_npy_metadata_defaults_to_scalar_layout():
         }
     )
 
-    assert meta["channel_count"] == 1
-    assert meta["color_mode"] == "scalar"
+    assert meta is None
+
+
+def test_legacy_rgba_npy_metadata_uses_header_for_authoritative_layout(client, monkeypatch):
+    pid = _create_project(client, name="legacy-rgba-volume-metadata")
+    payload = io.BytesIO()
+    np.save(payload, np.zeros((2, 3, 4, 4), dtype=np.uint8))
+    payload.seek(0)
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("legacy-rgba.npy", payload, "application/octet-stream")},
+    )
+    assert upload.status_code == 201, upload.text
+    image_id = upload.json()["id"]
+    assert client.delete(f"/api/images/{image_id}/metadata/channel_count").status_code == 200
+    assert client.delete(f"/api/images/{image_id}/metadata/color_mode").status_code == 200
+    from routers import images as images_router
+
+    original_get_metadata = images_router._persisted_npy_volume_meta
+    assert original_get_metadata({
+        "volume_shape": {"axial": 2, "coronal": 3, "sagittal": 4},
+        "voxel_dtype": "uint8",
+    }) is None
+    header_reads = 0
+
+    async def read_header(_db_image):
+        nonlocal header_reads
+        header_reads += 1
+        return (2, 3, 4, 4), "|u1"
+
+    monkeypatch.setattr("routers.images._read_authorized_npy_header", read_header)
+
+    response = client.get(f"/api/images/{image_id}/volume-metadata")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["dimensions"] == {"axial": 2, "coronal": 3, "sagittal": 4}
+    assert response.json()["channel_count"] == 4
+    assert response.json()["color_mode"] == "rgba"
+    assert header_reads == 1
 
 
 def test_invalid_persisted_npy_metadata_falls_back_to_header(client, monkeypatch, tmp_path):

@@ -391,7 +391,16 @@ function fireCoordinatePointerEvent(target, type, init = {}) {
 
 const defaultCalibration = { pixels_per_mm: 20, pixels_per_inch: 508, unit: 'mm' };
 
-function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys, metadataDict = { calibration_default: defaultCalibration }, projectImages = null }) {
+function mockWorkbenchFetch({
+  user,
+  batches,
+  parts,
+  workspaceState = {},
+  hotkeys,
+  metadataDict = { calibration_default: defaultCalibration },
+  projectImages = null,
+  volumeMetadataById = {},
+}) {
   let mutableParts = [...parts];
   const uploadedImages = [];
   const savedWorkspaceStates = [];
@@ -493,6 +502,33 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
     }
     if (url.includes('/metadata-dict') && (!options.method || options.method === 'GET')) {
       return Promise.resolve({ ok: true, json: async () => metadataDict });
+    }
+    if (url.includes('/volume-metadata') && (!options.method || options.method === 'GET')) {
+      const imageId = decodeURIComponent(url.split('/images/')[1].split('/')[0]);
+      const configured = volumeMetadataById[imageId];
+      if (configured === false) return Promise.resolve({ ok: false, status: 500 });
+      if (configured) return Promise.resolve({ ok: true, json: async () => configured });
+      const projectRecord = (Array.isArray(projectImages) ? projectImages : [])
+        .find((image) => String(image.id) === imageId);
+      const sourceRecord = mutableParts
+        .flatMap((part) => (Array.isArray(part?.metadata?.source_images) ? part.metadata.source_images : []))
+        .find((record) => String(record.image_id || '') === imageId);
+      const metadata = projectRecord?.metadata || sourceRecord?.metadata || sourceRecord || {};
+      const dimensions = metadata.volume_shape || sourceRecord?.volume_shape;
+      if (!dimensions) return Promise.resolve({ ok: false, status: 404 });
+      const channelCount = Number(metadata.channel_count || sourceRecord?.channel_count || 1);
+      const colorMode = metadata.color_mode || sourceRecord?.color_mode || 'scalar';
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          dimensions,
+          channel_count: channelCount,
+          color_mode: colorMode,
+          pixel_dtype: metadata.pixel_dtype || metadata.voxel_dtype || 'uint8',
+          voxel_dtype: metadata.voxel_dtype || metadata.pixel_dtype || 'uint8',
+          bit_depth: metadata.bit_depth || 8,
+        }),
+      });
     }
     if (url.includes('/metadata') && options.method === 'POST') {
       const payload = JSON.parse(options.body || '{}');
@@ -1701,6 +1737,145 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('mpr-preview-axial').querySelector('canvas')).toHaveAttribute('height', '550');
   });
 
+  test('probes legacy volume metadata once and renders an RGBA overlay over a scalar source', async () => {
+    const sourceId = 'legacy-scalar-source';
+    const overlayId = 'legacy-rgba-overlay';
+    mockWorkbenchFetch({
+      user: 'legacy-rgba-volume-overlay',
+      batches: [{ id: 'batch-legacy-rgba', name: 'Legacy RGBA' }],
+      workspaceState: { selected_part_id: 'part-legacy-rgba' },
+      parts: [{
+        id: 'part-legacy-rgba',
+        batch_id: 'batch-legacy-rgba',
+        serial_number: 'LEGACY-RGBA',
+        display_name: 'Legacy RGBA overlay',
+        metadata: {
+          source_images: [
+            { filename: 'source.npy', image_id: sourceId, overlay: false },
+            {
+              filename: 'segments.npy',
+              image_id: overlayId,
+              overlay: true,
+              overlay_base_image_id: sourceId,
+            },
+          ],
+        },
+      }],
+      projectImages: [
+        { id: sourceId, filename: 'source.npy', metadata: {} },
+        { id: overlayId, filename: 'segments.npy', metadata: {} },
+      ],
+      volumeMetadataById: {
+        [sourceId]: {
+          dimensions: { axial: 2, coronal: 3, sagittal: 4 },
+          channel_count: 1,
+          color_mode: 'scalar',
+          pixel_dtype: 'uint16',
+          voxel_dtype: 'uint16',
+          bit_depth: 16,
+        },
+        [overlayId]: {
+          dimensions: { axial: 2, coronal: 3, sagittal: 4 },
+          channel_count: 4,
+          color_mode: 'rgba',
+          pixel_dtype: 'uint8',
+          voxel_dtype: 'uint8',
+          bit_depth: 8,
+        },
+      },
+    });
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    const panel = await screen.findByTestId('mpr-panel');
+    await waitFor(() => {
+      const axialCanvas = within(panel).getByTestId('mpr-preview-axial').querySelector('canvas');
+      expect(axialCanvas).toHaveAttribute('data-volume-color-mode', 'scalar');
+      expect(axialCanvas).toHaveAttribute('data-overlay-color-modes', 'rgba');
+      expect(axialCanvas).toHaveAttribute('width', '4');
+      expect(axialCanvas).toHaveAttribute('height', '3');
+    });
+    expect(screen.queryByTestId('volume-metadata-probe-warning')).not.toBeInTheDocument();
+    expect(global.fetch.mock.calls.filter(([url]) => url === `/api/images/${sourceId}/volume-metadata`)).toHaveLength(1);
+    expect(global.fetch.mock.calls.filter(([url]) => url === `/api/images/${overlayId}/volume-metadata`)).toHaveLength(1);
+    expect(Array.from(document.querySelectorAll('img')).some((image) => (
+      image.getAttribute('src') === `/api/images/${sourceId}/content`
+      || image.getAttribute('src') === `/api/images/${overlayId}/content`
+    ))).toBe(false);
+  });
+
+  test('retries a transient legacy volume probe after reselection without using image content fallback', async () => {
+    const sourceId = 'legacy-unreadable-volume';
+    mockWorkbenchFetch({
+      user: 'legacy-volume-probe-failure',
+      batches: [{ id: 'batch-legacy-failure', name: 'Legacy failure' }],
+      workspaceState: { selected_part_id: 'part-legacy-failure' },
+      parts: [
+        {
+          id: 'part-legacy-failure',
+          batch_id: 'batch-legacy-failure',
+          serial_number: 'LEGACY-FAILURE',
+          display_name: 'Legacy volume probe failure',
+          metadata: {
+            source_images: [{ filename: 'unreadable.npy', image_id: sourceId, overlay: false }],
+          },
+        },
+        {
+          id: 'part-probe-reset',
+          batch_id: 'batch-legacy-failure',
+          serial_number: 'PROBE-RESET',
+          display_name: 'Probe reset part',
+          metadata: {},
+        },
+      ],
+      projectImages: [{ id: sourceId, filename: 'unreadable.npy', metadata: {} }],
+    });
+    const baseFetch = global.fetch;
+    let metadataAttempts = 0;
+    global.fetch = jest.fn((url, options = {}) => {
+      if (url === `/api/images/${sourceId}/volume-metadata`) {
+        metadataAttempts += 1;
+        if (metadataAttempts === 1) return Promise.resolve({ ok: false, status: 503 });
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            dimensions: { axial: 2, coronal: 3, sagittal: 4 },
+            channel_count: 1,
+            color_mode: 'scalar',
+            pixel_dtype: 'uint16',
+            voxel_dtype: 'uint16',
+            bit_depth: 16,
+          }),
+        });
+      }
+      return baseFetch(url, options);
+    });
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    const warning = await screen.findByTestId('volume-metadata-probe-warning');
+    expect(warning).toHaveTextContent('The volume was not rendered as a regular image');
+    expect(Array.from(document.querySelectorAll('img')).some((image) => (
+      image.getAttribute('src') === `/api/images/${sourceId}/content`
+    ))).toBe(false);
+
+    fireEvent.change(screen.getByTestId('mpr-part-selector'), { target: { value: 'part-probe-reset' } });
+    await waitFor(() => expect(screen.queryByTestId('volume-metadata-probe-warning')).not.toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('mpr-part-selector'), { target: { value: 'part-legacy-failure' } });
+
+    await waitFor(() => {
+      const axialCanvas = screen.getByTestId('mpr-preview-axial').querySelector('canvas');
+      expect(axialCanvas).toHaveAttribute('data-volume-color-mode', 'scalar');
+      expect(axialCanvas).toHaveAttribute('width', '4');
+      expect(axialCanvas).toHaveAttribute('height', '3');
+    });
+    expect(metadataAttempts).toBe(2);
+    expect(screen.queryByTestId('volume-metadata-probe-warning')).not.toBeInTheDocument();
+    expect(Array.from(document.querySelectorAll('img')).some((image) => (
+      image.getAttribute('src') === `/api/images/${sourceId}/content`
+    ))).toBe(false);
+  });
+
   test('carries RGB and RGBA server volume layout through cache identity and windowing', () => {
     const rgb = createServerVolumeDescriptor({
       filename: 'rgb.npy',
@@ -1718,7 +1893,7 @@ describe('InspectionWorkbenchPanel', () => {
         color_mode: 'rgba',
       },
     });
-    const legacyScalar = createServerVolumeDescriptor({
+    const legacyWithoutLayout = createServerVolumeDescriptor({
       filename: 'legacy.npy',
       image_id: 'legacy-image',
       volume_shape: { axial: 2, coronal: 3, sagittal: 4 },
@@ -1726,12 +1901,11 @@ describe('InspectionWorkbenchPanel', () => {
 
     expect(rgb).toMatchObject({ channelCount: 3, colorMode: 'rgb' });
     expect(rgba).toMatchObject({ channelCount: 4, colorMode: 'rgba' });
-    expect(legacyScalar).toMatchObject({ channelCount: 1, colorMode: 'scalar' });
+    expect(legacyWithoutLayout).toBeNull();
     expect(getMprVolumeCacheKey(rgb)).toContain('rgb-image:3:rgb');
     expect(getMprVolumeCacheKey(rgba)).toContain('rgba-image:4:rgba');
     expect(shouldApplyDisplayWindowToVolumeCache(rgb)).toBe(false);
     expect(shouldApplyDisplayWindowToVolumeCache(rgba)).toBe(false);
-    expect(shouldApplyDisplayWindowToVolumeCache(legacyScalar)).toBe(true);
     expect(shouldApplyDisplayWindowToVolumeCache({})).toBe(true);
   });
 
@@ -5186,7 +5360,7 @@ describe('InspectionWorkbenchPanel', () => {
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
 
     const annotationList = await screen.findByTestId('annotation-list');
-    fireEvent.click(within(annotationList).getByRole('button', { name: 'Edit annotation Persisted helper segment' }));
+    fireEvent.click(await within(annotationList).findByRole('button', { name: 'Edit annotation Persisted helper segment' }));
     expect(screen.getByRole('dialog', { name: 'Segmentation Helpers' })).toBeInTheDocument();
     expect(screen.getByLabelText('Creation axis')).toHaveValue('XZ');
     expect(screen.getByLabelText('Creation axis')).toHaveAttribute('readonly');

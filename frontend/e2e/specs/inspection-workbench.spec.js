@@ -469,7 +469,9 @@ test.describe('PT3 large NPY lazy MPR loading', () => {
       { id: baseImageId, filename: 'nist_part.npy', metadata: { load_mode: 'volume', volume_shape: dimensions, voxel_dtype: 'uint16' } },
       { id: overlayImageId, filename: 'nist_part_segments.npy', metadata: { load_mode: 'volume', volume_shape: dimensions, voxel_dtype: 'uint8' } },
     ];
+    const metadataRequests = [];
     const sliceRequests = [];
+    const volumeContentRequests = [];
     const pageErrors = [];
     const failedRequests = [];
     let inFlightSliceRequests = 0;
@@ -477,6 +479,16 @@ test.describe('PT3 large NPY lazy MPR loading', () => {
     let sliceRequestDelayMs = 25;
 
     page.on('pageerror', (error) => pageErrors.push(error.message));
+    page.on('request', (request) => {
+      const requestUrl = new URL(request.url());
+      if (
+        [baseImageId, overlayImageId].some((imageId) => (
+          requestUrl.pathname === `/api/images/${imageId}/content`
+        ))
+      ) {
+        volumeContentRequests.push(requestUrl.pathname);
+      }
+    });
     page.on('requestfailed', (request) => {
       // React may cancel superseded project-data reads while the inspection tab
       // initializes; those browser aborts are not failed slice loads.
@@ -490,6 +502,27 @@ test.describe('PT3 large NPY lazy MPR loading', () => {
       mockParts: [largeVolumePart],
       mockBatches: [{ id: 'batch-adv-a', name: 'Batch Adv A' }],
       images,
+    });
+
+    await page.route(/\/api\/images\/(large-npy-base|large-npy-segments)\/volume-metadata(?:\?.*)?$/, async (route) => {
+      const requestUrl = new URL(route.request().url());
+      const imageId = requestUrl.pathname.split('/').at(-2);
+      const isOverlay = imageId === overlayImageId;
+      metadataRequests.push(imageId);
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          dimensions,
+          channel_count: isOverlay ? 4 : 1,
+          color_mode: isOverlay ? 'rgba' : 'scalar',
+          pixel_dtype: isOverlay ? 'uint8' : 'uint16',
+          voxel_dtype: isOverlay ? 'uint8' : 'uint16',
+          bit_depth: isOverlay ? 8 : 16,
+          source_kind: 'npy',
+          interpretation: 'voxel_array',
+        }),
+      });
     });
 
     await page.route(/\/api\/images\/(large-npy-base|large-npy-segments)\/volume-slice\?/, async (route) => {
@@ -508,7 +541,7 @@ test.describe('PT3 large NPY lazy MPR loading', () => {
       await new Promise((resolve) => setTimeout(resolve, sliceRequestDelayMs));
       const isOverlay = imageId === overlayImageId;
       const body = isOverlay
-        ? `<svg xmlns="http://www.w3.org/2000/svg" width="${imageDimensions.width}" height="${imageDimensions.height}" viewBox="0 0 100 100" preserveAspectRatio="none"><rect x="38" y="38" width="24" height="24" rx="5" fill="#ff1744"/><circle cx="50" cy="50" r="31" fill="none" stroke="#ff4f72" stroke-width="4"/><rect x="14" y="9" width="10" height="8" fill="#ff002f"/></svg>`
+        ? `<svg xmlns="http://www.w3.org/2000/svg" width="${imageDimensions.width}" height="${imageDimensions.height}" viewBox="0 0 100 100" preserveAspectRatio="none"><rect x="38" y="38" width="24" height="24" rx="5" fill="#ff1744" fill-opacity="0.82"/><circle cx="50" cy="50" r="31" fill="none" stroke="#ff4f72" stroke-opacity="0.88" stroke-width="4"/><rect x="14" y="9" width="10" height="8" fill="#ff002f"/></svg>`
         : `<svg xmlns="http://www.w3.org/2000/svg" width="${imageDimensions.width}" height="${imageDimensions.height}" viewBox="0 0 100 100" preserveAspectRatio="none"><rect width="100" height="100" fill="#182332"/><circle cx="50" cy="50" r="31" fill="#aeb8c6"/><path d="M19 50h62M50 19v62" stroke="#566579" stroke-width="2"/><rect x="8" y="5" width="28" height="16" fill="#eef2f7"/><text x="4" y="96" fill="#d9e2ec" font-size="6">${axis} ${index}</text></svg>`;
       await route.fulfill({ status: 200, contentType: 'image/svg+xml', body });
       inFlightSliceRequests -= 1;
@@ -528,6 +561,10 @@ test.describe('PT3 large NPY lazy MPR loading', () => {
     await expect(page.locator('#mpr-slice-sagittal')).toHaveAttribute('max', '983');
     await expect(page.locator('.mpr-slice-canvas[data-slice-load-status="ready"]')).toHaveCount(3);
     await expect.poll(() => inFlightSliceRequests).toBe(0);
+    expect(metadataRequests.filter((imageId) => imageId === baseImageId)).toHaveLength(1);
+    expect(metadataRequests.filter((imageId) => imageId === overlayImageId)).toHaveLength(1);
+    expect(metadataRequests).toHaveLength(2);
+    expect(volumeContentRequests).toEqual([]);
 
     const baseRequestsAfterLoad = sliceRequests.filter((request) => request.imageId === baseImageId);
     const overlayRequests = sliceRequests.filter((request) => request.imageId === overlayImageId);
@@ -651,6 +688,7 @@ test.describe('PT3 large NPY lazy MPR loading', () => {
     expect(rapidScrubRequests.length).toBeLessThanOrEqual(20);
     expect(rapidScrubRequests.some((request) => request.axis === 'axial' && request.index === 299)).toBe(true);
     expect(maxInFlightSliceRequests).toBeLessThanOrEqual(4);
+    expect(volumeContentRequests).toEqual([]);
 
     await mprPanel.screenshot({ path: largeNpyLazyMprScreenshotPath });
     expect(pageErrors).toEqual([]);

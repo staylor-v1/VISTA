@@ -993,14 +993,28 @@ function getPartSummaryModalities(part, imageRefs = getPartImageRefs(part)) {
 }
 
 function getVolumeShapeFromEntry(entry, projectImageLookup = {}) {
+  const isValidShape = (candidate) => MPR_AXES.every((axis) => {
+    const value = Number(candidate?.[axis]);
+    return Number.isFinite(value) && value > 0 && Math.floor(value) === value;
+  });
   const direct = entry?.volume_shape || entry?.metadata?.volume_shape;
-  if (direct) return direct;
+  if (isValidShape(direct)) return direct;
   const record = getProjectImageRecord(projectImageLookup, entry);
-  return record?.metadata?.volume_shape || null;
+  const authoritative = record?.volume_shape || record?.metadata?.volume_shape;
+  return isValidShape(authoritative) ? authoritative : null;
 }
 
 function isVolumeFileEntry(entry, projectImageLookup = {}) {
-  const filename = String(entry?.filename || getProjectImageRecord(projectImageLookup, entry)?.filename || '').toLowerCase();
+  const record = getProjectImageRecord(projectImageLookup, entry) || {};
+  const filename = String(entry?.filename || record.filename || '').toLowerCase();
+  const hasExplicitSliceIndex = [
+    entry?.slice_index,
+    entry?.metadata?.slice_index,
+    record?.slice_index,
+    record?.metadata?.slice_index,
+  ].some((value) => value !== undefined && value !== null && Number.isFinite(Number(value)));
+  const isTiffVolumeCandidate = (filename.endsWith('.tif') || filename.endsWith('.tiff'))
+    && !hasExplicitSliceIndex;
   return Boolean(
     entry?.load_mode === 'volume'
       || entry?.metadata?.load_mode === 'volume'
@@ -1009,8 +1023,7 @@ function isVolumeFileEntry(entry, projectImageLookup = {}) {
       || filename.endsWith('.npy')
       || filename.endsWith('.npz')
       || filename.endsWith('.inspiro')
-      || filename.endsWith('.tif')
-      || filename.endsWith('.tiff'),
+      || isTiffVolumeCandidate,
   );
 }
 
@@ -1040,11 +1053,6 @@ function getVolumeEntryImageId(entry, projectImageLookup = {}) {
   return getProjectImageRecord(projectImageLookup, entry)?.id || '';
 }
 
-function isNpyVolumeFileEntry(entry, projectImageLookup = {}) {
-  const filename = String(entry?.filename || getProjectImageRecord(projectImageLookup, entry)?.filename || '').toLowerCase();
-  return filename.endsWith('.npy');
-}
-
 function normalizeServerVolumeDimensions(candidate = {}) {
   return MPR_AXES.reduce((acc, axis) => {
     const value = Number(candidate?.[axis]);
@@ -1054,25 +1062,84 @@ function normalizeServerVolumeDimensions(candidate = {}) {
 }
 
 function getServerVolumeColorLayout(entry, projectImageLookup = {}) {
-  const recordMetadata = getProjectImageRecord(projectImageLookup, entry)?.metadata || {};
-  const channelCount = Number(
-    entry?.channel_count
-      ?? entry?.metadata?.channel_count
-      ?? recordMetadata.channel_count,
-  );
-  const colorMode = String(
-    entry?.color_mode
-      ?? entry?.metadata?.color_mode
-      ?? recordMetadata.color_mode
-      ?? '',
-  ).toLowerCase();
-  if (channelCount === 3 && colorMode === 'rgb') return { channelCount: 3, colorMode: 'rgb' };
-  if (channelCount === 4 && colorMode === 'rgba') return { channelCount: 4, colorMode: 'rgba' };
+  const record = getProjectImageRecord(projectImageLookup, entry) || {};
+  const candidates = [entry, entry?.metadata, record, record?.metadata];
+  for (const candidate of candidates) {
+    const channelCount = Number(candidate?.channel_count);
+    const colorMode = String(candidate?.color_mode || '').toLowerCase();
+    if (channelCount === 1 && colorMode === 'scalar') return { channelCount: 1, colorMode: 'scalar' };
+    if (channelCount === 3 && colorMode === 'rgb') return { channelCount: 3, colorMode: 'rgb' };
+    if (channelCount === 4 && colorMode === 'rgba') return { channelCount: 4, colorMode: 'rgba' };
+  }
+  return null;
+}
+
+function getVolumeColorLayout(entry, projectImageLookup = {}) {
+  const layout = getServerVolumeColorLayout(entry, projectImageLookup);
+  if (layout) return layout;
   return { channelCount: 1, colorMode: 'scalar' };
+}
+
+function getVolumeMetadataProbeCandidates(part, projectImageLookup = {}) {
+  const sourceImages = Array.isArray(part?.metadata?.source_images) ? part.metadata.source_images : [];
+  return sourceImages
+    .filter((entry) => entry && isVolumeFileEntry(entry, projectImageLookup))
+    .filter((entry) => (
+      !getVolumeShapeFromEntry(entry, projectImageLookup)
+      || !getServerVolumeColorLayout(entry, projectImageLookup)
+    ))
+    .map((entry) => ({
+      entry,
+      imageId: String(getVolumeEntryImageId(entry, projectImageLookup) || ''),
+      filename: String(entry?.filename || getProjectImageRecord(projectImageLookup, entry)?.filename || ''),
+    }));
+}
+
+function normalizeProbedVolumeMetadata(payload) {
+  const dimensions = getVolumeShapeFromEntry({ volume_shape: payload?.dimensions });
+  const layout = getServerVolumeColorLayout({
+    channel_count: payload?.channel_count,
+    color_mode: payload?.color_mode,
+  });
+  if (!dimensions || !layout) {
+    throw new Error('Volume metadata response did not include valid dimensions and color layout');
+  }
+  const metadata = {
+    volume_shape: dimensions,
+    channel_count: layout.channelCount,
+    color_mode: layout.colorMode,
+  };
+  [
+    'pixel_dtype',
+    'voxel_dtype',
+    'bit_depth',
+    'metadata_bit_depth',
+    'source_kind',
+    'interpretation',
+    'image_count',
+    'height',
+    'width',
+  ].forEach((key) => {
+    if (payload?.[key] !== undefined && payload?.[key] !== null) metadata[key] = payload[key];
+  });
+  return metadata;
 }
 
 function shouldApplyDisplayWindowToVolumeCache(volumeCache) {
   return volumeCache?.colorMode !== 'rgb' && volumeCache?.colorMode !== 'rgba';
+}
+
+function getMprOverlayCompositeAlpha(volumeCache) {
+  return volumeCache?.colorMode === 'rgba' ? 1 : 0.45;
+}
+
+function drawMprOverlaySlice(context, overlaySliceCanvas, overlayCache, width, height) {
+  if (!context || !overlaySliceCanvas) return;
+  context.save();
+  context.globalAlpha = getMprOverlayCompositeAlpha(overlayCache);
+  context.globalCompositeOperation = 'source-over';
+  context.drawImage(overlaySliceCanvas, 0, 0, width, height);
+  context.restore();
 }
 
 function getServerVolumeSliceUrl(volume, axis, index) {
@@ -1087,9 +1154,9 @@ function getServerVolumeSliceUrl(volume, axis, index) {
 function createServerVolumeDescriptor(entry, projectImageLookup = {}, extra = {}) {
   const imageId = getVolumeEntryImageId(entry, projectImageLookup);
   const volumeShape = getVolumeShapeFromEntry(entry, projectImageLookup);
-  if (!imageId || !volumeShape || !isNpyVolumeFileEntry(entry, projectImageLookup)) return null;
-  const dimensions = normalizeServerVolumeDimensions(volumeShape);
   const colorLayout = getServerVolumeColorLayout(entry, projectImageLookup);
+  if (!imageId || !volumeShape || !colorLayout || !isVolumeFileEntry(entry, projectImageLookup)) return null;
+  const dimensions = normalizeServerVolumeDimensions(volumeShape);
   const descriptor = {
     kind: MPR_SERVER_VOLUME_KIND,
     id: String(imageId),
@@ -1135,22 +1202,13 @@ function getVolumeSourceImages(part, projectImageLookup = {}) {
       if (!imageId) return null;
       const sliceIndex = Number(entry?.metadata?.slice_index ?? entry?.slice_index ?? index);
       const normalizedSliceIndex = Number.isFinite(sliceIndex) ? sliceIndex : index;
-      const volumeShape = getVolumeShapeFromEntry(entry, projectImageLookup);
-      if (isVolumeFileEntry(entry, projectImageLookup) && volumeShape) {
-        const axialCount = Math.max(1, Math.floor(Number(volumeShape.axial) || Number(entry?.frame_count) || Number(entry?.metadata?.frame_count) || 1));
-        return Array.from({ length: axialCount }, (_unused, axialIndex) => ({
-          id: `${String(imageId)}:axial:${axialIndex}`,
-          imageId: String(imageId),
-          filename,
-          sliceIndex: axialIndex,
-          url: `/api/images/${encodeURIComponent(String(imageId))}/volume-slice?axis=axial&index=${axialIndex}`,
-        }));
-      }
+      if (isVolumeFileEntry(entry, projectImageLookup)) return null;
       return {
         id: String(imageId),
         filename,
         sliceIndex: normalizedSliceIndex,
         url: `/api/images/${encodeURIComponent(String(imageId))}/content`,
+        ...getVolumeColorLayout(entry, projectImageLookup),
       };
     })
     .flat()
@@ -1187,12 +1245,14 @@ function getVolumeOverlayStacks(part, projectImageLookup = {}) {
       serverVolumesByOverlayImage.set(key, serverVolume);
       return;
     }
+    if (isVolumeFileEntry(entry, projectImageLookup)) return;
     if (!stacksByOverlayImage.has(key)) stacksByOverlayImage.set(key, []);
     stacksByOverlayImage.get(key).push({
       id: String(imageId),
       filename,
       sliceIndex: Number.isFinite(sliceIndex) ? sliceIndex : index,
       url: `/api/images/${encodeURIComponent(String(imageId))}/content`,
+      ...getVolumeColorLayout(entry, projectImageLookup),
       overlayBaseImageId: String(entry.overlay_base_image_id || ''),
       overlayBaseFilename: String(entry.overlay_base_filename || ''),
       hidden: entry.hidden === true,
@@ -2166,6 +2226,8 @@ async function buildMprVolumeCache(cacheKey, imageStack, dimensions, onProgress)
     width,
     height,
     depth,
+    channelCount: Number(imageStack[0]?.channelCount) || 1,
+    colorMode: String(imageStack[0]?.colorMode || 'scalar'),
     slices,
     sliceCanvases: new Map(),
   };
@@ -2979,11 +3041,7 @@ const MprSliceCanvas = React.forwardRef(function MprSliceCanvas({
     overlayCaches.forEach((overlayCache) => {
       const overlaySliceCanvas = getCachedMprSliceCanvas(axis, slicePosition, dimensions, overlayCache);
       if (!overlaySliceCanvas) return;
-      ctx.save();
-      ctx.globalAlpha = 0.45;
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.drawImage(overlaySliceCanvas, 0, 0, canvas.width, canvas.height);
-      ctx.restore();
+      drawMprOverlaySlice(ctx, overlaySliceCanvas, overlayCache, canvas.width, canvas.height);
     });
     return undefined;
   }, [axis, dimensions, displayDomain, displayWindow, fallbackDimensions.height, fallbackDimensions.width, overlayCaches, relevantSlicePosition, serverSliceRevision, slicePosition, volumeCache]);
@@ -3001,6 +3059,8 @@ const MprSliceCanvas = React.forwardRef(function MprSliceCanvas({
       data-mpr-slice-index={relevantSlicePosition}
       data-volume-cache-status={volumeCacheStatus}
       data-slice-load-status={serverSliceStatus}
+      data-volume-color-mode={volumeCache?.colorMode || ''}
+      data-overlay-color-modes={overlayCaches.map((cache) => cache?.colorMode || '').filter(Boolean).join(',')}
       data-display-window={`${formatWindowValue(displayWindow?.min ?? 0)}-${formatWindowValue(displayWindow?.max ?? 255)}`}
       data-display-domain={`${formatWindowValue(displayDomain?.min ?? 0)}-${formatWindowValue(displayDomain?.max ?? 255)}`}
     />
@@ -3377,6 +3437,8 @@ function InspectionWorkbenchPanel({
   const [normalizationTriageField, setNormalizationTriageField] = useState('');
   const [selectedImageRef, setSelectedImageRef] = useState('');
   const [projectImageLookup, setProjectImageLookup] = useState({});
+  const volumeMetadataProbeCacheRef = useRef(new Map());
+  const [volumeMetadataProbeState, setVolumeMetadataProbeState] = useState({ pending: false, warning: '' });
   const [deletingOverlayId, setDeletingOverlayId] = useState('');
   const [fullscreenImageModal, setFullscreenImageModal] = useState(null);
   const [fullscreenMeasureActive, setFullscreenMeasureActive] = useState(false);
@@ -3833,6 +3895,101 @@ function InspectionWorkbenchPanel({
     () => filteredParts.find((part) => part.id === selectedPartId) || filteredParts[0] || null,
     [filteredParts, selectedPartId],
   );
+
+  useEffect(() => {
+    const candidates = getVolumeMetadataProbeCandidates(selectedPart, projectImageLookup);
+    if (candidates.length === 0) {
+      setVolumeMetadataProbeState((previous) => (
+        previous.pending || previous.warning ? { pending: false, warning: '' } : previous
+      ));
+      return undefined;
+    }
+
+    const unresolved = candidates.filter((candidate) => !candidate.imageId);
+    const probeableById = new Map();
+    candidates.forEach((candidate) => {
+      if (candidate.imageId && !probeableById.has(candidate.imageId)) {
+        probeableById.set(candidate.imageId, candidate);
+      }
+    });
+    const probeable = Array.from(probeableById.values());
+    if (probeable.length === 0) {
+      const labels = unresolved.map((candidate) => candidate.filename || 'unnamed volume').join(', ');
+      setVolumeMetadataProbeState({
+        pending: false,
+        warning: `Unable to inspect volume metadata because the image record is unavailable: ${labels}`,
+      });
+      return undefined;
+    }
+
+    let cancelled = false;
+    setVolumeMetadataProbeState({ pending: true, warning: '' });
+    const probes = probeable.map((candidate) => {
+      const cacheKey = `${String(projectId)}:${candidate.imageId}`;
+      let probe = volumeMetadataProbeCacheRef.current.get(cacheKey);
+      if (!probe) {
+        probe = fetch(`/api/images/${encodeURIComponent(candidate.imageId)}/volume-metadata`)
+          .then(async (response) => {
+            if (!response.ok) throw new Error(`metadata request failed (${response.status})`);
+            return normalizeProbedVolumeMetadata(await response.json());
+          });
+        volumeMetadataProbeCacheRef.current.set(cacheKey, probe);
+        probe.catch(() => {
+          if (volumeMetadataProbeCacheRef.current.get(cacheKey) === probe) {
+            volumeMetadataProbeCacheRef.current.delete(cacheKey);
+          }
+        });
+      }
+      return probe.then((metadata) => ({ candidate, metadata }));
+    });
+
+    Promise.allSettled(probes).then((results) => {
+      if (cancelled) return;
+      const successful = results
+        .filter((result) => result.status === 'fulfilled')
+        .map((result) => result.value);
+      if (successful.length > 0) {
+        setProjectImageLookup((previous) => {
+          const next = { ...previous };
+          successful.forEach(({ candidate, metadata }) => {
+            const existing = previous[candidate.imageId] || previous[candidate.filename] || {};
+            const filename = String(existing.filename || candidate.filename || '');
+            const updated = {
+              ...existing,
+              id: candidate.imageId,
+              filename,
+              ...metadata,
+              metadata: {
+                ...(existing.metadata && typeof existing.metadata === 'object' ? existing.metadata : {}),
+                ...metadata,
+              },
+            };
+            next[candidate.imageId] = updated;
+            if (filename) next[filename] = updated;
+          });
+          return next;
+        });
+      }
+      const failedLabels = results
+        .map((result, index) => (result.status === 'rejected'
+          ? (probeable[index]?.filename || probeable[index]?.imageId || 'volume')
+          : null))
+        .filter(Boolean);
+      const unresolvedLabels = unresolved.map((candidate) => candidate.filename || 'unnamed volume');
+      const warningLabels = [...failedLabels, ...unresolvedLabels];
+      setVolumeMetadataProbeState({
+        pending: false,
+        warning: warningLabels.length > 0
+          ? `Unable to inspect volume metadata for ${warningLabels.join(', ')}. The volume was not rendered as a regular image.`
+          : '',
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, projectImageLookup, selectedPart]);
+
   const activePartMutationScope = `${projectId}:${selectedPart?.id || ''}`;
   activeSegmentationPersistenceScopeRef.current = activePartMutationScope;
   if (activeAnnotationViewRef.current.scope !== activePartMutationScope) {
@@ -6824,7 +6981,18 @@ function InspectionWorkbenchPanel({
               )}
             </div>
           </div>
+          {volumeMetadataProbeState.warning && (
+            <div className="alert alert-warning" role="alert" data-testid="volume-metadata-probe-warning">
+              {volumeMetadataProbeState.warning}
+            </div>
+          )}
           <div className="mpr-grid mpr-grid-four" data-testid="mpr-grid">
+            {volumeMetadataProbeState.pending && (
+              <div className="mpr-grid-loading" role="status" aria-live="polite" data-testid="volume-metadata-probe-loading">
+                <strong>Inspecting volume metadata…</strong>
+                <small>VISTA is confirming volume dimensions and color channels before rendering.</small>
+              </div>
+            )}
             {volumeCacheState.status === 'loading' && hasVolumeImageSource && (
               <div className="mpr-grid-loading" role="status" aria-live="polite">
                 <strong>Preparing MPR slices…</strong>
@@ -10593,10 +10761,12 @@ export {
   getMprAxisImageDimensions,
   getMprSliceCanvasCacheStats,
   getMprSliceCachingMessage,
+  getMprOverlayCompositeAlpha,
   getServerVolumePrefetchSources,
   getServerVolumeSliceUrl,
   projectMprPointToOverlay,
   drawServerMprSliceImage,
+  drawMprOverlaySlice,
   createServerVolumeDescriptor,
   getMprVolumeCacheKey,
   rememberSliceCanvas,

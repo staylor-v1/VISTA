@@ -3028,8 +3028,11 @@ def _persisted_npy_volume_meta(metadata: Dict[str, Any]) -> Optional[Dict[str, A
     persisted_channel_count = metadata.get('channel_count')
     persisted_color_mode = metadata.get('color_mode')
     if persisted_channel_count is None and persisted_color_mode is None:
-        persisted_channel_count = 1
-        persisted_color_mode = 'scalar'
+        # Legacy records cannot prove whether a 3D spatial shape came from a
+        # scalar array or a channel-last RGB(A) array. Fall back to the bounded
+        # NumPy header probe instead of silently treating an RGBA overlay as
+        # scalar data.
+        return None
     valid_layouts = {(1, 'scalar'), (3, 'rgb'), (4, 'rgba')}
     if (persisted_channel_count, persisted_color_mode) not in valid_layouts:
         return None
