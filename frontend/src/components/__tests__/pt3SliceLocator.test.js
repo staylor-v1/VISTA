@@ -1,7 +1,6 @@
 import {
   buildPt3SliceLocatorGeometry,
   drawPt3SliceLocator,
-  layoutPt3SliceLocatorLabels,
   PT3_SLICE_LOCATOR_AXES,
 } from '../pt3SliceLocator';
 
@@ -79,78 +78,11 @@ test('clamps malformed slice and volume inputs to finite degenerate geometry', (
   expect(buildPt3SliceLocatorGeometry({ metadata: null }).activePlaneLabel).toBe('XY • Z 0 / 0');
 });
 
-function expectCollisionFree(labelLayout, width, height) {
-  labelLayout.boxes.forEach((box) => {
-    expect(box.left).toBeGreaterThanOrEqual(0);
-    expect(box.top).toBeGreaterThanOrEqual(0);
-    expect(box.left + box.width).toBeLessThanOrEqual(width);
-    expect(box.top + box.height).toBeLessThanOrEqual(height);
-  });
-  labelLayout.boxes.forEach((left, leftIndex) => {
-    labelLayout.boxes.slice(leftIndex + 1).forEach((right) => {
-      const overlaps = left.left < right.left + right.width
-        && left.left + left.width > right.left
-        && left.top < right.top + right.height
-        && left.top + left.height > right.top;
-      expect(overlaps).toBe(false);
-    });
-  });
-}
-
-test.each([
-  [280, 180],
-  [180, 180],
-])('lays out compact %sx%s labels without collisions or excessive scene coverage', (width, height) => {
-  const geometry = buildPt3SliceLocatorGeometry({
-    metadata,
-    width,
-    height,
-    rotation: { x: -55, y: 122 },
-    slicePosition: { axial: 99, coronal: 274, sagittal: 149 },
-    activeSliceAxis: 'axial',
-  });
-  const layout = layoutPt3SliceLocatorLabels(geometry);
-
-  expect(layout.compact).toBe(true);
-  expect(layout.boxes.map(({ text }) => text)).toEqual([
-    'XY • Z 99',
-    'X 149',
-    'Y 274',
-    'Z 99',
-  ]);
-  expectCollisionFree(layout, width, height);
-  expect(layout.reservedBottom).toBe(34);
-  layout.boxes.forEach((box) => {
-    expect(box.top + box.height).toBeLessThanOrEqual(height - layout.reservedBottom);
-  });
-  const coveredArea = layout.boxes.reduce((total, box) => total + box.width * box.height, 0);
-  expect(coveredArea / (width * height)).toBeLessThan(0.16);
-});
-
-test.each([
-  [180, 96],
-  [100, 72],
-])('omits labels rather than overlapping them in an ultra-short %sx%s canvas', (width, height) => {
-  const geometry = buildPt3SliceLocatorGeometry({
-    metadata,
-    width,
-    height,
-    rotation: { x: -55, y: 122 },
-    slicePosition: { axial: 99, coronal: 274, sagittal: 149 },
-    activeSliceAxis: 'coronal',
-  });
-  const layout = layoutPt3SliceLocatorLabels(geometry);
-
-  expect(layout.boxes[0]).toMatchObject({ kind: 'active', axis: 'coronal' });
-  expect(layout.boxes.length).toBeLessThanOrEqual(4);
-  expectCollisionFree(layout, width, height);
-});
-
 test.each([
   [{ x: 90, y: 90 }, { x: 1, y: 1, z: 1 }],
   [{ x: -90, y: 180 }, { x: -1, y: -1, z: -1 }],
   [{ x: Number.POSITIVE_INFINITY, y: Number.NEGATIVE_INFINITY }, { x: -1, y: 1, z: -1 }],
-])('keeps edge-on, mirrored, and non-finite rotations finite and labelable', (rotation, mirrorScale) => {
+])('keeps edge-on, mirrored, and non-finite rotations finite', (rotation, mirrorScale) => {
   const geometry = buildPt3SliceLocatorGeometry({
     metadata,
     width: 640,
@@ -169,20 +101,26 @@ test.each([
     expect(Number.isFinite(point.y)).toBe(true);
     expect(Number.isFinite(point.depth)).toBe(true);
   });
-  expectCollisionFree(layoutPt3SliceLocatorLabels(geometry), 640, 360);
 });
 
-test('draws high-contrast outlines, active fill, center marker, and compact labels', () => {
+test('draws unlabeled half-width planes and 50%-transparent half-width crosshairs', () => {
+  const strokes = [];
+  const fills = [];
   const ctx = {
     canvas: { width: 800, height: 600 },
+    globalAlpha: 1,
     save: jest.fn(),
     restore: jest.fn(),
     beginPath: jest.fn(),
     moveTo: jest.fn(),
     lineTo: jest.fn(),
     closePath: jest.fn(),
-    stroke: jest.fn(),
-    fill: jest.fn(),
+    stroke: jest.fn(() => strokes.push({
+      alpha: ctx.globalAlpha,
+      lineWidth: ctx.lineWidth,
+      style: ctx.strokeStyle,
+    })),
+    fill: jest.fn(() => fills.push({ alpha: ctx.globalAlpha, style: ctx.fillStyle })),
     arc: jest.fn(),
     fillRect: jest.fn(),
     fillText: jest.fn(),
@@ -197,16 +135,24 @@ test('draws high-contrast outlines, active fill, center marker, and compact labe
   });
 
   expect(geometry.activePlaneLabel).toBe('XZ • Y 274 / 549');
-  expect(ctx.stroke.mock.calls.length).toBeGreaterThanOrEqual(12);
-  expect(ctx.stroke.mock.calls.length % 2).toBe(0);
-  expect(ctx.fill).toHaveBeenCalledTimes(3);
-  expect(ctx.arc).toHaveBeenCalledTimes(2);
-  expect(ctx.fillText.mock.calls.map(([text]) => text)).toEqual([
-    'XZ • Y 274 / 549',
-    'X 149 / 299',
-    'Y 274 / 549',
-    'Z 99 / 199',
+  expect(strokes).toHaveLength(12);
+  expect(strokes.slice(0, 6).map(({ alpha }) => alpha)).toEqual(Array(6).fill(1));
+  expect(strokes.slice(6).map(({ alpha }) => alpha)).toEqual(Array(6).fill(0.5));
+  expect(strokes.slice(0, 6).map(({ lineWidth }) => lineWidth)).toEqual([
+    2.125, 0.625,
+    2.75, 1.25,
+    2.125, 0.625,
   ]);
+  expect(strokes.slice(6).map(({ lineWidth }) => lineWidth)).toEqual([
+    2.75, 1.25,
+    2.75, 1.25,
+    2.75, 1.25,
+  ]);
+  expect(ctx.fill).toHaveBeenCalledTimes(3);
+  expect(fills.map(({ alpha }) => alpha)).toEqual([1, 0.5, 0.5]);
+  expect(ctx.arc).toHaveBeenCalledTimes(2);
+  expect(ctx.fillRect).not.toHaveBeenCalled();
+  expect(ctx.fillText).not.toHaveBeenCalled();
   expect(ctx.save).toHaveBeenCalledTimes(1);
   expect(ctx.restore).toHaveBeenCalledTimes(1);
 });
