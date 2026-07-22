@@ -902,7 +902,7 @@ const DashboardSettingsModal = memo(function DashboardSettingsModal({ onClose, s
             &times;
           </button>
         </div>
-        <div className="modal-body dashboard-settings-body">
+        <div className="modal-body dashboard-settings-body" role="region" aria-label="Dashboard settings options" tabIndex="0">
           <section className="settings-section" aria-labelledby="dashboard-backup-settings-title">
             <DashboardBackupPanel showToast={showToast} onImportComplete={onImportComplete} compact />
           </section>

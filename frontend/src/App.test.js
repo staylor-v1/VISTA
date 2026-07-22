@@ -294,7 +294,11 @@ describe('project type UI exposure', () => {
     await user.click(screen.getByRole('button', { name: 'Open dashboard settings' }));
 
     const settingsModal = screen.getByRole('dialog', { name: 'Dashboard Settings' });
-    expect(settingsModal.querySelector('.dashboard-settings-body')).toBeInTheDocument();
+    const settingsBody = settingsModal.querySelector('.dashboard-settings-body');
+    expect(settingsBody).toBeInTheDocument();
+    expect(settingsBody).toHaveAttribute('role', 'region');
+    expect(settingsBody).toHaveAttribute('aria-label', 'Dashboard settings options');
+    expect(settingsBody).toHaveAttribute('tabindex', '0');
     expect(await within(settingsModal).findByText('Debug Mode')).toBeInTheDocument();
     const debugToggle = within(settingsModal).getByRole('switch', { name: 'Enable dashboard debug mode' });
     expect(debugToggle).not.toBeChecked();
