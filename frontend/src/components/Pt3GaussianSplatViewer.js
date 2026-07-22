@@ -34,7 +34,9 @@ const EMPTY_VOLUME_IMAGE_STACK = Object.freeze([]);
 export const REAL_SPLAT_BROWSER_MAX = 100000;
 const DEFAULT_REAL_SPLAT_BUDGET = 50000;
 export const DEFAULT_RAY_MARCH_SETTINGS = Object.freeze({
-  presetKey: 'machinedMetal',
+  opacityRampWidth: 0.52,
+  colorLow: '#3d5c7a',
+  colorHigh: '#f5faff',
   volumeOpacity: 1.25,
   intensityThreshold: 0.08,
   quality: 'balanced',
@@ -438,7 +440,7 @@ export default function Pt3GaussianSplatViewer({
     [mirrorScale],
   );
   const activeRayMarchSettings = { ...DEFAULT_RAY_MARCH_SETTINGS, ...(rayMarchSettings || {}) };
-  const { presetKey, quality, volumeOpacity, intensityThreshold, showSliceGuides } = activeRayMarchSettings;
+  const { quality, volumeOpacity, intensityThreshold, showSliceGuides, opacityRampWidth, colorLow, colorHigh } = activeRayMarchSettings;
   const activeSplatViewSettings = { ...DEFAULT_SPLAT_VIEW_SETTINGS, ...(splatViewSettings || {}) };
   const {
     opacity: configuredSplatOpacity,
@@ -694,7 +696,7 @@ export default function Pt3GaussianSplatViewer({
         zoom,
         mirrorScale: activeMirrorScale,
         volumeOpacity,
-        presetKey,
+        transferFunction: { opacityRampWidth, colorLow, colorHigh },
         intensityThreshold,
         sampleStep: profile.sampleStep,
         slicePosition,
@@ -711,7 +713,7 @@ export default function Pt3GaussianSplatViewer({
           rotation,
           zoom,
           mirrorScale: activeMirrorScale,
-          preset: MECHANICAL_TRANSFER_PRESETS[presetKey],
+          preset: MECHANICAL_TRANSFER_PRESETS.machinedMetal,
           crop: getMechanicalCropBox(metadata, cropEnabled),
           volumeOpacity,
           splatOpacity,
@@ -730,7 +732,7 @@ export default function Pt3GaussianSplatViewer({
       frameId = window.requestAnimationFrame(render);
     };
     frameId = window.requestAnimationFrame(render); return () => window.cancelAnimationFrame(frameId);
-  }, [activeMirrorScale, cropEnabled, intensityThreshold, isPureSplatMode, metadata, mode, presetKey, quality, rendererType, rotation, segmentationSegments, showSliceGuides, slicePosition, splatContrast, splatGuidesVisible, splatOpacity, splatPointSize, splats, volumeOpacity, zoom]);
+  }, [activeMirrorScale, colorHigh, colorLow, cropEnabled, intensityThreshold, isPureSplatMode, metadata, mode, opacityRampWidth, quality, rendererType, rotation, segmentationSegments, showSliceGuides, slicePosition, splatContrast, splatGuidesVisible, splatOpacity, splatPointSize, splats, volumeOpacity, zoom]);
 
   const updateRayMarchSetting = (key, value) => {
     onRayMarchSettingsChange?.({ ...activeRayMarchSettings, [key]: value });
@@ -817,10 +819,8 @@ export default function Pt3GaussianSplatViewer({
     : mode === VIEWER_MODES.realSplat
       ? 'trained'
       : mode === VIEWER_MODES.hybrid && rayRendererFallback ? 'degraded' : 'ready';
-  const readyStatus = `${modeLabel} ${readyLabel}${canonicalMarker}${[VIEWER_MODES.splat, VIEWER_MODES.hybrid].includes(mode) ? ` • threshold ${splatParameters?.threshold ?? 'n/a'}` : ''} • ${metadata.dimensions.join('×')} voxels • ${bounds.size.map((v) => v.toFixed(1)).join('×')} mm • ${rendererType} • FPS ${stats.fps || '…'}${mode === VIEWER_MODES.volume ? ` • slices ${volumeImageStack.length}` : ` • splats ${loadedSplatCount}`}`;
-  const pendingStatus = mode === VIEWER_MODES.realSplat
-    ? `${directFitSelected ? 'Voxel splat fitting is running' : 'Real 3DGS training is running'}${statusDetail?.note ? ` • ${statusDetail.note}` : ''}`
-    : `Simplified 3DGS preprocessing is still running • threshold ${splatParameters?.threshold ?? 'n/a'}`;
+  const readyStatus = `${modeLabel} ${readyLabel}${canonicalMarker}${mode === VIEWER_MODES.hybrid ? ` • threshold ${splatParameters?.threshold ?? 'n/a'}` : ''} • ${metadata.dimensions.join('×')} voxels • ${bounds.size.map((v) => v.toFixed(1)).join('×')} mm • ${rendererType} • FPS ${stats.fps || '…'}${mode === VIEWER_MODES.volume ? ` • slices ${volumeImageStack.length}` : ` • splats ${loadedSplatCount}`}`;
+  const pendingStatus = `${directFitSelected ? 'Voxel splat fitting is running' : 'Real 3DGS training is running'}${statusDetail?.note ? ` • ${statusDetail.note}` : ''}`;
   return <div
     className={`pt3-gaussian-splat-viewer${mode === VIEWER_MODES.realSplat ? ' pt3-real-splat-mode' : ''}${segmentationSegments.length > 0 ? ' pt3-has-segmentation' : ''}`}
     data-testid="pt3-gaussian-splat-viewer"
@@ -894,11 +894,20 @@ export default function Pt3GaussianSplatViewer({
         onKeyDown={(event) => { if (!['Tab', 'Escape'].includes(event.key)) event.stopPropagation(); }}
       >
         <legend>Ray march</legend>
+        <div className="pt3-ray-march-transfer-summary" data-testid="ray-march-transfer-summary">
+          Transfer function: alpha = smoothstep(threshold, threshold + width, intensity) × density; color = mix(low, high, smoothstep(threshold, 1, intensity)).
+        </div>
         <label>
-          Transfer function preset
-          <select value={presetKey} onChange={(event) => updateRayMarchSetting('presetKey', event.target.value)}>
-            {Object.entries(MECHANICAL_TRANSFER_PRESETS).map(([key, preset]) => <option key={key} value={key}>{preset.label}</option>)}
-          </select>
+          Opacity ramp width <output aria-hidden="true">{Number(opacityRampWidth).toFixed(2)}</output>
+          <input aria-label="Ray-march opacity ramp width" type="range" min="0.05" max="1" step="0.01" value={opacityRampWidth} onChange={(event) => updateRayMarchSetting('opacityRampWidth', Number(event.target.value))} />
+        </label>
+        <label>
+          Low color coefficient
+          <input aria-label="Ray-march low color coefficient" type="color" value={colorLow} onChange={(event) => updateRayMarchSetting('colorLow', event.target.value)} />
+        </label>
+        <label>
+          High color coefficient
+          <input aria-label="Ray-march high color coefficient" type="color" value={colorHigh} onChange={(event) => updateRayMarchSetting('colorHigh', event.target.value)} />
         </label>
         <label>
           Density <output aria-hidden="true">{volumeOpacity.toFixed(2)}×</output>
@@ -906,7 +915,7 @@ export default function Pt3GaussianSplatViewer({
         </label>
         <label>
           Threshold <output aria-hidden="true">{intensityThreshold.toFixed(2)}</output>
-          <input aria-label="Ray-march intensity threshold" type="range" min="0" max="0.6" step="0.01" value={intensityThreshold} onChange={(event) => updateRayMarchSetting('intensityThreshold', Number(event.target.value))} />
+          <input aria-label="Ray-march intensity threshold" type="range" min="0" max="0.6" step="0.01" value={intensityThreshold} onChange={(event) => onRayMarchSettingsChange?.({ ...activeRayMarchSettings, intensityThreshold: Number(event.target.value) })} />
         </label>
         <label>
           Quality profile
@@ -1021,7 +1030,7 @@ export default function Pt3GaussianSplatViewer({
         ))}
       </fieldset>
     )}
-    <span className="pt3-gaussian-splat-status">{status === 'ready' ? readyStatus : status === 'pending' ? pendingStatus : `${modeLabel} ${status}${mode === VIEWER_MODES.splat ? ` • threshold ${splatParameters?.threshold ?? 'n/a'}` : ''}${statusDetail?.error ? `: ${statusDetail.error}` : ''}`}</span>
+    <span className="pt3-gaussian-splat-status">{status === 'ready' ? readyStatus : status === 'pending' ? pendingStatus : `${modeLabel} ${status}${statusDetail?.error ? `: ${statusDetail.error}` : ''}`}</span>
     {statusDetail?.note && mode !== VIEWER_MODES.realSplat && <span className="pt3-viewer-note">{statusDetail.note}</span>}
     {rayRendererFallback && <span className="pt3-viewer-note">{rayRendererFallback}</span>}
   </div>;

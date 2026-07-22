@@ -1400,7 +1400,7 @@ describe('InspectionWorkbenchPanel', () => {
     });
 
     expect(screen.getByRole('button', { name: 'Open 3D part view fullscreen' })).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('mpr-pane-3d'));
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Open 3D part view fullscreen' }), { key: 'Enter' });
 
     const fullscreen = screen.getByRole('dialog', { name: '3D reconstruction' });
     expect(fullscreen).toHaveAttribute('aria-modal', 'true');
@@ -1520,7 +1520,7 @@ describe('InspectionWorkbenchPanel', () => {
     await screen.findByTestId('mpr-panel');
     fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'volume3d' } });
     expect(screen.queryByRole('group', { name: 'Ray-march controls' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Open 3D part view fullscreen' }));
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Open 3D part view fullscreen' }), { key: 'Enter' });
 
     const modeSelect = screen.getByLabelText('3D view');
     const cases = [
@@ -1528,7 +1528,6 @@ describe('InspectionWorkbenchPanel', () => {
       ['stack', 'Stack reconstruction'],
       ['shell', 'Reference shell'],
       ['volume3d', 'Ray-marched volume'],
-      ['splat', 'Simplified 3DGS'],
       ['real_splat', 'Real 3DGS'],
       ['hybrid3d', 'Hybrid part view'],
     ];
@@ -1538,10 +1537,10 @@ describe('InspectionWorkbenchPanel', () => {
       expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toHaveTextContent(label);
       expect(document.querySelectorAll('.mpr-volume-scene')).toHaveLength(1);
       expect(screen.queryAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(
-        ['volume3d', 'splat', 'real_splat', 'hybrid3d'].includes(value) ? 1 : 0,
+        ['volume3d', 'real_splat', 'hybrid3d'].includes(value) ? 1 : 0,
       );
       expect(screen.queryByRole('group', { name: 'Ray-march controls' }) !== null).toBe(value === 'volume3d');
-      expect(screen.queryByRole('group', { name: '3DGS controls' }) !== null).toBe(['splat', 'real_splat'].includes(value));
+      expect(screen.queryByRole('group', { name: '3DGS controls' }) !== null).toBe(['real_splat'].includes(value));
     });
 
     expect(screen.getAllByTestId('pt3-gaussian-splat-viewer')).toHaveLength(1);
@@ -1558,14 +1557,15 @@ describe('InspectionWorkbenchPanel', () => {
     fireEvent.change(modeSelect, { target: { value: 'volume3d' } });
     const density = screen.getByLabelText('Ray-march density');
     const threshold = screen.getByLabelText('Ray-march intensity threshold');
-    const preset = screen.getByLabelText('Transfer function preset');
     const quality = screen.getByLabelText('Quality profile');
     const guides = screen.getByLabelText('Show slice guides');
     const orbitX = screen.getByRole('slider', { name: 'Orbit X' });
     const orbitY = screen.getByRole('slider', { name: 'Orbit Y' });
     expect(density).toHaveValue('1.25');
     expect(threshold).toHaveValue('0.08');
-    expect(preset).toHaveValue('machinedMetal');
+    expect(screen.queryByLabelText('Transfer function preset')).not.toBeInTheDocument();
+    expect(screen.getByTestId('ray-march-transfer-summary')).toHaveTextContent('alpha = smoothstep');
+    expect(screen.getByLabelText('Ray-march opacity ramp width')).toHaveValue('0.52');
     expect(quality).toHaveValue('balanced');
     expect(guides).toBeChecked();
     expect(orbitX).toHaveValue('-22');
@@ -1575,19 +1575,19 @@ describe('InspectionWorkbenchPanel', () => {
 
     fireEvent.change(density, { target: { value: '0.4' } });
     fireEvent.change(threshold, { target: { value: '0.3' } });
-    fireEvent.change(preset, { target: { value: 'defect' } });
     fireEvent.change(quality, { target: { value: 'quality' } });
     fireEvent.click(guides);
     expect(density).toHaveValue('0.4');
     expect(threshold).toHaveValue('0.3');
-    expect(preset).toHaveValue('defect');
     expect(quality).toHaveValue('quality');
     expect(guides).not.toBeChecked();
 
     fireEvent.click(screen.getByRole('button', { name: 'Reset ray-march settings' }));
     expect(density).toHaveValue('1.25');
     expect(threshold).toHaveValue('0.08');
-    expect(preset).toHaveValue('machinedMetal');
+    expect(screen.queryByLabelText('Transfer function preset')).not.toBeInTheDocument();
+    expect(screen.getByTestId('ray-march-transfer-summary')).toHaveTextContent('alpha = smoothstep');
+    expect(screen.getByLabelText('Ray-march opacity ramp width')).toHaveValue('0.52');
     expect(quality).toHaveValue('balanced');
     expect(guides).toBeChecked();
 
@@ -1602,7 +1602,7 @@ describe('InspectionWorkbenchPanel', () => {
     expect(orbitY).toHaveValue('32');
     expect(screen.getByRole('dialog', { name: '3D reconstruction' })).toHaveTextContent('Zoom 1.00x');
 
-    fireEvent.change(modeSelect, { target: { value: 'splat' } });
+    fireEvent.change(modeSelect, { target: { value: 'real_splat' } });
     const splatControls = screen.getByRole('group', { name: '3DGS controls' });
     const splatOpacity = within(splatControls).getByLabelText('3DGS opacity');
     const splatPointSize = within(splatControls).getByLabelText('3DGS point size');
@@ -1759,9 +1759,7 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByLabelText('Three.js mechanical volume renderer')).not.toBeVisible();
     expect(screen.getByLabelText('Mechanical 3DGS preview')).toBeVisible();
 
-    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'splat' } });
-    expect(screen.getByLabelText('Three.js mechanical volume renderer')).not.toBeVisible();
-    expect(screen.getByLabelText('Mechanical 3DGS preview')).toBeVisible();
+    expect([...screen.getByLabelText('3D view').options].map((option) => option.value)).not.toContain('splat');
   });
 
   test('uses a neutral deterministic 3DGS fallback when preprocessing status returns an HTTP error', async () => {
@@ -1776,12 +1774,7 @@ describe('InspectionWorkbenchPanel', () => {
 
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
     await screen.findByTestId('mpr-panel');
-    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'splat' } });
-
-    const viewer = screen.getByTestId('pt3-gaussian-splat-viewer');
-    await waitFor(() => expect(viewer).toHaveTextContent('Generated 3DGS asset unavailable'));
-    expect(viewer).toHaveTextContent('Simplified 3DGS ready');
-    expect(viewer).not.toHaveTextContent('HTTP 500');
+    expect([...screen.getByLabelText('3D view').options].map((option) => option.value)).not.toContain('splat');
   });
 
   test('releases an active fullscreen orbit capture when the view closes or loses focus', async () => {
@@ -1789,7 +1782,7 @@ describe('InspectionWorkbenchPanel', () => {
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
 
     await screen.findByTestId('mpr-panel');
-    fireEvent.click(screen.getByRole('button', { name: 'Open 3D part view fullscreen' }));
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Open 3D part view fullscreen' }), { key: 'Enter' });
     let scene = screen.getByRole('application', { name: 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.' });
     const setPointerCapture = jest.fn();
     const releasePointerCapture = jest.fn();
@@ -1807,7 +1800,7 @@ describe('InspectionWorkbenchPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close fullscreen 3D view' }));
     expect(releasePointerCapture).toHaveBeenCalledWith(31);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open 3D part view fullscreen' }));
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Open 3D part view fullscreen' }), { key: 'Enter' });
     scene = screen.getByRole('application', { name: 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.' });
     const blurReleasePointerCapture = jest.fn();
     scene.setPointerCapture = jest.fn();
@@ -3457,73 +3450,14 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByLabelText('Display window maximum')).toHaveValue(editValue);
   });
 
-  test('opens PT3 splat configuration with histogram-aware defaults scoped to the 3D quadrant', async () => {
-    mockWorkbenchFetch({
-      user: 'pt3-splat-config',
-      batches: [{ id: 'batch-splat-config', name: 'Batch Splat Config' }],
-      parts: [
-        {
-          id: 'part-splat-config-1',
-          batch_id: 'batch-splat-config',
-          serial_number: 'SN-SPLAT-CONFIG-1',
-          display_name: 'Histogram Splat Part',
-          review_state: 'in_review',
-          metadata: {
-            volume_shape: { axial: 2, coronal: 2, sagittal: 2 },
-            source_images: [
-              {
-                filename: 'histogram-slice-0.png',
-                image_id: 'histogram-slice-0-id',
-                metadata: {
-                  slice_index: 0,
-                  bit_depth: 8,
-                  pixel_value_range: { min: 0, max: 200 },
-                  pixel_histogram: { bins: [0, 50, 100, 150], counts: [10, 20, 30, 40] },
-                },
-              },
-              {
-                filename: 'histogram-slice-1.png',
-                image_id: 'histogram-slice-1-id',
-                metadata: {
-                  slice_index: 1,
-                  bit_depth: 8,
-                  pixel_value_range: { min: 0, max: 200 },
-                },
-              },
-            ],
-          },
-        },
-      ],
-      workspaceState: { selected_part_id: 'part-splat-config-1' },
-      hotkeys: { accept_classification: 'a', reject_classification: 'r', toggle_shortcut_help: 'h' },
-    });
-
+  test('removes simplified 3DGS configuration from the PT3 quadrant', async () => {
+    mockWorkbenchFetch(scenarioByUser[2]);
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
-
     await waitFor(() => expect(screen.getByTestId('mpr-panel')).toBeInTheDocument());
+    const values = [...screen.getByLabelText('3D view').options].map((option) => option.value);
+    expect(values).not.toContain('splat');
+    expect(screen.queryByText('Simplified 3DGS')).not.toBeInTheDocument();
     expect(screen.queryByTestId('splat-config-button')).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'splat' } });
-
-    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toBeInTheDocument();
-    expect(screen.getAllByTestId('mpr-preview-axial')[0].querySelector('.mpr-slice-canvas')).toBeInTheDocument();
-    expect(screen.getAllByTestId('mpr-preview-coronal')[0].querySelector('.mpr-slice-canvas')).toBeInTheDocument();
-    expect(screen.getAllByTestId('mpr-preview-sagittal')[0].querySelector('.mpr-slice-canvas')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByTestId('splat-config-button'));
-    const modal = screen.getByRole('dialog', { name: 'Simplified 3DGS configuration' });
-    expect(within(modal).getByLabelText('Intensity threshold')).toHaveValue(150);
-    expect(within(modal).getByText(/0-200 loaded image range/)).toBeInTheDocument();
-    expect(within(modal).getByTestId('splat-config-summary')).toHaveTextContent('threshold 150');
-    expect(within(modal).getByLabelText('Maximum splats')).toHaveAttribute('max', '100000');
-    fireEvent.change(within(modal).getByLabelText('Maximum splats'), { target: { value: '250000' } });
-    expect(within(modal).getByLabelText('Maximum splats')).toHaveValue(100000);
-
-    fireEvent.change(within(modal).getByLabelText('Downsample stride'), { target: { value: '3' } });
-    fireEvent.click(within(modal).getByRole('button', { name: 'Apply splat parameters' }));
-    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('threshold 150');
-    expect(screen.getByTestId('mpr-pane-axial')).not.toHaveTextContent('Gaussian splat');
-    expect(screen.getByTestId('mpr-pane-coronal')).not.toHaveTextContent('Gaussian splat');
-    expect(screen.getByTestId('mpr-pane-sagittal')).not.toHaveTextContent('Gaussian splat');
   });
 
   test('defaults PT3 to focused four-quadrant MPR with modal access and wheel controls', async () => {
@@ -3562,17 +3496,8 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.queryByLabelText('3DGS opacity')).not.toBeInTheDocument();
     expect(global.fetch.mock.calls.some((call) => call[0].includes('/volume-splat-assets'))).toBe(false);
 
-    fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'splat' } });
-    expect(screen.getByLabelText('3D view')).toHaveValue('splat');
-    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toBeInTheDocument();
-    expect(screen.getByLabelText('Mechanical 3DGS preview')).toBeInTheDocument();
-    expect(screen.queryByRole('img', { name: /Volume reconstruction slice/ })).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('Simplified 3DGS preprocessing is still running'));
-    const splatPostCall = global.fetch.mock.calls.find((call) => call[0].includes('/volume-splat-assets') && call[1]?.method === 'POST');
-    expect(splatPostCall).toBeTruthy();
-    expect(JSON.parse(splatPostCall[1].body).source_path).toBeUndefined();
-    expect(screen.getByLabelText('3D view')).toHaveValue('splat');
-    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toBeInTheDocument();
+    expect([...screen.getByLabelText('3D view').options].map((option) => option.value)).not.toContain('splat');
+    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('Ray march');
     fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'orientation' } });
     expect(screen.queryByTestId('pt3-gaussian-splat-viewer')).not.toBeInTheDocument();
 

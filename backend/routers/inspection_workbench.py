@@ -107,8 +107,9 @@ SLICE_SEGMENTATION_METHOD_IDS = {
     "segmentation.sam.placeholder",
     "segmentation.opencv.placeholder",
 }
-PT3_MAX_MATERIALIZED_FILE_BYTES = REFERENCE_VOLUME_READ_LIMITS.max_source_bytes
-PT3_MAX_MATERIALIZED_STACK_BYTES = REFERENCE_VOLUME_READ_LIMITS.max_source_bytes
+PT3_REAL_3DGS_MATERIALIZATION_LIMIT_BYTES = int(2.5 * 1024 * 1024 * 1024)
+PT3_MAX_MATERIALIZED_FILE_BYTES = PT3_REAL_3DGS_MATERIALIZATION_LIMIT_BYTES
+PT3_MAX_MATERIALIZED_STACK_BYTES = PT3_REAL_3DGS_MATERIALIZATION_LIMIT_BYTES
 PT3_DOWNLOAD_CHUNK_BYTES = 64 * 1024
 # Both bundled splat fitters are CPU- and memory-intensive. Keep one PT3 splat
 # compute in flight per backend worker; deployments can scale workers
