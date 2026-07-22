@@ -1,10 +1,18 @@
+import asyncio
 import io
 import json
+import struct
+import threading
 import uuid
 import zipfile
+import httpx
 import pytest
 import numpy as np
 from PIL import Image
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from routers import images as images_router
+import utils.boto3_client as boto3_client_module
 
 
 def _make_png_bytes(size=(10, 10), color=(255, 0, 0)):
@@ -147,6 +155,132 @@ def test_upload_image_and_list(client):
     assert len(items) == 1
 
 
+@pytest.mark.parametrize(
+    "filename,content_type,pil_format",
+    [
+        ("color.png", "image/png", "PNG"),
+        ("color.tiff", "image/tiff", "TIFF"),
+    ],
+)
+def test_upload_ordinary_rgb_image_skips_pixel_extrema_scan(
+    client,
+    monkeypatch,
+    filename,
+    content_type,
+    pil_format,
+):
+    from routers import images as images_router
+
+    pid = _create_project(client, name=f"rgb-no-extrema-{pil_format}")
+    payload = _make_raster_bytes(pil_format, size=(128, 96))
+    original_open = images_router.Image.open
+    open_calls = 0
+    extrema_calls = 0
+
+    def counted_open(*args, **kwargs):
+        nonlocal open_calls
+        open_calls += 1
+        return original_open(*args, **kwargs)
+
+    def unexpected_extrema(_image):
+        nonlocal extrema_calls
+        extrema_calls += 1
+        raise AssertionError("ordinary RGB upload must not decode pixels for extrema")
+
+    monkeypatch.setattr(images_router.Image, "open", counted_open)
+    monkeypatch.setattr(images_router.Image.Image, "getextrema", unexpected_extrema)
+
+    response = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": (filename, payload, content_type)},
+    )
+
+    assert response.status_code == 201, response.text
+    assert open_calls == 1
+    assert extrema_calls == 0
+    if pil_format == "TIFF":
+        assert response.json()["metadata"]["tiff_dimensionality"] == "2d"
+
+
+def test_upload_scalar_png_preserves_exact_intensity_metadata(client):
+    pid = _create_project(client, name="scalar-intensity-preserved")
+    payload = _make_scalar_image_bytes("PNG", np.uint8, [[3, 11], [25, 247]])
+
+    response = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("scalar.png", payload, "image/png")},
+    )
+
+    assert response.status_code == 201, response.text
+    metadata = response.json()["metadata"]
+    assert metadata["pixel_dtype"] == "uint8"
+    assert metadata["bit_depth"] == 8
+    assert metadata["pixel_value_range"] == {"min": 3, "max": 247}
+    assert metadata["intensity_range"] == {"min": 3, "max": 247}
+
+
+def test_upload_big_endian_uint16_tiff_accepts_unsupported_extrema_mode(client):
+    pid = _create_project(client, name="big-endian-tiff-extrema")
+    payload = _make_scalar_image_bytes(
+        "TIFF",
+        np.dtype(">u2"),
+        [[1024, 2048], [4096, 12000]],
+    )
+
+    with Image.open(payload) as image:
+        assert image.mode == "I;16B"
+        with pytest.raises(ValueError, match="wrong mode"):
+            image.getextrema()
+    payload.seek(0)
+
+    response = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("big-endian-slice.tif", payload, "image/tiff")},
+    )
+
+    assert response.status_code == 201, response.text
+    metadata = response.json()["metadata"]
+    assert metadata["tiff_dimensionality"] == "2d"
+    assert metadata["load_mode"] == "single_image"
+    assert metadata["frame_count"] == 1
+    assert "pixel_value_range" not in metadata
+
+
+def test_upload_invalid_tiff_still_rejects_structural_inspection_failure(client):
+    pid = _create_project(client, name="invalid-tiff-header")
+
+    response = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("invalid.tif", io.BytesIO(b"not a TIFF"), "image/tiff")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith("Invalid TIFF image data:")
+
+
+def test_upload_inspection_is_dispatched_via_asyncio_to_thread(client, monkeypatch):
+    from routers import images as images_router
+
+    pid = _create_project(client, name="threaded-upload-inspection")
+    payload = _make_png_bytes(size=(32, 32))
+    original_to_thread = images_router.asyncio.to_thread
+    dispatched_functions = []
+
+    async def tracked_to_thread(function, *args, **kwargs):
+        dispatched_functions.append(function)
+        return await original_to_thread(function, *args, **kwargs)
+
+    monkeypatch.setattr(images_router.asyncio, "to_thread", tracked_to_thread)
+
+    response = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("threaded.png", payload, "image/png")},
+    )
+
+    assert response.status_code == 201, response.text
+    assert images_router._inspect_upload_file in dispatched_functions
+
+
 def test_upload_image_bad_metadata(client):
     pr = client.post("/api/projects/", json={"name": "P2", "description": None, "meta_group_id": "g"})
     pid = pr.json()["id"]
@@ -155,6 +289,170 @@ def test_upload_image_bad_metadata(client):
     data = {"metadata": "{not-json}"}
     r = client.post(f"/api/projects/{pid}/images", files=files, data=data)
     assert r.status_code == 400
+
+
+@pytest.mark.parametrize("storage_outcome", ["false", "exception"])
+def test_legacy_upload_storage_failures_remove_ambiguous_target(
+    client,
+    monkeypatch,
+    storage_outcome,
+):
+    pid = _create_project(client, name=f"legacy-storage-{storage_outcome}")
+    attempted_keys = []
+    deleted_keys = []
+
+    async def fail_upload(*, object_name, **_kwargs):
+        attempted_keys.append(object_name)
+        if storage_outcome == "exception":
+            raise RuntimeError("ambiguous storage failure")
+        return False
+
+    def track_delete(_bucket, object_name):
+        deleted_keys.append(object_name)
+        return True
+
+    monkeypatch.setattr(images_router, "upload_file_to_s3", fail_upload)
+    monkeypatch.setattr(images_router, "delete_file_from_s3", track_delete)
+    response = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("image.png", _make_png_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Failed to upload file to object storage"
+    assert deleted_keys == attempted_keys
+    assert client.get(f"/api/projects/{pid}/images").json() == []
+
+
+@pytest.mark.parametrize("failure_point", ["database", "group", "autoassign"])
+def test_legacy_upload_precommit_failures_roll_back_and_remove_object(
+    client,
+    monkeypatch,
+    failure_point,
+):
+    project_type = "PT3" if failure_point == "autoassign" else "PT1"
+    project = client.post(
+        "/api/projects/",
+        json={
+            "name": f"legacy-{failure_point}-failure",
+            "description": None,
+            "meta_group_id": "g",
+            "project_type": project_type,
+        },
+    )
+    assert project.status_code == 201
+    pid = project.json()["id"]
+    uploaded_keys = []
+    deleted_keys = []
+
+    async def successful_upload(*, object_name, **_kwargs):
+        uploaded_keys.append(object_name)
+        return True
+
+    def track_delete(_bucket, object_name):
+        deleted_keys.append(object_name)
+        return True
+
+    monkeypatch.setattr(images_router, "upload_file_to_s3", successful_upload)
+    monkeypatch.setattr(images_router, "delete_file_from_s3", track_delete)
+    request_data = {}
+    if failure_point == "database":
+        async def fail_flush(_session, *_args, **_kwargs):
+            raise RuntimeError("database unavailable")
+
+        monkeypatch.setattr(AsyncSession, "flush", fail_flush)
+    elif failure_point == "group":
+        async def fail_group_resolution(*_args, **_kwargs):
+            raise RuntimeError("group insert failed")
+
+        monkeypatch.setattr(images_router, "_resolve_batch_image_groups", fail_group_resolution)
+        request_data["group_identifier"] = "part-a"
+    else:
+        async def fail_autoassign(**_kwargs):
+            raise RuntimeError("part assignment failed")
+
+        monkeypatch.setattr(
+            images_router,
+            "_autoassign_pt3_volume_upload_to_part",
+            fail_autoassign,
+        )
+
+    if failure_point == "autoassign":
+        payload = io.BytesIO()
+        np.save(payload, np.zeros((2, 3, 4), dtype=np.uint16))
+        upload_file = ("volume.npy", payload.getvalue(), "application/octet-stream")
+    else:
+        upload_file = ("image.png", _make_png_bytes(), "image/png")
+    response = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": upload_file},
+        data=request_data,
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Unable to save uploaded image record"
+    assert deleted_keys == uploaded_keys
+    assert client.get(f"/api/projects/{pid}/images").json() == []
+    if failure_point == "autoassign":
+        assert client.get(f"/api/projects/{pid}/parts").json() == []
+
+
+def test_legacy_upload_commits_image_group_and_pt3_autoassignment_once(client, monkeypatch):
+    project = client.post(
+        "/api/projects/",
+        json={
+            "name": "legacy-one-transaction",
+            "description": None,
+            "meta_group_id": "g",
+            "project_type": "PT3",
+        },
+    )
+    pid = project.json()["id"]
+    original_commit = AsyncSession.commit
+    commit_calls = 0
+
+    async def tracked_commit(session, *args, **kwargs):
+        nonlocal commit_calls
+        commit_calls += 1
+        return await original_commit(session, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "commit", tracked_commit)
+    payload = io.BytesIO()
+    np.save(payload, np.zeros((2, 3, 4), dtype=np.uint16))
+    response = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("volume.npy", payload.getvalue(), "application/octet-stream")},
+        data={"group_identifier": "part-a"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert commit_calls == 1
+    assert response.json()["group_id"]
+    assert len(client.get(f"/api/projects/{pid}/parts").json()) == 1
+
+
+def test_legacy_upload_cache_failure_does_not_report_false_500(client, monkeypatch):
+    pid = _create_project(client, name="legacy-cache-failure")
+
+    class FailingCache:
+        def get(self, _key):
+            return None
+
+        def set(self, _key, _value, *_args, **_kwargs):
+            return None
+
+        def clear_pattern(self, _pattern):
+            raise RuntimeError("cache unavailable")
+
+    monkeypatch.setattr(images_router, "get_cache", lambda: FailingCache())
+    response = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("image.png", _make_png_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 201, response.text
+    listed = client.get(f"/api/projects/{pid}/images")
+    assert [item["id"] for item in listed.json()] == [response.json()["id"]]
 
 
 def test_pt3_upload_numpy_volume_autoassigns_part_named_for_file(client):
@@ -489,6 +787,126 @@ def test_upload_inspiro_voxel_data_accepts_3d_arrays(client):
     assert r.json()["filename"] == "scan.inspiro"
 
 
+@pytest.mark.parametrize(
+    ("members", "limits", "expected_detail"),
+    [
+        (
+            [("first.npy", b"x"), ("second.bin", b"y")],
+            {"max_container_members": 1, "max_decoded_bytes": 1024},
+            "member limit",
+        ),
+        (
+            [("voxels.npy", b"x" * 256)],
+            {"max_container_members": 4, "max_decoded_bytes": 64},
+            "uncompressed bytes",
+        ),
+    ],
+)
+def test_voxel_archive_preflight_rejects_declared_bombs_before_opening_members(
+    client,
+    monkeypatch,
+    members,
+    limits,
+    expected_detail,
+):
+    from utils.volume_loader import VolumeReadLimits
+
+    pid = _create_project(client, name=f"archive-preflight-{expected_detail}")
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, value in members:
+            archive.writestr(name, value)
+    payload.seek(0)
+    monkeypatch.setattr(
+        images_router,
+        "REFERENCE_VOLUME_READ_LIMITS",
+        VolumeReadLimits(
+            max_voxels=100,
+            max_decoded_bytes=limits["max_decoded_bytes"],
+            max_source_bytes=4096,
+            max_container_members=limits["max_container_members"],
+        ),
+    )
+    member_open_calls = 0
+
+    def forbidden_member_open(*_args, **_kwargs):
+        nonlocal member_open_calls
+        member_open_calls += 1
+        raise AssertionError("rejected archive members must never be inflated")
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", forbidden_member_open)
+    response = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("bomb.npz", payload, "application/octet-stream")},
+    )
+
+    assert response.status_code == 400
+    assert expected_detail in response.json()["detail"]
+    assert member_open_calls == 0
+
+
+def test_voxel_upload_rejects_declared_member_bomb_before_zipfile_construction(
+    client,
+    monkeypatch,
+):
+    pid = _create_project(client, name="archive-central-directory-preflight")
+    payload = struct.pack(
+        "<4s4H2LH",
+        b"PK\x05\x06",
+        0,
+        0,
+        images_router.REFERENCE_VOLUME_READ_LIMITS.max_container_members + 1,
+        images_router.REFERENCE_VOLUME_READ_LIMITS.max_container_members + 1,
+        0,
+        0,
+        0,
+    )
+    zipfile_constructor_calls = 0
+
+    def forbidden_zipfile_constructor(*_args, **_kwargs):
+        nonlocal zipfile_constructor_calls
+        zipfile_constructor_calls += 1
+        raise AssertionError("unsafe archive must be rejected before ZipFile construction")
+
+    monkeypatch.setattr(images_router.zipfile, "ZipFile", forbidden_zipfile_constructor)
+    response = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("bomb.npz", payload, "application/octet-stream")},
+    )
+
+    assert response.status_code == 400
+    assert "configured/built-in" in response.json()["detail"]
+    assert "member limit" in response.json()["detail"]
+    assert zipfile_constructor_calls == 0
+
+
+def test_voxel_archive_preflight_reads_only_bounded_npy_header_chunks(client, monkeypatch):
+    pid = _create_project(client, name="archive-bounded-header")
+    array_bytes = io.BytesIO()
+    np.save(array_bytes, np.zeros((2, 3, 4), dtype=np.uint16))
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("voxels.npy", array_bytes.getvalue())
+    payload.seek(0)
+    original_read = zipfile.ZipExtFile.read
+    requested_sizes = []
+
+    def bounded_read(member, size=-1):
+        requested_sizes.append(size)
+        assert 0 <= size <= images_router.MAX_NPY_HEADER_BYTES
+        return original_read(member, size)
+
+    monkeypatch.setattr(zipfile.ZipExtFile, "read", bounded_read)
+    response = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("safe.npz", payload, "application/octet-stream")},
+    )
+
+    assert response.status_code == 201, response.text
+    assert requested_sizes
+    assert -1 not in requested_sizes
+
+
 def test_e2e_supported_3d_numpy_formats_upload_and_volume_introspection(client):
     pid = _create_project(client, name="3d-all")
 
@@ -528,6 +946,104 @@ def test_e2e_supported_3d_numpy_formats_upload_and_volume_introspection(client):
     assert listed.status_code == 200
     filenames = {item["filename"] for item in listed.json()}
     assert {"synthetic.npy", "synthetic.npz", "synthetic.inspiro"}.issubset(filenames)
+
+
+def test_npz_volume_decode_rejects_declared_expansion_before_member_read(monkeypatch):
+    from utils.volume_loader import VolumeReadLimits
+
+    npy_payload = io.BytesIO()
+    np.save(npy_payload, np.zeros((1, 1, 64), dtype=np.uint8))
+    archive_payload = io.BytesIO()
+    with zipfile.ZipFile(
+        archive_payload,
+        mode="w",
+        compression=zipfile.ZIP_DEFLATED,
+    ) as archive:
+        archive.writestr("voxels.npy", npy_payload.getvalue())
+    monkeypatch.setattr(
+        images_router,
+        "REFERENCE_VOLUME_READ_LIMITS",
+        VolumeReadLimits(
+            max_voxels=100,
+            max_decoded_bytes=64,
+            max_source_bytes=4096,
+            max_container_members=4,
+        ),
+    )
+    member_open_calls = 0
+
+    def forbidden_member_open(*_args, **_kwargs):
+        nonlocal member_open_calls
+        member_open_calls += 1
+        raise AssertionError("oversized archive members must not be opened")
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", forbidden_member_open)
+
+    with pytest.raises(ValueError, match="uncompressed bytes.*64-byte archive limit"):
+        images_router._load_numpy_volume(archive_payload.getvalue(), "bomb.npz")
+
+    assert member_open_calls == 0
+
+
+def test_tiff_volume_decode_rejects_voxel_limit_before_array_allocation(monkeypatch):
+    from utils.volume_loader import VolumeReadLimits
+
+    payload = _make_tiff_bytes(frame_count=3, size=(10, 10)).getvalue()
+    monkeypatch.setattr(
+        images_router,
+        "REFERENCE_VOLUME_READ_LIMITS",
+        VolumeReadLimits(
+            max_voxels=100,
+            max_decoded_bytes=4096,
+            max_source_bytes=4096,
+            max_container_members=4,
+        ),
+    )
+    allocation_calls = 0
+
+    def forbidden_empty(*_args, **_kwargs):
+        nonlocal allocation_calls
+        allocation_calls += 1
+        raise AssertionError("oversized TIFF must be rejected before volume allocation")
+
+    monkeypatch.setattr(images_router.np, "empty", forbidden_empty)
+
+    with pytest.raises(ValueError, match="300 voxels.*100-voxel limit"):
+        images_router._load_tiff_volume(payload)
+
+    assert allocation_calls == 0
+
+
+def test_tiff_volume_rejects_large_later_frame_before_array_allocation(monkeypatch):
+    from utils.volume_loader import VolumeReadLimits
+
+    first = Image.new("L", (1, 1), color=0)
+    second = Image.new("L", (128, 128), color=1)
+    payload = io.BytesIO()
+    first.save(payload, format="TIFF", save_all=True, append_images=[second])
+    monkeypatch.setattr(
+        images_router,
+        "REFERENCE_VOLUME_READ_LIMITS",
+        VolumeReadLimits(
+            max_voxels=100,
+            max_decoded_bytes=4096,
+            max_source_bytes=1024 * 1024,
+            max_container_members=4,
+        ),
+    )
+    allocation_calls = 0
+
+    def forbidden_empty(*_args, **_kwargs):
+        nonlocal allocation_calls
+        allocation_calls += 1
+        raise AssertionError("heterogeneous TIFF must be rejected before volume allocation")
+
+    monkeypatch.setattr(images_router.np, "empty", forbidden_empty)
+
+    with pytest.raises(ValueError, match="same dimensions"):
+        images_router._load_tiff_volume(payload.getvalue())
+
+    assert allocation_calls == 0
 
 
 def test_get_download_url_and_content_and_thumbnail(client, monkeypatch):
@@ -646,9 +1162,11 @@ def test_upload_and_list_1000_tiny_encoded_images(client, monkeypatch):
 def test_list_project_s3_files_filters_supported_objects(client, monkeypatch):
     pid = _create_project(client, name="S3 List")
 
-    async def fake_list_s3_objects(bucket, prefix, max_keys=1000):
+    async def fake_list_s3_objects(bucket, prefix, max_keys=1000, **kwargs):
         assert bucket == "source-bucket"
         assert prefix == "incoming"
+        assert kwargs["key_filter"]("incoming/a.png") is True
+        assert kwargs["key_filter"]("incoming/readme.txt") is False
         return [
             {"key": "incoming/a.png", "size": 12},
             {"key": "incoming/readme.txt", "size": 4},
@@ -672,10 +1190,24 @@ def test_import_project_s3_files_creates_image_records(client, monkeypatch):
 
     async def fake_get_s3_object_info(bucket, key):
         assert bucket == "source-bucket"
-        return {"size": 12, "content_type": "image/png", "metadata": {}}
+        return {
+            "size": 12,
+            "content_type": "image/png",
+            "metadata": {},
+            "etag": '"source-etag"',
+        }
 
-    async def fake_copy_s3_object_to_s3(source_bucket, source_key, destination_bucket, destination_key):
-        copied.append((source_bucket, source_key, destination_bucket, destination_key))
+    async def fake_copy_s3_object_to_s3(
+        source_bucket,
+        source_key,
+        destination_bucket,
+        destination_key,
+        *,
+        source_etag=None,
+    ):
+        copied.append(
+            (source_bucket, source_key, destination_bucket, destination_key, source_etag)
+        )
         return True
 
     monkeypatch.setattr("routers.images.get_s3_object_info", fake_get_s3_object_info)
@@ -686,7 +1218,21 @@ def test_import_project_s3_files_creates_image_records(client, monkeypatch):
         json={
             "s3_url": "s3://source-bucket/incoming",
             "keys": ["incoming/a.png"],
-            "per_file_metadata": {"incoming/a.png": {"lot": "LOT1"}},
+            "metadata": {
+                "source": "hostile-shared",
+                "source_s3_url": "s3://attacker/shared",
+                "source_s3_bucket": "attacker-shared",
+                "source_s3_key": "attacker/shared.png",
+            },
+            "per_file_metadata": {
+                "incoming/a.png": {
+                    "lot": "LOT1",
+                    "source": "hostile-per-file",
+                    "source_s3_url": "s3://attacker/per-file",
+                    "source_s3_bucket": "attacker-per-file",
+                    "source_s3_key": "attacker/per-file.png",
+                }
+            },
         },
     )
 
@@ -699,15 +1245,97 @@ def test_import_project_s3_files_creates_image_records(client, monkeypatch):
     assert imported["project_id"] == pid
     assert imported["content_type"] == "image/png"
     assert imported["metadata"]["source"] == "s3_import"
+    assert imported["metadata"]["source_s3_url"] == "s3://source-bucket/incoming"
     assert imported["metadata"]["source_s3_bucket"] == "source-bucket"
     assert imported["metadata"]["source_s3_key"] == "incoming/a.png"
     assert imported["metadata"]["lot"] == "LOT1"
     assert copied[0][0] == "source-bucket"
     assert copied[0][1] == "incoming/a.png"
+    assert copied[0][4] == '"source-etag"'
 
     listed = client.get(f"/api/projects/{pid}/images")
     assert listed.status_code == 200
     assert [item["filename"] for item in listed.json()] == ["a.png"]
+
+
+def test_import_project_s3_files_uses_etag_precondition_and_cleans_failed_copy(
+    client,
+    monkeypatch,
+):
+    pid = _create_project(client, name="S3 conditional copy")
+    copied_etags = []
+    cleaned_targets = []
+
+    async def fake_get_s3_object_info(_bucket, _key):
+        return {
+            "size": 12,
+            "content_type": "image/png",
+            "metadata": {},
+            "etag": '"inspected-version"',
+        }
+
+    async def fake_copy_s3_object_to_s3(
+        _source_bucket,
+        _source_key,
+        _destination_bucket,
+        _destination_key,
+        *,
+        source_etag=None,
+    ):
+        copied_etags.append(source_etag)
+        # Models S3 rejecting CopySourceIfMatch because the source changed
+        # after HEAD and before COPY.
+        return False
+
+    def fake_delete_file_from_s3(_bucket, object_key):
+        cleaned_targets.append(object_key)
+        return True
+
+    monkeypatch.setattr(images_router, "get_s3_object_info", fake_get_s3_object_info)
+    monkeypatch.setattr(images_router, "copy_s3_object_to_s3", fake_copy_s3_object_to_s3)
+    monkeypatch.setattr(images_router, "delete_file_from_s3", fake_delete_file_from_s3)
+
+    response = client.post(
+        f"/api/projects/{pid}/s3/import",
+        json={"s3_url": "s3://source-bucket/incoming", "keys": ["incoming/a.png"]},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["imported"] == []
+    assert response.json()["failed"][0]["key"] == "incoming/a.png"
+    assert copied_etags == ['"inspected-version"']
+    assert len(cleaned_targets) == 1
+
+
+def test_s3_copy_helper_passes_source_etag_precondition(monkeypatch):
+    copy_calls = []
+
+    class Client:
+        def copy_object(self, **kwargs):
+            copy_calls.append(kwargs)
+            return {}
+
+    monkeypatch.setattr(boto3_client_module, "boto3_client", Client())
+
+    copied = asyncio.run(
+        boto3_client_module.copy_s3_object_to_s3(
+            "source-bucket",
+            "incoming/a.png",
+            "destination-bucket",
+            "project/a.png",
+            source_etag='"inspected-version"',
+        )
+    )
+
+    assert copied is True
+    assert copy_calls == [
+        {
+            "Bucket": "destination-bucket",
+            "Key": "project/a.png",
+            "CopySource": {"Bucket": "source-bucket", "Key": "incoming/a.png"},
+            "CopySourceIfMatch": '"inspected-version"',
+        }
+    ]
 
 
 def test_import_project_s3_files_rejects_key_outside_prefix(client):
@@ -763,7 +1391,466 @@ def test_import_project_s3_files_reports_oversized_object_limit(client, monkeypa
     assert "volume.npy is too large" in body["failed"][0]["error"]
     assert "built-in upload size limit" in body["failed"][0]["error"]
 
-def test_numpy_volume_metadata_and_axis_slice_endpoints(client, monkeypatch):
+
+def test_import_project_s3_files_commits_once_preserving_order_failures_and_existing_group(
+    client,
+    monkeypatch,
+):
+    pid = _create_project(client, name="S3 concurrent import")
+    created_group = client.post(
+        f"/api/projects/{pid}/groups",
+        json={"identifier": "existing-part", "display_name": "Existing part"},
+    )
+    assert created_group.status_code == 201, created_group.text
+    existing_group_id = created_group.json()["id"]
+
+    commit_calls = 0
+    flush_calls = 0
+    invalidations = []
+    copy_completion = []
+    failed_copy_cleanup = []
+    original_commit = AsyncSession.commit
+    original_flush = AsyncSession.flush
+
+    async def tracked_commit(session, *args, **kwargs):
+        nonlocal commit_calls
+        commit_calls += 1
+        return await original_commit(session, *args, **kwargs)
+
+    async def tracked_flush(session, *args, **kwargs):
+        nonlocal flush_calls
+        flush_calls += 1
+        return await original_flush(session, *args, **kwargs)
+
+    async def fake_get_s3_object_info(_bucket, key):
+        await asyncio.sleep(0.001 if "fast" in key else 0.01)
+        if key.endswith("missing.png"):
+            return None
+        return {
+            "size": 12,
+            "content_type": "image/png",
+            "metadata": {},
+            "etag": f'"etag-{key}"',
+        }
+
+    async def fake_copy_s3_object_to_s3(
+        _source_bucket,
+        source_key,
+        _destination_bucket,
+        _destination_key,
+        *,
+        source_etag=None,
+    ):
+        assert source_etag == f'"etag-{source_key}"'
+        await asyncio.sleep(0.001 if "fast" in source_key else 0.01)
+        copy_completion.append(source_key)
+        return not source_key.endswith("copy-failure.png")
+
+    def fake_delete_file_from_s3(_bucket, object_key):
+        failed_copy_cleanup.append(object_key)
+        return True
+
+    class Cache:
+        def clear_pattern(self, pattern):
+            invalidations.append(pattern)
+
+    monkeypatch.setattr(AsyncSession, "commit", tracked_commit)
+    monkeypatch.setattr(AsyncSession, "flush", tracked_flush)
+    monkeypatch.setattr(images_router, "get_s3_object_info", fake_get_s3_object_info)
+    monkeypatch.setattr(images_router, "copy_s3_object_to_s3", fake_copy_s3_object_to_s3)
+    monkeypatch.setattr(images_router, "delete_file_from_s3", fake_delete_file_from_s3)
+    monkeypatch.setattr(images_router, "get_cache", lambda: Cache())
+
+    keys = [
+        "incoming/slow-a.png",
+        "incoming/missing.png",
+        "incoming/copy-failure.png",
+        "incoming/fast-b.png",
+        "incoming/slow-c.png",
+    ]
+    response = client.post(
+        f"/api/projects/{pid}/s3/import",
+        json={
+            "s3_url": "s3://source-bucket/incoming",
+            "keys": keys,
+            "metadata": {"shared": True},
+            "per_file_metadata": {"incoming/fast-b.png": {"marker": "fast"}},
+            "group_identifiers": {
+                "incoming/slow-a.png": "existing-part",
+                "incoming/slow-c.png": "existing-part",
+            },
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert [item["filename"] for item in body["imported"]] == [
+        "slow-a.png",
+        "fast-b.png",
+        "slow-c.png",
+    ]
+    assert [item["group_id"] for item in body["imported"] if item["filename"].startswith("slow-")] == [
+        existing_group_id,
+        existing_group_id,
+    ]
+    assert body["imported"][1]["metadata"]["marker"] == "fast"
+    assert [item["key"] for item in body["failed"]] == [
+        "incoming/missing.png",
+        "incoming/copy-failure.png",
+    ]
+    assert copy_completion[0] == "incoming/fast-b.png"
+    assert len(failed_copy_cleanup) == 1
+    assert failed_copy_cleanup[0].endswith("/copy-failure.png")
+    assert flush_calls == 1
+    assert commit_calls == 1
+    assert invalidations == [f"project_images:{pid}"]
+
+
+@pytest.mark.parametrize(
+    ("local_limit", "global_limit", "expected_maximum"),
+    [(2, 6, 2), (6, 1, 1)],
+)
+def test_import_project_s3_files_honors_local_and_process_storage_limits(
+    client,
+    monkeypatch,
+    local_limit,
+    global_limit,
+    expected_maximum,
+):
+    pid = _create_project(client, name=f"S3 concurrency {local_limit}-{global_limit}")
+    active = 0
+    maximum_active = 0
+    limiter = images_router._ProcessWideStorageLimiter(global_limit)
+
+    async def track_operation():
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+
+    async def fake_get_s3_object_info(_bucket, _key):
+        await track_operation()
+        return {
+            "size": 12,
+            "content_type": "image/png",
+            "metadata": {},
+            "etag": '"stable-etag"',
+        }
+
+    async def fake_copy_s3_object_to_s3(*_args, **_kwargs):
+        assert _kwargs["source_etag"] == '"stable-etag"'
+        await track_operation()
+        return True
+
+    monkeypatch.setenv("MAX_S3_IMPORT_CONCURRENCY", str(local_limit))
+    monkeypatch.setattr(images_router, "_PROCESS_STORAGE_LIMITER", limiter)
+    monkeypatch.setattr(images_router, "get_s3_object_info", fake_get_s3_object_info)
+    monkeypatch.setattr(images_router, "copy_s3_object_to_s3", fake_copy_s3_object_to_s3)
+    try:
+        response = client.post(
+            f"/api/projects/{pid}/s3/import",
+            json={
+                "s3_url": "s3://source-bucket/incoming",
+                "keys": [f"incoming/{index}.png" for index in range(8)],
+            },
+        )
+    finally:
+        limiter.shutdown()
+
+    assert response.status_code == 201, response.text
+    assert len(response.json()["imported"]) == 8
+    assert maximum_active == expected_maximum
+
+
+def test_import_project_s3_files_rolls_back_and_removes_copies_on_database_failure(
+    client,
+    monkeypatch,
+):
+    pid = _create_project(client, name="S3 DB cleanup")
+    stored_objects = set()
+    deleted_objects = []
+    rollback_calls = 0
+    original_rollback = AsyncSession.rollback
+
+    async def fake_get_s3_object_info(_bucket, _key):
+        return {
+            "size": 12,
+            "content_type": "image/png",
+            "metadata": {},
+            "etag": '"stable-etag"',
+        }
+
+    async def fake_copy_s3_object_to_s3(
+        _source_bucket,
+        _source_key,
+        _destination_bucket,
+        destination_key,
+        *,
+        source_etag=None,
+    ):
+        assert source_etag == '"stable-etag"'
+        stored_objects.add(destination_key)
+        return True
+
+    async def fail_flush(_session, *_args, **_kwargs):
+        raise RuntimeError("database unavailable")
+
+    async def tracked_rollback(session, *args, **kwargs):
+        nonlocal rollback_calls
+        rollback_calls += 1
+        return await original_rollback(session, *args, **kwargs)
+
+    def fake_delete_file_from_s3(_bucket, object_key):
+        deleted_objects.append(object_key)
+        stored_objects.discard(object_key)
+        return True
+
+    monkeypatch.setattr(images_router, "get_s3_object_info", fake_get_s3_object_info)
+    monkeypatch.setattr(images_router, "copy_s3_object_to_s3", fake_copy_s3_object_to_s3)
+    monkeypatch.setattr(images_router, "delete_file_from_s3", fake_delete_file_from_s3)
+    monkeypatch.setattr(AsyncSession, "flush", fail_flush)
+    monkeypatch.setattr(AsyncSession, "rollback", tracked_rollback)
+
+    response = client.post(
+        f"/api/projects/{pid}/s3/import",
+        json={
+            "s3_url": "s3://source-bucket/incoming",
+            "keys": ["incoming/a.png", "incoming/b.png", "incoming/c.png"],
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Unable to save imported image records"
+    assert rollback_calls == 1
+    assert len(deleted_objects) == 3
+    assert stored_objects == set()
+    listed = client.get(f"/api/projects/{pid}/images?limit=20")
+    assert listed.status_code == 200
+    assert listed.json() == []
+
+
+def test_import_project_s3_files_validates_all_keys_and_metadata_before_storage(client, monkeypatch):
+    pid = _create_project(client, name="S3 preflight")
+    storage_calls = 0
+
+    async def unexpected_storage_call(*_args, **_kwargs):
+        nonlocal storage_calls
+        storage_calls += 1
+        raise AssertionError("invalid requests must not reach object storage")
+
+    monkeypatch.setattr(images_router, "get_s3_object_info", unexpected_storage_call)
+    monkeypatch.setattr(images_router, "copy_s3_object_to_s3", unexpected_storage_call)
+    response = client.post(
+        f"/api/projects/{pid}/s3/import",
+        json={
+            "s3_url": "s3://source-bucket/incoming",
+            "keys": ["incoming/valid.png", "outside/invalid.png"],
+        },
+    )
+    assert response.status_code == 400
+    assert storage_calls == 0
+
+    monkeypatch.setenv("MAX_BATCH_UPLOAD_MANIFEST_BYTES", "128")
+    metadata_response = client.post(
+        f"/api/projects/{pid}/s3/import",
+        json={
+            "s3_url": "s3://source-bucket/incoming",
+            "keys": ["incoming/valid.png"],
+            "metadata": {"padding": "x" * 256},
+        },
+    )
+    assert metadata_response.status_code == 413
+    assert "MAX_BATCH_UPLOAD_MANIFEST_BYTES" in metadata_response.text
+    assert storage_calls == 0
+
+
+def test_list_project_s3_files_returns_more_than_two_thousand_supported_objects(client, monkeypatch):
+    pid = _create_project(client, name="S3 large listing")
+    objects = [
+        {"key": f"incoming/image-{index:04d}.png", "size": index + 1}
+        for index in range(2505)
+    ]
+
+    async def fake_list_s3_objects(bucket, prefix, max_keys=1000, **kwargs):
+        assert bucket == "source-bucket"
+        assert prefix == "incoming"
+        assert max_keys == 5001
+        assert kwargs["key_filter"]("incoming/image.png") is True
+        return objects
+
+    monkeypatch.setattr(images_router, "list_s3_objects", fake_list_s3_objects)
+    response = client.post(
+        f"/api/projects/{pid}/s3/list",
+        json={"s3_url": "s3://source-bucket/incoming"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(response.json()["objects"]) == 2505
+    assert response.json()["truncated"] is False
+
+
+def test_list_s3_objects_paginates_beyond_two_thousand(monkeypatch):
+    raw_objects = [
+        {"Key": f"incoming/image-{index:04d}.png", "Size": index + 1}
+        for index in range(2505)
+    ]
+
+    class Paginator:
+        def paginate(self, **kwargs):
+            assert kwargs["PaginationConfig"] == {"MaxItems": 50000, "PageSize": 1000}
+            return [
+                {"Contents": raw_objects[:1000]},
+                {"Contents": raw_objects[1000:2000]},
+                {"Contents": raw_objects[2000:]},
+            ]
+
+    class Client:
+        def get_paginator(self, operation):
+            assert operation == "list_objects_v2"
+            return Paginator()
+
+    monkeypatch.setattr(boto3_client_module, "boto3_client", Client())
+    listed = asyncio.run(
+        boto3_client_module.list_s3_objects(
+            "source-bucket",
+            "incoming",
+            max_keys=2505,
+        )
+    )
+    assert len(listed) == 2505
+    assert listed[-1]["key"] == "incoming/image-2504.png"
+
+
+def test_list_s3_objects_skips_more_than_five_thousand_unsupported_keys_before_valid_files(
+    monkeypatch,
+):
+    unsupported = [
+        {"Key": f"incoming/readme-{index:04d}.txt", "Size": 1}
+        for index in range(5_500)
+    ]
+    supported = [
+        {"Key": "incoming/late-a.png", "Size": 12},
+        {"Key": "incoming/late-b.npy", "Size": 24},
+    ]
+    raw_objects = unsupported + supported
+
+    class Paginator:
+        def paginate(self, **kwargs):
+            assert kwargs["PaginationConfig"] == {"MaxItems": 50000, "PageSize": 1000}
+            return [
+                {"Contents": raw_objects[index:index + 1000]}
+                for index in range(0, len(raw_objects), 1000)
+            ]
+
+    class Client:
+        def get_paginator(self, operation):
+            assert operation == "list_objects_v2"
+            return Paginator()
+
+    monkeypatch.setattr(boto3_client_module, "boto3_client", Client())
+    listed = asyncio.run(
+        boto3_client_module.list_s3_objects(
+            "source-bucket",
+            "incoming",
+            max_keys=3,
+            key_filter=lambda key: key.endswith((".png", ".npy")),
+        )
+    )
+
+    assert [item["key"] for item in listed] == [
+        "incoming/late-a.png",
+        "incoming/late-b.npy",
+    ]
+    assert listed.scan_truncated is False
+
+
+def test_list_s3_objects_reports_configured_raw_scan_truncation(monkeypatch):
+    raw_objects = [
+        {"Key": f"incoming/readme-{index:04d}.txt", "Size": 1}
+        for index in range(12)
+    ]
+
+    class Paginator:
+        def paginate(self, **_kwargs):
+            return [{"Contents": raw_objects}]
+
+    class Client:
+        def get_paginator(self, _operation):
+            return Paginator()
+
+    monkeypatch.setattr(boto3_client_module, "boto3_client", Client())
+    listed = asyncio.run(
+        boto3_client_module.list_s3_objects(
+            "source-bucket",
+            "incoming",
+            max_keys=2,
+            max_scan_keys=5,
+            key_filter=lambda key: key.endswith(".png"),
+        )
+    )
+
+    assert listed == []
+    assert listed.scan_truncated is True
+
+
+@pytest.mark.parametrize("operation", ["upload", "head", "copy"])
+def test_blocking_boto_operations_hold_cancellation_until_executor_work_settles(
+    monkeypatch,
+    operation,
+):
+    started = threading.Event()
+    release = threading.Event()
+
+    class Client:
+        def _block(self):
+            started.set()
+            assert release.wait(timeout=5)
+
+        def upload_fileobj(self, *_args, **_kwargs):
+            self._block()
+
+        def head_object(self, **_kwargs):
+            self._block()
+            return {"ContentLength": 4, "Metadata": {}}
+
+        def copy_object(self, **_kwargs):
+            self._block()
+            return {}
+
+    monkeypatch.setattr(boto3_client_module, "boto3_client", Client())
+
+    async def exercise():
+        if operation == "upload":
+            coroutine = boto3_client_module.upload_file_to_s3(
+                "bucket",
+                "target",
+                io.BytesIO(b"data"),
+                length=4,
+                content_type="application/octet-stream",
+            )
+        elif operation == "head":
+            coroutine = boto3_client_module.get_s3_object_info("bucket", "source")
+        else:
+            coroutine = boto3_client_module.copy_s3_object_to_s3(
+                "source-bucket",
+                "source",
+                "destination-bucket",
+                "target",
+            )
+
+        task = asyncio.create_task(coroutine)
+        assert await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0.02)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+
+def test_numpy_volume_metadata_and_axis_slice_endpoints(client, monkeypatch, tmp_path):
     pid = _create_project(client, name="volume-slice-endpoints")
     volume = np.arange(2 * 3 * 4, dtype=np.uint16).reshape((2, 3, 4))
     payload = io.BytesIO()
@@ -776,30 +1863,22 @@ def test_numpy_volume_metadata_and_axis_slice_endpoints(client, monkeypatch):
     assert upload.status_code == 201
     image_id = upload.json()["id"]
     raw_payload = payload.getvalue()
+    storage_reads = {"count": 0}
 
-    class Resp:
-        def raise_for_status(self):
-            return None
+    async def stream_source(_db_image):
+        storage_reads["count"] += 1
+        midpoint = len(raw_payload) // 2
+        yield raw_payload[:midpoint]
+        yield raw_payload[midpoint:]
 
-        async def aread(self):
-            return raw_payload
-
-    class Client:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def get(self, url):
-            return Resp()
-
-    monkeypatch.setattr("routers.images.httpx.AsyncClient", Client)
+    monkeypatch.setenv("VOLUME_CACHE_DIR", str(tmp_path / "volume-cache"))
+    monkeypatch.setattr("routers.images._iter_authorized_npy_bytes", stream_source)
     meta = client.get(f"/api/images/{image_id}/volume-metadata")
     assert meta.status_code == 200
     assert meta.json()["dimensions"] == {"axial": 2, "coronal": 3, "sagittal": 4}
     assert meta.json()["interpretation"] == "voxel_array"
     assert meta.json()["bit_depth"] == 16
+    assert storage_reads["count"] == 0
 
     sliced = client.get(f"/api/images/{image_id}/volume-slice?axis=coronal&index=1")
     assert sliced.status_code == 200
@@ -808,12 +1887,277 @@ def test_numpy_volume_metadata_and_axis_slice_endpoints(client, monkeypatch):
     with Image.open(io.BytesIO(sliced.content)) as image:
         assert image.size == (4, 2)
         assert image.convert("L").getextrema()[1] > 0
+    assert storage_reads["count"] == 1
 
     out_of_range = client.get(f"/api/images/{image_id}/volume-slice?axis=sagittal&index=99")
     assert out_of_range.status_code == 400
 
 
-def test_uint16_constant_nonzero_volume_slice_renders_visible_pixels(client, monkeypatch):
+def test_numpy_volume_metadata_fallback_reads_only_bounded_header(client, monkeypatch, tmp_path):
+    pid = _create_project(client, name="volume-header-fallback")
+    volume = np.arange(2 * 3 * 4, dtype=np.uint16).reshape((2, 3, 4))
+    payload = io.BytesIO()
+    np.save(payload, volume)
+    payload.seek(0)
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("legacy-volume.npy", payload, "application/octet-stream")},
+    )
+    assert upload.status_code == 201
+    image_id = upload.json()["id"]
+    raw_payload = payload.getvalue()
+    deleted = client.delete(f"/api/images/{image_id}/metadata/volume_shape")
+    assert deleted.status_code == 200
+    requests = []
+
+    class HeaderResponse:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self, chunk_size=None):
+            yield raw_payload
+
+    class HeaderClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, method, url, **kwargs):
+            requests.append((method, url, kwargs))
+            return HeaderResponse()
+
+    monkeypatch.setenv("VOLUME_CACHE_DIR", str(tmp_path / "volume-cache"))
+    monkeypatch.setattr("routers.images.httpx.AsyncClient", HeaderClient)
+
+    response = client.get(f"/api/images/{image_id}/volume-metadata")
+
+    assert response.status_code == 200
+    assert response.json()["dimensions"] == {"axial": 2, "coronal": 3, "sagittal": 4}
+    assert response.json()["voxel_dtype"] == "uint16"
+    assert len(requests) == 1
+    assert requests[0][0] == "GET"
+    assert requests[0][2]["headers"]["Range"].startswith("bytes=0-")
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"volume_shape": {"axial": 0, "coronal": 3, "sagittal": 4}, "voxel_dtype": "uint8"},
+        {"volume_shape": {"axial": 10**40, "coronal": 3, "sagittal": 4}, "voxel_dtype": "uint8"},
+        {"volume_shape": {"axial": 2, "coronal": 3, "sagittal": 4}, "voxel_dtype": "object"},
+        {"volume_shape": {"axial": 2, "coronal": 3, "sagittal": 4}, "voxel_dtype": "complex64"},
+    ],
+)
+def test_persisted_npy_metadata_rejects_unsafe_fast_path(metadata):
+    from routers.images import _persisted_npy_volume_meta
+
+    assert _persisted_npy_volume_meta(metadata) is None
+
+
+def test_invalid_persisted_npy_metadata_falls_back_to_header(client, monkeypatch, tmp_path):
+    pid = _create_project(client, name="invalid-volume-metadata-fallback")
+    payload = io.BytesIO()
+    np.save(payload, np.zeros((2, 3, 4), dtype=np.uint16))
+    payload.seek(0)
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("invalid-fast-path.npy", payload, "application/octet-stream")},
+    )
+    assert upload.status_code == 201
+    image_id = upload.json()["id"]
+    assert client.put(
+        f"/api/images/{image_id}/metadata",
+        json={"key": "volume_shape", "value": {"axial": 0, "coronal": 3, "sagittal": 4}},
+    ).status_code == 200
+    header_reads = 0
+
+    async def read_header(_db_image):
+        nonlocal header_reads
+        header_reads += 1
+        return (2, 3, 4), "<u2"
+
+    monkeypatch.setenv("VOLUME_CACHE_DIR", str(tmp_path / "volume-cache"))
+    monkeypatch.setattr("routers.images._read_authorized_npy_header", read_header)
+
+    response = client.get(f"/api/images/{image_id}/volume-metadata")
+
+    assert response.status_code == 200
+    assert response.json()["dimensions"] == {"axial": 2, "coronal": 3, "sagittal": 4}
+    assert header_reads == 1
+
+
+def test_storage_http_error_does_not_expose_presigned_query(client, monkeypatch):
+    pid = _create_project(client, name="storage-error-sanitization")
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("private.png", _make_png_bytes(), "image/png")},
+    )
+    assert upload.status_code == 201
+    image_id = upload.json()["id"]
+    secret_url = "http://minio/private.png?X-Amz-Credential=SECRET&X-Amz-Signature=TOPSECRET"
+
+    class FailingClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            request = httpx.Request("GET", url)
+            response = httpx.Response(503, request=request)
+            raise httpx.HTTPStatusError(f"storage failed for {url}", request=request, response=response)
+
+    monkeypatch.setattr("routers.images.get_presigned_download_url", lambda **_kwargs: secret_url)
+    monkeypatch.setattr("routers.images.httpx.AsyncClient", FailingClient)
+
+    response = client.get(f"/api/images/{image_id}/content")
+
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail == "Unable to retrieve image data from object storage"
+    assert "X-Amz" not in detail
+    assert "SECRET" not in detail
+
+
+def test_npy_volume_slice_storage_error_keeps_safe_status_and_detail(client, monkeypatch, tmp_path):
+    pid = _create_project(client, name="volume-storage-error-sanitization")
+    payload = io.BytesIO()
+    np.save(payload, np.zeros((2, 3, 4), dtype=np.uint8))
+    payload.seek(0)
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("private.npy", payload, "application/octet-stream")},
+    )
+    assert upload.status_code == 201
+    image_id = upload.json()["id"]
+    secret_url = "http://minio/private.npy?X-Amz-Credential=SECRET&X-Amz-Signature=TOPSECRET"
+
+    class FailingResponse:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            request = httpx.Request("GET", secret_url)
+            response = httpx.Response(503, request=request)
+            raise httpx.HTTPStatusError(
+                f"storage failed for {secret_url}",
+                request=request,
+                response=response,
+            )
+
+    class FailingClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, method, url, **_kwargs):
+            return FailingResponse()
+
+    monkeypatch.setenv("VOLUME_CACHE_DIR", str(tmp_path / "volume-cache"))
+    monkeypatch.setattr("routers.images.get_presigned_download_url", lambda **_kwargs: secret_url)
+    monkeypatch.setattr("routers.images.httpx.AsyncClient", FailingClient)
+
+    response = client.get(f"/api/images/{image_id}/volume-slice?axis=axial&index=0")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Unable to retrieve image data from object storage"
+    assert "X-Amz" not in response.text
+    assert "SECRET" not in response.text
+
+
+def test_volume_metadata_cache_failure_is_sanitized_server_error(client, monkeypatch):
+    from routers import images as images_router
+
+    pid = _create_project(client, name="volume-metadata-cache-error")
+    payload = io.BytesIO()
+    np.save(payload, np.zeros((2, 3, 4), dtype=np.uint8))
+    payload.seek(0)
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("cache-error.npy", payload, "application/octet-stream")},
+    )
+    assert upload.status_code == 201
+    image_id = upload.json()["id"]
+    assert client.delete(f"/api/images/{image_id}/metadata/volume_shape").status_code == 200
+
+    def fail_cache_lookup(_identity):
+        raise images_router.VolumeCacheError("/private/cache/volume.npy: permission denied")
+
+    monkeypatch.setattr(images_router, "get_materialized_npy_path", fail_cache_lookup)
+
+    response = client.get(f"/api/images/{image_id}/volume-metadata")
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Volume cache is temporarily unavailable"
+    assert "/private/cache" not in response.text
+
+
+def test_volume_slice_cache_failure_is_sanitized_server_error(client, monkeypatch):
+    from routers import images as images_router
+
+    pid = _create_project(client, name="volume-slice-cache-error")
+    payload = io.BytesIO()
+    np.save(payload, np.zeros((2, 3, 4), dtype=np.uint8))
+    payload.seek(0)
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("cache-error.npy", payload, "application/octet-stream")},
+    )
+    assert upload.status_code == 201
+    image_id = upload.json()["id"]
+
+    async def fail_cache_open(*_args, **_kwargs):
+        raise images_router.VolumeCacheError("/private/cache/volume.npy: input/output error")
+
+    monkeypatch.setattr(images_router, "get_npy_volume_handle", fail_cache_open)
+
+    response = client.get(f"/api/images/{image_id}/volume-slice?axis=axial&index=0")
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Volume cache is temporarily unavailable"
+    assert "/private/cache" not in response.text
+
+
+def test_malformed_npy_volume_remains_client_error(client, monkeypatch):
+    from routers import images as images_router
+
+    pid = _create_project(client, name="malformed-volume-client-error")
+    payload = io.BytesIO()
+    np.save(payload, np.zeros((2, 3, 4), dtype=np.uint8))
+    payload.seek(0)
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("malformed.npy", payload, "application/octet-stream")},
+    )
+    assert upload.status_code == 201
+    image_id = upload.json()["id"]
+
+    async def reject_source(*_args, **_kwargs):
+        raise images_router.InvalidVolumeSourceError("Invalid NumPy volume: malformed header")
+
+    monkeypatch.setattr(images_router, "get_npy_volume_handle", reject_source)
+
+    response = client.get(f"/api/images/{image_id}/volume-slice?axis=axial&index=0")
+
+    assert response.status_code == 400
+    assert "malformed header" in response.json()["detail"]
+
+
+def test_uint16_constant_nonzero_volume_slice_renders_visible_pixels(client, monkeypatch, tmp_path):
     pid = _create_project(client, name="uint16-constant-volume-slice")
     volume = np.full((2, 3, 4), 2048, dtype=np.uint16)
     payload = io.BytesIO()
@@ -827,24 +2171,11 @@ def test_uint16_constant_nonzero_volume_slice_renders_visible_pixels(client, mon
     image_id = upload.json()["id"]
     raw_payload = payload.getvalue()
 
-    class Resp:
-        def raise_for_status(self):
-            return None
+    async def stream_source(_db_image):
+        yield raw_payload
 
-        async def aread(self):
-            return raw_payload
-
-    class Client:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def get(self, url):
-            return Resp()
-
-    monkeypatch.setattr("routers.images.httpx.AsyncClient", Client)
+    monkeypatch.setenv("VOLUME_CACHE_DIR", str(tmp_path / "volume-cache"))
+    monkeypatch.setattr("routers.images._iter_authorized_npy_bytes", stream_source)
 
     sliced = client.get(f"/api/images/{image_id}/volume-slice?axis=axial&index=0")
 
@@ -855,7 +2186,7 @@ def test_uint16_constant_nonzero_volume_slice_renders_visible_pixels(client, mon
         assert image.convert("L").getextrema() == (255, 255)
 
 
-def test_volume_slice_cache_reuses_rendered_png_for_repeated_slice(client, monkeypatch):
+def test_volume_slice_cache_reuses_rendered_png_for_repeated_slice(client, monkeypatch, tmp_path):
     pid = _create_project(client, name="volume-slice-cache")
     volume = np.arange(2 * 3 * 4, dtype=np.uint16).reshape((2, 3, 4))
     payload = io.BytesIO()
@@ -870,35 +2201,29 @@ def test_volume_slice_cache_reuses_rendered_png_for_repeated_slice(client, monke
     raw_payload = payload.getvalue()
     calls = {"count": 0}
 
-    class Resp:
-        def raise_for_status(self):
-            return None
-
-        async def aread(self):
-            calls["count"] += 1
-            return raw_payload
-
-    class Client:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def get(self, url):
-            return Resp()
+    async def stream_source(_db_image):
+        calls["count"] += 1
+        yield raw_payload
 
     from routers import images as images_router
 
     render_calls = {"count": 0}
+    handle_calls = {"count": 0}
     original_render = images_router._normalize_array_slice_to_png
+    original_get_handle = images_router.get_npy_volume_handle
 
     def counted_render(array):
         render_calls["count"] += 1
         return original_render(array)
 
-    monkeypatch.setattr("routers.images.httpx.AsyncClient", Client)
+    async def counted_get_handle(*args, **kwargs):
+        handle_calls["count"] += 1
+        return await original_get_handle(*args, **kwargs)
+
+    monkeypatch.setenv("VOLUME_CACHE_DIR", str(tmp_path / "volume-cache"))
+    monkeypatch.setattr("routers.images._iter_authorized_npy_bytes", stream_source)
     monkeypatch.setattr(images_router, "_normalize_array_slice_to_png", counted_render)
+    monkeypatch.setattr(images_router, "get_npy_volume_handle", counted_get_handle)
 
     first = client.get(f"/api/images/{image_id}/volume-slice?axis=coronal&index=1")
     second = client.get(f"/api/images/{image_id}/volume-slice?axis=coronal&index=1")
@@ -906,7 +2231,8 @@ def test_volume_slice_cache_reuses_rendered_png_for_repeated_slice(client, monke
     assert first.status_code == 200
     assert second.status_code == 200
     assert first.content == second.content
-    assert calls["count"] == 2
+    assert calls["count"] == 1
+    assert handle_calls["count"] == 1
     assert render_calls["count"] == 1
 
 
@@ -921,4 +2247,3 @@ def test_float_volume_slice_ignores_nan_and_infinity_for_visible_pixels():
     assert scaled[1, 1] == 0
     assert scaled[0, 2] == 0
     assert scaled[1, 2] == 255
-

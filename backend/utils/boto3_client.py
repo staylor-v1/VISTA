@@ -6,8 +6,53 @@ from botocore.exceptions import ClientError
 from core.config import settings
 from datetime import timedelta
 import io
+from typing import Callable, TypeVar
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_S3_LIST_MAX_KEYS = 5000
+DEFAULT_S3_LIST_MAX_SCAN_KEYS = 50_000
+
+_BlockingResult = TypeVar("_BlockingResult")
+
+
+class S3ObjectList(list[dict]):
+    """Backward-compatible listing with raw-scan truncation state."""
+
+    def __init__(self, values=(), *, scan_truncated: bool = False):
+        super().__init__(values)
+        self.scan_truncated = scan_truncated
+
+
+async def _run_blocking_s3_call(call: Callable[[], _BlockingResult]) -> _BlockingResult:
+    """Run boto3 work without abandoning its thread when the caller cancels.
+
+    ``run_in_executor`` cannot stop a boto3 call that has already begun.  If
+    the surrounding request is cancelled, wait for that call to settle before
+    propagating cancellation so request-level storage semaphores remain held
+    for the true lifetime of the operation.
+    """
+
+    loop = asyncio.get_running_loop()
+    future = loop.run_in_executor(None, call)
+    try:
+        return await asyncio.shield(future)
+    except asyncio.CancelledError as cancelled:
+        while not future.done():
+            try:
+                await asyncio.shield(future)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        if future.done():
+            # Retrieve any executor exception so it is not reported as an
+            # unhandled Future; cancellation remains the public outcome.
+            try:
+                future.result()
+            except BaseException:
+                pass
+        raise cancelled
 
 def sanitize_for_log(val: str) -> str:
     """Remove log injection characters from user-sourced input."""
@@ -209,9 +254,7 @@ async def upload_file_to_s3(
             })
 
         # Run blocking boto3 call in a thread to avoid blocking the event loop
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None,
+        await _run_blocking_s3_call(
             lambda: boto3_client.upload_fileobj(
                 file_data,
                 bucket_name,
@@ -219,9 +262,9 @@ async def upload_file_to_s3(
                 ExtraArgs={
                     'ContentType': content_type
                 }
-            ),
+            )
         )
-        logger.info("Successfully uploaded file to bucket", extra={
+        logger.debug("Successfully uploaded file to bucket", extra={
             "object_name": object_name,
             "bucket": bucket_name,
             "content_type": content_type
@@ -245,31 +288,75 @@ async def upload_file_to_s3(
         return False
 
 
-async def list_s3_objects(bucket_name: str, prefix: str = "", max_keys: int = 1000) -> list[dict]:
-    """List objects in an S3 bucket/prefix using the configured client."""
+async def list_s3_objects(
+    bucket_name: str,
+    prefix: str = "",
+    max_keys: int = DEFAULT_S3_LIST_MAX_KEYS,
+    *,
+    key_filter: Callable[[str], bool] | None = None,
+    max_scan_keys: int | None = None,
+) -> S3ObjectList:
+    """List matching objects while bounding the number of raw keys scanned.
+
+    ``max_keys`` applies after ``key_filter``.  This prevents unsupported keys
+    at the start of a large bucket from hiding supported files later in the
+    listing.  At most ``MAX_S3_LIST_SCAN_KEYS`` raw objects are inspected per
+    request unless the caller supplies a smaller explicit bound.
+    """
     if not boto3_client:
         logger.error("Boto3 S3 client not initialized, cannot list objects")
         return []
 
     try:
-        safe_max_keys = max(1, min(int(max_keys or 1000), 1001))
+        safe_max_keys = max(1, int(max_keys or DEFAULT_S3_LIST_MAX_KEYS))
+        if max_scan_keys is None:
+            try:
+                max_scan_keys = int(
+                    os.getenv(
+                        "MAX_S3_LIST_SCAN_KEYS",
+                        str(DEFAULT_S3_LIST_MAX_SCAN_KEYS),
+                    )
+                )
+            except (TypeError, ValueError):
+                max_scan_keys = DEFAULT_S3_LIST_MAX_SCAN_KEYS
+        safe_scan_keys = max(1, int(max_scan_keys or DEFAULT_S3_LIST_MAX_SCAN_KEYS))
         paginator = boto3_client.get_paginator('list_objects_v2')
-        loop = asyncio.get_running_loop()
 
         def _collect():
             objects = []
+            raw_count = 0
+            scan_truncated = False
             for page in paginator.paginate(
                 Bucket=bucket_name,
                 Prefix=prefix or "",
-                PaginationConfig={'MaxItems': safe_max_keys, 'PageSize': min(safe_max_keys, 1000)},
+                PaginationConfig={
+                    'MaxItems': safe_scan_keys,
+                    'PageSize': min(safe_scan_keys, 1000),
+                },
             ):
-                objects.extend(page.get('Contents', []))
+                for obj in page.get('Contents', []):
+                    if raw_count >= safe_scan_keys:
+                        scan_truncated = True
+                        break
+                    raw_count += 1
+                    key = str(obj.get("Key") or "")
+                    if key_filter is None or key_filter(key):
+                        objects.append(obj)
+                        if len(objects) >= safe_max_keys:
+                            scan_truncated = True
+                            break
                 if len(objects) >= safe_max_keys:
                     break
-            return objects[:safe_max_keys]
+                if raw_count >= safe_scan_keys:
+                    # Conservatively report truncation at the configured raw
+                    # bound. A false-positive at an exact bucket boundary is
+                    # preferable to claiming that an unscanned suffix is empty.
+                    scan_truncated = True
+                    break
+            return objects[:safe_max_keys], scan_truncated
 
-        raw_objects = await loop.run_in_executor(None, _collect)
-        return [
+        raw_objects, scan_truncated = await _run_blocking_s3_call(_collect)
+        return S3ObjectList([
             {
                 "key": obj.get("Key", ""),
                 "size": int(obj.get("Size") or 0),
@@ -277,7 +364,7 @@ async def list_s3_objects(bucket_name: str, prefix: str = "", max_keys: int = 10
                 "etag": obj.get("ETag"),
             }
             for obj in raw_objects
-        ]
+        ], scan_truncated=scan_truncated)
     except ClientError as e:
         logger.error("S3 error listing objects", extra={
             "bucket": sanitize_for_log(bucket_name),
@@ -302,10 +389,8 @@ async def get_s3_object_info(bucket_name: str, object_name: str) -> dict | None:
         return None
 
     try:
-        loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: boto3_client.head_object(Bucket=bucket_name, Key=object_name),
+        response = await _run_blocking_s3_call(
+            lambda: boto3_client.head_object(Bucket=bucket_name, Key=object_name)
         )
         return {
             "content_type": response.get("ContentType"),
@@ -331,23 +416,33 @@ async def get_s3_object_info(bucket_name: str, object_name: str) -> dict | None:
         return None
 
 
-async def copy_s3_object_to_s3(source_bucket: str, source_key: str, destination_bucket: str, destination_key: str) -> bool:
-    """Copy an object between S3 locations using the configured client."""
+async def copy_s3_object_to_s3(
+    source_bucket: str,
+    source_key: str,
+    destination_bucket: str,
+    destination_key: str,
+    *,
+    source_etag: str | None = None,
+) -> bool:
+    """Copy an object, optionally requiring the source HEAD ETag to still match."""
     if not boto3_client:
         logger.error("Boto3 S3 client not initialized, cannot copy object")
         return False
 
     try:
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None,
+        copy_args = {
+            "Bucket": destination_bucket,
+            "Key": destination_key,
+            "CopySource": {"Bucket": source_bucket, "Key": source_key},
+        }
+        if source_etag:
+            copy_args["CopySourceIfMatch"] = source_etag
+        await _run_blocking_s3_call(
             lambda: boto3_client.copy_object(
-                Bucket=destination_bucket,
-                Key=destination_key,
-                CopySource={"Bucket": source_bucket, "Key": source_key},
-            ),
+                **copy_args,
+            )
         )
-        logger.info("Copied S3 object", extra={
+        logger.debug("Copied S3 object", extra={
             "source_bucket": sanitize_for_log(source_bucket),
             "source_key": sanitize_for_log(source_key),
             "destination_bucket": sanitize_for_log(destination_bucket),
@@ -466,7 +561,7 @@ def delete_file_from_s3(bucket_name: str, object_name: str) -> bool:
         return False
     try:
         boto3_client.delete_object(Bucket=bucket_name, Key=object_name)
-        logger.info("Deleted object from bucket", extra={
+        logger.debug("Deleted object from bucket", extra={
             "object_name": sanitize_for_log(object_name),
             "bucket": sanitize_for_log(bucket_name)
         })
@@ -474,7 +569,7 @@ def delete_file_from_s3(bucket_name: str, object_name: str) -> bool:
     except ClientError as e:
         error_code = e.response.get('Error', {}).get('Code')
         if error_code in ('NoSuchKey', '404'):
-            logger.info("Object already missing when attempting delete", extra={
+            logger.debug("Object already missing when attempting delete", extra={
                 "object_name": sanitize_for_log(object_name),
                 "bucket": sanitize_for_log(bucket_name)
             })

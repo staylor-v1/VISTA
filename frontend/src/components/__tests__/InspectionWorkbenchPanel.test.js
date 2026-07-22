@@ -2,6 +2,7 @@ import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import InspectionWorkbenchPanel, { getMprSliceCachingMessage } from '../InspectionWorkbenchPanel';
 import ImagesToPartsTab from '../ImagesToPartsTab';
+import * as pt3ThreeRenderer from '../pt3ThreeRenderer';
 
 jest.setTimeout(90000);
 
@@ -616,11 +617,8 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
       mutableParts[0] = updatedPart;
       return Promise.resolve({ ok: true, json: async () => updatedPart });
     }
-    if (url.includes('/images?include_deleted=true&limit=5000')) {
-      if (Array.isArray(projectImages)) {
-        return Promise.resolve({ ok: true, json: async () => projectImages });
-      }
-      const imageRecords = mutableParts.flatMap((part) => {
+    if (url.includes('/images-page?')) {
+      const imageRecords = Array.isArray(projectImages) ? projectImages : mutableParts.flatMap((part) => {
         const viewImages = part?.metadata?.view_images || {};
         const viewRecords = Object.entries(viewImages).map(([viewName, imageRef], index) => ({
           id: `${part.id}-image-${index + 1}`,
@@ -644,7 +642,21 @@ function mockWorkbenchFetch({ user, batches, parts, workspaceState = {}, hotkeys
           : [];
         return [...viewRecords, ...sourceRecords];
       });
-      return Promise.resolve({ ok: true, json: async () => [...imageRecords, ...uploadedImages] });
+      const allImages = [...imageRecords, ...uploadedImages];
+      const parsedUrl = new URL(url, 'http://vista.test');
+      const offset = Number(parsedUrl.searchParams.get('cursor') || 0);
+      const limit = Number(parsedUrl.searchParams.get('limit') || 500);
+      const items = allImages.slice(offset, offset + limit);
+      const nextOffset = offset + items.length;
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          items,
+          total: allImages.length,
+          next_cursor: nextOffset < allImages.length ? String(nextOffset) : null,
+          has_more: nextOffset < allImages.length,
+        }),
+      });
     }
     if (url.includes('/parts')) {
       return Promise.resolve({ ok: true, json: async () => mutableParts });
@@ -669,6 +681,109 @@ describe('InspectionWorkbenchPanel', () => {
   test('formats MPR loading progress while volume slices are expected', () => {
     expect(getMprSliceCachingMessage({ loadedSlices: 1, totalSlices: 3 })).toBe('Caching MPR slices 1/3');
     expect(getMprSliceCachingMessage({ loadedSlices: 0, totalSlices: 0 })).toBe('Caching MPR slices');
+  });
+
+  test('hydrates the inspection image lookup across every cursor page', async () => {
+    const projectImages = Array.from({ length: 501 }, (_, index) => ({
+      id: `image-${index}`,
+      filename: `image-${index}.png`,
+      metadata: {},
+    }));
+    mockWorkbenchFetch({
+      user: 'pagination',
+      batches: [{ id: 'batch-1', name: 'Batch 1' }],
+      workspaceState: { selected_batch_id: 'batch-1', selected_part_id: 'part-page' },
+      projectImages,
+      parts: [{
+        id: 'part-page',
+        batch_id: 'batch-1',
+        serial_number: 'SN-PAGE',
+        display_name: 'Paginated Part',
+        review_state: 'unreviewed',
+        metadata: {
+          configured_views: ['front'],
+          view_images: { front: 'image-500.png' },
+          source_images: [{ filename: 'image-500.png', image_id: 'image-500', side: 'front', modality: 'visual' }],
+          annotations: [],
+        },
+      }],
+    });
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    expect(await screen.findByRole('heading', { name: 'Paginated Part' })).toBeInTheDocument();
+    const pageCalls = global.fetch.mock.calls.filter(([url]) => String(url).includes('/images-page?'));
+    expect(pageCalls).toHaveLength(2);
+    expect(new URL(pageCalls[1][0], 'http://vista.test').searchParams.get('cursor')).toBe('500');
+  });
+
+  test('aborts the previous project load and ignores its late response after a project switch', async () => {
+    let resolveProjectAParts;
+    const projectAPartsResponse = new Promise((resolve) => {
+      resolveProjectAParts = resolve;
+    });
+    const response = (payload) => ({ ok: true, json: async () => payload });
+    const partFor = (projectId) => ({
+      id: `part-${projectId}`,
+      batch_id: `batch-${projectId}`,
+      serial_number: `SN-${projectId}`,
+      display_name: `Part ${projectId.toUpperCase()}`,
+      review_state: 'unreviewed',
+      metadata: { configured_views: [], source_images: [], annotations: [] },
+    });
+
+    global.fetch = jest.fn((url, options = {}) => {
+      const requestUrl = String(url);
+      const projectId = requestUrl.includes('/project-a/') ? 'project-a' : 'project-b';
+      if (options.method === 'PUT') return Promise.resolve(response({ state: {} }));
+      if (requestUrl.includes('/batches')) {
+        return Promise.resolve(response([{ id: `batch-${projectId}`, name: `Batch ${projectId}` }]));
+      }
+      if (requestUrl.includes('/parts')) {
+        if (projectId === 'project-a') return projectAPartsResponse;
+        return Promise.resolve(response([partFor(projectId)]));
+      }
+      if (requestUrl.includes('/workspace-state')) {
+        return Promise.resolve(response({
+          state: {
+            selected_batch_id: `batch-${projectId}`,
+            selected_part_id: `part-${projectId}`,
+          },
+        }));
+      }
+      if (requestUrl.includes('/configuration')) return Promise.resolve(response({ config: {} }));
+      if (requestUrl.includes('/metadata-dict')) return Promise.resolve(response({}));
+      if (requestUrl.includes('/images-page?')) {
+        return Promise.resolve(response({ items: [], total: 0, next_cursor: null, has_more: false }));
+      }
+      return Promise.resolve({ ok: false, status: 404 });
+    });
+
+    const { rerender } = render(
+      <InspectionWorkbenchPanel projectId="project-a" projectType="PT1" />,
+    );
+    await waitFor(() => {
+      expect(global.fetch.mock.calls.filter(([url]) => String(url).includes('/project-a/'))).toHaveLength(6);
+    });
+    const projectASignals = new Set(
+      global.fetch.mock.calls
+        .filter(([url]) => String(url).includes('/project-a/'))
+        .map(([, options]) => options?.signal),
+    );
+    expect(projectASignals.size).toBe(1);
+    const [projectASignal] = projectASignals;
+    expect(projectASignal).toBeTruthy();
+    expect(projectASignal.aborted).toBe(false);
+
+    rerender(<InspectionWorkbenchPanel projectId="project-b" projectType="PT1" />);
+    expect(projectASignal.aborted).toBe(true);
+    expect(await screen.findByRole('heading', { name: 'Part PROJECT-B' })).toBeInTheDocument();
+
+    resolveProjectAParts(response([partFor('project-a')]));
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Part PROJECT-B' })).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'Part PROJECT-A' })).not.toBeInTheDocument();
+    });
   });
 
   test('does not reapply stale launch filters after a PT1 user selects another part', async () => {
@@ -901,7 +1016,10 @@ describe('InspectionWorkbenchPanel', () => {
       if (url.includes('/workspace-state')) return Promise.resolve({ ok: true, json: async () => ({ state: { selected_batch_id: 'batch-1', selected_part_id: 'part-1' } }) });
       if (url.includes('/configuration')) return Promise.resolve({ ok: true, json: async () => ({ config: {} }) });
       if (url.includes('/metadata-dict')) return Promise.resolve({ ok: true, json: async () => ({ calibration_default: defaultCalibration }) });
-      if (url.includes('/images?include_deleted=true&limit=5000')) return Promise.resolve({ ok: true, json: async () => images });
+      if (url.includes('/images-page?')) return Promise.resolve({
+        ok: true,
+        json: async () => ({ items: images, total: images.length, next_cursor: null, has_more: false }),
+      });
       return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
     });
 
@@ -1514,8 +1632,12 @@ describe('InspectionWorkbenchPanel', () => {
   });
 
   test('keeps one 3D scene and exposes renderer-specific controls only in fullscreen', async () => {
-    mockWorkbenchFetch(scenarioByUser[2]);
-    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+    const rayRenderer = { rendererType: 'three-webgl-raymarch', render: jest.fn(), dispose: jest.fn() };
+    const rayRendererSpy = jest.spyOn(pt3ThreeRenderer, 'createThreeMechanicalRenderer')
+      .mockResolvedValue(rayRenderer);
+    try {
+      mockWorkbenchFetch(scenarioByUser[2]);
+      render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
 
     await screen.findByTestId('mpr-panel');
     fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'volume3d' } });
@@ -1555,14 +1677,22 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.queryByRole('button', { name: 'Zoom -' })).not.toBeInTheDocument();
 
     fireEvent.change(modeSelect, { target: { value: 'volume3d' } });
+    await waitFor(() => expect(screen.getByRole('group', { name: 'Ray-march controls' })).toBeEnabled());
     const density = screen.getByLabelText('Ray-march density');
     const threshold = screen.getByLabelText('Ray-march intensity threshold');
     const quality = screen.getByLabelText('Quality profile');
     const guides = screen.getByLabelText('Show slice guides');
+    const reconstructionStyle = screen.getByLabelText('Ray-march reconstruction style');
+    const boundaryEnhancement = screen.getByLabelText('Ray-march boundary enhancement');
+    const boundaryStrength = screen.getByLabelText('Ray-march boundary strength');
     const orbitX = screen.getByRole('slider', { name: 'Orbit X' });
     const orbitY = screen.getByRole('slider', { name: 'Orbit Y' });
     expect(density).toHaveValue('1.25');
     expect(threshold).toHaveValue('0.08');
+    expect(reconstructionStyle).toHaveValue('composite');
+    expect(boundaryEnhancement).not.toBeChecked();
+    expect(boundaryStrength).toHaveValue('0.45');
+    expect(boundaryStrength).toBeDisabled();
     expect(screen.queryByLabelText('Transfer function preset')).not.toBeInTheDocument();
     expect(screen.getByTestId('ray-march-transfer-summary')).toHaveTextContent('α(I) = ρ · smoothstep');
     expect(screen.getByLabelText('Ray-march opacity ramp width')).toHaveValue('0.52');
@@ -1577,19 +1707,37 @@ describe('InspectionWorkbenchPanel', () => {
     fireEvent.change(threshold, { target: { value: '0.3' } });
     fireEvent.change(quality, { target: { value: 'quality' } });
     fireEvent.click(guides);
+    fireEvent.change(reconstructionStyle, { target: { value: 'window' } });
+    const windowCenter = screen.getByLabelText('Ray-march window center');
+    const windowWidth = screen.getByLabelText('Ray-march window width');
+    fireEvent.change(windowCenter, { target: { value: '0.38' } });
+    fireEvent.change(windowWidth, { target: { value: '0.12' } });
+    fireEvent.click(boundaryEnhancement);
+    fireEvent.change(boundaryStrength, { target: { value: '0.8' } });
     expect(density).toHaveValue('0.4');
-    expect(threshold).toHaveValue('0.3');
+    expect(screen.queryByLabelText('Ray-march intensity threshold')).not.toBeInTheDocument();
     expect(quality).toHaveValue('quality');
     expect(guides).not.toBeChecked();
+    expect(reconstructionStyle).toHaveValue('window');
+    expect(windowCenter).toHaveValue('0.38');
+    expect(windowWidth).toHaveValue('0.12');
+    expect(boundaryEnhancement).toBeChecked();
+    expect(boundaryStrength).toHaveValue('0.8');
+    expect(boundaryStrength).toBeEnabled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Reset ray-march settings' }));
     expect(density).toHaveValue('1.25');
-    expect(threshold).toHaveValue('0.08');
+    expect(screen.getByLabelText('Ray-march intensity threshold')).toHaveValue('0.08');
     expect(screen.queryByLabelText('Transfer function preset')).not.toBeInTheDocument();
     expect(screen.getByTestId('ray-march-transfer-summary')).toHaveTextContent('α(I) = ρ · smoothstep');
     expect(screen.getByLabelText('Ray-march opacity ramp width')).toHaveValue('0.52');
     expect(quality).toHaveValue('balanced');
     expect(guides).toBeChecked();
+    expect(reconstructionStyle).toHaveValue('composite');
+    expect(screen.queryByLabelText('Ray-march window center')).not.toBeInTheDocument();
+    expect(boundaryEnhancement).not.toBeChecked();
+    expect(boundaryStrength).toHaveValue('0.45');
+    expect(boundaryStrength).toBeDisabled();
 
     fireEvent.change(orbitX, { target: { value: '-40' } });
     fireEvent.change(orbitY, { target: { value: '75' } });
@@ -1671,8 +1819,11 @@ describe('InspectionWorkbenchPanel', () => {
     expect(within(screen.getByRole('dialog', { name: '3D reconstruction' })).getByRole('button', { name: 'Close fullscreen 3D view' })).toHaveFocus();
     fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
     expect(lastControl).toHaveFocus();
-    fireEvent.keyDown(lastControl, { key: 'Escape' });
-    expect(screen.queryByRole('dialog', { name: '3D reconstruction' })).not.toBeInTheDocument();
+      fireEvent.keyDown(lastControl, { key: 'Escape' });
+      expect(screen.queryByRole('dialog', { name: '3D reconstruction' })).not.toBeInTheDocument();
+    } finally {
+      rayRendererSpy.mockRestore();
+    }
   });
 
   test('applies each MPR axis mirror to the single CSS and PT3 3D scene', async () => {
@@ -3340,6 +3491,41 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getAllByAltText('back view')).toHaveLength(1);
     expect(screen.queryByText('IMAGE 1')).not.toBeInTheDocument();
     expect(screen.queryByText('IMAGE 2')).not.toBeInTheDocument();
+  });
+
+  test('keeps distinct image IDs inspectable when they share the same filename', async () => {
+    mockWorkbenchFetch({
+      user: 'same-filename-distinct-ids',
+      batches: [{ id: 'batch-shared-name', name: 'Batch Shared Name' }],
+      parts: [
+        {
+          id: 'part-shared-name',
+          batch_id: 'batch-shared-name',
+          serial_number: 'SN-SHARED-NAME',
+          display_name: 'Shared Filename Part',
+          review_state: 'in_review',
+          metadata: {
+            configured_views: ['front', 'back'],
+            source_images: [
+              { filename: 'capture.png', image_id: 'capture-front-id', side: 'front', modality: 'visual', overlay: false },
+              { filename: 'capture.png', image_id: 'capture-back-id', side: 'back', modality: 'visual', overlay: false },
+            ],
+          },
+        },
+      ],
+      workspaceState: {},
+      hotkeys: { accept_classification: 'a', reject_classification: 'r', toggle_shortcut_help: 'h' },
+    });
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    await waitFor(() => expect(screen.getAllByText('Shared Filename Part').length).toBeGreaterThan(0));
+    const front = screen.getAllByAltText('front view');
+    const back = screen.getAllByAltText('back view');
+    expect(front).toHaveLength(1);
+    expect(back).toHaveLength(1);
+    expect(front[0]).toHaveAttribute('src', '/api/images/capture-front-id/content');
+    expect(back[0]).toHaveAttribute('src', '/api/images/capture-back-id/content');
   });
 
   test.each([

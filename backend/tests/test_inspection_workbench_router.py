@@ -1967,7 +1967,10 @@ def test_bulk_ingest_dereferences_associated_nsipro_metadata(client):
     assert metadata["nsipro_metadata"] == {"capture": {"operator": "alice", "exposure": 12}}
     assert metadata["nsipro_payload"]["parser_id"] == "default"
     assert metadata["nsipro_payload"]["parser_hash"] == "sha256:3295a8f571b23a6bb2a5ae1ef21e5500d39fdabf209ea122d7352f65d1b217df"
-    assert metadata["source_images"][0]["nsipro_payload"]["metadata"] == metadata["nsipro_metadata"]
+    source_image = metadata["source_images"][0]
+    assert source_image["nsipro_payload_ref"] == metadata["nsipro_payload_ref"] == metadata_key
+    assert "nsipro_payload" not in source_image
+    assert metadata["nsipro_payload"]["metadata"] == metadata["nsipro_metadata"]
 
     replacement_key = "associated_upload_metadata:scan-updated.nsipro:updatedhash"
     replacement_resp = client.post(
@@ -2028,8 +2031,11 @@ def test_bulk_ingest_dereferences_associated_nsipro_metadata(client):
     assert updated_parts_resp.status_code == 200, updated_parts_resp.text
     updated_metadata = updated_parts_resp.json()[0]["metadata"]
     assert updated_metadata["nsipro_metadata"] == {"capture": {"operator": "bob", "exposure": 18}}
-    assert updated_metadata["source_images"][0]["nsipro_payload"]["source_filename"] == "scan-updated.nsipro"
-    assert updated_metadata["source_images"][0]["nsipro_payload"]["metadata"] == updated_metadata["nsipro_metadata"]
+    updated_source = updated_metadata["source_images"][0]
+    assert updated_source["nsipro_payload_ref"] == updated_metadata["nsipro_payload_ref"] == replacement_key
+    assert "nsipro_payload" not in updated_source
+    assert updated_metadata["nsipro_payload"]["source_filename"] == "scan-updated.nsipro"
+    assert updated_metadata["nsipro_payload"]["metadata"] == updated_metadata["nsipro_metadata"]
 
 
 def test_bulk_ingest_persists_deployment_nsipro_custom_fields_after_dereference(client):
@@ -2155,8 +2161,11 @@ def test_bulk_ingest_persists_deployment_nsipro_custom_fields_after_dereference(
         },
     }
     assert metadata["nsipro_payload"]["parser_id"] == "deployment_a"
-    assert metadata["source_images"][0]["nsipro_payload"]["metadata"] == metadata["nsipro_metadata"]
-    assert metadata["source_images"][0]["nsipro_payload"]["parser_hash"] == "sha256:d1c01fbbf53558bc44e1fcc73a8f537f0feec684ef38b8c919beefb59c1be6bb"
+    source_image = metadata["source_images"][0]
+    assert source_image["nsipro_payload_ref"] == metadata["nsipro_payload_ref"] == metadata_key
+    assert "nsipro_payload" not in source_image
+    assert metadata["nsipro_payload"]["metadata"] == metadata["nsipro_metadata"]
+    assert metadata["nsipro_payload"]["parser_hash"] == "sha256:d1c01fbbf53558bc44e1fcc73a8f537f0feec684ef38b8c919beefb59c1be6bb"
 
 def test_bulk_ingest_strict_nsipro_parser_contract_rejects_mismatched_payload(client):
     headers = {"X-User-Id": "nsipro-strict@example.com", "X-User-Groups": '["nsipro-strict"]'}

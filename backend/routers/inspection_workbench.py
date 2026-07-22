@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import httpx
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1076,22 +1077,48 @@ async def _resolve_associated_nsipro_payload(
     expected_version: str,
     expected_hash: str,
     strict: bool,
-) -> dict | None:
+    project_metadata_by_key: dict[str, models.ProjectMetadata] | None = None,
+    nsipro_payload_by_ref: dict[str, dict] | None = None,
+) -> tuple[str, dict] | None:
     for metadata_key in _candidate_metadata_reference_keys(metadata):
-        project_metadata = await crud.get_project_metadata_by_key(db=db, project_id=project_id, key=metadata_key)
+        if project_metadata_by_key is None:
+            project_metadata = await crud.get_project_metadata_by_key(db=db, project_id=project_id, key=metadata_key)
+        else:
+            project_metadata = project_metadata_by_key.get(metadata_key)
         bundle = project_metadata.value if project_metadata and isinstance(project_metadata.value, dict) else None
         if not bundle:
             continue
+        reference = _dict_or_empty(metadata.get("associated_metadata"))
+        cached_payload = (
+            nsipro_payload_by_ref.get(metadata_key)
+            if nsipro_payload_by_ref is not None
+            else None
+        )
+        if cached_payload is not None:
+            # The parsed payload is canonical for a project-metadata key, but
+            # strict parser declarations belong to each individual reference.
+            # Validate every occurrence even when parsing is request-cached.
+            _validate_nsipro_parser_contract(
+                bundle=bundle,
+                reference=reference,
+                configured_parser=configured_parser,
+                expected_version=expected_version,
+                expected_hash=expected_hash,
+                strict=strict,
+            )
+            return metadata_key, cached_payload
         payload = _normalize_nsipro_bundle_payload(
             bundle=bundle,
-            reference=_dict_or_empty(metadata.get("associated_metadata")),
+            reference=reference,
             configured_parser=configured_parser,
             expected_version=expected_version,
             expected_hash=expected_hash,
             strict=strict,
         )
         if payload:
-            return payload
+            if nsipro_payload_by_ref is not None:
+                nsipro_payload_by_ref[metadata_key] = payload
+            return metadata_key, payload
     return None
 
 
@@ -1120,6 +1147,8 @@ async def _normalize_ingest_part_metadata(
     expected_version: str,
     expected_hash: str,
     strict: bool,
+    project_metadata_by_key: dict[str, models.ProjectMetadata] | None = None,
+    nsipro_payload_by_ref: dict[str, dict] | None = None,
 ) -> dict | None:
     if metadata is None:
         return None
@@ -1127,7 +1156,8 @@ async def _normalize_ingest_part_metadata(
         return metadata
 
     normalized = {**metadata}
-    top_level_payload = await _resolve_associated_nsipro_payload(
+    resolved_payloads: dict[str, dict] = {}
+    top_level_resolution = await _resolve_associated_nsipro_payload(
         db=db,
         project_id=project_id,
         metadata=normalized,
@@ -1135,10 +1165,13 @@ async def _normalize_ingest_part_metadata(
         expected_version=expected_version,
         expected_hash=expected_hash,
         strict=strict,
+        project_metadata_by_key=project_metadata_by_key,
+        nsipro_payload_by_ref=nsipro_payload_by_ref,
     )
-    if top_level_payload:
-        normalized["nsipro_metadata"] = top_level_payload["metadata"]
-        normalized["nsipro_payload"] = top_level_payload
+    primary_reference: str | None = None
+    if top_level_resolution:
+        primary_reference, top_level_payload = top_level_resolution
+        resolved_payloads[primary_reference] = top_level_payload
 
     source_images = normalized.get("source_images")
     if isinstance(source_images, list):
@@ -1148,7 +1181,7 @@ async def _normalize_ingest_part_metadata(
                 normalized_source_images.append(record)
                 continue
             normalized_record = {**record}
-            record_payload = await _resolve_associated_nsipro_payload(
+            record_resolution = await _resolve_associated_nsipro_payload(
                 db=db,
                 project_id=project_id,
                 metadata=normalized_record,
@@ -1156,72 +1189,212 @@ async def _normalize_ingest_part_metadata(
                 expected_version=expected_version,
                 expected_hash=expected_hash,
                 strict=strict,
+                project_metadata_by_key=project_metadata_by_key,
+                nsipro_payload_by_ref=nsipro_payload_by_ref,
             )
-            if record_payload:
-                normalized_record["nsipro_payload"] = record_payload
-                normalized.setdefault("nsipro_metadata", record_payload["metadata"])
+            if record_resolution:
+                record_reference, record_payload = record_resolution
+                resolved_payloads.setdefault(record_reference, record_payload)
+                primary_reference = primary_reference or record_reference
+                # Source-image records stay compact. Keep an explicitly
+                # supplied legacy inline ``nsipro_payload`` untouched, but do
+                # not create another full copy while resolving references.
+                normalized_record["associated_metadata_ref"] = record_reference
+                normalized_record["nsipro_payload_ref"] = record_reference
             normalized_source_images.append(normalized_record)
         normalized["source_images"] = normalized_source_images
+
+    if primary_reference:
+        primary_payload = resolved_payloads[primary_reference]
+        normalized["nsipro_payload_ref"] = primary_reference
+        normalized["nsipro_payload"] = primary_payload
+        normalized["nsipro_metadata"] = primary_payload["metadata"]
+
+        additional_payloads = {
+            str(reference): payload
+            for reference, payload in _dict_or_empty(normalized.get("nsipro_payloads_by_ref")).items()
+            if str(reference) != primary_reference and isinstance(payload, dict)
+        }
+        additional_payloads.update(
+            {
+                reference: payload
+                for reference, payload in resolved_payloads.items()
+                if reference != primary_reference
+            }
+        )
+        if additional_payloads:
+            normalized["nsipro_payloads_by_ref"] = additional_payloads
+        else:
+            normalized.pop("nsipro_payloads_by_ref", None)
     return normalized
 
 
-def _source_image_match_key(record: dict) -> str:
-    image_id = str(record.get("image_id") or "").strip()
-    if image_id:
-        return f"image_id:{image_id}"
-    filename = str(record.get("filename") or "").strip()
-    return f"filename:{filename}" if filename else ""
+def _source_image_identity(record: dict) -> tuple[str, str]:
+    return (
+        str(record.get("image_id") or "").strip(),
+        str(record.get("filename") or "").strip(),
+    )
 
 
-def _metadata_contains_nsipro_payload(metadata: object) -> bool:
-    if not isinstance(metadata, dict):
-        return False
-    if isinstance(metadata.get("nsipro_metadata"), dict) or isinstance(metadata.get("nsipro_payload"), dict):
-        return True
-    source_images = metadata.get("source_images")
-    if isinstance(source_images, list):
-        return any(
-            isinstance(record, dict)
-            and (isinstance(record.get("nsipro_metadata"), dict) or isinstance(record.get("nsipro_payload"), dict))
-            for record in source_images
-        )
-    return False
-
-
-def _merge_existing_part_nsipro_metadata(existing_metadata: object, incoming_metadata: object) -> dict:
+def _merge_existing_part_ingest_metadata(existing_metadata: object, incoming_metadata: object) -> dict:
     current = existing_metadata if isinstance(existing_metadata, dict) else {}
     incoming = incoming_metadata if isinstance(incoming_metadata, dict) else {}
     patch: dict = {}
-    for key in ("nsipro_metadata", "nsipro_payload", "associated_metadata_ref", "associated_metadata"):
+    for key in (
+        "nsipro_metadata",
+        "nsipro_payload",
+        "nsipro_payload_ref",
+        "nsipro_payloads_by_ref",
+        "associated_metadata_ref",
+        "associated_metadata",
+    ):
         if key in incoming:
             patch[key] = incoming[key]
+
+    current_primary_ref = str(current.get("nsipro_payload_ref") or "").strip()
+    incoming_primary_ref = str(incoming.get("nsipro_payload_ref") or "").strip()
+    current_primary_payload = current.get("nsipro_payload")
+    incoming_primary_payload = incoming.get("nsipro_payload")
+    if incoming_primary_ref and isinstance(incoming_primary_payload, dict):
+        combined_payloads = {
+            str(reference): payload
+            for reference, payload in _dict_or_empty(current.get("nsipro_payloads_by_ref")).items()
+            if isinstance(payload, dict)
+        }
+        if current_primary_ref and isinstance(current_primary_payload, dict):
+            combined_payloads[current_primary_ref] = current_primary_payload
+        combined_payloads.update(
+            {
+                str(reference): payload
+                for reference, payload in _dict_or_empty(incoming.get("nsipro_payloads_by_ref")).items()
+                if isinstance(payload, dict)
+            }
+        )
+        combined_payloads.pop(incoming_primary_ref, None)
+        if combined_payloads:
+            patch["nsipro_payloads_by_ref"] = combined_payloads
+        elif "nsipro_payloads_by_ref" in current or "nsipro_payloads_by_ref" in incoming:
+            patch["nsipro_payloads_by_ref"] = {}
 
     incoming_source_images = incoming.get("source_images")
     if isinstance(incoming_source_images, list):
         current_source_images = current.get("source_images") if isinstance(current.get("source_images"), list) else []
         merged_source_images = [dict(record) if isinstance(record, dict) else record for record in current_source_images]
-        index_by_key = {
-            _source_image_match_key(record): index
-            for index, record in enumerate(merged_source_images)
-            if isinstance(record, dict) and _source_image_match_key(record)
-        }
+
+        # Keep separate indexes for durable image IDs and the legacy filename
+        # fallback. A filename may legitimately refer to multiple identified
+        # images, so it must not become an alias between two different IDs.
+        indexes_by_image_id: dict[str, dict[int, None]] = {}
+        indexes_by_filename: dict[str, dict[int, None]] = {}
+        legacy_indexes_by_filename: dict[str, dict[int, None]] = {}
+
+        def add_to_index(index_map: dict[str, dict[int, None]], key: str, index: int) -> None:
+            if key:
+                index_map.setdefault(key, {})[index] = None
+
+        def remove_from_index(index_map: dict[str, dict[int, None]], key: str, index: int) -> None:
+            if not key:
+                return
+            candidates = index_map.get(key)
+            if candidates is None:
+                return
+            candidates.pop(index, None)
+            if not candidates:
+                index_map.pop(key, None)
+
+        def index_record(index: int, record: dict) -> None:
+            image_id, filename = _source_image_identity(record)
+            add_to_index(indexes_by_image_id, image_id, index)
+            add_to_index(indexes_by_filename, filename, index)
+            if not image_id:
+                add_to_index(legacy_indexes_by_filename, filename, index)
+
+        def unindex_record(index: int, record: dict) -> None:
+            image_id, filename = _source_image_identity(record)
+            remove_from_index(indexes_by_image_id, image_id, index)
+            remove_from_index(indexes_by_filename, filename, index)
+            if not image_id:
+                remove_from_index(legacy_indexes_by_filename, filename, index)
+
+        def first_index(index_map: dict[str, dict[int, None]], key: str) -> int | None:
+            candidates = index_map.get(key)
+            return next(iter(candidates)) if candidates else None
+
+        for index, record in enumerate(merged_source_images):
+            if isinstance(record, dict):
+                index_record(index, record)
         changed = False
         for incoming_record in incoming_source_images:
             if not isinstance(incoming_record, dict):
                 continue
-            record_key = _source_image_match_key(incoming_record)
-            if record_key and record_key in index_by_key and isinstance(merged_source_images[index_by_key[record_key]], dict):
-                existing_record = merged_source_images[index_by_key[record_key]]
+            incoming_image_id, incoming_filename = _source_image_identity(incoming_record)
+            matching_index = first_index(indexes_by_image_id, incoming_image_id) if incoming_image_id else None
+            if matching_index is None and incoming_filename:
+                # Identified records may fall back only to a legacy record with
+                # no ID. A legacy incoming record may fall back to any record
+                # with the same filename because one side of that comparison
+                # lacks a durable identity.
+                filename_index = legacy_indexes_by_filename if incoming_image_id else indexes_by_filename
+                matching_index = first_index(filename_index, incoming_filename)
+            if matching_index is not None and isinstance(merged_source_images[matching_index], dict):
+                existing_record = merged_source_images[matching_index]
                 next_record = {**existing_record, **incoming_record}
+                existing_image_id, _ = _source_image_identity(existing_record)
+                if existing_image_id and not incoming_image_id:
+                    # Legacy payloads must not erase an identity already known
+                    # by the project merely because they omit it.
+                    next_record["image_id"] = existing_record.get("image_id")
                 if next_record != existing_record:
-                    merged_source_images[index_by_key[record_key]] = next_record
+                    unindex_record(matching_index, existing_record)
+                    merged_source_images[matching_index] = next_record
+                    index_record(matching_index, next_record)
                     changed = True
-            elif _metadata_contains_nsipro_payload(incoming_record):
+            else:
                 merged_source_images.append(incoming_record)
+                appended_index = len(merged_source_images) - 1
+                index_record(appended_index, incoming_record)
                 changed = True
         if changed:
             patch["source_images"] = merged_source_images
     return patch
+
+
+def _collect_ingest_metadata_reference_keys(payload: schemas.InspectionBulkIngestPayload) -> list[str]:
+    """Collect every project-metadata reference used by a bulk ingest request."""
+
+    reference_keys: set[str] = set()
+    ingest_parts = [part for batch in payload.batches for part in batch.parts]
+    ingest_parts.extend(payload.unassigned_parts)
+    for ingest_part in ingest_parts:
+        metadata = ingest_part.metadata_json
+        if not isinstance(metadata, dict):
+            continue
+        reference_keys.update(_candidate_metadata_reference_keys(metadata))
+        source_images = metadata.get("source_images")
+        if not isinstance(source_images, list):
+            continue
+        for record in source_images:
+            if isinstance(record, dict):
+                reference_keys.update(_candidate_metadata_reference_keys(record))
+    return sorted(reference_keys)
+
+
+async def _load_ingest_project_metadata_references(
+    *,
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    payload: schemas.InspectionBulkIngestPayload,
+) -> dict[str, models.ProjectMetadata]:
+    reference_keys = _collect_ingest_metadata_reference_keys(payload)
+    if not reference_keys:
+        return {}
+    result = await db.execute(
+        select(models.ProjectMetadata).where(
+            models.ProjectMetadata.project_id == project_id,
+            models.ProjectMetadata.key.in_(reference_keys),
+        )
+    )
+    return {metadata.key: metadata for metadata in result.scalars().all()}
 
 async def _bulk_ingest_project_parts(
     *,
@@ -1231,18 +1404,7 @@ async def _bulk_ingest_project_parts(
     current_user: schemas.User,
     project_type: str | None = None,
 ):
-    project_config = await _load_project_configuration_for_ingest(
-        db=db,
-        project_id=project_id,
-        project_type=project_type,
-    )
-    configured_parser, expected_version, expected_hash, strict_parser_match = _resolve_configured_nsipro_parser(project_config)
-
-    existing_batches = await crud.list_inspection_batches(db=db, project_id=project_id)
-    batches_by_name = {batch.name: batch for batch in existing_batches}
-    existing_parts = await crud.list_inspection_parts(db=db, project_id=project_id)
-    parts_by_serial = {part.serial_number: part for part in existing_parts}
-
+    ingest_started = time.perf_counter()
     counters = {
         "batches_received": len(payload.batches),
         "parts_received": sum(len(batch.parts) for batch in payload.batches) + len(payload.unassigned_parts),
@@ -1253,42 +1415,91 @@ async def _bulk_ingest_project_parts(
     }
     discrepancies: List[dict] = []
     payload_seen_serials: set[str] = set()
+    try:
+        project_config = await _load_project_configuration_for_ingest(
+            db=db,
+            project_id=project_id,
+            project_type=project_type,
+        )
+        configured_parser, expected_version, expected_hash, strict_parser_match = _resolve_configured_nsipro_parser(project_config)
+        project_metadata_by_key = await _load_ingest_project_metadata_references(
+            db=db,
+            project_id=project_id,
+            payload=payload,
+        )
+        nsipro_payload_by_ref: dict[str, dict] = {}
 
-    async def ingest_parts(
-        ingest_parts_list: List[schemas.InspectionIngestPartRecord],
-        *,
-        ingest_batch_name: Optional[str],
-        target_batch_id: Optional[uuid.UUID],
-    ) -> None:
-        for ingest_part in ingest_parts_list:
-            serial_number = ingest_part.serial_number.strip()
-            if serial_number in payload_seen_serials:
-                counters["parts_skipped_discrepancy"] += 1
-                discrepancies.append(
-                    {
-                        "code": "duplicate_serial_in_payload",
-                        "batch_name": ingest_batch_name or "unassigned",
-                        "serial_number": serial_number,
-                        "message": "Serial number appears more than once in ingest payload",
-                    }
-                )
-                continue
-            payload_seen_serials.add(serial_number)
+        existing_batches = await crud.list_inspection_batches(db=db, project_id=project_id)
+        batches_by_name = {batch.name: batch for batch in existing_batches}
+        existing_parts = await crud.list_inspection_parts(db=db, project_id=project_id)
+        parts_by_serial = {part.serial_number: part for part in existing_parts}
 
-            existing_part = parts_by_serial.get(serial_number)
-            if existing_part:
-                if target_batch_id and existing_part.batch_id and existing_part.batch_id != target_batch_id:
+        async def ingest_parts(
+            ingest_parts_list: List[schemas.InspectionIngestPartRecord],
+            *,
+            ingest_batch_name: Optional[str],
+            target_batch_id: Optional[uuid.UUID],
+        ) -> None:
+            for ingest_part in ingest_parts_list:
+                serial_number = ingest_part.serial_number.strip()
+                if serial_number in payload_seen_serials:
                     counters["parts_skipped_discrepancy"] += 1
                     discrepancies.append(
                         {
-                            "code": "serial_already_assigned_to_other_batch",
+                            "code": "duplicate_serial_in_payload",
                             "batch_name": ingest_batch_name or "unassigned",
                             "serial_number": serial_number,
-                            "message": "Serial number already belongs to a different batch in this project",
+                            "message": "Serial number appears more than once in ingest payload",
                         }
                     )
                     continue
-                normalized_existing_metadata = await _normalize_ingest_part_metadata(
+                payload_seen_serials.add(serial_number)
+
+                existing_part = parts_by_serial.get(serial_number)
+                if existing_part:
+                    if target_batch_id and existing_part.batch_id and existing_part.batch_id != target_batch_id:
+                        counters["parts_skipped_discrepancy"] += 1
+                        discrepancies.append(
+                            {
+                                "code": "serial_already_assigned_to_other_batch",
+                                "batch_name": ingest_batch_name or "unassigned",
+                                "serial_number": serial_number,
+                                "message": "Serial number already belongs to a different batch in this project",
+                            }
+                        )
+                        continue
+                    normalized_existing_metadata = await _normalize_ingest_part_metadata(
+                        db=db,
+                        project_id=project_id,
+                        metadata=ingest_part.metadata_json,
+                        configured_parser=configured_parser,
+                        expected_version=expected_version,
+                        expected_hash=expected_hash,
+                        strict=strict_parser_match,
+                        project_metadata_by_key=project_metadata_by_key,
+                        nsipro_payload_by_ref=nsipro_payload_by_ref,
+                    )
+                    if isinstance(normalized_existing_metadata, dict):
+                        metadata_patch = _merge_existing_part_ingest_metadata(existing_part.metadata_json, normalized_existing_metadata)
+                        if metadata_patch:
+                            # ``existing_part`` was loaded into the request-local
+                            # serial map above. Mutate that tracked ORM row
+                            # directly instead of re-selecting every existing
+                            # part through the CRUD helper (an O(n) query loop
+                            # for multi-view imports).
+                            current_metadata = (
+                                existing_part.metadata_json
+                                if isinstance(existing_part.metadata_json, dict)
+                                else {}
+                            )
+                            existing_part.metadata_json = {
+                                **current_metadata,
+                                **metadata_patch,
+                            }
+                    counters["parts_skipped_existing"] += 1
+                    continue
+
+                normalized_metadata = await _normalize_ingest_part_metadata(
                     db=db,
                     project_id=project_id,
                     metadata=ingest_part.metadata_json,
@@ -1296,70 +1507,79 @@ async def _bulk_ingest_project_parts(
                     expected_version=expected_version,
                     expected_hash=expected_hash,
                     strict=strict_parser_match,
+                    project_metadata_by_key=project_metadata_by_key,
+                    nsipro_payload_by_ref=nsipro_payload_by_ref,
                 )
-                if _metadata_contains_nsipro_payload(normalized_existing_metadata):
-                    metadata_patch = _merge_existing_part_nsipro_metadata(existing_part.metadata_json, normalized_existing_metadata)
-                    if metadata_patch:
-                        updated_part = await crud.update_inspection_part_metadata(
-                            db=db,
-                            project_id=project_id,
-                            part_id=existing_part.id,
-                            metadata_patch=metadata_patch,
-                            updated_by=current_user.email,
-                        )
-                        if updated_part:
-                            parts_by_serial[serial_number] = updated_part
-                counters["parts_skipped_existing"] += 1
-                continue
+                created_part = await crud.create_inspection_part(
+                    db=db,
+                    project_id=project_id,
+                    part=schemas.InspectionPartCreate(
+                        batch_id=target_batch_id,
+                        serial_number=serial_number,
+                        display_name=ingest_part.display_name,
+                        metadata=normalized_metadata,
+                        review_state=ingest_part.review_state,
+                    ),
+                    created_by=current_user.email,
+                    commit=False,
+                )
+                parts_by_serial[serial_number] = created_part
+                counters["parts_created"] += 1
 
-            normalized_metadata = await _normalize_ingest_part_metadata(
-                db=db,
-                project_id=project_id,
-                metadata=ingest_part.metadata_json,
-                configured_parser=configured_parser,
-                expected_version=expected_version,
-                expected_hash=expected_hash,
-                strict=strict_parser_match,
-            )
-            created_part = await crud.create_inspection_part(
-                db=db,
-                project_id=project_id,
-                part=schemas.InspectionPartCreate(
-                    batch_id=target_batch_id,
-                    serial_number=serial_number,
-                    display_name=ingest_part.display_name,
-                    metadata=normalized_metadata,
-                    review_state=ingest_part.review_state,
-                ),
-                created_by=current_user.email,
-            )
-            parts_by_serial[serial_number] = created_part
-            counters["parts_created"] += 1
+        resolved_ingest_batches: list[
+            tuple[schemas.InspectionIngestBatchRecord, models.InspectionBatch]
+        ] = []
+        for ingest_batch in payload.batches:
+            target_batch = batches_by_name.get(ingest_batch.name)
+            if target_batch is None:
+                target_batch = await crud.create_inspection_batch(
+                    db=db,
+                    project_id=project_id,
+                    batch=schemas.InspectionBatchCreate(
+                        name=ingest_batch.name,
+                        description=ingest_batch.description,
+                    ),
+                    created_by=current_user.email,
+                    commit=False,
+                )
+                # SQLAlchemy's UUID default is normally materialized during a
+                # flush. Assign it now so every missing batch can be staged
+                # before its parts without issuing one flush per batch. The
+                # final unit-of-work flush orders batch inserts ahead of their
+                # part foreign keys.
+                if target_batch.id is None:
+                    target_batch.id = uuid.uuid4()
+                batches_by_name[ingest_batch.name] = target_batch
+                counters["batches_created"] += 1
+            resolved_ingest_batches.append((ingest_batch, target_batch))
 
-    for ingest_batch in payload.batches:
-        target_batch = batches_by_name.get(ingest_batch.name)
-        if target_batch is None:
-            target_batch = await crud.create_inspection_batch(
-                db=db,
-                project_id=project_id,
-                batch=schemas.InspectionBatchCreate(
-                    name=ingest_batch.name,
-                    description=ingest_batch.description,
-                ),
-                created_by=current_user.email,
+        for ingest_batch, target_batch in resolved_ingest_batches:
+            await ingest_parts(
+                ingest_batch.parts,
+                ingest_batch_name=ingest_batch.name,
+                target_batch_id=target_batch.id,
             )
-            batches_by_name[ingest_batch.name] = target_batch
-            counters["batches_created"] += 1
+
         await ingest_parts(
-            ingest_batch.parts,
-            ingest_batch_name=ingest_batch.name,
-            target_batch_id=target_batch.id,
+            payload.unassigned_parts,
+            ingest_batch_name=None,
+            target_batch_id=None,
         )
+        await db.flush()
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
 
-    await ingest_parts(
-        payload.unassigned_parts,
-        ingest_batch_name=None,
-        target_batch_id=None,
+    crud.log_db_operation(
+        "BULK_INGEST",
+        "inspection_parts",
+        project_id,
+        current_user.email,
+        {
+            **counters,
+            "elapsed_ms": round((time.perf_counter() - ingest_started) * 1000, 3),
+        },
     )
 
     return {
@@ -4254,6 +4474,7 @@ async def load_project_test_data(
                 overlay_metadata = {
                     "source": "vista-test-data",
                     "project_type": "PT3",
+                    "builtin_fixture_filename": overlay_path.name,
                     "volume_stack_id": "PT3_SYNTH_MPR_001",
                     "slice_index": index,
                     "slice_axis": "Z",

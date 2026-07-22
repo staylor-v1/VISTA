@@ -1,9 +1,10 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import FilenameMetadataExtractor, { applyOverlayIndicatorMetadata, buildConfiguredFilenameFields, extractValues, isFilenameConventionEnabled, stripConfiguredAbbreviation, stripExtension } from './FilenameMetadataExtractor';
 import { getConfiguredNsiproParserId, parseNsiproText } from '../metadata/nsiproParsers';
+import { runImageUploadPlan } from './imageUploadBatches';
 
-const CONCURRENT_UPLOADS = 6;
-const S3_IMPORT_LIMIT = 100;
+const S3_IMPORT_BATCH_SIZE = 100;
+const S3_IMPORT_CONCURRENCY = 2;
 const UPLOAD_PROGRESS_UPDATE_INTERVAL_MS = 5000;
 const BYTES_PER_KIB = 1024;
 const BYTES_PER_MIB = BYTES_PER_KIB ** 2;
@@ -162,51 +163,6 @@ function buildAssociatedMetadataBundle(file, text, parsedResult) {
 
 
 
-const RAW_ASSOCIATED_METADATA_KEYS = new Set([
-  'raw',
-  'raw_data',
-  'raw_payload',
-  'raw_content',
-  'file_content',
-  'binary',
-  'bytes',
-]);
-const MAX_ASSOCIATED_METADATA_STRING_LENGTH = 2048;
-
-function sanitizeAssociatedMetadataValue(value, parentKey = '') {
-  if (value === undefined || value === null) return value;
-  if (typeof value === 'string') {
-    if (value.length > MAX_ASSOCIATED_METADATA_STRING_LENGTH) {
-      return `${value.slice(0, MAX_ASSOCIATED_METADATA_STRING_LENGTH)}…`;
-    }
-    return value;
-  }
-  if (typeof value === 'number' || typeof value === 'boolean') return value;
-  if (Array.isArray(value)) {
-    return value.map((item) => sanitizeAssociatedMetadataValue(item, parentKey));
-  }
-  if (typeof value === 'object') {
-    return Object.entries(value).reduce((acc, [key, childValue]) => {
-      const normalizedKey = String(key || '').trim().toLowerCase();
-      if (RAW_ASSOCIATED_METADATA_KEYS.has(normalizedKey)) return acc;
-      if ((normalizedKey.includes('raw') || normalizedKey.includes('content')) && typeof childValue === 'string' && childValue.length > MAX_ASSOCIATED_METADATA_STRING_LENGTH) {
-        return acc;
-      }
-      const sanitized = sanitizeAssociatedMetadataValue(childValue, normalizedKey || parentKey);
-      if (sanitized !== undefined) acc[key] = sanitized;
-      return acc;
-    }, {});
-  }
-  return String(value);
-}
-
-function getAssociatedBundleNsiproMetadata(bundle) {
-  if (bundle?.value?.file_type !== 'nsipro') return null;
-  const metadata = bundle.value.metadata;
-  if (!metadata || typeof metadata !== 'object') return null;
-  return sanitizeAssociatedMetadataValue(metadata);
-}
-
 function getRecordNsiproMetadata(recordMetadata) {
   const candidates = [
     recordMetadata?.nsipro_metadata,
@@ -233,13 +189,12 @@ function getNsiproIngestMetadata(recordMetadata) {
   return nsiproMetadata ? { nsipro_metadata: nsiproMetadata } : {};
 }
 
-function buildMetadataWithAssociatedReference(baseMetadata, associatedMetadataReference = null, nsiproMetadata = null) {
+function buildMetadataWithAssociatedReference(baseMetadata, associatedMetadataReference = null) {
   if (!associatedMetadataReference) return baseMetadata;
   return {
     ...(baseMetadata || {}),
     associated_metadata_ref: associatedMetadataReference.project_metadata_key,
     associated_metadata: associatedMetadataReference,
-    ...(nsiproMetadata ? { nsipro_metadata: nsiproMetadata } : {}),
   };
 }
 
@@ -255,7 +210,6 @@ function buildAssociatedMetadataImageReference(bundle) {
     requested_parser_id: bundle.value.requested_parser_id,
     parser_version: bundle.value.parser_version,
     parser_hash: bundle.value.parser_hash,
-    warnings: Array.isArray(bundle.value.warnings) ? bundle.value.warnings : [],
     source_filename: bundle.value.source_filename || bundle.value.filename,
     content_hash: bundle.value.content_hash,
   };
@@ -580,7 +534,16 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
   const [loadingS3Files, setLoadingS3Files] = useState(false);
   const [importingS3Files, setImportingS3Files] = useState(false);
   const [s3PickerOpen, setS3PickerOpen] = useState(false);
+  const [s3ListingTruncated, setS3ListingTruncated] = useState(false);
+  const [s3ReconciliationBlock, setS3ReconciliationBlock] = useState(null);
+  const [activeDataOperation, setActiveDataOperation] = useState(null);
   const cancelledRef = useRef(false);
+  const uploadAbortControllerRef = useRef(null);
+  const s3AbortControllerRef = useRef(null);
+  const dataOperationRef = useRef(null);
+  const activeProjectIdRef = useRef(projectId);
+  activeProjectIdRef.current = projectId;
+  const associatedMetadataParseGenerationRef = useRef(0);
   const uploadProgressRef = useRef(null);
   const uploadProgressTimerRef = useRef(null);
 
@@ -614,13 +577,100 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
     setUploadProgress(null);
   }, [clearUploadProgressTimer]);
 
-  useEffect(() => () => {
-    clearUploadProgressTimer();
-  }, [clearUploadProgressTimer]);
+  const acquireDataOperation = useCallback((kind, { s3 = false } = {}) => {
+    if (dataOperationRef.current) return null;
+    const token = {
+      kind,
+      projectId,
+      controller: new AbortController(),
+    };
+    dataOperationRef.current = token;
+    if (s3) s3AbortControllerRef.current = token.controller;
+    setActiveDataOperation(kind);
+    return token;
+  }, [projectId]);
+
+  const ownsDataOperation = useCallback((token) => (
+    Boolean(token)
+    && dataOperationRef.current === token
+    && activeProjectIdRef.current === token.projectId
+  ), []);
+
+  const isDataOperationCurrent = useCallback((token) => (
+    ownsDataOperation(token) && !token.controller.signal.aborted
+  ), [ownsDataOperation]);
+
+  const releaseDataOperation = useCallback((token) => {
+    if (dataOperationRef.current !== token) return;
+    dataOperationRef.current = null;
+    if (uploadAbortControllerRef.current === token.controller) uploadAbortControllerRef.current = null;
+    if (s3AbortControllerRef.current === token.controller) s3AbortControllerRef.current = null;
+    setActiveDataOperation(null);
+  }, []);
+
+  useEffect(() => {
+    setActiveDataOperation(null);
+    setUploading(false);
+    setLoadingTestData(false);
+    setAssociatedMetadataSaving(false);
+    setAssociatedMetadataParsing(false);
+    setAssociatedMetadataFile(null);
+    setAssociatedMetadataBundle(null);
+    setAssociatedMetadataSaved(null);
+    setAssociatedMetadataError(null);
+    setLoadingS3Files(false);
+    setImportingS3Files(false);
+    setSelectedFiles([]);
+    setUploadMetadata('');
+    setTestDataResult(null);
+    setS3Url('');
+    setS3Objects([]);
+    setSelectedS3Keys([]);
+    setS3PickerOpen(false);
+    setS3ListingTruncated(false);
+    setS3ReconciliationBlock(null);
+    associatedMetadataParseGenerationRef.current += 1;
+    cancelledRef.current = false;
+    uploadAbortControllerRef.current = null;
+    s3AbortControllerRef.current = null;
+    finishUploadProgress();
+
+    return () => {
+      const operation = dataOperationRef.current;
+      if (operation?.projectId === projectId) {
+        operation.controller.abort();
+        dataOperationRef.current = null;
+      }
+      uploadAbortControllerRef.current?.abort();
+      s3AbortControllerRef.current?.abort();
+      clearUploadProgressTimer();
+    };
+  }, [clearUploadProgressTimer, finishUploadProgress, projectId]);
 
   const extractorPreviewFiles = selectedFiles.length > 0
     ? selectedFiles
     : s3Objects.map((object) => ({ name: object.filename || object.key }));
+  const selectedS3KeySet = useMemo(() => new Set(selectedS3Keys), [selectedS3Keys]);
+  const dataOperationBusy = activeDataOperation !== null;
+
+  const notifyUploadComplete = useCallback(async (images, completion) => {
+    if (!onUploadComplete) {
+      return {
+        reconciled: completion?.requiresAuthoritativeReconciliation !== true,
+        error: null,
+      };
+    }
+    try {
+      const result = await onUploadComplete(images, completion);
+      return {
+        reconciled: completion?.requiresAuthoritativeReconciliation !== true
+          || (result !== false && result?.reconciled !== false),
+        error: null,
+      };
+    } catch (error) {
+      return { reconciled: false, error };
+    }
+  }, [onUploadComplete]);
 
   const handleExtractorChange = useCallback((config) => {
     setLegacyExtractorConfig(config);
@@ -640,6 +690,13 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
   };
 
   const applyAssociatedMetadataFile = useCallback(async (file) => {
+    const requestProjectId = projectId;
+    const parseGeneration = associatedMetadataParseGenerationRef.current + 1;
+    associatedMetadataParseGenerationRef.current = parseGeneration;
+    const isCurrentParse = () => (
+      activeProjectIdRef.current === requestProjectId
+      && associatedMetadataParseGenerationRef.current === parseGeneration
+    );
     setAssociatedMetadataFile(file || null);
     setAssociatedMetadataBundle(null);
     setAssociatedMetadataError(null);
@@ -654,6 +711,7 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
     setAssociatedMetadataParsing(true);
     try {
       const text = await readAssociatedMetadataFileText(file);
+      if (!isCurrentParse()) return;
       const parsedResult = parseAssociatedMetadataText(text, file.name, {
         parserId: nsiproParserId,
         projectConfiguration,
@@ -661,11 +719,12 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
       });
       setAssociatedMetadataBundle(buildAssociatedMetadataBundle(file, text, parsedResult));
     } catch (err) {
+      if (!isCurrentParse()) return;
       setAssociatedMetadataError(err?.message || 'Unable to parse associated metadata file.');
     } finally {
-      setAssociatedMetadataParsing(false);
+      if (isCurrentParse()) setAssociatedMetadataParsing(false);
     }
-  }, [nsiproParserId, projectConfiguration]);
+  }, [nsiproParserId, projectConfiguration, projectId]);
 
   const applySelectedUploadFiles = useCallback(async (files) => {
     const fileList = Array.from(files || []);
@@ -677,7 +736,7 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
     }
   }, [applyAssociatedMetadataFile]);
 
-  const saveAssociatedMetadataBundle = useCallback(async () => {
+  const saveAssociatedMetadataBundle = useCallback(async (signal = undefined) => {
     if (!associatedMetadataFile) return null;
     if (associatedMetadataParsing) {
       throw new Error('Associated metadata file is still being parsed.');
@@ -693,6 +752,7 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
         key: associatedMetadataBundle.key,
         value: associatedMetadataBundle.value,
       }),
+      signal,
     });
     if (!response.ok) {
       let detail = `HTTP ${response.status}`;
@@ -713,20 +773,26 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
       setAssociatedMetadataError('Choose a metadata file before loading metadata.');
       return;
     }
+    const operation = acquireDataOperation('metadata');
+    if (!operation) return;
     setAssociatedMetadataSaving(true);
     setAssociatedMetadataSaved(null);
     try {
-      const reference = await saveAssociatedMetadataBundle();
+      const reference = await saveAssociatedMetadataBundle(operation.controller.signal);
+      if (!isDataOperationCurrent(operation)) return;
       setAssociatedMetadataSaved(reference);
       setError(null);
       if (onProjectMetadataLoaded) {
         await onProjectMetadataLoaded(reference);
+        if (!isDataOperationCurrent(operation)) return;
       }
     } catch (err) {
+      if (!isDataOperationCurrent(operation)) return;
       const detail = err?.message ? ` ${err.message}` : '';
       setError(`Unable to load metadata file.${detail}`);
     } finally {
-      setAssociatedMetadataSaving(false);
+      if (isDataOperationCurrent(operation)) setAssociatedMetadataSaving(false);
+      releaseDataOperation(operation);
     }
   };
 
@@ -751,6 +817,7 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
   const handleDrop = async (e) => {
     e.preventDefault();
     setIsDragOver(false);
+    if (dataOperationRef.current) return;
     if (e.dataTransfer.files) {
       await applySelectedUploadFiles(e.dataTransfer.files);
     }
@@ -782,142 +849,217 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
       }
     }
 
+    const operation = acquireDataOperation('local_upload');
+    if (!operation) return;
     setUploading(true);
     cancelledRef.current = false;
-    const total = selectedFiles.length;
-    const totalBytes = getTotalUploadSizeBytes(selectedFiles);
-    const uploadFilenameMap = buildDuplicateFilenameMap(selectedFiles);
-    beginUploadProgress({ completed: 0, failed: 0, total, loadedBytes: 0, totalBytes });
+    const uploadController = operation.controller;
+    uploadAbortControllerRef.current = uploadController;
+    try {
+      const total = selectedFiles.length;
+      const totalBytes = getTotalUploadSizeBytes(selectedFiles);
+      beginUploadProgress({ completed: 0, failed: 0, total, loadedBytes: 0, totalBytes });
 
-    let associatedMetadataReference = null;
-    let associatedMetadataNsiproMetadata = null;
-    if (associatedMetadataFile) {
-      try {
-        associatedMetadataReference = await saveAssociatedMetadataBundle();
-        associatedMetadataNsiproMetadata = getAssociatedBundleNsiproMetadata(associatedMetadataBundle);
-      } catch (err) {
-        const detail = err?.message ? ` ${err.message}` : '';
-        setError(`Unable to associate metadata file.${detail}`);
-        finishUploadProgress();
-        setUploading(false);
-        return;
-      }
-    }
-
-
-    const results = [];
-    const uploadedRecords = [];
-    let completed = 0;
-    let failed = 0;
-    let loadedBytes = 0;
-
-    // Upload files with bounded concurrency
-    const queue = [...selectedFiles];
-    const uploadOne = async () => {
-      while (queue.length > 0) {
-        if (cancelledRef.current) return;
-        const file = queue.shift();
-        if (!file) return;
-
-        const formData = new FormData();
-        const uploadFilename = uploadFilenameMap.get(file) || file.name;
-        formData.append('file', file, uploadFilename);
-
-        const extractedMetadata = extractorConfig.extractMetadata(file.name);
-        const mergedMetadata = (extractedMetadata || manualMetadata)
-          ? { ...(extractedMetadata || {}), ...(manualMetadata || {}) }
-          : null;
-        const metadataWithAssociatedReference = buildMetadataWithAssociatedReference(
-          mergedMetadata,
-          associatedMetadataReference,
-          associatedMetadataNsiproMetadata,
-        );
-        const hierarchyMetadata = normalizeHierarchyMetadata(metadataWithAssociatedReference);
-        const duplicateMetadata = uploadFilename !== file.name
-          ? { original_filename: file.name, duplicate_filename_tagged: true }
-          : {};
-        const metadataForUpload = hierarchyMetadata
-          ? { ...metadataWithAssociatedReference, ...hierarchyMetadata, ...duplicateMetadata }
-          : (Object.keys(duplicateMetadata).length > 0
-            ? { ...(metadataWithAssociatedReference || {}), ...duplicateMetadata }
-            : metadataWithAssociatedReference);
-
-        if (metadataForUpload) {
-          formData.append('metadata', JSON.stringify(metadataForUpload));
-        }
-
-        if (groupKey && extractedMetadata && extractedMetadata[groupKey]) {
-          formData.append('group_identifier', extractedMetadata[groupKey]);
-        }
-
+      let associatedMetadataReference = null;
+      if (associatedMetadataFile) {
         try {
-          const response = await fetch(`/api/projects/${projectId}/images`, {
-            method: 'POST',
-            body: formData,
-          });
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
+          associatedMetadataReference = await saveAssociatedMetadataBundle(uploadController.signal);
+          if (!ownsDataOperation(operation)) return;
+          if (onProjectMetadataLoaded) {
+            try {
+              await onProjectMetadataLoaded(associatedMetadataReference);
+              if (!ownsDataOperation(operation)) return;
+            } catch (metadataRefreshError) {
+              if (!ownsDataOperation(operation)) return;
+              console.error('Associated metadata was saved, but the project metadata view could not be refreshed:', metadataRefreshError);
+            }
           }
-          const uploadedImage = await response.json();
-          results.push(uploadedImage);
-          uploadedRecords.push({
-            image: uploadedImage,
-            filename: uploadFilename,
-            metadata: metadataForUpload || {},
-          });
         } catch (err) {
-          console.error(`Error uploading ${file.name}:`, err);
-          failed += 1;
+          if (!ownsDataOperation(operation)) return;
+          if (cancelledRef.current || uploadController.signal.aborted) {
+            await notifyUploadComplete([], {
+              source: 'local_upload',
+              total,
+              confirmedSucceeded: 0,
+              confirmedFailed: 0,
+              completionUnknown: 0,
+              notStarted: total,
+              cancelled: true,
+              partsMayHaveChanged: false,
+              requiresAuthoritativeReconciliation: false,
+            });
+            if (ownsDataOperation(operation)) {
+              setError('Upload cancelled before any images were sent. Project data was refreshed.');
+            }
+          } else {
+            const detail = err?.message ? ` ${err.message}` : '';
+            setError(`Unable to associate metadata file.${detail}`);
+          }
+          return;
         }
-        completed += 1;
-        loadedBytes += getUploadItemSizeBytes(file);
-        setUploadProgressSnapshot({ completed, failed, total, loadedBytes, totalBytes });
       }
-    };
 
-    const workers = Array.from(
-      { length: Math.min(CONCURRENT_UPLOADS, total) },
-      () => uploadOne()
+      let completed = 0;
+      let failed = 0;
+      let loadedBytes = 0;
+      const occurrenceCounts = new Map();
+      const uploadItems = selectedFiles.map((file, clientIndex) => {
+      const occurrence = occurrenceCounts.get(file.name) || 0;
+      occurrenceCounts.set(file.name, occurrence + 1);
+      const uploadFilename = tagDuplicateFilename(file.name, occurrence);
+      const extractedMetadata = extractorConfig.extractMetadata(file.name);
+      const mergedMetadata = (extractedMetadata || manualMetadata)
+        ? { ...(extractedMetadata || {}), ...(manualMetadata || {}) }
+        : null;
+      const metadataWithAssociatedReference = buildMetadataWithAssociatedReference(
+        mergedMetadata,
+        associatedMetadataReference,
+      );
+      const hierarchyMetadata = normalizeHierarchyMetadata(metadataWithAssociatedReference);
+      const duplicateMetadata = uploadFilename !== file.name
+        ? { original_filename: file.name, duplicate_filename_tagged: true }
+        : {};
+      const metadataForUpload = hierarchyMetadata
+        ? { ...metadataWithAssociatedReference, ...hierarchyMetadata, ...duplicateMetadata }
+        : (Object.keys(duplicateMetadata).length > 0
+          ? { ...(metadataWithAssociatedReference || {}), ...duplicateMetadata }
+          : metadataWithAssociatedReference);
+      return {
+        clientIndex,
+        file,
+        filename: uploadFilename,
+        metadata: metadataForUpload || {},
+        groupIdentifier: groupKey && extractedMetadata?.[groupKey]
+          ? String(extractedMetadata[groupKey])
+          : null,
+      };
+      });
+
+      const uploadResult = await runImageUploadPlan({
+      items: uploadItems,
+      projectId,
+      signal: uploadController.signal,
+      shouldStop: () => cancelledRef.current,
+      onItemSettled: (outcome) => {
+        if (!ownsDataOperation(operation)) return;
+        completed += 1;
+        if (!outcome.ok) failed += 1;
+        loadedBytes += getUploadItemSizeBytes(outcome.item.file);
+        setUploadProgressSnapshot({ completed, failed, total, loadedBytes, totalBytes });
+      },
+    });
+      if (!ownsDataOperation(operation)) return;
+      const results = uploadResult.successes.map((outcome) => outcome.image);
+    const uploadedRecords = uploadResult.successes.map((outcome) => ({
+      image: outcome.image,
+      filename: outcome.item.filename,
+      metadata: outcome.item.metadata,
+    }));
+    const uploadWasCancelled = () => (
+      uploadResult.cancelled || cancelledRef.current || uploadController.signal.aborted
     );
-    await Promise.all(workers);
+    const completionUnknown = uploadResult.completionUnknown.length;
+    let cancelled = uploadWasCancelled();
+    const notStarted = uploadResult.failures.filter((outcome) => (
+      outcome.code === 'cancelled_before_start'
+    )).length;
+    const confirmedFailed = Math.max(0, uploadResult.failures.length - completionUnknown - notStarted);
+    const retryableFiles = uploadResult.failures
+      .filter((outcome) => outcome.code !== 'completion_unknown')
+      .map((outcome) => outcome.item.file);
 
     let ingestError = null;
+    let ingestCompletionUnknown = false;
     const ingestPayload = buildInspectionPartIngestPayload(uploadedRecords);
     const partCount = ingestPayload.batches.reduce((acc, batch) => acc + batch.parts.length, 0)
       + ingestPayload.unassigned_parts.length;
-    if (partCount > 0) {
+      if (partCount > 0 && !cancelled) {
       try {
         const ingestResponse = await fetch(`/api/projects/${projectId}/ingest`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(ingestPayload),
+          signal: uploadController.signal,
         });
         if (!ingestResponse.ok) {
-          throw new Error(`HTTP ${ingestResponse.status}`);
+          const error = new Error(`HTTP ${ingestResponse.status}`);
+          error.ingestCompletionUnknown = ingestResponse.status >= 500;
+          throw error;
         }
       } catch (err) {
+        if (!ownsDataOperation(operation)) return;
         ingestError = err;
+        ingestCompletionUnknown = err?.ingestCompletionUnknown !== false;
         console.error('Error ingesting uploaded images as inspection parts:', err);
       }
-    }
+      }
+      if (!ownsDataOperation(operation)) return;
+      cancelled = uploadWasCancelled();
 
-    if (results.length > 0) {
-      onUploadComplete(results);
-    }
-    if (failed > 0) {
-      setError(`Upload complete: ${results.length} succeeded, ${failed} failed out of ${total}.`);
+      let reconciliationResult = { reconciled: true, error: null };
+      if (results.length > 0 || cancelled || completionUnknown > 0) {
+      // A rejected/aborted request can still have committed on the server. One
+      // authoritative refresh reconciles the UI without risking a retry.
+      reconciliationResult = await notifyUploadComplete(results, {
+        source: 'local_upload',
+        total,
+        confirmedSucceeded: results.length,
+        confirmedFailed,
+        completionUnknown,
+        notStarted,
+        cancelled,
+        partsMayHaveChanged: partCount > 0 || completionUnknown > 0 || cancelled || ingestCompletionUnknown,
+        ingestFailed: Boolean(ingestError),
+        ingestCompletionUnknown,
+        requiresAuthoritativeReconciliation: completionUnknown > 0 || cancelled || ingestCompletionUnknown,
+      });
+        if (!ownsDataOperation(operation)) return;
+      }
+    const reconciliationMessage = (completionUnknown > 0 || cancelled || ingestCompletionUnknown) && !reconciliationResult.reconciled
+      ? ' Authoritative project reconciliation failed; reload the project before acting on uncertain files.'
+      : ' Project data was refreshed.';
+    const uncertainRetryMessage = completionUnknown > 0
+      ? ' Completion-unknown files were removed from the retry selection; audit project data and explicitly reselect them only if retrying is safe.'
+      : '';
+    if (cancelled) {
+      const failedSummary = confirmedFailed > 0 ? `, ${confirmedFailed} failed` : '';
+      setError(
+        `Upload cancelled: ${results.length} confirmed succeeded, ${completionUnknown} completion unknown, ${notStarted} not started${failedSummary} out of ${total}.${reconciliationMessage}${uncertainRetryMessage}`,
+      );
+    } else if (completionUnknown > 0) {
+      const confirmedFailed = Math.max(0, uploadResult.failures.length - completionUnknown);
+      setError(
+        `Upload finished with uncertain results: ${results.length} confirmed succeeded, ${completionUnknown} completion unknown, ${confirmedFailed} failed out of ${total}.${reconciliationMessage}${uncertainRetryMessage}`,
+      );
+    } else if (failed > 0) {
+      const locallyRejected = uploadResult.failures.filter((outcome) => (
+        outcome.code === 'manifest_item_too_large' || outcome.code === 'invalid_manifest_metadata'
+      ));
+      const rejectionDetail = locallyRejected.length > 0
+        ? ` ${locallyRejected.length} ${locallyRejected.length === 1 ? 'file was' : 'files were'} not sent because upload metadata exceeded a built-in limit or was invalid. First: ${locallyRejected[0].item.filename}: ${locallyRejected[0].detail}.`
+        : '';
+      setError(`Upload complete: ${results.length} succeeded, ${failed} failed out of ${total}.${rejectionDetail}`);
+    } else if (ingestCompletionUnknown) {
+      setError(`Images uploaded, but part-ingest completion is unknown.${reconciliationMessage}`);
     } else if (ingestError) {
       setError('Images uploaded, but parts could not be created from filename metadata.');
     } else {
       setError(null);
     }
-    setSelectedFiles([]);
-    setUploadMetadata('');
-    finishUploadProgress();
-    setUploading(false);
+      setSelectedFiles(retryableFiles);
+      if (retryableFiles.length === 0) {
+        setUploadMetadata('');
+      }
+    } finally {
+      if (ownsDataOperation(operation)) {
+        finishUploadProgress();
+        setUploading(false);
+      }
+      releaseDataOperation(operation);
+    }
   };
 
-  const getMergedMetadataForName = useCallback((filename, manualMetadata, associatedMetadataReference = null, associatedMetadataNsiproMetadata = null) => {
+  const getMergedMetadataForName = useCallback((filename, manualMetadata, associatedMetadataReference = null) => {
     const extractedMetadata = extractorConfig.extractMetadata(filename);
     const mergedMetadata = (extractedMetadata || manualMetadata)
       ? { ...(extractedMetadata || {}), ...(manualMetadata || {}) }
@@ -925,7 +1067,6 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
     const metadataWithAssociatedReference = buildMetadataWithAssociatedReference(
       mergedMetadata,
       associatedMetadataReference,
-      associatedMetadataNsiproMetadata,
     );
     const hierarchyMetadata = normalizeHierarchyMetadata(metadataWithAssociatedReference);
     return hierarchyMetadata
@@ -948,16 +1089,21 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
       setError('Please specify an S3 URL.');
       return;
     }
+    const operation = acquireDataOperation('s3_list', { s3: true });
+    if (!operation) return;
     setLoadingS3Files(true);
     setS3Objects([]);
     setSelectedS3Keys([]);
     setS3PickerOpen(false);
+    setS3ListingTruncated(false);
     try {
       const response = await fetch(`/api/projects/${projectId}/s3/list`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ s3_url: s3Url.trim() }),
+        signal: operation.controller.signal,
       });
+      if (!isDataOperationCurrent(operation)) return;
       if (!response.ok) {
         let detail = `HTTP ${response.status}`;
         try {
@@ -969,36 +1115,45 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
         throw new Error(detail);
       }
       const payload = await response.json();
+      if (!isDataOperationCurrent(operation)) return;
       const objects = payload.objects || [];
       setS3Objects(objects);
-      setSelectedS3Keys(objects.map((object) => object.key).slice(0, S3_IMPORT_LIMIT));
+      setSelectedS3Keys(objects.map((object) => object.key));
+      setS3ListingTruncated(Boolean(payload.truncated));
       setS3PickerOpen(true);
       setError(objects.length ? null : 'No supported files were found at that S3 URL.');
     } catch (err) {
+      if (!isDataOperationCurrent(operation) || err?.name === 'AbortError') return;
       const detail = err?.message ? ` ${err.message}` : '';
       setError(`Failed to load files from S3.${detail}`);
     } finally {
-      setLoadingS3Files(false);
+      if (ownsDataOperation(operation)) setLoadingS3Files(false);
+      releaseDataOperation(operation);
     }
   };
 
   const handleToggleS3Key = (key) => {
-    setSelectedS3Keys((current) => (
-      current.includes(key)
-        ? current.filter((item) => item !== key)
-        : [...current, key].slice(0, S3_IMPORT_LIMIT)
-    ));
+    setSelectedS3Keys((current) => {
+      const selected = new Set(current);
+      if (selected.has(key)) selected.delete(key);
+      else selected.add(key);
+      return Array.from(selected);
+    });
   };
 
   const handleToggleAllS3Keys = () => {
     setSelectedS3Keys((current) => (
       current.length === s3Objects.length
         ? []
-        : s3Objects.map((object) => object.key).slice(0, S3_IMPORT_LIMIT)
+        : s3Objects.map((object) => object.key)
     ));
   };
 
   const handleImportS3Files = async () => {
+    if (s3ReconciliationBlock) {
+      setError('S3 retry is blocked until the uncertain import is reconciled with the project.');
+      return;
+    }
     if (selectedS3Keys.length === 0) {
       setError('Please choose at least one S3 file to load.');
       return;
@@ -1009,25 +1164,41 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
     }
     const manualMetadata = parseManualMetadata();
     if (manualMetadata === undefined) return;
-
-    let associatedMetadataReference = null;
-    let associatedMetadataNsiproMetadata = null;
-    if (associatedMetadataFile) {
-      try {
-        associatedMetadataReference = await saveAssociatedMetadataBundle();
-        associatedMetadataNsiproMetadata = getAssociatedBundleNsiproMetadata(associatedMetadataBundle);
-      } catch (err) {
-        const detail = err?.message ? ` ${err.message}` : '';
-        setError(`Unable to associate metadata file.${detail}`);
-        return;
-      }
+    const selectedObjects = s3Objects.filter((object) => selectedS3KeySet.has(object.key));
+    if (selectedObjects.length === 0) {
+      setError('Selected S3 files are no longer available. Reload the S3 listing and try again.');
+      return;
     }
-
+    const selectedS3Url = s3Url.trim();
+    const operation = acquireDataOperation('s3_import', { s3: true });
+    if (!operation) return;
     setImportingS3Files(true);
+
     try {
-      const selectedObjects = s3Objects.filter((object) => selectedS3Keys.includes(object.key));
+      let associatedMetadataReference = null;
+      if (associatedMetadataFile) {
+        try {
+          associatedMetadataReference = await saveAssociatedMetadataBundle(operation.controller.signal);
+          if (!isDataOperationCurrent(operation)) return;
+          if (onProjectMetadataLoaded) {
+            try {
+              await onProjectMetadataLoaded(associatedMetadataReference);
+              if (!isDataOperationCurrent(operation)) return;
+            } catch (metadataRefreshError) {
+              if (!isDataOperationCurrent(operation)) return;
+              console.error('Associated metadata was saved, but the project metadata view could not be refreshed:', metadataRefreshError);
+            }
+          }
+        } catch (err) {
+          if (!isDataOperationCurrent(operation)) return;
+          const detail = err?.message ? ` ${err.message}` : '';
+          setError(`Unable to associate metadata file.${detail}`);
+          return;
+        }
+      }
+
       const totalBytes = getTotalUploadSizeBytes(selectedObjects);
-      beginUploadProgress({ completed: 0, failed: 0, total: selectedS3Keys.length, loadedBytes: 0, totalBytes });
+      beginUploadProgress({ completed: 0, failed: 0, total: selectedObjects.length, loadedBytes: 0, totalBytes });
       const perFileMetadata = {};
       const groupIdentifiers = {};
       selectedObjects.forEach((object) => {
@@ -1035,7 +1206,6 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
           object.filename,
           manualMetadata,
           associatedMetadataReference,
-          associatedMetadataNsiproMetadata,
         );
         if (metadataForUpload) {
           perFileMetadata[object.key] = metadataForUpload;
@@ -1046,50 +1216,188 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
         }
       });
 
-      const response = await fetch(`/api/projects/${projectId}/s3/import`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          s3_url: s3Url.trim(),
-          keys: selectedS3Keys,
-          per_file_metadata: perFileMetadata,
-          group_identifiers: groupIdentifiers,
-        }),
-      });
-      if (!response.ok) {
-        let detail = `HTTP ${response.status}`;
-        try {
-          const payload = await response.json();
-          detail = payload?.detail || detail;
-        } catch (parseError) {
-          detail = response.statusText || detail;
-        }
-        throw new Error(detail);
+      const importChunks = [];
+      for (let index = 0; index < selectedObjects.length; index += S3_IMPORT_BATCH_SIZE) {
+        importChunks.push(selectedObjects.slice(index, index + S3_IMPORT_BATCH_SIZE));
       }
-      const payload = await response.json();
-      const imported = payload.imported || [];
-      const failed = payload.failed || [];
-      const completedKeys = new Set([
-        ...imported.map((item) => item.metadata?.source_s3_key).filter(Boolean),
-        ...imported.map((item) => item.source_s3_key).filter(Boolean),
-        ...failed.map((item) => item.key || item.source_s3_key).filter(Boolean),
-      ]);
-      const completedObjects = completedKeys.size > 0
-        ? selectedObjects.filter((object) => completedKeys.has(object.key))
-        : selectedObjects.slice(0, imported.length + failed.length);
+
+      const importedByKey = new Map();
+      const failedByKey = new Map();
+      const completionUnknownByKey = new Map();
+      let completed = 0;
+      let failedCount = 0;
+      let loadedBytes = 0;
+
+      const settleChunk = (
+        chunk,
+        payload = null,
+        { requestError = null, completionUnknown = false, acceptedResponse = false } = {},
+      ) => {
+        const remainingKeys = new Set(chunk.map((object) => object.key));
+        const ambiguousResponseKeys = new Set();
+        const importedItems = Array.isArray(payload?.imported) ? payload.imported : [];
+        const failedItems = Array.isArray(payload?.failed) ? payload.failed : [];
+
+        const importedWithoutSourceKey = [];
+        importedItems.forEach((image) => {
+          const key = image?.metadata?.source_s3_key || image?.source_s3_key;
+          if (!remainingKeys.has(key)) {
+            importedWithoutSourceKey.push(image);
+            return;
+          }
+          importedByKey.set(key, image);
+          remainingKeys.delete(key);
+        });
+        importedWithoutSourceKey.forEach((image) => {
+          const filenameMatches = chunk.filter((object) => (
+            remainingKeys.has(object.key) && object.filename === image?.filename
+          ));
+          if (filenameMatches.length === 1) {
+            const key = filenameMatches[0].key;
+            importedByKey.set(key, image);
+            remainingKeys.delete(key);
+          } else if (filenameMatches.length > 1) {
+            filenameMatches.forEach((object) => ambiguousResponseKeys.add(object.key));
+          }
+        });
+
+        failedItems.forEach((failure) => {
+          const key = failure?.key || failure?.source_s3_key;
+          if (!key || !remainingKeys.has(key)) return;
+          failedByKey.set(key, {
+            key,
+            error: failure.error || failure.detail || 'S3 file could not be imported',
+          });
+          remainingKeys.delete(key);
+        });
+
+        remainingKeys.forEach((key) => {
+          const omittedFromAcceptedResponse = acceptedResponse && !requestError;
+          const outcome = {
+            key,
+            error: requestError
+              || (ambiguousResponseKeys.has(key)
+                ? 'S3 import response could not be correlated because duplicate filenames lacked source keys'
+                : omittedFromAcceptedResponse
+                  ? 'S3 import success response omitted this file; server completion is unknown'
+                  : 'S3 import response did not include a result for this file'),
+          };
+          if (completionUnknown || ambiguousResponseKeys.has(key) || omittedFromAcceptedResponse) {
+            completionUnknownByKey.set(key, outcome);
+          } else {
+            failedByKey.set(key, outcome);
+          }
+        });
+
+        completed += chunk.length;
+        failedCount += chunk.filter((object) => (
+          failedByKey.has(object.key) || completionUnknownByKey.has(object.key)
+        )).length;
+        loadedBytes += getTotalUploadSizeBytes(chunk);
+        if (ownsDataOperation(operation)) {
+          setUploadProgressSnapshot({
+            completed,
+            failed: failedCount,
+            total: selectedObjects.length,
+            loadedBytes,
+            totalBytes,
+          });
+        }
+      };
+
+      let nextChunkIndex = 0;
+      const importWorker = async () => {
+        while (isDataOperationCurrent(operation)) {
+          const chunkIndex = nextChunkIndex;
+          nextChunkIndex += 1;
+          if (chunkIndex >= importChunks.length) return;
+          const chunk = importChunks[chunkIndex];
+          const keys = chunk.map((object) => object.key);
+          try {
+            const response = await fetch(`/api/projects/${projectId}/s3/import`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                s3_url: selectedS3Url,
+                keys,
+                per_file_metadata: Object.fromEntries(
+                  keys.filter((key) => perFileMetadata[key]).map((key) => [key, perFileMetadata[key]]),
+                ),
+                group_identifiers: Object.fromEntries(
+                  keys.filter((key) => groupIdentifiers[key]).map((key) => [key, groupIdentifiers[key]]),
+                ),
+              }),
+              signal: operation.controller.signal,
+            });
+            if (!isDataOperationCurrent(operation)) return;
+            if (!response.ok) {
+              let detail = `HTTP ${response.status}`;
+              try {
+                const errorPayload = await response.json();
+                detail = errorPayload?.detail || detail;
+              } catch (parseError) {
+                detail = response.statusText || detail;
+              }
+              settleChunk(chunk, null, {
+                requestError: response.status >= 500
+                  ? `${detail}; server completion is unknown`
+                  : detail,
+                completionUnknown: response.status >= 500,
+              });
+              continue;
+            }
+            let payload;
+            try {
+              payload = await response.json();
+            } catch (parseError) {
+              settleChunk(chunk, null, {
+                requestError: 'S3 import response was not valid JSON; server completion is unknown',
+                completionUnknown: true,
+              });
+              continue;
+            }
+            settleChunk(chunk, payload, { acceptedResponse: true });
+          } catch (err) {
+            if (!isDataOperationCurrent(operation) || err?.name === 'AbortError') return;
+            const requestDetail = err?.message || 'S3 import request failed';
+            settleChunk(chunk, null, {
+              requestError: `${requestDetail}; server completion is unknown`,
+              completionUnknown: true,
+            });
+          }
+        }
+      };
+
+      await Promise.all(Array.from(
+        { length: Math.min(S3_IMPORT_CONCURRENCY, importChunks.length) },
+        () => importWorker(),
+      ));
+      if (!isDataOperationCurrent(operation)) return;
+
+      const imported = selectedObjects
+        .map((object) => importedByKey.get(object.key))
+        .filter(Boolean);
+      const failed = selectedObjects
+        .map((object) => failedByKey.get(object.key))
+        .filter(Boolean);
+      const completionUnknown = selectedObjects
+        .map((object) => completionUnknownByKey.get(object.key))
+        .filter(Boolean);
+      const retryableS3Keys = failed.map((outcome) => outcome.key);
+      setSelectedS3Keys(retryableS3Keys);
       setUploadProgressSnapshot({
-        completed: imported.length + failed.length,
-        failed: failed.length,
-        total: selectedS3Keys.length,
-        loadedBytes: getTotalUploadSizeBytes(completedObjects),
+        completed: selectedObjects.length,
+        failed: failed.length + completionUnknown.length,
+        total: selectedObjects.length,
+        loadedBytes: totalBytes,
         totalBytes,
       }, { flush: true });
 
       let ingestError = null;
+      let ingestCompletionUnknown = false;
       const uploadedRecords = selectedObjects
         .map((object) => {
-          const image = imported.find((item) => item.metadata?.source_s3_key === object.key)
-            || imported.find((item) => item.filename === object.filename);
+          const image = importedByKey.get(object.key);
           if (!image) return null;
           return {
             image,
@@ -1107,44 +1415,119 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(ingestPayload),
+            signal: operation.controller.signal,
           });
           if (!ingestResponse.ok) {
-            throw new Error(`HTTP ${ingestResponse.status}`);
+            const error = new Error(`HTTP ${ingestResponse.status}`);
+            error.ingestCompletionUnknown = ingestResponse.status >= 500;
+            throw error;
           }
         } catch (err) {
+          if (!isDataOperationCurrent(operation)) return;
           ingestError = err;
+          ingestCompletionUnknown = err?.ingestCompletionUnknown !== false;
           console.error('Error ingesting S3-loaded images as inspection parts:', err);
         }
       }
 
-      if (imported.length > 0 && onUploadComplete) {
-        onUploadComplete(imported);
-      }
-      if (failed.length > 0) {
-        setError(`S3 load complete: ${imported.length} succeeded, ${failed.length} failed out of ${selectedS3Keys.length}.`);
+      const completion = {
+        source: 's3_import',
+        total: selectedObjects.length,
+        confirmedSucceeded: imported.length,
+        confirmedFailed: failed.length,
+        completionUnknown: completionUnknown.length,
+        notStarted: 0,
+        cancelled: false,
+        partsMayHaveChanged: partCount > 0 || completionUnknown.length > 0 || ingestCompletionUnknown,
+        ingestFailed: Boolean(ingestError),
+        ingestCompletionUnknown,
+        requiresAuthoritativeReconciliation: completionUnknown.length > 0 || ingestCompletionUnknown,
+      };
+      // A 5xx, transport failure, or unreadable success response can happen
+      // after the server commits. Refresh once instead of retrying and
+      // risking duplicate project images.
+      const reconciliationResult = await notifyUploadComplete(imported, completion);
+      if (!isDataOperationCurrent(operation)) return;
+      if (completionUnknown.length > 0) {
+        const ingestDetail = ingestError ? ' Parts could not be created for confirmed imports.' : '';
+        const retryDetail = ' Confirmed successes and completion-unknown files were removed from the retry selection; completion-unknown files require manual audit and explicit reselection.';
+        if (reconciliationResult.reconciled) {
+          setS3ReconciliationBlock(null);
+          setError(
+            `S3 load finished with uncertain results: ${imported.length} confirmed succeeded, ${completionUnknown.length} completion unknown, ${failed.length} failed out of ${selectedObjects.length}. Project data was refreshed.${retryDetail}${ingestDetail}`,
+          );
+        } else {
+          setS3ReconciliationBlock({ completion });
+          setError(
+            `S3 load finished with uncertain results: ${imported.length} confirmed succeeded, ${completionUnknown.length} completion unknown, ${failed.length} failed out of ${selectedObjects.length}. Authoritative project reconciliation failed, so S3 retry is blocked until reconciliation succeeds.${retryDetail}${ingestDetail}`,
+          );
+        }
+      } else if (ingestCompletionUnknown) {
+        setS3ReconciliationBlock(null);
+        setError(reconciliationResult.reconciled
+          ? `S3 load complete: ${imported.length} succeeded, ${failed.length} failed out of ${selectedObjects.length}; part-ingest completion was uncertain. Project data was authoritatively reconciled.`
+          : `S3 load complete: ${imported.length} succeeded, ${failed.length} failed out of ${selectedObjects.length}; part-ingest completion was uncertain and authoritative project reconciliation failed.`);
+      } else if (failed.length > 0) {
+        setS3ReconciliationBlock(null);
+        const ingestDetail = ingestError ? ' Parts could not be created for the imported images.' : '';
+        setError(`S3 load complete: ${imported.length} succeeded, ${failed.length} failed out of ${selectedObjects.length}.${ingestDetail}`);
       } else if (ingestError) {
+        setS3ReconciliationBlock(null);
         setError('S3 files loaded, but parts could not be created from filename metadata.');
       } else {
+        setS3ReconciliationBlock(null);
         setError(null);
       }
-      setS3PickerOpen(false);
-      setSelectedS3Keys([]);
+      if (completionUnknown.length === 0 && retryableS3Keys.length === 0) {
+        setS3PickerOpen(false);
+      }
     } catch (err) {
+      if (!isDataOperationCurrent(operation) || err?.name === 'AbortError') return;
       const detail = err?.message ? ` ${err.message}` : '';
       setError(`Failed to import selected S3 files.${detail}`);
     } finally {
-      setImportingS3Files(false);
-      finishUploadProgress();
+      if (ownsDataOperation(operation)) {
+        setImportingS3Files(false);
+        finishUploadProgress();
+      }
+      releaseDataOperation(operation);
+    }
+  };
+
+  const handleRetryS3Reconciliation = async () => {
+    if (!s3ReconciliationBlock) return;
+    const operation = acquireDataOperation('s3_reconcile', { s3: true });
+    if (!operation) return;
+    setImportingS3Files(true);
+    try {
+      const result = await notifyUploadComplete([], {
+        ...s3ReconciliationBlock.completion,
+        retryReconciliation: true,
+      });
+      if (!isDataOperationCurrent(operation)) return;
+      if (result.reconciled) {
+        setS3ReconciliationBlock(null);
+        setError('Project reconciliation succeeded. Completion-unknown S3 files remain unselected; audit project data and explicitly reselect a file only if retrying is safe.');
+      } else {
+        setError('Authoritative project reconciliation still failed. S3 retry remains blocked.');
+      }
+    } finally {
+      if (ownsDataOperation(operation)) setImportingS3Files(false);
+      releaseDataOperation(operation);
     }
   };
 
   const handleLoadTestData = async () => {
+    const operation = acquireDataOperation('test_data');
+    if (!operation) return;
     setLoadingTestData(true);
     setTestDataResult(null);
     try {
       const response = await fetch(`/api/projects/${projectId}/load-test-data`, {
         method: 'POST',
+        signal: operation.controller.signal,
       });
+      if (!isDataOperationCurrent(operation)) return;
       if (!response.ok) {
         let detail = `HTTP ${response.status}`;
         try {
@@ -1156,22 +1539,37 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
         throw new Error(detail);
       }
       const payload = await response.json();
+      if (!isDataOperationCurrent(operation)) return;
       setTestDataResult(payload);
       setError(null);
       if (onUploadComplete) {
-        await onUploadComplete(payload);
+        await onUploadComplete(payload, {
+          source: 'test_data',
+          total: Number(payload?.images_created) || 0,
+          confirmedSucceeded: Number(payload?.images_created) || 0,
+          confirmedFailed: 0,
+          completionUnknown: 0,
+          notStarted: 0,
+          cancelled: false,
+          partsMayHaveChanged: true,
+          requiresAuthoritativeReconciliation: false,
+          payload,
+        });
+        if (!isDataOperationCurrent(operation)) return;
       }
     } catch (err) {
+      if (!isDataOperationCurrent(operation) || err?.name === 'AbortError') return;
       const detail = err?.message ? ` ${err.message}` : '';
       setError(`Failed to load ${projectType || 'project'} test data.${detail}`);
     } finally {
-      setLoadingTestData(false);
+      if (ownsDataOperation(operation)) setLoadingTestData(false);
+      releaseDataOperation(operation);
     }
   };
 
   const selectedFilesTotalBytes = getTotalUploadSizeBytes(selectedFiles);
   const selectedS3TotalBytes = getTotalUploadSizeBytes(
-    s3Objects.filter((object) => selectedS3Keys.includes(object.key))
+    s3Objects.filter((object) => selectedS3KeySet.has(object.key))
   );
 
   return (
@@ -1186,7 +1584,9 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
-            onClick={() => document.getElementById('file-input').click()}
+            onClick={() => {
+              if (!dataOperationBusy) document.getElementById('file-input').click();
+            }}
           >
             <div className="upload-area-content">
               <div className="upload-area-icon">
@@ -1211,6 +1611,7 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
               multiple
               style={{ display: 'none' }}
               onChange={handleFileChange}
+              disabled={dataOperationBusy}
             />
           </div>
 
@@ -1224,13 +1625,13 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
                 placeholder="s3://bucket/path/to/files/"
                 value={s3Url}
                 onChange={(e) => setS3Url(e.target.value)}
-                disabled={uploading || loadingTestData || loadingS3Files || importingS3Files}
+                disabled={dataOperationBusy || Boolean(s3ReconciliationBlock)}
               />
               <button
                 type="button"
                 className="btn btn-secondary"
                 onClick={handleLoadS3Files}
-                disabled={uploading || loadingTestData || loadingS3Files || importingS3Files}
+                disabled={dataOperationBusy || Boolean(s3ReconciliationBlock)}
               >
                 {loadingS3Files ? 'Loading S3 Files...' : 'Load Files from S3'}
               </button>
@@ -1240,6 +1641,21 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
             </small>
           </div>
 
+          {s3ReconciliationBlock && (
+            <div className="alert alert-warning" role="alert">
+              An uncertain S3 import has not been reconciled. Loading selected S3 files again is blocked to prevent duplicates.
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ marginLeft: '8px' }}
+                onClick={handleRetryS3Reconciliation}
+                disabled={dataOperationBusy}
+              >
+                {importingS3Files ? 'Retrying Project Reconciliation...' : 'Retry Project Reconciliation'}
+              </button>
+            </div>
+          )}
+
           {s3PickerOpen && (
             <div className="card" style={{ margin: '12px 0', border: '1px solid #dee2e6' }} data-testid="s3-file-picker">
               <div className="card-header">
@@ -1248,10 +1664,15 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
               <div className="card-content">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                   <span>{selectedS3Keys.length} / {s3Objects.length} selected ({formatUploadSize(selectedS3TotalBytes)})</span>
-                  <button type="button" className="btn btn-secondary" onClick={handleToggleAllS3Keys}>
+                  <button type="button" className="btn btn-secondary" onClick={handleToggleAllS3Keys} disabled={dataOperationBusy}>
                     {selectedS3Keys.length === s3Objects.length ? 'Clear Selection' : 'Select All'}
                   </button>
                 </div>
+                {s3ListingTruncated && (
+                  <div className="alert alert-warning" role="status" style={{ marginBottom: '8px' }}>
+                    The S3 listing was truncated by the server. All returned files are selectable; narrow the S3 prefix to load additional files.
+                  </div>
+                )}
                 <div style={{ maxHeight: '240px', overflowY: 'auto', border: '1px solid #e9ecef', borderRadius: '4px' }}>
                   {s3Objects.map((object) => (
                     <label
@@ -1260,8 +1681,9 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
                     >
                       <input
                         type="checkbox"
-                        checked={selectedS3Keys.includes(object.key)}
+                        checked={selectedS3KeySet.has(object.key)}
                         onChange={() => handleToggleS3Key(object.key)}
+                        disabled={dataOperationBusy}
                       />
                       <span style={{ flex: 1 }}>
                         <strong>{object.filename}</strong>
@@ -1276,7 +1698,7 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
                     type="button"
                     className="btn btn-success"
                     onClick={handleImportS3Files}
-                    disabled={importingS3Files || selectedS3Keys.length === 0 || !extractorConfig.isValid}
+                    disabled={dataOperationBusy || Boolean(s3ReconciliationBlock) || selectedS3Keys.length === 0 || !extractorConfig.isValid}
                   >
                     {importingS3Files ? 'Loading Selected S3 Files...' : 'Load Selected S3 Files'}
                   </button>
@@ -1285,7 +1707,7 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
                     className="btn btn-secondary"
                     style={{ marginLeft: '8px' }}
                     onClick={() => setS3PickerOpen(false)}
-                    disabled={importingS3Files}
+                    disabled={dataOperationBusy}
                   >
                     Cancel
                   </button>
@@ -1341,7 +1763,7 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
                   type="file"
                   accept=".json,.nsipro,application/json"
                   onChange={handleAssociatedMetadataFileChange}
-                  disabled={associatedMetadataSaving}
+                  disabled={dataOperationBusy}
                 />
                 <span className="form-text" aria-live="polite">
                   {associatedMetadataFile ? associatedMetadataFile.name : 'No metadata file chosen'}
@@ -1350,7 +1772,7 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
                   type="button"
                   className="btn btn-secondary"
                   onClick={handleLoadAssociatedMetadata}
-                  disabled={associatedMetadataSaving || associatedMetadataParsing || !associatedMetadataBundle || Boolean(associatedMetadataError)}
+                  disabled={dataOperationBusy || associatedMetadataParsing || !associatedMetadataBundle || Boolean(associatedMetadataError)}
                 >
                   {associatedMetadataSaving ? 'Loading Metadata...' : 'Load Metadata'}
                 </button>
@@ -1392,7 +1814,7 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
             <button
               type="submit"
               className="btn btn-success"
-              disabled={uploading || loadingTestData || associatedMetadataSaving || !extractorConfig.isValid || associatedMetadataParsing || Boolean(associatedMetadataError)}
+              disabled={dataOperationBusy || !extractorConfig.isValid || associatedMetadataParsing || Boolean(associatedMetadataError)}
             >
               {uploading ? 'Uploading...' : 'Upload Images'}
             </button>
@@ -1400,7 +1822,7 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
               type="button"
               className="btn btn-secondary"
               style={{ marginLeft: '8px' }}
-              disabled={uploading || loadingTestData}
+              disabled={dataOperationBusy}
               onClick={handleLoadTestData}
             >
               {loadingTestData ? 'Loading Test Data...' : 'Load Test Data'}
@@ -1410,7 +1832,10 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
                 type="button"
                 className="btn btn-secondary"
                 style={{ marginLeft: '8px' }}
-                onClick={() => { cancelledRef.current = true; }}
+                onClick={() => {
+                  cancelledRef.current = true;
+                  uploadAbortControllerRef.current?.abort();
+                }}
               >
                 Cancel
               </button>

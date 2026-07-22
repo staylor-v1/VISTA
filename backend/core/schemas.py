@@ -86,6 +86,22 @@ class Project(ProjectBase):
     }
 
 
+class ProjectDataSummary(BaseModel):
+    """Small aggregate used when opening a project with a large data set."""
+
+    project_id: uuid.UUID
+    active_image_count: int = Field(ge=0)
+    deleted_image_count: int = Field(ge=0)
+    total_image_bytes: int = Field(ge=0)
+    part_count: int = Field(ge=0)
+    image_metadata_fields: int = Field(
+        ge=0,
+        description="Total number of top-level metadata fields across active images",
+    )
+    annotation_count: int = Field(ge=0)
+    overlay_layer_count: int = Field(ge=0)
+
+
 class InspectionBatchBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
@@ -869,6 +885,59 @@ class DataInstance(DataInstanceBase):
         "from_attributes": True,
         "populate_by_name": True
     }
+
+
+class DataInstancePage(BaseModel):
+    """A stable keyset page of project images."""
+
+    items: List[DataInstance]
+    total: int = Field(ge=0)
+    next_cursor: Optional[str] = None
+    has_more: bool
+
+
+class BatchImageUploadManifestEntry(BaseModel):
+    """One positional file entry in a multipart batch image upload."""
+
+    client_index: int = Field(..., ge=0, strict=True)
+    filename: str = Field(..., min_length=1, max_length=255)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    group_identifier: Optional[str] = Field(default=None, max_length=255)
+
+    @field_validator("filename")
+    @classmethod
+    def validate_batch_filename(cls, value: str) -> str:
+        filename = value.strip()
+        if not filename or filename in {".", ".."}:
+            raise ValueError("filename must not be blank")
+        if "/" in filename or "\\" in filename or any(ord(character) < 32 for character in filename):
+            raise ValueError("filename must not contain path separators or control characters")
+        return filename
+
+    @field_validator("group_identifier")
+    @classmethod
+    def normalize_batch_group_identifier(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
+class BatchImageUploadSuccess(BaseModel):
+    client_index: int
+    image: DataInstance
+
+
+class BatchImageUploadFailure(BaseModel):
+    client_index: int
+    filename: str
+    code: str
+    detail: str
+
+
+class BatchImageUploadResponse(BaseModel):
+    uploaded: List[BatchImageUploadSuccess] = Field(default_factory=list)
+    failed: List[BatchImageUploadFailure] = Field(default_factory=list)
 
 # ImageClass schemas
 class ImageClassBase(BaseModel):

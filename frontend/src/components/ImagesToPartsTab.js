@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { MPR_AXES, MPR_AXIS_CONFIG, MprSliceCanvas, getMprAxisImageDimensions, useMprVolumeCache } from './InspectionWorkbenchPanel';
+import { MPR_AXES, MPR_AXIS_CONFIG, MPR_SERVER_VOLUME_KIND, MprSliceCanvas, getMprAxisImageDimensions, getServerVolumeSliceUrl, useMprVolumeCache } from './InspectionWorkbenchPanel';
 import { buildConfiguredFilenameFields, isFilenameConventionEnabled } from './FilenameMetadataExtractor';
 
 function tagDuplicateFilename(filename = '', occurrence = 0) {
@@ -352,9 +352,26 @@ function VolumeSliceViewer({ viewer, onChange, onClose }) {
   const dimensions = useMemo(() => metadata?.dimensions || { axial: 1, coronal: 1, sagittal: 1 }, [metadata]);
   const slicePosition = viewer.slicePosition || { axial: 0, coronal: 0, sagittal: 0 };
   const axisMax = Math.max(0, Number(dimensions[axis] || 1) - 1);
-  const axialStack = useMemo(() => Array.from({ length: Math.max(1, Number(dimensions.axial) || 1) }, (_, index) => ({ id: `${imageRef.id}-${index}`, sliceIndex: index, url: `/api/images/${encodeURIComponent(imageRef.id)}/volume-slice?axis=axial&index=${index}` })), [dimensions.axial, imageRef.id]);
+  const isServerBackedNpy = String(imageRef.filename || '').toLowerCase().endsWith('.npy');
+  const serverVolumeSource = useMemo(() => {
+    if (!isServerBackedNpy) return null;
+    const descriptor = {
+      kind: MPR_SERVER_VOLUME_KIND,
+      id: String(imageRef.id),
+      imageId: String(imageRef.id),
+      filename: imageRef.filename,
+      dimensions,
+      sliceIndex: Math.floor((Math.max(1, Number(dimensions.axial) || 1) - 1) / 2),
+    };
+    return { ...descriptor, url: getServerVolumeSliceUrl(descriptor, 'axial', descriptor.sliceIndex) };
+  }, [dimensions, imageRef.filename, imageRef.id, isServerBackedNpy]);
+  const axialStack = useMemo(() => (
+    isServerBackedNpy
+      ? []
+      : Array.from({ length: Math.max(1, Number(dimensions.axial) || 1) }, (_, index) => ({ id: `${imageRef.id}-${index}`, sliceIndex: index, url: `/api/images/${encodeURIComponent(imageRef.id)}/volume-slice?axis=axial&index=${index}` }))
+  ), [dimensions.axial, imageRef.id, isServerBackedNpy]);
   const previewSliceCache = usePreviewSliceCache(axialStack);
-  const volumeCacheState = useMprVolumeCache(previewSliceCache.imageStack, dimensions);
+  const volumeCacheState = useMprVolumeCache(serverVolumeSource || previewSliceCache.imageStack, dimensions);
   const previewIsLoading = previewSliceCache.status === 'loading' || volumeCacheState.status === 'loading';
   const imageDimensions = getMprAxisImageDimensions(axis, dimensions, volumeCacheState.cache);
   const setAxis = (nextAxis) => onChange((previous) => ({ ...previous, axis: nextAxis }));

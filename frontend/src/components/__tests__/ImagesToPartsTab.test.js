@@ -697,7 +697,7 @@ describe('ImagesToPartsTab volume preview progress', () => {
     URL.revokeObjectURL = originalRevokeObjectUrl;
   });
 
-  test('shows 3D slice caching progress inside the modal view section', async () => {
+  test('shows legacy stack caching progress inside the modal view section', async () => {
     URL.createObjectURL = jest.fn(() => 'blob:preview-slice');
     URL.revokeObjectURL = jest.fn();
 
@@ -749,16 +749,59 @@ describe('ImagesToPartsTab volume preview progress', () => {
           id: 'part-1',
           serial_number: 'P1',
           display_name: 'Part 1',
-          metadata: { source_images: [{ filename: 'scan.npy', image_id: 'img-volume-1' }] },
+          metadata: { source_images: [{ filename: 'scan.tif', image_id: 'img-volume-1' }] },
         }]}
-        images={[{ id: 'img-volume-1', filename: 'scan.npy', metadata: { load_mode: 'volume' } }]}
+        images={[{ id: 'img-volume-1', filename: 'scan.tif', metadata: { load_mode: 'volume' } }]}
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'scan.npy' }));
+    fireEvent.click(screen.getByRole('button', { name: 'scan.tif' }));
 
-    const dialog = await screen.findByRole('dialog', { name: 'scan.npy' });
+    const dialog = await screen.findByRole('dialog', { name: 'scan.tif' });
     await waitFor(() => expect(within(dialog).getByText('Caching 1/2 MB')).toBeInTheDocument());
     expect(within(dialog).getByTestId('volume-slice-stage')).toContainElement(within(dialog).getByRole('status'));
+  });
+
+  test('does not eagerly fetch every axial slice for a large npy preview', async () => {
+    const dimensions = { axial: 749, coronal: 1010, sagittal: 984 };
+    global.fetch = jest.fn((url) => {
+      if (url.includes('/volume-metadata')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            image_count: dimensions.axial,
+            height: dimensions.coronal,
+            width: dimensions.sagittal,
+            dimensions,
+            interpretation: 'voxel_array',
+            bit_depth: 16,
+            pixel_dtype: 'uint16',
+          }),
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+    });
+
+    render(
+      <ImagesToPartsTab
+        projectId="proj-1"
+        parts={[{
+          id: 'part-large',
+          serial_number: 'P-LARGE',
+          display_name: 'Large part',
+          metadata: { source_images: [{ filename: 'large-part.npy', image_id: 'large-volume-id' }] },
+        }]}
+        images={[{ id: 'large-volume-id', filename: 'large-part.npy', metadata: { load_mode: 'volume' } }]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'large-part.npy' }));
+    const dialog = await screen.findByRole('dialog', { name: 'large-part.npy' });
+    await waitFor(() => expect(within(dialog).getByText('749')).toBeInTheDocument());
+
+    expect(global.fetch.mock.calls.filter(([url]) => url.includes('/volume-slice'))).toHaveLength(0);
+    expect(within(dialog).queryByText(/Caching \d+\//)).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('img', { name: 'XY slice 374' })).toHaveAttribute('width', '984');
+    expect(within(dialog).getByRole('img', { name: 'XY slice 374' })).toHaveAttribute('height', '1010');
   });
 });

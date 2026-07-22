@@ -1,6 +1,16 @@
-import { getVolumeOverlayStacks, getVolumeSourceImages } from '../InspectionWorkbenchPanel';
+import {
+  drawServerMprSliceImage,
+  getMprSliceCanvasCacheStats,
+  getServerVolumePrefetchSources,
+  getVolumeOverlayStacks,
+  getVolumeSourceImages,
+  rememberSliceCanvas,
+  resetMprSliceCanvasCacheForTests,
+} from '../InspectionWorkbenchPanel';
 
 describe('PT3 volume overlay stack mapping', () => {
+  afterEach(() => resetMprSliceCanvasCacheForTests());
+
   test('keeps base and overlay stacks separate and aligns overlay slices by image id', () => {
     const part = {
       id: 'part-1',
@@ -35,5 +45,107 @@ describe('PT3 volume overlay stack mapping', () => {
         stack: [expect.objectContaining({ id: 'stack-overlay-id', sliceIndex: 0, overlayBaseImageId: 'stack-base-id', url: '/api/images/stack-overlay-id/content' })],
       }),
     ]);
+  });
+
+  test('represents large npy base and overlay volumes as bounded server-backed descriptors', () => {
+    const dimensions = { axial: 749, coronal: 1010, sagittal: 984 };
+    const part = {
+      id: 'part-large-volume',
+      metadata: {
+        source_images: [
+          {
+            filename: 'part.npy',
+            image_id: 'large-base-id',
+            overlay: false,
+            metadata: { load_mode: 'volume', volume_shape: dimensions },
+          },
+          {
+            filename: 'part-segments.npy',
+            image_id: 'large-overlay-id',
+            overlay: true,
+            overlay_base_image_id: 'large-base-id',
+            metadata: { load_mode: 'volume', volume_shape: dimensions },
+          },
+        ],
+      },
+    };
+    const projectImageLookup = {
+      'large-base-id': { id: 'large-base-id', filename: 'part.npy', metadata: { volume_shape: dimensions } },
+      'large-overlay-id': { id: 'large-overlay-id', filename: 'part-segments.npy', metadata: { volume_shape: dimensions } },
+    };
+
+    const baseVolume = getVolumeSourceImages(part, projectImageLookup);
+    const [overlayVolume] = getVolumeOverlayStacks(part, projectImageLookup);
+
+    expect(Array.isArray(baseVolume)).toBe(false);
+    expect(baseVolume).toEqual(expect.objectContaining({
+      kind: 'server-volume',
+      imageId: 'large-base-id',
+      dimensions,
+      url: '/api/images/large-base-id/volume-slice?axis=axial&index=374',
+    }));
+    expect(overlayVolume).toEqual(expect.objectContaining({
+      kind: 'server-volume',
+      imageId: 'large-overlay-id',
+      overlayBaseImageId: 'large-base-id',
+      dimensions,
+    }));
+
+    const baseSources = getServerVolumePrefetchSources(baseVolume, 'coronal', 505);
+    const overlaySources = getServerVolumePrefetchSources(overlayVolume, 'coronal', 505);
+    expect(baseSources).toHaveLength(5);
+    expect(baseSources.map((source) => source.index)).toEqual([505, 504, 506, 503, 507]);
+    expect(overlaySources.map((source) => `${source.axis}:${source.index}`)).toEqual(
+      baseSources.map((source) => `${source.axis}:${source.index}`),
+    );
+    expect(baseSources.every((source) => source.url.startsWith('/api/images/large-base-id/volume-slice?'))).toBe(true);
+    expect(overlaySources.every((source) => source.url.startsWith('/api/images/large-overlay-id/volume-slice?'))).toBe(true);
+  });
+
+  test('enforces one global 192 MiB canvas budget across volume caches', () => {
+    const firstCache = { key: 'base-volume', sliceCanvases: new Map() };
+    const secondCache = { key: 'overlay-volume', sliceCanvases: new Map() };
+    const canvasBytes = 1000 * 1000 * 4;
+
+    for (let index = 0; index < 60; index += 1) {
+      const cache = index % 2 === 0 ? firstCache : secondCache;
+      rememberSliceCanvas(cache, `axial:${index}`, { width: 1000, height: 1000 });
+    }
+
+    const stats = getMprSliceCanvasCacheStats();
+    expect(stats.maxBytes).toBe(192 * 1024 * 1024);
+    expect(stats.bytes).toBeLessThanOrEqual(stats.maxBytes);
+    expect(stats.items * canvasBytes).toBe(stats.bytes);
+    expect(stats.items).toBe(50);
+    expect(firstCache.sliceCanvases.has('axial:0')).toBe(false);
+    expect(secondCache.sliceCanvases.has('axial:59')).toBe(true);
+  });
+
+  test.each([
+    ['axial', false],
+    ['coronal', true],
+    ['sagittal', true],
+  ])('matches legacy vertical orientation for %s server slices', (axis, shouldFlipVertically) => {
+    const context = {
+      save: jest.fn(),
+      translate: jest.fn(),
+      scale: jest.fn(),
+      drawImage: jest.fn(),
+      restore: jest.fn(),
+    };
+    const image = { marker: 'z-zero-at-source-top' };
+
+    drawServerMprSliceImage(context, image, axis, 120, 80);
+
+    expect(context.save).toHaveBeenCalledTimes(1);
+    expect(context.drawImage).toHaveBeenCalledWith(image, 0, 0, 120, 80);
+    expect(context.restore).toHaveBeenCalledTimes(1);
+    if (shouldFlipVertically) {
+      expect(context.translate).toHaveBeenCalledWith(0, 80);
+      expect(context.scale).toHaveBeenCalledWith(1, -1);
+    } else {
+      expect(context.translate).not.toHaveBeenCalled();
+      expect(context.scale).not.toHaveBeenCalled();
+    }
   });
 });

@@ -28,25 +28,64 @@ Separates app creation from runtime configuration.
 
 
 # Configure logging
+NOISY_THIRD_PARTY_LOGGERS = (
+    "PIL",
+    "Pillow",
+    "boto3",
+    "botocore",
+    "s3transfer",
+    "urllib3",
+    "python_multipart",
+    "multipart",
+)
+HIGH_VOLUME_APPLICATION_LOGGERS = (
+    "utils.boto3_client",
+    "boto3_client",
+)
+
+_STANDARD_LOG_RECORD_FIELDS = frozenset(
+    logging.makeLogRecord({}).__dict__
+) | {"message", "asctime"}
+
+
+def _json_log_value(value):
+    """Return a JSON-safe structured logging value without hiding context."""
+
+    try:
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError, OverflowError):
+        return str(value)
+
+
+class JSONFormatter(logging.Formatter):
+    """Format application logs as JSON while retaining intentional extras."""
+
+    def format(self, record):
+        log_entry = {
+            'timestamp': self.formatTime(record, self.datefmt),
+            'level': record.levelname,
+            'logger': record.name,
+            'message': record.getMessage(),
+            'module': record.module,
+            'function': record.funcName,
+            'line': record.lineno,
+        }
+        for key, value in record.__dict__.items():
+            if (
+                key not in _STANDARD_LOG_RECORD_FIELDS
+                and key not in log_entry
+                and not key.startswith('_')
+            ):
+                log_entry[key] = _json_log_value(value)
+        if record.exc_info:
+            log_entry['exception'] = self.formatException(record.exc_info)
+        return json.dumps(log_entry)
+
+
 def setup_logging():
     """Configure structured logging for the application."""
     log_level = logging.DEBUG if settings.DEBUG else logging.INFO
-
-    # JSON formatter for structured logging
-    class JSONFormatter(logging.Formatter):
-        def format(self, record):
-            log_entry = {
-                'timestamp': self.formatTime(record, self.datefmt),
-                'level': record.levelname,
-                'logger': record.name,
-                'message': record.getMessage(),
-                'module': record.module,
-                'function': record.funcName,
-                'line': record.lineno
-            }
-            if record.exc_info:
-                log_entry['exception'] = self.formatException(record.exc_info)
-            return json.dumps(log_entry)
 
     # Setup root logger
     root_logger = logging.getLogger()
@@ -71,6 +110,16 @@ def setup_logging():
         file_handler = logging.FileHandler(log_file_path)
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
+
+    # Application DEBUG logging is useful during development, but DEBUG output
+    # from image and object-storage dependencies is extremely chatty during
+    # large imports and can dominate terminal and Docker logging overhead.
+    for logger_name in NOISY_THIRD_PARTY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+    # Keep useful object-storage startup/error records in development while
+    # suppressing one DEBUG success record for every uploaded/copied object.
+    for logger_name in HIGH_VOLUME_APPLICATION_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.INFO)
 
     return logging.getLogger(__name__)
 

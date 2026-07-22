@@ -6,6 +6,7 @@ import { normalizePt3Segmentation } from '../pt3Segmentation';
 import { createThreeMechanicalRenderer } from '../pt3ThreeRenderer';
 
 jest.mock('../pt3ThreeRenderer', () => ({
+  ...jest.requireActual('../pt3ThreeRenderer'),
   createThreeMechanicalRenderer: jest.fn(),
 }));
 

@@ -1,5 +1,7 @@
 import uuid
-from sqlalchemy import select, update, delete, and_, text, func, exists
+import time
+from datetime import datetime
+from sqlalchemy import select, update, delete, and_, or_, text, func, exists, cast, String, bindparam
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -351,12 +353,15 @@ async def create_inspection_batch(
     project_id: uuid.UUID,
     batch: schemas.InspectionBatchCreate,
     created_by: Optional[str] = None,
+    commit: bool = True,
 ) -> models.InspectionBatch:
+    """Create a batch, or stage it when ``commit`` is false."""
     db_batch = models.InspectionBatch(project_id=project_id, **batch.model_dump())
     db.add(db_batch)
-    await db.commit()
-    await db.refresh(db_batch)
-    log_db_operation("CREATE", "inspection_batches", db_batch.id, created_by or "system", {"project_id": str(project_id), "name": batch.name})
+    if commit:
+        await db.commit()
+        await db.refresh(db_batch)
+        log_db_operation("CREATE", "inspection_batches", db_batch.id, created_by or "system", {"project_id": str(project_id), "name": batch.name})
     return db_batch
 
 
@@ -460,14 +465,17 @@ async def create_inspection_part(
     project_id: uuid.UUID,
     part: schemas.InspectionPartCreate,
     created_by: Optional[str] = None,
+    commit: bool = True,
 ) -> models.InspectionPart:
+    """Create a part, or stage it when ``commit`` is false."""
     payload = part.model_dump(by_alias=False)
     metadata_payload = payload.pop("metadata_json", None)
     db_part = models.InspectionPart(project_id=project_id, metadata_json=metadata_payload, **payload)
     db.add(db_part)
-    await db.commit()
-    await db.refresh(db_part)
-    log_db_operation("CREATE", "inspection_parts", db_part.id, created_by or "system", {"project_id": str(project_id), "serial_number": part.serial_number})
+    if commit:
+        await db.commit()
+        await db.refresh(db_part)
+        log_db_operation("CREATE", "inspection_parts", db_part.id, created_by or "system", {"project_id": str(project_id), "serial_number": part.serial_number})
     return db_part
 
 
@@ -559,6 +567,7 @@ async def update_inspection_part_metadata(
     part_id: uuid.UUID,
     metadata_patch: Dict,
     updated_by: Optional[str] = None,
+    commit: bool = True,
 ) -> Optional[models.InspectionPart]:
     part = await get_inspection_part(db=db, project_id=project_id, part_id=part_id)
     if not part:
@@ -566,15 +575,16 @@ async def update_inspection_part_metadata(
 
     current_metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
     part.metadata_json = {**current_metadata, **metadata_patch}
-    await db.commit()
-    await db.refresh(part)
-    log_db_operation(
-        "UPDATE",
-        "inspection_parts",
-        part.id,
-        updated_by or "system",
-        {"project_id": str(project_id), "metadata_keys": sorted(metadata_patch.keys())},
-    )
+    if commit:
+        await db.commit()
+        await db.refresh(part)
+        log_db_operation(
+            "UPDATE",
+            "inspection_parts",
+            part.id,
+            updated_by or "system",
+            {"project_id": str(project_id), "metadata_keys": sorted(metadata_patch.keys())},
+        )
     return part
 
 
@@ -721,22 +731,33 @@ async def get_image(db: AsyncSession, image_id: uuid.UUID) -> Optional[models.Da
     """
     return await get_data_instance(db, image_id)
 
-async def get_data_instances_for_project(db: AsyncSession, project_id: uuid.UUID, skip: int = 0, limit: int = 100, search_field: Optional[str] = None, search_value: Optional[str] = None, group_id: Optional[uuid.UUID] = None, ungrouped: bool = False) -> List[models.DataInstance]:
-    # First check if the project exists
-    project = await get_project(db, project_id)
-    if not project:
-        return []
-        
-    query = select(models.DataInstance).where(models.DataInstance.project_id == project_id)
-    
+def _apply_data_instance_filters(
+    query,
+    *,
+    project_id: uuid.UUID,
+    include_deleted: bool = False,
+    deleted_only: bool = False,
+    search_field: Optional[str] = None,
+    search_value: Optional[str] = None,
+    group_id: Optional[uuid.UUID] = None,
+    ungrouped: bool = False,
+):
+    """Apply the common project-image filters before pagination."""
+    query = query.where(models.DataInstance.project_id == project_id)
+
+    if deleted_only:
+        query = query.where(models.DataInstance.deleted_at.isnot(None))
+    elif not include_deleted:
+        query = query.where(models.DataInstance.deleted_at.is_(None))
+
     if group_id is not None:
         query = query.where(models.DataInstance.group_id == group_id)
     elif ungrouped:
         query = query.where(models.DataInstance.group_id.is_(None))
-    
+
     if search_field and search_value:
         search_value_lower = f"%{search_value.lower()}%"
-        
+
         if search_field == 'filename':
             query = query.where(models.DataInstance.filename.ilike(search_value_lower))
         elif search_field == 'content_type':
@@ -744,15 +765,39 @@ async def get_data_instances_for_project(db: AsyncSession, project_id: uuid.UUID
         elif search_field == 'uploaded_by':
             query = query.where(models.DataInstance.uploaded_by_user_id.ilike(search_value_lower))
         elif search_field == 'metadata':
-            # Search across all metadata values using JSON text search
-            # This uses PostgreSQL's jsonb operators
-            query = query.where(text("metadata::text ILIKE :search_value")).params(search_value=search_value_lower)
+            query = query.where(cast(models.DataInstance.metadata_json, String).ilike(search_value_lower))
         else:
-            # Search specific metadata key using JSON path
-            # This searches for the specific key in the metadata JSON
-            query = query.where(text("metadata ->> :key ILIKE :search_value")).params(key=search_field, search_value=search_value_lower)
-    
-    query = query.offset(skip).limit(limit)
+            query = query.where(
+                models.DataInstance.metadata_json[search_field].as_string().ilike(search_value_lower)
+            )
+
+    return query
+
+
+async def get_data_instances_for_project(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    skip: int = 0,
+    limit: int = 100,
+    search_field: Optional[str] = None,
+    search_value: Optional[str] = None,
+    group_id: Optional[uuid.UUID] = None,
+    ungrouped: bool = False,
+    include_deleted: bool = False,
+) -> List[models.DataInstance]:
+    query = _apply_data_instance_filters(
+        select(models.DataInstance),
+        project_id=project_id,
+        include_deleted=include_deleted,
+        search_field=search_field,
+        search_value=search_value,
+        group_id=group_id,
+        ungrouped=ungrouped,
+    )
+    query = query.order_by(
+        models.DataInstance.created_at.asc(),
+        models.DataInstance.id.asc(),
+    ).offset(skip).limit(limit)
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -761,10 +806,183 @@ async def get_deleted_images_for_project(db: AsyncSession, project_id: uuid.UUID
         select(models.DataInstance)
         .where(models.DataInstance.project_id == project_id)
         .where(models.DataInstance.deleted_at.isnot(None))
-        .order_by(models.DataInstance.deleted_at.desc())
+        .order_by(models.DataInstance.deleted_at.desc(), models.DataInstance.id.desc())
         .offset(skip).limit(limit)
     )
     return result.scalars().all()
+
+
+async def get_data_instance_page(
+    db: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    limit: int,
+    cursor_created_at: Optional[datetime] = None,
+    cursor_id: Optional[uuid.UUID] = None,
+    include_deleted: bool = False,
+    deleted_only: bool = False,
+    search_field: Optional[str] = None,
+    search_value: Optional[str] = None,
+    group_id: Optional[uuid.UUID] = None,
+    ungrouped: bool = False,
+) -> tuple[List[models.DataInstance], int]:
+    """Return a keyset page plus the exact total for the un-cursored filter."""
+    base_options = {
+        "project_id": project_id,
+        "include_deleted": include_deleted,
+        "deleted_only": deleted_only,
+        "search_field": search_field,
+        "search_value": search_value,
+        "group_id": group_id,
+        "ungrouped": ungrouped,
+    }
+    count_query = _apply_data_instance_filters(
+        select(func.count(models.DataInstance.id)),
+        **base_options,
+    )
+    total_result = await db.execute(count_query)
+    total = int(total_result.scalar_one() or 0)
+
+    page_query = _apply_data_instance_filters(select(models.DataInstance), **base_options)
+    if cursor_created_at is not None and cursor_id is not None:
+        page_query = page_query.where(
+            or_(
+                models.DataInstance.created_at > cursor_created_at,
+                and_(
+                    models.DataInstance.created_at == cursor_created_at,
+                    models.DataInstance.id > cursor_id,
+                ),
+            )
+        )
+    page_query = page_query.order_by(
+        models.DataInstance.created_at.asc(),
+        models.DataInstance.id.asc(),
+    ).limit(limit + 1)
+    page_result = await db.execute(page_query)
+    return list(page_result.scalars().all()), total
+
+
+async def get_project_data_summary(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+) -> tuple[Dict[str, int], Dict[str, float]]:
+    """Compute a project summary using two aggregate-only database queries."""
+    dialect_name = db.get_bind().dialect.name
+    project_id_param = bindparam("project_id", type_=models.Project.id.type)
+
+    image_started = time.perf_counter()
+    if dialect_name == "sqlite":
+        image_sql = text(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN di.deleted_at IS NULL THEN 1 ELSE 0 END), 0) AS active_image_count,
+                COALESCE(SUM(CASE WHEN di.deleted_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS deleted_image_count,
+                COALESCE(SUM(CASE WHEN di.deleted_at IS NULL THEN COALESCE(di.size_bytes, 0) ELSE 0 END), 0) AS total_image_bytes,
+                COALESCE(SUM(
+                    CASE
+                        WHEN di.deleted_at IS NULL AND json_valid(di.metadata) AND json_type(di.metadata) = 'object'
+                        THEN (SELECT COUNT(*) FROM json_each(di.metadata))
+                        ELSE 0
+                    END
+                ), 0) AS image_metadata_fields
+            FROM data_instances AS di
+            WHERE di.project_id = :project_id
+            """
+        )
+    elif dialect_name == "postgresql":
+        image_sql = text(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE di.deleted_at IS NULL) AS active_image_count,
+                COUNT(*) FILTER (WHERE di.deleted_at IS NOT NULL) AS deleted_image_count,
+                COALESCE(SUM(CASE WHEN di.deleted_at IS NULL THEN COALESCE(di.size_bytes, 0) ELSE 0 END), 0) AS total_image_bytes,
+                COALESCE(SUM(
+                    CASE
+                        WHEN di.deleted_at IS NULL AND jsonb_typeof(di.metadata::jsonb) = 'object'
+                        THEN (SELECT COUNT(*) FROM jsonb_object_keys(di.metadata::jsonb))
+                        ELSE 0
+                    END
+                ), 0) AS image_metadata_fields
+            FROM data_instances AS di
+            WHERE di.project_id = :project_id
+            """
+        )
+    else:  # The application officially supports SQLite and PostgreSQL.
+        raise RuntimeError(f"Unsupported database dialect for project summaries: {dialect_name}")
+    image_sql = image_sql.bindparams(project_id_param)
+    image_row = (await db.execute(image_sql, {"project_id": project_id})).mappings().one()
+    image_ms = (time.perf_counter() - image_started) * 1000
+
+    part_started = time.perf_counter()
+    if dialect_name == "sqlite":
+        part_sql = text(
+            """
+            SELECT
+                COUNT(*) AS part_count,
+                COALESCE(SUM(
+                    CASE WHEN json_valid(ip.metadata) AND json_type(ip.metadata, '$.annotations') = 'array'
+                    THEN (
+                        SELECT COUNT(*)
+                        FROM json_each(ip.metadata, '$.annotations')
+                        WHERE json_each.type = 'object'
+                    ) ELSE 0 END
+                ), 0) AS annotation_count,
+                COALESCE(SUM(
+                    CASE WHEN json_valid(ip.metadata) AND json_type(ip.metadata, '$.overlay_layers') = 'array'
+                    THEN (
+                        SELECT COUNT(*)
+                        FROM json_each(ip.metadata, '$.overlay_layers')
+                        WHERE json_each.type = 'object'
+                    ) ELSE 0 END
+                ), 0) AS overlay_layer_count
+            FROM inspection_parts AS ip
+            WHERE ip.project_id = :project_id
+            """
+        )
+    else:
+        part_sql = text(
+            """
+            SELECT
+                COUNT(*) AS part_count,
+                COALESCE(SUM(
+                    CASE WHEN jsonb_typeof(ip.metadata::jsonb -> 'annotations') = 'array'
+                    THEN (
+                        SELECT COUNT(*)
+                        FROM jsonb_array_elements(ip.metadata::jsonb -> 'annotations') AS annotation(value)
+                        WHERE jsonb_typeof(annotation.value) = 'object'
+                    ) ELSE 0 END
+                ), 0) AS annotation_count,
+                COALESCE(SUM(
+                    CASE WHEN jsonb_typeof(ip.metadata::jsonb -> 'overlay_layers') = 'array'
+                    THEN (
+                        SELECT COUNT(*)
+                        FROM jsonb_array_elements(ip.metadata::jsonb -> 'overlay_layers') AS overlay(value)
+                        WHERE jsonb_typeof(overlay.value) = 'object'
+                    ) ELSE 0 END
+                ), 0) AS overlay_layer_count
+            FROM inspection_parts AS ip
+            WHERE ip.project_id = :project_id
+            """
+        )
+    part_sql = part_sql.bindparams(project_id_param)
+    part_row = (await db.execute(part_sql, {"project_id": project_id})).mappings().one()
+    part_ms = (time.perf_counter() - part_started) * 1000
+
+    return (
+        {
+            "active_image_count": int(image_row["active_image_count"] or 0),
+            "deleted_image_count": int(image_row["deleted_image_count"] or 0),
+            "total_image_bytes": int(image_row["total_image_bytes"] or 0),
+            "part_count": int(part_row["part_count"] or 0),
+            "image_metadata_fields": int(image_row["image_metadata_fields"] or 0),
+            "annotation_count": int(part_row["annotation_count"] or 0),
+            "overlay_layer_count": int(part_row["overlay_layer_count"] or 0),
+        },
+        {
+            "images_ms": round(image_ms, 3),
+            "parts_ms": round(part_ms, 3),
+        },
+    )
 
 async def count_deleted_images_for_project(db: AsyncSession, project_id: uuid.UUID) -> int:
 

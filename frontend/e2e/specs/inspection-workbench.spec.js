@@ -8,8 +8,26 @@ const pr09ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr09-inspect
 const pr11ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr11-project-configuration.png');
 const pr14ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr14-report-normalization-advanced.png');
 const projectDataLayoutScreenshotPath = path.resolve(__dirname, '../../artifacts/project-data-load-images-layout.png');
+const highVolumeUploadScreenshotPath = path.resolve(__dirname, '../../artifacts/high-volume-image-upload-progress.png');
 const pt3RealSplatScreenshotPath = path.resolve(__dirname, '../../artifacts/pt3-real-vs-simplified-3dgs.png');
+const largeNpyLazyMprScreenshotPath = path.resolve(__dirname, '../../artifacts/large-npy-lazy-mpr.png');
 const simulatedUsers = ['basic', 'intermediate', 'advanced'];
+
+function readMultipartJsonFilePart(bodyBuffer, fieldName) {
+  const multipartBody = bodyBuffer.toString('utf8');
+  const fieldMarker = `name="${fieldName}"`;
+  const fieldIndex = multipartBody.indexOf(fieldMarker);
+  if (fieldIndex < 0) throw new Error(`Multipart field ${fieldName} was not found`);
+  const headerStart = multipartBody.lastIndexOf('\r\n', fieldIndex) + 2;
+  const headerEnd = multipartBody.indexOf('\r\n\r\n', fieldIndex);
+  const headers = multipartBody.slice(headerStart, headerEnd);
+  const valueStart = headerEnd + 4;
+  const valueEnd = multipartBody.indexOf('\r\n--', valueStart);
+  return {
+    headers,
+    value: JSON.parse(multipartBody.slice(valueStart, valueEnd)),
+  };
+}
 
 test.describe('Project Data load images layout', () => {
   test('places Images to Parts before Batches and keeps upload left of compact export', async ({ page }) => {
@@ -49,6 +67,161 @@ test.describe('Project Data load images layout', () => {
     await page.locator('.project-data-tab-panel[aria-label="Load Images"]').screenshot({
       path: projectDataLayoutScreenshotPath,
     });
+  });
+
+  test('batches a large local selection with bounded concurrency and refreshes from successes once', async ({ page }) => {
+    const { projectId } = await mockInspectionWorkbenchRoutes(page, { type: 'PT1', scenario: 'basic' });
+    const batchRequests = [];
+    const ingestPayloads = [];
+    const imageListUrls = [];
+    const summaryUrls = [];
+    const legacyUploadRequests = [];
+    const pageErrors = [];
+    let activeBatchRequests = 0;
+    let maximumActiveBatchRequests = 0;
+    let releaseDelayedBatches;
+    const delayedBatches = new Promise((resolve) => {
+      releaseDelayedBatches = resolve;
+    });
+
+    page.on('pageerror', (error) => pageErrors.push(error.message));
+
+    await page.route(`**/api/projects/${projectId}/data-summary`, async (route) => {
+      summaryUrls.push(new URL(route.request().url()).pathname);
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          project_id: projectId,
+          active_image_count: 2,
+          deleted_image_count: 0,
+          total_image_bytes: 2,
+          part_count: 1,
+          image_metadata_fields: 0,
+          annotation_count: 0,
+          overlay_layer_count: 0,
+        }),
+      });
+    });
+
+    // Registered after the common fixture so this handler can measure the
+    // high-volume path while the fixture continues to serve all other APIs.
+    await page.route(`**/api/projects/${projectId}/images**`, async (route) => {
+      const request = route.request();
+      const requestUrl = new URL(request.url());
+      if (request.method() === 'GET') {
+        imageListUrls.push(`${requestUrl.pathname}${requestUrl.search}`);
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ items: [], total: 0, next_cursor: null, has_more: false }),
+        });
+        return;
+      }
+      if (!requestUrl.pathname.endsWith('/images/batch')) {
+        legacyUploadRequests.push(requestUrl.pathname);
+        await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ detail: 'unexpected legacy upload' }) });
+        return;
+      }
+
+      const manifestPart = readMultipartJsonFilePart(request.postDataBuffer(), 'manifest');
+      expect(manifestPart.headers).toContain('filename="manifest.json"');
+      expect(manifestPart.headers.toLowerCase()).toContain('content-type: application/json');
+      const manifest = manifestPart.value;
+      const requestNumber = batchRequests.length;
+      batchRequests.push(manifest);
+      activeBatchRequests += 1;
+      maximumActiveBatchRequests = Math.max(maximumActiveBatchRequests, activeBatchRequests);
+
+      if (requestNumber === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      } else {
+        await delayedBatches;
+      }
+
+      const failedClientIndex = 204;
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          uploaded: manifest
+            .filter((entry) => entry.client_index !== failedClientIndex)
+            .map((entry) => ({
+              client_index: entry.client_index,
+              image: { id: `image-${entry.client_index}`, filename: entry.filename },
+            })),
+          failed: manifest
+            .filter((entry) => entry.client_index === failedClientIndex)
+            .map((entry) => ({
+              client_index: entry.client_index,
+              filename: entry.filename,
+              code: 'validation_failed',
+              detail: 'synthetic corrupt image',
+            })),
+        }),
+      });
+      activeBatchRequests -= 1;
+    });
+    await page.route(`**/api/projects/${projectId}/ingest`, async (route) => {
+      ingestPayloads.push(route.request().postDataJSON());
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          project_id: projectId,
+          counters: { parts_received: 204, parts_created: 204 },
+          discrepancies: [],
+        }),
+      });
+    });
+
+    await page.goto(`/project/${projectId}?tab=project_data`, { waitUntil: 'networkidle' });
+    await expect(page.getByRole('tab', { name: 'Load Images', exact: true })).toHaveAttribute('aria-selected', 'true');
+    const initialSummaryRequestCount = summaryUrls.length;
+    expect(initialSummaryRequestCount).toBeGreaterThanOrEqual(1);
+    expect(imageListUrls).toEqual([]);
+
+    const files = Array.from({ length: 205 }, (_, index) => ({
+      name: `D1001_LOT01_SET01_SN${String(index).padStart(4, '0')}_front_visual_false.jpg`,
+      mimeType: 'image/jpeg',
+      buffer: Buffer.from([index % 251]),
+    }));
+    await page.locator('#file-input').setInputFiles(files);
+    await expect(page.getByText('205 files selected (205 B)')).toBeVisible();
+    await expect(page.getByLabel('Delimiter')).toHaveValue('_');
+    await expect(page.getByLabel('Keys (comma-separated)')).toHaveValue(
+      'design_number, lot_number, set_number, serial_number, side, modality, overlay',
+    );
+
+    await page.getByRole('button', { name: 'Upload Images' }).click();
+    await expect.poll(() => batchRequests.length).toBe(3);
+    await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible();
+    await expect(page.getByRole('progressbar', { name: 'Image upload data progress' })).toHaveAttribute('aria-valuenow', '49', { timeout: 8_000 });
+    await expect(page.getByText('100 B / 205 B uploaded')).toBeVisible();
+    await page.locator('.project-data-upload-first .upload-section').screenshot({
+      path: highVolumeUploadScreenshotPath,
+    });
+
+    releaseDelayedBatches();
+    await expect(page.getByText('Upload complete: 204 succeeded, 1 failed out of 205.')).toBeVisible();
+    await expect(page.getByText('1 file selected (1 B)')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Upload Images' })).toBeEnabled();
+    await expect(page.getByRole('progressbar', { name: 'Image upload data progress' })).toHaveCount(0);
+
+    expect(batchRequests.map((manifest) => manifest.length).sort((left, right) => right - left)).toEqual([100, 100, 5]);
+    expect(maximumActiveBatchRequests).toBeLessThanOrEqual(2);
+    expect(legacyUploadRequests).toEqual([]);
+    await expect.poll(() => ingestPayloads.length).toBe(1);
+    const ingestedImageIds = [
+      ...(ingestPayloads[0].batches || []).flatMap((batch) => batch.parts || []),
+      ...(ingestPayloads[0].unassigned_parts || []),
+    ].flatMap((part) => part.metadata?.source_images || []).map((image) => image.image_id);
+    expect(ingestedImageIds).toHaveLength(204);
+    expect(ingestedImageIds).not.toContain('image-204');
+
+    await expect.poll(() => summaryUrls.length).toBe(initialSummaryRequestCount + 1);
+    expect(imageListUrls).toEqual([]);
+    expect(pageErrors).toEqual([]);
   });
 });
 
@@ -252,6 +425,227 @@ test.describe('PT3 real and simplified 3DGS modes', () => {
     await viewSelector.selectOption('splat');
     await expect(page.getByTestId('splat-config-button')).toBeVisible();
     await expect(viewer).not.toContainText('Real 3DGS');
+  });
+});
+
+test.describe('PT3 large NPY lazy MPR loading', () => {
+  test('bounds slice requests and keeps a segmented overlay aligned with the base volume', async ({ page }) => {
+    const dimensions = { axial: 749, coronal: 1010, sagittal: 984 };
+    const baseImageId = 'large-npy-base';
+    const overlayImageId = 'large-npy-segments';
+    const largeVolumePart = {
+      id: 'part-adv-001',
+      batch_id: 'batch-adv-a',
+      serial_number: 'NIST-749',
+      display_name: 'Large NPY segmented part',
+      review_state: 'in_review',
+      metadata: {
+        volume_shape: dimensions,
+        overlay_layers: [{ id: 'segments', label: 'Segments', color: '#fb315b' }],
+        source_images: [
+          {
+            filename: 'nist_part.npy',
+            image_id: baseImageId,
+            overlay: false,
+            metadata: { load_mode: 'volume', volume_shape: dimensions, voxel_dtype: 'uint16' },
+          },
+          {
+            filename: 'nist_part_segments.npy',
+            image_id: overlayImageId,
+            overlay: true,
+            overlay_base_image_id: baseImageId,
+            overlay_base_filename: 'nist_part.npy',
+            metadata: { load_mode: 'volume', volume_shape: dimensions, voxel_dtype: 'uint8' },
+          },
+        ],
+      },
+    };
+    const images = [
+      { id: baseImageId, filename: 'nist_part.npy', metadata: { load_mode: 'volume', volume_shape: dimensions, voxel_dtype: 'uint16' } },
+      { id: overlayImageId, filename: 'nist_part_segments.npy', metadata: { load_mode: 'volume', volume_shape: dimensions, voxel_dtype: 'uint8' } },
+    ];
+    const sliceRequests = [];
+    const pageErrors = [];
+    const failedRequests = [];
+    let inFlightSliceRequests = 0;
+    let maxInFlightSliceRequests = 0;
+    let sliceRequestDelayMs = 25;
+
+    page.on('pageerror', (error) => pageErrors.push(error.message));
+    page.on('requestfailed', (request) => failedRequests.push(`${request.method()} ${request.url()}`));
+
+    const { projectId } = await mockInspectionWorkbenchRoutes(page, {
+      type: 'PT3',
+      scenario: 'advanced',
+      mockParts: [largeVolumePart],
+      mockBatches: [{ id: 'batch-adv-a', name: 'Batch Adv A' }],
+      images,
+    });
+
+    await page.route(/\/api\/images\/(large-npy-base|large-npy-segments)\/volume-slice\?/, async (route) => {
+      const requestUrl = new URL(route.request().url());
+      const imageId = requestUrl.pathname.split('/').at(-2);
+      const axis = requestUrl.searchParams.get('axis');
+      const index = Number(requestUrl.searchParams.get('index'));
+      const imageDimensions = {
+        axial: { width: dimensions.sagittal, height: dimensions.coronal },
+        coronal: { width: dimensions.sagittal, height: dimensions.axial },
+        sagittal: { width: dimensions.coronal, height: dimensions.axial },
+      }[axis];
+      sliceRequests.push({ imageId, axis, index });
+      inFlightSliceRequests += 1;
+      maxInFlightSliceRequests = Math.max(maxInFlightSliceRequests, inFlightSliceRequests);
+      await new Promise((resolve) => setTimeout(resolve, sliceRequestDelayMs));
+      const isOverlay = imageId === overlayImageId;
+      const body = isOverlay
+        ? `<svg xmlns="http://www.w3.org/2000/svg" width="${imageDimensions.width}" height="${imageDimensions.height}" viewBox="0 0 100 100" preserveAspectRatio="none"><rect x="38" y="38" width="24" height="24" rx="5" fill="#ff1744"/><circle cx="50" cy="50" r="31" fill="none" stroke="#ff4f72" stroke-width="4"/><rect x="14" y="9" width="10" height="8" fill="#ff002f"/></svg>`
+        : `<svg xmlns="http://www.w3.org/2000/svg" width="${imageDimensions.width}" height="${imageDimensions.height}" viewBox="0 0 100 100" preserveAspectRatio="none"><rect width="100" height="100" fill="#182332"/><circle cx="50" cy="50" r="31" fill="#aeb8c6"/><path d="M19 50h62M50 19v62" stroke="#566579" stroke-width="2"/><rect x="8" y="5" width="28" height="16" fill="#eef2f7"/><text x="4" y="96" fill="#d9e2ec" font-size="6">${axis} ${index}</text></svg>`;
+      await route.fulfill({ status: 200, contentType: 'image/svg+xml', body });
+      inFlightSliceRequests -= 1;
+    });
+
+    await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
+    await page.getByRole('tab', { name: 'Inspection' }).click();
+
+    const mprPanel = page.getByTestId('mpr-panel');
+    await expect(mprPanel).toBeVisible();
+    await expect(page.getByTestId('mpr-pane-axial')).toBeVisible();
+    await expect(page.getByTestId('mpr-pane-coronal')).toBeVisible();
+    await expect(page.getByTestId('mpr-pane-sagittal')).toBeVisible();
+    await expect(page.getByTestId('mpr-pane-3d')).toContainText('3D');
+    await expect(page.locator('#mpr-slice-axial')).toHaveAttribute('max', '748');
+    await expect(page.locator('#mpr-slice-coronal')).toHaveAttribute('max', '1009');
+    await expect(page.locator('#mpr-slice-sagittal')).toHaveAttribute('max', '983');
+    await expect(page.locator('.mpr-slice-canvas[data-slice-load-status="ready"]')).toHaveCount(3);
+    await expect.poll(() => inFlightSliceRequests).toBe(0);
+
+    const baseRequestsBeforeOverlay = sliceRequests.filter((request) => request.imageId === baseImageId);
+    expect(baseRequestsBeforeOverlay.length).toBeGreaterThanOrEqual(3);
+    expect(baseRequestsBeforeOverlay.length).toBeLessThanOrEqual(24);
+    expect(baseRequestsBeforeOverlay.length).toBeLessThan(dimensions.axial / 20);
+    expect(sliceRequests.filter((request) => request.imageId === overlayImageId)).toHaveLength(0);
+    expect(maxInFlightSliceRequests).toBeLessThanOrEqual(4);
+    for (const axis of ['axial', 'coronal', 'sagittal']) {
+      const selectedIndex = Number(await page.locator(`#mpr-slice-${axis}`).inputValue());
+      expect(baseRequestsBeforeOverlay.find((request) => request.axis === axis)?.index).toBe(selectedIndex);
+    }
+
+    await page.getByRole('button', { name: 'Part Selection' }).click();
+    await expect(page.getByRole('heading', { name: 'Part Selection' })).toBeVisible();
+    const overlayToggle = page.getByRole('button', { name: 'OVERLAY', exact: true });
+    await expect(overlayToggle).toBeVisible();
+    await overlayToggle.click();
+    await expect(overlayToggle).toHaveAttribute('aria-pressed', 'true');
+    await page.getByRole('button', { name: 'Close Part Selection' }).click();
+    await expect.poll(() => sliceRequests.filter((request) => request.imageId === overlayImageId).length).toBeGreaterThanOrEqual(3);
+    await expect.poll(() => inFlightSliceRequests).toBe(0);
+
+    const overlayRequests = sliceRequests.filter((request) => request.imageId === overlayImageId);
+    expect(overlayRequests.length).toBeLessThanOrEqual(15);
+    for (const overlayRequest of overlayRequests) {
+      expect(baseRequestsBeforeOverlay).toContainEqual(expect.objectContaining({
+        axis: overlayRequest.axis,
+        index: overlayRequest.index,
+      }));
+    }
+    expect(maxInFlightSliceRequests).toBeLessThanOrEqual(4);
+
+    await expect.poll(async () => page.evaluate(() => ['axial', 'coronal', 'sagittal'].every((axis) => {
+      const canvas = document.querySelector(`[data-testid="mpr-preview-${axis}"] canvas`);
+      const context = canvas?.getContext('2d');
+      if (!canvas || !context) return false;
+      const center = context.getImageData(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1).data;
+      return center[0] > center[1] + 35 && center[0] > center[2] + 35;
+    }))).toBe(true);
+
+    const canvasEvidence = await page.evaluate(() => {
+      const expectedDimensions = {
+        axial: { width: 984, height: 1010 },
+        coronal: { width: 984, height: 749 },
+        sagittal: { width: 1010, height: 749 },
+      };
+      return Object.entries(expectedDimensions).map(([axis, expected]) => {
+        const canvas = document.querySelector(`[data-testid="mpr-preview-${axis}"] canvas`);
+        const context = canvas.getContext('2d');
+        const center = Array.from(context.getImageData(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1).data);
+        const background = Array.from(context.getImageData(Math.floor(canvas.width / 2), Math.floor(canvas.height / 10), 1, 1).data);
+        return { axis, width: canvas.width, height: canvas.height, expected, center, background };
+      });
+    });
+    for (const evidence of canvasEvidence) {
+      expect({ width: evidence.width, height: evidence.height }).toEqual(evidence.expected);
+      expect(evidence.center[0]).toBeGreaterThan(evidence.center[1] + 35);
+      expect(evidence.center[0]).toBeGreaterThan(evidence.center[2] + 35);
+      expect(evidence.background[3]).toBe(255);
+      expect(Math.abs(evidence.background[0] - evidence.background[1])).toBeLessThan(20);
+    }
+
+    const orientationEvidence = await page.evaluate(() => (
+      ['axial', 'coronal', 'sagittal'].map((axis) => {
+        const canvas = document.querySelector(`[data-testid="mpr-preview-${axis}"] canvas`);
+        const context = canvas.getContext('2d');
+        const pixel = (xFraction, yFraction) => Array.from(context.getImageData(
+          Math.floor(canvas.width * xFraction),
+          Math.floor(canvas.height * yFraction),
+          1,
+          1,
+        ).data);
+        return {
+          axis,
+          sourceTopMarker: pixel(0.19, 0.13),
+          legacyBottomMarker: pixel(0.19, 0.87),
+          sourceTopBaseEdge: pixel(0.10, 0.10),
+          legacyBottomBaseEdge: pixel(0.10, 0.90),
+        };
+      })
+    ));
+    const isRed = (pixel) => pixel[0] > pixel[1] + 55 && pixel[0] > pixel[2] + 55;
+    const isBrightNeutral = (pixel) => (
+      pixel[0] > 180
+      && Math.abs(pixel[0] - pixel[1]) < 35
+      && Math.abs(pixel[0] - pixel[2]) < 35
+    );
+    for (const evidence of orientationEvidence) {
+      if (evidence.axis === 'axial') {
+        expect(isRed(evidence.sourceTopMarker)).toBe(true);
+        expect(isRed(evidence.legacyBottomMarker)).toBe(false);
+        expect(isBrightNeutral(evidence.sourceTopBaseEdge)).toBe(true);
+      } else {
+        expect(isRed(evidence.sourceTopMarker)).toBe(false);
+        expect(isRed(evidence.legacyBottomMarker)).toBe(true);
+        expect(isBrightNeutral(evidence.legacyBottomBaseEdge)).toBe(true);
+      }
+    }
+
+    const requestsBeforeRapidScrub = sliceRequests.length;
+    // Model the slow cold-slice path that originally exposed the backlog:
+    // only the latest queued generation should survive while four requests run.
+    sliceRequestDelayMs = 1000;
+    const axialSlider = page.locator('#mpr-slice-axial');
+    await axialSlider.evaluate(async (slider) => {
+      const setNativeValue = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value',
+      ).set;
+      for (let offset = 0; offset < 100; offset += 1) {
+        setNativeValue.call(slider, String(200 + offset));
+        slider.dispatchEvent(new Event('input', { bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    });
+    await expect(axialSlider).toHaveValue('299');
+    await expect(page.getByTestId('mpr-pane-axial').locator('[data-slice-load-status="ready"]')).toHaveCount(1);
+    await expect.poll(() => inFlightSliceRequests, { timeout: 20_000 }).toBe(0);
+    const rapidScrubRequests = sliceRequests.slice(requestsBeforeRapidScrub);
+    expect(rapidScrubRequests.length).toBeGreaterThanOrEqual(2);
+    expect(rapidScrubRequests.length).toBeLessThanOrEqual(20);
+    expect(rapidScrubRequests.some((request) => request.axis === 'axial' && request.index === 299)).toBe(true);
+    expect(maxInFlightSliceRequests).toBeLessThanOrEqual(4);
+
+    await mprPanel.screenshot({ path: largeNpyLazyMprScreenshotPath });
+    expect(pageErrors).toEqual([]);
+    expect(failedRequests).toEqual([]);
+    await expect(page.locator('.error-message:visible')).toHaveCount(0);
   });
 });
 

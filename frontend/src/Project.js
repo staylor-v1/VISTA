@@ -22,6 +22,7 @@ import { DEFAULT_INTERFACE_HIERARCHY, loadInterfaceHierarchy } from './utils/int
 import { copyCurrentShareUrl } from './utils/shareLink';
 import { getProjectTypeLabel } from './projectTypes';
 import { isUiSectionEnabled } from './utils/uiSections';
+import { fetchProjectImagePages } from './utils/projectImages';
 
 const MAIN_TAB_DEFINITIONS = {
   project_configuration: { label: 'Project Configuration' },
@@ -31,6 +32,51 @@ const MAIN_TAB_DEFINITIONS = {
   report: { label: 'Report' },
 };
 const ALLOWED_PROJECT_QUERY_TABS = new Set(Object.keys(MAIN_TAB_DEFINITIONS));
+
+const PROJECT_DATA_TABS_REQUIRING_PARTS = new Set([
+  'batches',
+  'images_to_parts',
+  'overlays',
+  'metadata',
+  'remove_images',
+]);
+const PROJECT_DATA_TABS_REQUIRING_IMAGES = new Set([
+  'images_to_parts',
+  'overlays',
+  'remove_images',
+]);
+
+const emptyProjectDataCounts = () => ({
+  partsLoaded: 0,
+  rawImages: 0,
+  imageMetadata: 0,
+  overlayImages: 0,
+  annotations: 0,
+});
+
+const isAbortError = (error) => error?.name === 'AbortError';
+
+function mergeImagesByIdentity(currentImages, confirmedImages) {
+  const next = Array.isArray(currentImages) ? [...currentImages] : [];
+  const indexesById = new Map();
+  next.forEach((image, index) => {
+    if (image?.id !== undefined && image?.id !== null) {
+      indexesById.set(String(image.id), index);
+    }
+  });
+  (Array.isArray(confirmedImages) ? confirmedImages : []).forEach((image) => {
+    if (!image || typeof image !== 'object') return;
+    const id = image.id !== undefined && image.id !== null ? String(image.id) : '';
+    if (id && indexesById.has(id)) {
+      const index = indexesById.get(id);
+      next[index] = { ...next[index], ...image };
+      return;
+    }
+    if (id) indexesById.set(id, next.length);
+    next.push(image);
+  });
+  return next;
+}
 
 const PROJECT_DATA_TABS = {
   load_images: { label: 'Load Images' },
@@ -66,6 +112,22 @@ async function buildHttpErrorMessage(response, fallbackLabel) {
   ].filter(Boolean).join(' | ');
 }
 
+function LazyProjectDataState({ label, error, onRetry }) {
+  if (error) {
+    return (
+      <div className="project-data-tab-panel" role="tabpanel" aria-label={label}>
+        <div className="alert alert-error">{error}</div>
+        <button type="button" className="btn btn-secondary" onClick={onRetry}>Retry</button>
+      </div>
+    );
+  }
+  return (
+    <div className="project-data-tab-panel" role="tabpanel" aria-label={label}>
+      <div className="loading-text" role="status">Loading complete project data...</div>
+    </div>
+  );
+}
+
 function Project({ currentUserGroups = [] }) {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -80,15 +142,21 @@ function Project({ currentUserGroups = [] }) {
   const [activeMainTab, setActiveMainTab] = useState(DEFAULT_INTERFACE_HIERARCHY.mainTabs[0]);
   const [activeProjectDataTab, setActiveProjectDataTab] = useState('load_images');
   const [activeProjectConfigurationSubtab, setActiveProjectConfigurationSubtab] = useState('general');
-  const [dataCounts, setDataCounts] = useState({
-    partsLoaded: 0,
-    rawImages: 0,
-    imageMetadata: 0,
-    overlayImages: 0,
-    annotations: 0,
-  });
+  const [dataCounts, setDataCounts] = useState(emptyProjectDataCounts);
   const [projectParts, setProjectParts] = useState([]);
   const [projectImages, setProjectImages] = useState([]);
+  const [projectPartsState, setProjectPartsState] = useState({
+    loaded: false,
+    loading: false,
+    stale: true,
+    error: null,
+  });
+  const [projectImagesState, setProjectImagesState] = useState({
+    loaded: false,
+    loading: false,
+    stale: true,
+    error: null,
+  });
   const [recentlyDeletedOverlays, setRecentlyDeletedOverlays] = useState([]);
   const [recentlyDeletedLoading, setRecentlyDeletedLoading] = useState(false);
   const [countsLoading, setCountsLoading] = useState(true);
@@ -99,8 +167,44 @@ function Project({ currentUserGroups = [] }) {
   });
   const [inspectionLaunchFilters, setInspectionLaunchFilters] = useState(null);
   const projectConfigurationPanelRef = useRef(null);
+  const projectPartsRequestRef = useRef(null);
+  const projectImagesRequestRef = useRef(null);
+  const projectPartsAbortControllerRef = useRef(null);
+  const projectImagesAbortControllerRef = useRef(null);
+  const projectPartsGenerationRef = useRef(0);
+  const projectImagesGenerationRef = useRef(0);
+  const loadedProjectPartsGenerationRef = useRef(-1);
+  const loadedProjectImagesGenerationRef = useRef(-1);
+  const activeProjectIdRef = useRef(id);
+  activeProjectIdRef.current = id;
   const [autosaveTabDelayMessage, setAutosaveTabDelayMessage] = useState('');
   const [shareLinkMessage, setShareLinkMessage] = useState(null);
+
+  const isActiveProject = useCallback((projectId) => (
+    activeProjectIdRef.current === projectId
+  ), []);
+
+  // Child components can finish asynchronous work after React Router has
+  // reused this Project instance for another id. Keep their state setters
+  // scoped to the project that created the callback.
+  const setActiveProjectError = useCallback((value) => {
+    if (isActiveProject(id)) setError(value);
+  }, [id, isActiveProject]);
+  const setActiveProjectLoading = useCallback((value) => {
+    if (isActiveProject(id)) setLoading(value);
+  }, [id, isActiveProject]);
+  const setActiveProjectMetadata = useCallback((value) => {
+    if (isActiveProject(id)) setMetadata(value);
+  }, [id, isActiveProject]);
+  const setActiveProjectClasses = useCallback((value) => {
+    if (isActiveProject(id)) setClasses(value);
+  }, [id, isActiveProject]);
+  const setActiveProjectConfigurationValue = useCallback((value) => {
+    if (isActiveProject(id)) setProjectConfiguration(value);
+  }, [id, isActiveProject]);
+  const setActiveProjectConfigurationSubtabValue = useCallback((value) => {
+    if (isActiveProject(id)) setActiveProjectConfigurationSubtab(value);
+  }, [id, isActiveProject]);
 
   const projectQueryParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const queryMainTab = projectQueryParams.get('tab');
@@ -145,99 +249,140 @@ function Project({ currentUserGroups = [] }) {
     return Object.keys(filters).length > 0 ? filters : null;
   }, [projectQueryParams, validQueryMainTab]);
 
-  const fetchImages = useCallback(async (projId) => {
-    const PAGE_SIZE = 200;
-    let skip = 0;
-    let allImages = [];
-    let hasMore = true;
-    while (hasMore) {
-      const params = new URLSearchParams();
-      params.set('skip', String(skip));
-      params.set('limit', String(PAGE_SIZE));
-      const resp = await fetch(`/api/projects/${projId}/images?${params}`);
-      if (!resp.ok) break;
-      const batch = await resp.json();
-      allImages = allImages.concat(batch);
-      hasMore = batch.length === PAGE_SIZE;
-      skip += PAGE_SIZE;
-    }
-    return allImages;
-  }, []);
-
-  const refreshProjectCounts = useCallback(async () => {
+  const refreshProjectCounts = useCallback(async ({
+    requestProjectId = id,
+    signal,
+  } = {}) => {
+    if (signal?.aborted || !isActiveProject(requestProjectId)) return 'stale';
     setCountsLoading(true);
     try {
-      const [partsResp, bundleResp, imageResp, configResp] = await Promise.all([
-        fetch(`/api/projects/${id}/parts`),
-        fetch(`/api/projects/${id}/export-bundle-json`),
-        fetch(`/api/projects/${id}/images?include_deleted=true&limit=2000`),
-        fetch(`/api/projects/${id}/configuration`),
-      ]);
-
-      const partsPayload = partsResp.ok ? await partsResp.json() : [];
-      const bundlePayload = bundleResp.ok ? await bundleResp.json() : {};
-      const imagePayload = imageResp.ok ? await imageResp.json() : [];
-      const configPayload = configResp.ok ? await configResp.json() : {};
-
-      const allImages = Array.isArray(imagePayload) ? imagePayload : [];
-      setProjectImages(allImages);
-      setProjectParts(Array.isArray(partsPayload) ? partsPayload : []);
-      const activeImageCount = allImages.filter((image) => !image?.deleted_at).length;
-      const imageMetadata = allImages.reduce((count, image) => {
-        const metadataObj = image?.metadata;
-        return count + (metadataObj && typeof metadataObj === 'object' ? Object.keys(metadataObj).length : 0);
-      }, 0);
-      const bundleRawImageCount = Number(bundlePayload?.bundle_summary?.images?.total) || 0;
-
-      setProjectConfiguration(configPayload?.config || null);
+      const response = await fetch(
+        `/api/projects/${requestProjectId}/data-summary`,
+        signal ? { signal } : undefined,
+      );
+      if (!response.ok) {
+        throw new Error(await buildHttpErrorMessage(response, 'Failed to load project summary counts'));
+      }
+      const payload = await response.json();
+      if (signal?.aborted || !isActiveProject(requestProjectId)) return 'stale';
       setDataCounts({
-        partsLoaded: Array.isArray(partsPayload) ? partsPayload.length : 0,
-        rawImages: Math.max(bundleRawImageCount, activeImageCount),
-        imageMetadata,
-        overlayImages: bundlePayload?.bundle_summary?.overlays?.configured_layers || 0,
-        annotations: bundlePayload?.bundle_summary?.annotations?.total || 0,
+        partsLoaded: Number(payload?.part_count) || 0,
+        rawImages: Number(payload?.active_image_count) || 0,
+        imageMetadata: Number(payload?.image_metadata_fields) || 0,
+        overlayImages: Number(payload?.overlay_layer_count) || 0,
+        annotations: Number(payload?.annotation_count) || 0,
       });
+      return 'fresh';
     } catch (err) {
+      if (signal?.aborted || isAbortError(err) || !isActiveProject(requestProjectId)) return 'stale';
       setError(err.message || 'Failed to load project summary counts');
+      return 'error';
     } finally {
-      setCountsLoading(false);
+      if (!signal?.aborted && isActiveProject(requestProjectId)) setCountsLoading(false);
     }
-  }, [id]);
+  }, [id, isActiveProject]);
+
+  const refreshProjectConfiguration = useCallback(async ({
+    requestProjectId = id,
+    signal,
+  } = {}) => {
+    if (signal?.aborted || !isActiveProject(requestProjectId)) return 'stale';
+    try {
+      const response = await fetch(
+        `/api/projects/${requestProjectId}/configuration`,
+        signal ? { signal } : undefined,
+      );
+      if (!response.ok) return 'error';
+      const payload = await response.json();
+      if (signal?.aborted || !isActiveProject(requestProjectId)) return 'stale';
+      setProjectConfiguration(payload?.config || null);
+      return 'fresh';
+    } catch (err) {
+      if (signal?.aborted || isAbortError(err) || !isActiveProject(requestProjectId)) return 'stale';
+      throw err;
+    }
+  }, [id, isActiveProject]);
 
   useEffect(() => {
+    const requestProjectId = id;
+    const controller = new AbortController();
+    const { signal } = controller;
+    const requestIsActive = () => !signal.aborted && isActiveProject(requestProjectId);
+
     const fetchProjectData = async () => {
       try {
         setLoading(true);
-        const projectResponse = await fetch(`/api/projects/${id}`);
+        setError(null);
+        setProject(null);
+        setMetadata({});
+        setClasses([]);
+        setProjectConfiguration(null);
+        setDataCounts(emptyProjectDataCounts());
+        setCountsLoading(true);
+        setRecentlyDeletedOverlays([]);
+        setRecentlyDeletedLoading(false);
+        setIngestResult({ loading: false, error: null, payload: null });
+        setAutosaveTabDelayMessage('');
+        setShareLinkMessage(null);
+        projectPartsAbortControllerRef.current?.abort();
+        projectImagesAbortControllerRef.current?.abort();
+        projectPartsAbortControllerRef.current = null;
+        projectImagesAbortControllerRef.current = null;
+        projectPartsRequestRef.current = null;
+        projectImagesRequestRef.current = null;
+        projectPartsGenerationRef.current += 1;
+        projectImagesGenerationRef.current += 1;
+        loadedProjectPartsGenerationRef.current = -1;
+        loadedProjectImagesGenerationRef.current = -1;
+        setProjectParts([]);
+        setProjectImages([]);
+        setProjectPartsState({ loaded: false, loading: false, stale: true, error: null });
+        setProjectImagesState({ loaded: false, loading: false, stale: true, error: null });
+        const projectResponse = await fetch(`/api/projects/${requestProjectId}`, { signal });
         if (!projectResponse.ok) {
           throw new Error(`HTTP error! status: ${projectResponse.status}`);
         }
         const projectData = await projectResponse.json();
+        if (!requestIsActive()) return;
         setProject(projectData);
 
-        const metadataResponse = await fetch(`/api/projects/${id}/metadata-dict`);
-        if (metadataResponse.ok) {
-          const metadataData = await metadataResponse.json();
-          setMetadata(metadataData);
-        }
-
-        const classesResponse = await fetch(`/api/projects/${id}/classes`);
-        if (classesResponse.ok) {
-          const classesData = await classesResponse.json();
-          setClasses(classesData);
-        }
-
-        await fetchImages(id);
-        await refreshProjectCounts();
-        setLoading(false);
+        await Promise.all([
+          (async () => {
+            const metadataResponse = await fetch(
+              `/api/projects/${requestProjectId}/metadata-dict`,
+              { signal },
+            );
+            if (!metadataResponse.ok) return;
+            const metadataData = await metadataResponse.json();
+            if (requestIsActive()) setMetadata(metadataData);
+          })(),
+          (async () => {
+            const classesResponse = await fetch(
+              `/api/projects/${requestProjectId}/classes`,
+              { signal },
+            );
+            if (!classesResponse.ok) return;
+            const classesData = await classesResponse.json();
+            if (requestIsActive()) setClasses(classesData);
+          })(),
+          refreshProjectCounts({ requestProjectId, signal }),
+          refreshProjectConfiguration({ requestProjectId, signal }),
+        ]);
+        if (requestIsActive()) setLoading(false);
       } catch (err) {
+        if (!requestIsActive() || isAbortError(err)) return;
         setError(err.message);
         setLoading(false);
       }
     };
 
     fetchProjectData();
-  }, [id, fetchImages, refreshProjectCounts]);
+    return () => {
+      controller.abort();
+      projectPartsAbortControllerRef.current?.abort();
+      projectImagesAbortControllerRef.current?.abort();
+    };
+  }, [id, isActiveProject, refreshProjectConfiguration, refreshProjectCounts]);
 
   useEffect(() => {
     let cancelled = false;
@@ -315,18 +460,250 @@ function Project({ currentUserGroups = [] }) {
     }
   }, [queryInspectionLaunchFilters, validQueryMainTab]);
 
-  const refreshProjectMetadata = useCallback(async () => {
-    const metadataResponse = await fetch(`/api/projects/${id}/metadata-dict`);
-    if (metadataResponse.ok) {
+  const refreshProjectMetadata = useCallback(async ({
+    requestProjectId = id,
+    signal,
+  } = {}) => {
+    if (signal?.aborted || !isActiveProject(requestProjectId)) return 'stale';
+    try {
+      const metadataResponse = await fetch(
+        `/api/projects/${requestProjectId}/metadata-dict`,
+        signal ? { signal } : undefined,
+      );
+      if (!metadataResponse.ok) return 'error';
       const metadataData = await metadataResponse.json();
+      if (signal?.aborted || !isActiveProject(requestProjectId)) return 'stale';
       setMetadata(metadataData);
+      return 'fresh';
+    } catch (err) {
+      if (signal?.aborted || isAbortError(err) || !isActiveProject(requestProjectId)) return 'stale';
+      throw err;
     }
-  }, [id]);
+  }, [id, isActiveProject]);
 
-  const handleUploadComplete = useCallback(async () => {
-    await refreshProjectCounts();
-    await refreshProjectMetadata();
-  }, [refreshProjectCounts, refreshProjectMetadata]);
+  const handleProjectMetadataLoaded = useCallback(() => (
+    refreshProjectMetadata({ requestProjectId: id })
+  ), [id, refreshProjectMetadata]);
+
+  const loadProjectParts = useCallback(() => {
+    const requestProjectId = id;
+    if (!isActiveProject(requestProjectId)) return Promise.resolve('stale');
+    if (projectPartsRequestRef.current) return projectPartsRequestRef.current;
+    const requestGeneration = projectPartsGenerationRef.current;
+    const controller = new AbortController();
+    projectPartsAbortControllerRef.current = controller;
+    const { signal } = controller;
+    const operation = (async () => {
+      setProjectPartsState((previous) => ({ ...previous, loading: true, error: null }));
+      try {
+        const response = await fetch(`/api/projects/${requestProjectId}/parts`, { signal });
+        if (!response.ok) throw new Error(`Failed to load project parts (${response.status})`);
+        const payload = await response.json();
+        if (signal.aborted || activeProjectIdRef.current !== requestProjectId) return 'stale';
+        const stale = projectPartsGenerationRef.current !== requestGeneration;
+        setProjectParts(Array.isArray(payload) ? payload : []);
+        if (!stale) loadedProjectPartsGenerationRef.current = requestGeneration;
+        setProjectPartsState({ loaded: true, loading: false, stale, error: null });
+        return stale ? 'stale' : 'fresh';
+      } catch (err) {
+        if (signal.aborted || isAbortError(err) || activeProjectIdRef.current !== requestProjectId) {
+          return 'stale';
+        }
+        setProjectPartsState((previous) => ({
+          ...previous,
+          loading: false,
+          error: err?.message || 'Failed to load project parts',
+        }));
+        return 'error';
+      }
+    })();
+    const request = operation.finally(() => {
+      if (projectPartsRequestRef.current === request) projectPartsRequestRef.current = null;
+      if (projectPartsAbortControllerRef.current === controller) {
+        projectPartsAbortControllerRef.current = null;
+      }
+    });
+    projectPartsRequestRef.current = request;
+    return request;
+  }, [id, isActiveProject]);
+
+  const loadProjectImages = useCallback(() => {
+    const requestProjectId = id;
+    if (!isActiveProject(requestProjectId)) return Promise.resolve('stale');
+    if (projectImagesRequestRef.current) return projectImagesRequestRef.current;
+    const requestGeneration = projectImagesGenerationRef.current;
+    const controller = new AbortController();
+    projectImagesAbortControllerRef.current = controller;
+    const { signal } = controller;
+    const operation = (async () => {
+      setProjectImagesState((previous) => ({ ...previous, loading: true, error: null }));
+      try {
+        const payload = await fetchProjectImagePages(requestProjectId, {
+          includeDeleted: true,
+          signal,
+        });
+        if (signal.aborted || activeProjectIdRef.current !== requestProjectId) return 'stale';
+        const stale = projectImagesGenerationRef.current !== requestGeneration;
+        setProjectImages(payload.items);
+        if (!stale) loadedProjectImagesGenerationRef.current = requestGeneration;
+        setProjectImagesState({ loaded: true, loading: false, stale, error: null });
+        return stale ? 'stale' : 'fresh';
+      } catch (err) {
+        if (signal.aborted || isAbortError(err) || activeProjectIdRef.current !== requestProjectId) {
+          return 'stale';
+        }
+        setProjectImagesState((previous) => ({
+          ...previous,
+          loading: false,
+          error: err?.message || 'Failed to load project images',
+        }));
+        return 'error';
+      }
+    })();
+    const request = operation.finally(() => {
+      if (projectImagesRequestRef.current === request) projectImagesRequestRef.current = null;
+      if (projectImagesAbortControllerRef.current === controller) {
+        projectImagesAbortControllerRef.current = null;
+      }
+    });
+    projectImagesRequestRef.current = request;
+    return request;
+  }, [id, isActiveProject]);
+
+  useEffect(() => {
+    if (activeMainTab !== 'project_data') return;
+    if (
+      PROJECT_DATA_TABS_REQUIRING_PARTS.has(activeProjectDataTab)
+      && !projectPartsState.loading
+      && !projectPartsState.error
+      && (!projectPartsState.loaded || projectPartsState.stale)
+    ) {
+      loadProjectParts();
+    }
+    if (
+      PROJECT_DATA_TABS_REQUIRING_IMAGES.has(activeProjectDataTab)
+      && !projectImagesState.loading
+      && !projectImagesState.error
+      && (!projectImagesState.loaded || projectImagesState.stale)
+    ) {
+      loadProjectImages();
+    }
+  }, [
+    activeMainTab,
+    activeProjectDataTab,
+    loadProjectImages,
+    loadProjectParts,
+    projectImagesState.loaded,
+    projectImagesState.error,
+    projectImagesState.loading,
+    projectImagesState.stale,
+    projectPartsState.loaded,
+    projectPartsState.error,
+    projectPartsState.loading,
+    projectPartsState.stale,
+  ]);
+
+  const markProjectCollectionsStale = useCallback(({ images = true, parts = true } = {}) => {
+    if (!isActiveProject(id)) return false;
+    if (images) {
+      projectImagesGenerationRef.current += 1;
+      setProjectImagesState((previous) => ({ ...previous, stale: true, error: null }));
+    }
+    if (parts) {
+      projectPartsGenerationRef.current += 1;
+      setProjectPartsState((previous) => ({ ...previous, stale: true, error: null }));
+    }
+    return true;
+  }, [id, isActiveProject]);
+
+  const reconcileProjectImages = useCallback(async () => {
+    if (!isActiveProject(id)) return false;
+    while (loadedProjectImagesGenerationRef.current !== projectImagesGenerationRef.current) {
+      if (!isActiveProject(id)) return false;
+      const result = await loadProjectImages();
+      if (result === 'error') return false;
+      if (result === 'stale' && !isActiveProject(id)) return false;
+    }
+    return isActiveProject(id);
+  }, [id, isActiveProject, loadProjectImages]);
+
+  const reconcileProjectParts = useCallback(async () => {
+    if (!isActiveProject(id)) return false;
+    while (loadedProjectPartsGenerationRef.current !== projectPartsGenerationRef.current) {
+      if (!isActiveProject(id)) return false;
+      const result = await loadProjectParts();
+      if (result === 'error') return false;
+      if (result === 'stale' && !isActiveProject(id)) return false;
+    }
+    return isActiveProject(id);
+  }, [id, isActiveProject, loadProjectParts]);
+
+  const handleUploadComplete = useCallback(async (confirmedImages = [], completion = {}) => {
+    const requestProjectId = id;
+    if (!isActiveProject(requestProjectId)) {
+      return { reconciled: false, authoritative: Boolean(completion?.requiresAuthoritativeReconciliation), stale: true };
+    }
+    if (Array.isArray(confirmedImages) && confirmedImages.length > 0) {
+      setProjectImages((previous) => mergeImagesByIdentity(previous, confirmedImages));
+    }
+    markProjectCollectionsStale({
+      images: true,
+      parts: completion?.partsMayHaveChanged !== false,
+    });
+    const summaryRefresh = refreshProjectCounts({ requestProjectId });
+    if (!completion?.requiresAuthoritativeReconciliation) {
+      const summaryResult = await summaryRefresh;
+      if (summaryResult === 'stale' || !isActiveProject(requestProjectId)) {
+        return { reconciled: false, authoritative: false, stale: true };
+      }
+      return { reconciled: true, authoritative: false };
+    }
+
+    const [imagesReconciled, partsReconciled] = await Promise.all([
+      reconcileProjectImages(),
+      completion?.partsMayHaveChanged === false
+        ? Promise.resolve(true)
+        : reconcileProjectParts(),
+      summaryRefresh,
+    ]);
+    if (!isActiveProject(requestProjectId)) {
+      return { reconciled: false, authoritative: true, stale: true };
+    }
+    return {
+      reconciled: imagesReconciled === true && partsReconciled === true,
+      authoritative: true,
+    };
+  }, [id, isActiveProject, markProjectCollectionsStale, reconcileProjectImages, reconcileProjectParts, refreshProjectCounts]);
+
+  const handleProjectCollectionsChanged = useCallback(async () => {
+    const requestProjectId = id;
+    if (!isActiveProject(requestProjectId)) return 'stale';
+    markProjectCollectionsStale();
+    return refreshProjectCounts({ requestProjectId });
+  }, [id, isActiveProject, markProjectCollectionsStale, refreshProjectCounts]);
+
+  const handleMetadataAssociationsChanged = useCallback(async () => {
+    const requestProjectId = id;
+    if (!isActiveProject(requestProjectId)) return 'stale';
+    markProjectCollectionsStale({ images: false, parts: true });
+    await Promise.all([
+      refreshProjectCounts({ requestProjectId }),
+      refreshProjectMetadata({ requestProjectId }),
+    ]);
+    return isActiveProject(requestProjectId) ? 'fresh' : 'stale';
+  }, [id, isActiveProject, markProjectCollectionsStale, refreshProjectCounts, refreshProjectMetadata]);
+
+  const handleBundleImportComplete = useCallback(async () => {
+    const requestProjectId = id;
+    if (!isActiveProject(requestProjectId)) return 'stale';
+    markProjectCollectionsStale();
+    await Promise.allSettled([
+      refreshProjectCounts({ requestProjectId }),
+      refreshProjectMetadata({ requestProjectId }),
+      refreshProjectConfiguration({ requestProjectId }),
+    ]);
+    return isActiveProject(requestProjectId) ? 'fresh' : 'stale';
+  }, [id, isActiveProject, markProjectCollectionsStale, refreshProjectConfiguration, refreshProjectCounts, refreshProjectMetadata]);
 
   const updateProjectTabRoute = useCallback((nextMainTab, nextDataTab = null) => {
     const params = new URLSearchParams(location.search);
@@ -341,18 +718,23 @@ function Project({ currentUserGroups = [] }) {
   }, [location.pathname, location.search, navigate]);
 
   const handleCopySessionLink = useCallback(async () => {
+    const requestProjectId = id;
+    if (!isActiveProject(requestProjectId)) return;
     try {
       await copyCurrentShareUrl();
+      if (!isActiveProject(requestProjectId)) return;
       setShareLinkMessage({ type: 'success', text: 'Session link copied to clipboard.' });
     } catch (err) {
+      if (!isActiveProject(requestProjectId)) return;
       setShareLinkMessage({
         type: 'error',
         text: err?.message || 'Unable to copy session link. Please copy the browser URL manually.',
       });
     }
-  }, []);
+  }, [id, isActiveProject]);
 
   const handleInspectionShareStateChange = useCallback((shareState, options = {}) => {
+    if (!isActiveProject(id)) return;
     const params = new URLSearchParams(location.search);
     params.set('tab', 'inspection');
     ['batch', 'part', 'image', 'review', 'metadataTab', 'mprPane', 'overlays'].forEach((key) => params.delete(key));
@@ -364,14 +746,17 @@ function Project({ currentUserGroups = [] }) {
       { pathname: location.pathname, search: nextSearch },
       { replace: options.replace !== false },
     );
-  }, [location.pathname, location.search, navigate]);
+  }, [id, isActiveProject, location.pathname, location.search, navigate]);
 
   const handleMainTabChange = useCallback(async (nextTabKey) => {
+    const requestProjectId = id;
+    if (!isActiveProject(requestProjectId)) return;
     if (nextTabKey === activeMainTab) return;
 
     if (activeMainTab === 'project_configuration' && projectConfigurationPanelRef.current?.hasPendingAutosave()) {
       setAutosaveTabDelayMessage('Autosaving project configuration before changing tabs…');
       const saved = await projectConfigurationPanelRef.current.flushPendingAutosave('Configuration autosaved.');
+      if (!isActiveProject(requestProjectId)) return;
       setAutosaveTabDelayMessage('');
       if (!saved) {
         return;
@@ -380,7 +765,7 @@ function Project({ currentUserGroups = [] }) {
 
     setActiveMainTab(nextTabKey);
     updateProjectTabRoute(nextTabKey, nextTabKey === 'project_data' ? activeProjectDataTab : null);
-  }, [activeMainTab, activeProjectDataTab, updateProjectTabRoute]);
+  }, [activeMainTab, activeProjectDataTab, id, isActiveProject, updateProjectTabRoute]);
 
   const handleProjectDataTabChange = useCallback((nextTabKey) => {
     setActiveMainTab('project_data');
@@ -388,52 +773,77 @@ function Project({ currentUserGroups = [] }) {
     updateProjectTabRoute('project_data', nextTabKey);
   }, [updateProjectTabRoute]);
 
-  const refreshRecentlyDeletedOverlays = useCallback(async () => {
+  const refreshRecentlyDeletedOverlays = useCallback(async ({
+    requestProjectId = id,
+    signal,
+  } = {}) => {
+    if (signal?.aborted || !isActiveProject(requestProjectId)) return 'stale';
     setRecentlyDeletedLoading(true);
     try {
-      const resp = await fetch(`/api/projects/${id}/analyze/overlays/recently-deleted`);
+      const resp = await fetch(
+        `/api/projects/${requestProjectId}/analyze/overlays/recently-deleted`,
+        signal ? { signal } : undefined,
+      );
       if (!resp.ok) throw new Error(`Failed to load recently deleted overlays (${resp.status})`);
       const payload = await resp.json();
+      if (signal?.aborted || !isActiveProject(requestProjectId)) return 'stale';
       setRecentlyDeletedOverlays(Array.isArray(payload) ? payload : []);
+      return 'fresh';
     } catch (err) {
+      if (signal?.aborted || isAbortError(err) || !isActiveProject(requestProjectId)) return 'stale';
       setError(err.message || 'Failed to load recently deleted overlays');
+      return 'error';
     } finally {
-      setRecentlyDeletedLoading(false);
+      if (!signal?.aborted && isActiveProject(requestProjectId)) setRecentlyDeletedLoading(false);
     }
-  }, [id]);
+  }, [id, isActiveProject]);
 
   useEffect(() => {
     if (activeMainTab === 'project_data' && activeProjectDataTab === 'recently_deleted') {
-      refreshRecentlyDeletedOverlays();
+      const controller = new AbortController();
+      refreshRecentlyDeletedOverlays({ requestProjectId: id, signal: controller.signal });
+      return () => controller.abort();
     }
-  }, [activeMainTab, activeProjectDataTab, refreshRecentlyDeletedOverlays]);
+    return undefined;
+  }, [activeMainTab, activeProjectDataTab, id, refreshRecentlyDeletedOverlays]);
 
   const restoreRecentlyDeletedOverlay = useCallback(async (overlay) => {
+    const requestProjectId = id;
+    if (!isActiveProject(requestProjectId)) return 'stale';
     const overlayId = overlay?.image_id;
     if (!overlayId) return;
     try {
-      const resp = await fetch(`/api/projects/${id}/analyze/overlays/${encodeURIComponent(String(overlayId))}/restore`, {
+      const resp = await fetch(`/api/projects/${requestProjectId}/analyze/overlays/${encodeURIComponent(String(overlayId))}/restore`, {
         method: 'POST',
       });
       if (!resp.ok) throw new Error(`Failed to restore overlay (${resp.status})`);
-      await refreshRecentlyDeletedOverlays();
-      await refreshProjectCounts();
+      if (!isActiveProject(requestProjectId)) return 'stale';
+      await refreshRecentlyDeletedOverlays({ requestProjectId });
+      if (!isActiveProject(requestProjectId)) return 'stale';
+      await handleProjectCollectionsChanged();
+      return isActiveProject(requestProjectId) ? 'fresh' : 'stale';
     } catch (err) {
+      if (!isActiveProject(requestProjectId)) return 'stale';
       setError(err.message || 'Failed to restore overlay');
+      return 'error';
     }
-  }, [id, refreshProjectCounts, refreshRecentlyDeletedOverlays]);
+  }, [handleProjectCollectionsChanged, id, isActiveProject, refreshRecentlyDeletedOverlays]);
 
   const requestIngestValidation = useCallback(async () => {
+    const requestProjectId = id;
+    if (!isActiveProject(requestProjectId)) return 'stale';
     try {
       setIngestResult({ loading: true, error: null, payload: null });
       const [batchResp, partResp] = await Promise.all([
-        fetch(`/api/projects/${id}/batches`),
-        fetch(`/api/projects/${id}/parts`),
+        fetch(`/api/projects/${requestProjectId}/batches`),
+        fetch(`/api/projects/${requestProjectId}/parts`),
       ]);
+      if (!isActiveProject(requestProjectId)) return 'stale';
       if (!batchResp.ok) throw new Error(await buildHttpErrorMessage(batchResp, 'Failed to load batches'));
       if (!partResp.ok) throw new Error(await buildHttpErrorMessage(partResp, 'Failed to load parts'));
 
       const [batchData, partData] = await Promise.all([batchResp.json(), partResp.json()]);
+      if (!isActiveProject(requestProjectId)) return 'stale';
       const batches = Array.isArray(batchData) ? batchData : [];
       const parts = Array.isArray(partData) ? partData : [];
       const syntheticPayload = {
@@ -455,25 +865,38 @@ function Project({ currentUserGroups = [] }) {
         })),
       };
 
-      const resp = await fetch(`/api/projects/${id}/ingest`, {
+      const resp = await fetch(`/api/projects/${requestProjectId}/ingest`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(syntheticPayload),
       });
       if (!resp.ok) throw new Error(await buildHttpErrorMessage(resp, 'Failed to run ingest validation'));
       const payload = await resp.json();
+      if (!isActiveProject(requestProjectId)) return 'stale';
       setIngestResult({ loading: false, error: null, payload });
-      await refreshProjectCounts();
+      await handleProjectCollectionsChanged();
+      return isActiveProject(requestProjectId) ? 'fresh' : 'stale';
     } catch (err) {
+      if (!isActiveProject(requestProjectId)) return 'stale';
       setIngestResult({ loading: false, error: err.message || 'Failed to run ingest validation', payload: null });
+      return 'error';
     }
-  }, [id, refreshProjectCounts]);
+  }, [handleProjectCollectionsChanged, id, isActiveProject]);
 
   const currentPhase = resolveCurrentProjectPhase({
     phaseSettings: projectConfiguration?.phase_settings,
     partsLoaded: dataCounts.partsLoaded,
     annotations: dataCounts.annotations,
   });
+
+  const projectPartsReady = projectPartsState.loaded
+    && !projectPartsState.loading
+    && !projectPartsState.stale;
+  const projectImagesReady = projectImagesState.loaded
+    && !projectImagesState.loading
+    && !projectImagesState.stale;
+  const completeProjectCollectionsReady = projectPartsReady && projectImagesReady;
+  const completeProjectCollectionsError = projectPartsState.error || projectImagesState.error;
 
   const projectDataContent = useMemo(() => (
     <>
@@ -506,8 +929,8 @@ function Project({ currentUserGroups = [] }) {
                   projectType={project?.project_type}
                   projectConfiguration={projectConfiguration}
                   onUploadComplete={handleUploadComplete}
-                  onProjectMetadataLoaded={refreshProjectMetadata}
-                  setError={setError}
+                  onProjectMetadataLoaded={handleProjectMetadataLoaded}
+                  setError={setActiveProjectError}
                 />
               </div>
               <div className="export-section">
@@ -515,8 +938,8 @@ function Project({ currentUserGroups = [] }) {
                   projectId={id}
                   projectName={project?.name}
                   counts={dataCounts}
-                  setError={setError}
-                  onImportComplete={handleUploadComplete}
+                  setError={setActiveProjectError}
+                  onImportComplete={handleBundleImportComplete}
                 />
               </div>
             </div>
@@ -553,12 +976,20 @@ function Project({ currentUserGroups = [] }) {
         </div>
       )}
 
-      {activeProjectDataTab === 'batches' && (
+      {activeProjectDataTab === 'batches' && !projectPartsReady && (
+        <LazyProjectDataState
+          label="Batches"
+          error={projectPartsState.error}
+          onRetry={loadProjectParts}
+        />
+      )}
+
+      {activeProjectDataTab === 'batches' && projectPartsReady && (
         <BatchesTab
           projectId={id}
           parts={projectParts}
-          onAssignmentsChanged={refreshProjectCounts}
-          setError={setError}
+          onAssignmentsChanged={handleProjectCollectionsChanged}
+          setError={setActiveProjectError}
           onInspectBatch={(batch) => {
             setInspectionLaunchFilters({
               selected_batch_id: batch.id,
@@ -572,48 +1003,86 @@ function Project({ currentUserGroups = [] }) {
         />
       )}
 
-      {activeProjectDataTab === 'images_to_parts' && (
+      {activeProjectDataTab === 'images_to_parts' && !completeProjectCollectionsReady && (
+        <LazyProjectDataState
+          label="Images to Parts"
+          error={completeProjectCollectionsError}
+          onRetry={() => {
+            if (!projectPartsReady) loadProjectParts();
+            if (!projectImagesReady) loadProjectImages();
+          }}
+        />
+      )}
+
+      {activeProjectDataTab === 'images_to_parts' && completeProjectCollectionsReady && (
         <ImagesToPartsTab
           projectId={id}
           parts={projectParts}
           images={projectImages}
           projectConfiguration={projectConfiguration}
-          onAssignmentsChanged={refreshProjectCounts}
-          setError={setError}
+          onAssignmentsChanged={handleProjectCollectionsChanged}
+          setError={setActiveProjectError}
         />
       )}
 
-      {activeProjectDataTab === 'overlays' && (
+      {activeProjectDataTab === 'overlays' && !completeProjectCollectionsReady && (
+        <LazyProjectDataState
+          label="Overlays"
+          error={completeProjectCollectionsError}
+          onRetry={() => {
+            if (!projectPartsReady) loadProjectParts();
+            if (!projectImagesReady) loadProjectImages();
+          }}
+        />
+      )}
+
+      {activeProjectDataTab === 'overlays' && completeProjectCollectionsReady && (
         <OverlaysTab
           projectId={id}
           parts={projectParts}
           images={projectImages}
           projectConfiguration={projectConfiguration}
-          onAssignmentsChanged={refreshProjectCounts}
-          setError={setError}
+          onAssignmentsChanged={handleProjectCollectionsChanged}
+          setError={setActiveProjectError}
         />
       )}
 
-      {activeProjectDataTab === 'metadata' && (
+      {activeProjectDataTab === 'metadata' && !projectPartsReady && (
+        <LazyProjectDataState
+          label="Metadata"
+          error={projectPartsState.error}
+          onRetry={loadProjectParts}
+        />
+      )}
+
+      {activeProjectDataTab === 'metadata' && projectPartsReady && (
         <ProjectDataMetadataTab
           projectId={id}
           metadata={metadata}
           parts={projectParts}
-          onAssociationsChanged={async () => {
-            await refreshProjectCounts();
-            await refreshProjectMetadata();
-          }}
-          setError={setError}
+          onAssociationsChanged={handleMetadataAssociationsChanged}
+          setError={setActiveProjectError}
         />
       )}
 
-      {activeProjectDataTab === 'remove_images' && (
+      {activeProjectDataTab === 'remove_images' && !completeProjectCollectionsReady && (
+        <LazyProjectDataState
+          label="Unload Images"
+          error={completeProjectCollectionsError}
+          onRetry={() => {
+            if (!projectPartsReady) loadProjectParts();
+            if (!projectImagesReady) loadProjectImages();
+          }}
+        />
+      )}
+
+      {activeProjectDataTab === 'remove_images' && completeProjectCollectionsReady && (
         <RemoveImagesTab
           projectId={id}
           parts={projectParts}
           images={projectImages}
-          onImagesRemoved={refreshProjectCounts}
-          setError={setError}
+          onImagesRemoved={handleProjectCollectionsChanged}
+          setError={setActiveProjectError}
         />
       )}
 
@@ -676,13 +1145,23 @@ function Project({ currentUserGroups = [] }) {
     </>
   ), [
     activeProjectDataTab,
-    activeProjectConfigurationSubtab,
     handleProjectDataTabChange,
     countsLoading,
+    completeProjectCollectionsError,
+    completeProjectCollectionsReady,
     dataCounts,
+    handleMetadataAssociationsChanged,
+    handleProjectMetadataLoaded,
+    handleBundleImportComplete,
+    handleProjectCollectionsChanged,
     id,
+    loadProjectImages,
+    loadProjectParts,
     projectImages,
+    projectImagesReady,
     projectParts,
+    projectPartsReady,
+    projectPartsState.error,
     recentlyDeletedLoading,
     recentlyDeletedOverlays,
     handleUploadComplete,
@@ -693,11 +1172,10 @@ function Project({ currentUserGroups = [] }) {
     project?.project_type,
     projectConfiguration,
     visibleProjectDataTabs,
-    refreshProjectCounts,
-    refreshProjectMetadata,
     refreshRecentlyDeletedOverlays,
     requestIngestValidation,
     restoreRecentlyDeletedOverlay,
+    setActiveProjectError,
   ]);
 
   const renderMainPanel = () => {
@@ -720,7 +1198,7 @@ function Project({ currentUserGroups = [] }) {
         <AnalyzeWorkbenchTab
           projectId={id}
           projectType={project?.project_type}
-          setError={setError}
+          setError={setActiveProjectError}
         />
       );
     }
@@ -733,8 +1211,8 @@ function Project({ currentUserGroups = [] }) {
             currentInterfaceLayout={interfaceHierarchy}
             isAdminUser={currentUserGroups.includes('admin') || currentUserGroups.includes('admins')}
             ref={projectConfigurationPanelRef}
-            onConfigurationSaved={(nextConfig) => setProjectConfiguration(nextConfig)}
-            onActiveSubtabChange={setActiveProjectConfigurationSubtab}
+            onConfigurationSaved={setActiveProjectConfigurationValue}
+            onActiveSubtabChange={setActiveProjectConfigurationSubtabValue}
           />
           {!project?.is_archived && activeProjectConfigurationSubtab === 'general' && (
             <div className="management-sections project-configuration-management">
@@ -742,20 +1220,20 @@ function Project({ currentUserGroups = [] }) {
                 <ClassManager
                   projectId={id}
                   classes={classes}
-                  setClasses={setClasses}
+                  setClasses={setActiveProjectClasses}
                   loading={loading}
-                  setLoading={setLoading}
-                  setError={setError}
+                  setLoading={setActiveProjectLoading}
+                  setError={setActiveProjectError}
                 />
               </div>
               <div className="metadata-section">
                 <MetadataManager
                   projectId={id}
                   metadata={metadata}
-                  setMetadata={setMetadata}
+                  setMetadata={setActiveProjectMetadata}
                   loading={loading}
-                  setLoading={setLoading}
-                  setError={setError}
+                  setLoading={setActiveProjectLoading}
+                  setError={setActiveProjectError}
                 />
               </div>
             </div>
@@ -764,7 +1242,7 @@ function Project({ currentUserGroups = [] }) {
       );
     }
     if (activeMainTab === 'report') {
-      return <ProjectReportTab projectId={id} projectName={project?.name} setError={setError} />;
+      return <ProjectReportTab projectId={id} projectName={project?.name} setError={setActiveProjectError} />;
     }
     return null;
   };

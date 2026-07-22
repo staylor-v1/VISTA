@@ -6,6 +6,10 @@ import Pt3GaussianSplatViewer, { DEFAULT_RAY_MARCH_SETTINGS, DEFAULT_SPLAT_VIEW_
 import { getMprAxisMirrorScale } from './pt3VolumeGeometry';
 import { DEFAULT_INTERFACE_HIERARCHY } from '../utils/interfaceHierarchy';
 import { isUiSectionEnabled } from '../utils/uiSections';
+import { fetchProjectImagePages } from '../utils/projectImages';
+import {
+  scheduleMprServerSliceTask,
+} from './mprServerSliceScheduler';
 
 const VIEW_ORDER = ['front', 'back', 'left', 'right', 'top', 'bottom'];
 const MPR_AXES = ['axial', 'coronal', 'sagittal'];
@@ -61,9 +65,14 @@ const PT3_RENDERER_RECONSTRUCTION_MODES = [
 ];
 const DEFAULT_MPR_PROJECTION_MIRROR = { axial: false, coronal: false, sagittal: false };
 const MPR_VOLUME_CACHE_LIMIT = 4;
-const MPR_SLICE_CANVAS_CACHE_LIMIT = 96;
+const MPR_SLICE_CANVAS_CACHE_MAX_BYTES = 192 * 1024 * 1024;
+const MPR_SERVER_VOLUME_KIND = 'server-volume';
+const MPR_SERVER_SLICE_PREFETCH_RADIUS = 2;
+const MPR_SERVER_CURRENT_SLICE_DEBOUNCE_MS = 200;
 const DEFAULT_DISPLAY_VALUE_DOMAIN = { min: 0, max: 255, step: 1, label: '8-bit image' };
 const mprVolumeCacheStore = new Map();
+const mprSliceCanvasCacheStore = new Map();
+let mprSliceCanvasCacheBytes = 0;
 const DEFAULT_OVERLAY_LAYERS = [
   { id: 'segmentation', label: 'Segmentation', color: '#ef4444' },
   { id: 'heatmap', label: 'Heatmap', color: '#8b5cf6' },
@@ -990,9 +999,69 @@ function getVolumeEntryImageId(entry, projectImageLookup = {}) {
   return getProjectImageRecord(projectImageLookup, entry)?.id || '';
 }
 
+function isNpyVolumeFileEntry(entry, projectImageLookup = {}) {
+  const filename = String(entry?.filename || getProjectImageRecord(projectImageLookup, entry)?.filename || '').toLowerCase();
+  return filename.endsWith('.npy');
+}
+
+function normalizeServerVolumeDimensions(candidate = {}) {
+  return MPR_AXES.reduce((acc, axis) => {
+    const value = Number(candidate?.[axis]);
+    acc[axis] = Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
+    return acc;
+  }, {});
+}
+
+function getServerVolumeSliceUrl(volume, axis, index) {
+  if (!volume?.imageId) return '';
+  const safeAxis = MPR_AXES.includes(axis) ? axis : 'axial';
+  const dimensions = normalizeServerVolumeDimensions(volume.dimensions);
+  const upper = Math.max(0, dimensions[safeAxis] - 1);
+  const safeIndex = clampRange(Math.round(Number(index) || 0), 0, upper, 0);
+  return `/api/images/${encodeURIComponent(String(volume.imageId))}/volume-slice?axis=${safeAxis}&index=${safeIndex}`;
+}
+
+function createServerVolumeDescriptor(entry, projectImageLookup = {}, extra = {}) {
+  const imageId = getVolumeEntryImageId(entry, projectImageLookup);
+  const volumeShape = getVolumeShapeFromEntry(entry, projectImageLookup);
+  if (!imageId || !volumeShape || !isNpyVolumeFileEntry(entry, projectImageLookup)) return null;
+  const dimensions = normalizeServerVolumeDimensions(volumeShape);
+  const descriptor = {
+    kind: MPR_SERVER_VOLUME_KIND,
+    id: String(imageId),
+    imageId: String(imageId),
+    filename: String(entry?.filename || getProjectImageRecord(projectImageLookup, entry)?.filename || ''),
+    dimensions,
+    sliceIndex: Math.floor((dimensions.axial - 1) / 2),
+    ...extra,
+  };
+  return {
+    ...descriptor,
+    url: getServerVolumeSliceUrl(descriptor, 'axial', descriptor.sliceIndex),
+  };
+}
+
+function isServerVolumeDescriptor(candidate) {
+  return candidate?.kind === MPR_SERVER_VOLUME_KIND && Boolean(candidate?.imageId);
+}
+
+function hasMprVolumeSource(source) {
+  return isServerVolumeDescriptor(source) || (Array.isArray(source) && source.length > 0);
+}
+
+function getMprVolumeSourceEntries(source) {
+  if (isServerVolumeDescriptor(source)) return [source];
+  return Array.isArray(source) ? source : [];
+}
+
 function getVolumeSourceImages(part, projectImageLookup = {}) {
   const sourceImages = part?.metadata?.source_images;
   if (!Array.isArray(sourceImages)) return [];
+  const serverVolume = sourceImages
+    .filter((entry) => entry && !entry.overlay)
+    .map((entry) => createServerVolumeDescriptor(entry, projectImageLookup))
+    .find(Boolean);
+  if (serverVolume) return serverVolume;
   return sourceImages
     .filter((entry) => entry && !entry.overlay)
     .map((entry, index) => {
@@ -1037,12 +1106,21 @@ function getVolumeOverlayStacks(part, projectImageLookup = {}) {
     return (baseImageId && baseIds.has(baseImageId)) || (baseFilename && baseFilenames.has(baseFilename)) || (!baseImageId && !baseFilename && baseRecords.length === 1);
   });
   const stacksByOverlayImage = new Map();
+  const serverVolumesByOverlayImage = new Map();
   overlays.forEach((entry, index) => {
     const imageId = getVolumeEntryImageId(entry, projectImageLookup);
     if (!imageId) return;
     const filename = String(entry?.filename || '');
     const sliceIndex = Number(entry?.metadata?.slice_index ?? entry?.slice_index ?? index);
     const key = imageId;
+    const serverVolume = createServerVolumeDescriptor(entry, projectImageLookup, {
+      overlayBaseImageId: String(entry.overlay_base_image_id || ''),
+      overlayBaseFilename: String(entry.overlay_base_filename || ''),
+    });
+    if (serverVolume) {
+      serverVolumesByOverlayImage.set(key, serverVolume);
+      return;
+    }
     if (!stacksByOverlayImage.has(key)) stacksByOverlayImage.set(key, []);
     stacksByOverlayImage.get(key).push({
       id: String(imageId),
@@ -1053,10 +1131,13 @@ function getVolumeOverlayStacks(part, projectImageLookup = {}) {
       overlayBaseFilename: String(entry.overlay_base_filename || ''),
     });
   });
-  return Array.from(stacksByOverlayImage.entries()).map(([id, stack]) => ({
-    id,
-    stack: stack.sort((left, right) => left.sliceIndex - right.sliceIndex || left.filename.localeCompare(right.filename)),
-  }));
+  return [
+    ...Array.from(serverVolumesByOverlayImage.values()),
+    ...Array.from(stacksByOverlayImage.entries()).map(([id, stack]) => ({
+      id,
+      stack: stack.sort((left, right) => left.sliceIndex - right.sliceIndex || left.filename.localeCompare(right.filename)),
+    })),
+  ];
 }
 
 function getNumericRangeFromCandidate(candidate) {
@@ -1319,7 +1400,7 @@ function getAnalyzeOverlayDisplayLabel(label) {
 
 function getPartImageRefs(part) {
   const refs = [];
-  const seen = new Set();
+  const claimedImages = [];
   const sourceImages = Array.isArray(part?.metadata?.source_images) ? part.metadata.source_images : [];
   const sourceImageByFilename = sourceImages.reduce((acc, record) => {
     const filename = String(record?.filename || '');
@@ -1327,20 +1408,42 @@ function getPartImageRefs(part) {
     return acc;
   }, {});
   const getRecordModality = (record) => String(record?.modality || record?.metadata?.modality || '').toLowerCase();
-  const getRecordIdentities = (record = {}) => [record.image_id, record.filename]
-    .map((value) => String(value || '').trim())
-    .filter(Boolean);
-  const addSeenIdentities = (record = {}) => {
-    getRecordIdentities(record).forEach((identity) => seen.add(identity));
+  const claimImageIdentity = (record = {}) => {
+    const imageId = String(record.image_id || '').trim();
+    const filename = String(record.filename || '').trim();
+    let existing = imageId
+      ? claimedImages.find((candidate) => candidate.imageId === imageId)
+      : null;
+    if (!existing && filename) {
+      existing = claimedImages.find((candidate) => (
+        candidate.filename === filename
+        && (!imageId || !candidate.imageId)
+      ));
+    }
+    if (existing) {
+      if (!existing.imageId && imageId) {
+        existing.imageId = imageId;
+        if (existing.ref && !existing.ref.imageId) existing.ref.imageId = imageId;
+      }
+      if (!existing.filename && filename) {
+        existing.filename = filename;
+        if (existing.ref && !existing.ref.filename) existing.ref.filename = filename;
+      }
+      return { claimed: false, entry: existing };
+    }
+    const entry = { imageId, filename, ref: null };
+    claimedImages.push(entry);
+    return { claimed: true, entry };
   };
   const imagesByView = part?.metadata?.view_images;
   if (imagesByView && typeof imagesByView === 'object') {
     Object.entries(imagesByView).forEach(([viewName, imageRef]) => {
       const ref = String(imageRef || '');
-      if (!ref || seen.has(ref)) return;
+      if (!ref) return;
       const sourceRecord = sourceImageByFilename[ref] || {};
-      addSeenIdentities({ ...sourceRecord, filename: ref });
-      refs.push({
+      const identity = claimImageIdentity({ ...sourceRecord, filename: ref });
+      if (!identity.claimed) return;
+      const imageReference = {
         id: `${part.id}-view-${viewName}`,
         viewName: String(viewName || '').toLowerCase(),
         modality: getRecordModality(sourceRecord),
@@ -1348,7 +1451,9 @@ function getPartImageRefs(part) {
         imageRef: ref,
         imageId: sourceRecord.image_id ? String(sourceRecord.image_id) : '',
         overlay: false,
-      });
+      };
+      identity.entry.ref = imageReference;
+      refs.push(imageReference);
     });
   }
   const isAnalyzeOutputRecord = (record) => {
@@ -1368,16 +1473,15 @@ function getPartImageRefs(part) {
     const cropSubtitle = String(record.crop_subtitle || record.cropSubtitle || '').trim();
     const imageRef = String(record.image_id || record.filename || '');
     if (!imageRef) return;
-    const identities = getRecordIdentities(record);
-    if (identities.some((identity) => seen.has(identity))) return;
-    identities.forEach((identity) => seen.add(identity));
+    const identity = claimImageIdentity(record);
+    if (!identity.claimed) return;
     const modality = getRecordModality(record);
     const label = cropChild
       ? String(record.crop_title || record.filename || `CROP ${index + 1}`)
       : overlay
         ? (getAssignedOverlayDisplayLabel(record) || getAnalyzeOverlayDisplayLabel(record.label || record.analysis_label || modality || 'Analyze Overlay'))
         : String(record.side || record.modality || `IMAGE ${index + 1}`).toUpperCase();
-    refs.push({
+    const imageReference = {
       id: `${part.id}-${overlay ? 'analysis' : 'source'}-${index}`,
       viewName: String(record.side || record.modality || (overlay ? 'overlay' : 'image')).toLowerCase(),
       modality,
@@ -1392,7 +1496,9 @@ function getPartImageRefs(part) {
       parentImageFilename: record.parent_image_filename ? String(record.parent_image_filename) : '',
       overlayBaseImageId: record.overlay_base_image_id ? String(record.overlay_base_image_id) : '',
       overlayBaseFilename: record.overlay_base_filename ? String(record.overlay_base_filename) : '',
-    });
+    };
+    identity.entry.ref = imageReference;
+    refs.push(imageReference);
   };
   sourceImages.forEach((record, index) => {
     pushRecord(record, index, isAnalyzeOutputRecord(record));
@@ -1529,8 +1635,12 @@ function getScaledIndex(value, sourceMaxValue, targetLength) {
 }
 
 function getMprVolumeCacheKey(imageStack, dimensions = {}) {
-  if (!Array.isArray(imageStack) || imageStack.length === 0) return '';
-  const dimensionKey = MPR_AXES.map((axis) => `${axis}:${dimensions?.[axis] || 0}`).join(',');
+  if (!isServerVolumeDescriptor(imageStack) && (!Array.isArray(imageStack) || imageStack.length === 0)) return '';
+  const resolvedDimensions = isServerVolumeDescriptor(imageStack) ? imageStack.dimensions : dimensions;
+  const dimensionKey = MPR_AXES.map((axis) => `${axis}:${resolvedDimensions?.[axis] || 0}`).join(',');
+  if (isServerVolumeDescriptor(imageStack)) {
+    return `${dimensionKey}|${MPR_SERVER_VOLUME_KIND}:${imageStack.imageId}`;
+  }
   return `${dimensionKey}|${imageStack
     .map((entry) => `${entry.id}:${entry.sliceIndex}:${entry.url}`)
     .join('|')}`;
@@ -1538,22 +1648,80 @@ function getMprVolumeCacheKey(imageStack, dimensions = {}) {
 
 function rememberMprVolumeCache(key, cache) {
   if (!key || !cache) return;
+  const replaced = mprVolumeCacheStore.get(key);
+  if (replaced && replaced !== cache) forgetMprVolumeCacheCanvases(replaced);
   mprVolumeCacheStore.delete(key);
   mprVolumeCacheStore.set(key, cache);
   while (mprVolumeCacheStore.size > MPR_VOLUME_CACHE_LIMIT) {
     const oldestKey = mprVolumeCacheStore.keys().next().value;
+    const oldestCache = mprVolumeCacheStore.get(oldestKey);
     mprVolumeCacheStore.delete(oldestKey);
+    forgetMprVolumeCacheCanvases(oldestCache);
   }
+}
+
+function getSliceCanvasByteSize(canvas) {
+  const width = Math.max(0, Math.floor(Number(canvas?.width) || 0));
+  const height = Math.max(0, Math.floor(Number(canvas?.height) || 0));
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)) return 0;
+  const bytes = width * height * 4;
+  return Number.isSafeInteger(bytes) ? bytes : 0;
+}
+
+function getGlobalSliceCanvasKey(volumeCache, sliceKey) {
+  return `${volumeCache?.key || 'anonymous'}\0${sliceKey}`;
+}
+
+function forgetMprVolumeCacheCanvases(volumeCache) {
+  if (!volumeCache?.sliceCanvases) return;
+  volumeCache.sliceCanvases.forEach((canvas, sliceKey) => {
+    const globalKey = getGlobalSliceCanvasKey(volumeCache, sliceKey);
+    const entry = mprSliceCanvasCacheStore.get(globalKey);
+    if (entry?.canvas === canvas) {
+      mprSliceCanvasCacheBytes = Math.max(0, mprSliceCanvasCacheBytes - entry.bytes);
+      mprSliceCanvasCacheStore.delete(globalKey);
+    }
+  });
+  volumeCache.sliceCanvases.clear();
 }
 
 function rememberSliceCanvas(volumeCache, key, canvas) {
   if (!volumeCache?.sliceCanvases || !key || !canvas) return;
+  const globalKey = getGlobalSliceCanvasKey(volumeCache, key);
+  const previous = mprSliceCanvasCacheStore.get(globalKey);
+  if (previous) {
+    mprSliceCanvasCacheBytes = Math.max(0, mprSliceCanvasCacheBytes - previous.bytes);
+    mprSliceCanvasCacheStore.delete(globalKey);
+  }
   volumeCache.sliceCanvases.delete(key);
   volumeCache.sliceCanvases.set(key, canvas);
-  while (volumeCache.sliceCanvases.size > MPR_SLICE_CANVAS_CACHE_LIMIT) {
-    const oldestKey = volumeCache.sliceCanvases.keys().next().value;
-    volumeCache.sliceCanvases.delete(oldestKey);
+  const bytes = getSliceCanvasByteSize(canvas);
+  mprSliceCanvasCacheStore.set(globalKey, { volumeCache, sliceKey: key, canvas, bytes });
+  mprSliceCanvasCacheBytes += bytes;
+  while (mprSliceCanvasCacheBytes > MPR_SLICE_CANVAS_CACHE_MAX_BYTES) {
+    const oldestGlobalKey = mprSliceCanvasCacheStore.keys().next().value;
+    const oldest = mprSliceCanvasCacheStore.get(oldestGlobalKey);
+    mprSliceCanvasCacheStore.delete(oldestGlobalKey);
+    mprSliceCanvasCacheBytes = Math.max(0, mprSliceCanvasCacheBytes - (oldest?.bytes || 0));
+    if (oldest?.volumeCache?.sliceCanvases?.get(oldest.sliceKey) === oldest.canvas) {
+      oldest.volumeCache.sliceCanvases.delete(oldest.sliceKey);
+    }
   }
+}
+
+function getMprSliceCanvasCacheStats() {
+  return {
+    bytes: mprSliceCanvasCacheBytes,
+    items: mprSliceCanvasCacheStore.size,
+    maxBytes: MPR_SLICE_CANVAS_CACHE_MAX_BYTES,
+  };
+}
+
+function resetMprSliceCanvasCacheForTests() {
+  [...mprVolumeCacheStore.values()].forEach(forgetMprVolumeCacheCanvases);
+  mprVolumeCacheStore.clear();
+  mprSliceCanvasCacheStore.clear();
+  mprSliceCanvasCacheBytes = 0;
 }
 
 function loadMprImage(source, onSettled) {
@@ -1567,6 +1735,178 @@ function loadMprImage(source, onSettled) {
     image.onerror = () => settle(null);
     image.src = source.url;
   });
+}
+
+function createServerMprVolumeCache(cacheKey, descriptor, dimensions = {}) {
+  const resolvedDimensions = normalizeServerVolumeDimensions(descriptor?.dimensions || dimensions);
+  return {
+    ...descriptor,
+    kind: MPR_SERVER_VOLUME_KIND,
+    key: cacheKey,
+    dimensions: resolvedDimensions,
+    width: resolvedDimensions.sagittal,
+    height: resolvedDimensions.coronal,
+    depth: resolvedDimensions.axial,
+    sliceCanvases: new Map(),
+    pendingSliceRequests: new Map(),
+    prefetchAnchorByAxis: {},
+    prefetchGenerationByAxis: {},
+    currentGenerationByAxis: {},
+    currentDebounceByAxis: {},
+  };
+}
+
+function beginServerMprSlicePrefetch(volumeCache, axis, index) {
+  const previousAnchor = volumeCache.prefetchAnchorByAxis[axis];
+  if (previousAnchor === index) return volumeCache.prefetchGenerationByAxis[axis] || 1;
+  const generation = (volumeCache.prefetchGenerationByAxis[axis] || 0) + 1;
+  volumeCache.prefetchAnchorByAxis[axis] = index;
+  volumeCache.prefetchGenerationByAxis[axis] = generation;
+  volumeCache.currentGenerationByAxis[axis] = generation;
+  return generation;
+}
+
+function invalidateServerMprSliceGeneration(volumeCache, axis) {
+  if (!volumeCache) return;
+  const pendingDebounce = volumeCache.currentDebounceByAxis?.[axis];
+  if (pendingDebounce) {
+    clearTimeout(pendingDebounce.timer);
+    delete volumeCache.currentDebounceByAxis[axis];
+    pendingDebounce.resolve(null);
+  }
+  const generation = Math.max(
+    volumeCache.prefetchGenerationByAxis?.[axis] || 0,
+    volumeCache.currentGenerationByAxis?.[axis] || 0,
+  ) + 1;
+  volumeCache.prefetchGenerationByAxis[axis] = generation;
+  volumeCache.currentGenerationByAxis[axis] = generation;
+}
+
+function getServerVolumePrefetchSources(volume, axis, index, radius = MPR_SERVER_SLICE_PREFETCH_RADIUS) {
+  if (!isServerVolumeDescriptor(volume)) return [];
+  const safeAxis = MPR_AXES.includes(axis) ? axis : 'axial';
+  const dimensions = normalizeServerVolumeDimensions(volume.dimensions);
+  const upper = Math.max(0, dimensions[safeAxis] - 1);
+  const center = clampRange(Math.round(Number(index) || 0), 0, upper, 0);
+  const offsets = [0];
+  for (let distance = 1; distance <= Math.max(0, Number(radius) || 0); distance += 1) {
+    offsets.push(-distance, distance);
+  }
+  const indexes = [];
+  offsets.forEach((offset) => {
+    const candidate = center + offset;
+    if (candidate >= 0 && candidate <= upper && !indexes.includes(candidate)) indexes.push(candidate);
+  });
+  return indexes.map((sliceIndex) => ({
+    axis: safeAxis,
+    index: sliceIndex,
+    url: getServerVolumeSliceUrl(volume, safeAxis, sliceIndex),
+  }));
+}
+
+async function buildServerMprSliceCanvas(volumeCache, source) {
+  const image = await loadMprImage(source);
+  if (!image) throw new Error(`Failed to load ${source.axis} slice ${source.index}`);
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext?.('2d');
+  if (!context) throw new Error('Canvas rendering is unavailable');
+  const fallbackDimensions = getMprAxisImageDimensions(source.axis, volumeCache.dimensions, volumeCache);
+  canvas.width = image.naturalWidth || image.width || fallbackDimensions.width;
+  canvas.height = image.naturalHeight || image.height || fallbackDimensions.height;
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  drawServerMprSliceImage(context, image, source.axis, canvas.width, canvas.height);
+  return canvas;
+}
+
+function drawServerMprSliceImage(context, image, axis, width, height) {
+  context.save();
+  if (axis === 'coronal' || axis === 'sagittal') {
+    // The legacy reconstruction displays axial z=0 on the bottom row for
+    // orthogonal views. Backend NumPy slices arrive with z=0 on the top row.
+    context.translate(0, height);
+    context.scale(1, -1);
+  }
+  context.drawImage(image, 0, 0, width, height);
+  context.restore();
+}
+
+function requestServerMprSliceCanvas(
+  volumeCache,
+  source,
+  { priority = false, prefetchGeneration = null, currentGeneration = null } = {},
+) {
+  if (!isServerVolumeDescriptor(volumeCache) || !source?.url) return Promise.resolve(null);
+  const sliceKey = `${source.axis}:${source.index}`;
+  const cachedCanvas = volumeCache.sliceCanvases.get(sliceKey);
+  if (cachedCanvas) {
+    rememberSliceCanvas(volumeCache, sliceKey, cachedCanvas);
+    return Promise.resolve(cachedCanvas);
+  }
+  const pendingRequest = volumeCache.pendingSliceRequests.get(sliceKey);
+  if (pendingRequest) {
+    if (priority) {
+      pendingRequest.isPrefetch = false;
+      pendingRequest.currentGeneration = currentGeneration;
+      return pendingRequest.promise.then((canvas) => (
+        canvas || requestServerMprSliceCanvas(volumeCache, source, {
+          priority: true,
+          currentGeneration,
+        })
+      ));
+    }
+    if (pendingRequest.isPrefetch && prefetchGeneration !== null) {
+      pendingRequest.prefetchGeneration = prefetchGeneration;
+    }
+    return pendingRequest.promise;
+  }
+
+  const requestState = {
+    isPrefetch: !priority && prefetchGeneration !== null,
+    prefetchGeneration,
+    currentGeneration,
+  };
+  const shouldRun = () => (
+    requestState.isPrefetch
+      ? volumeCache.prefetchGenerationByAxis[source.axis] === requestState.prefetchGeneration
+      : (
+        requestState.currentGeneration === null
+        || volumeCache.currentGenerationByAxis[source.axis] === requestState.currentGeneration
+      )
+  );
+  const enqueue = () => scheduleMprServerSliceTask(
+    () => buildServerMprSliceCanvas(volumeCache, source),
+    { priority, shouldRun },
+  );
+  const scheduledRequest = priority && currentGeneration !== null
+    ? new Promise((resolve, reject) => {
+      const previous = volumeCache.currentDebounceByAxis[source.axis];
+      if (previous) {
+        clearTimeout(previous.timer);
+        previous.resolve(null);
+      }
+      const state = { resolve, timer: null };
+      state.timer = setTimeout(() => {
+        if (volumeCache.currentDebounceByAxis[source.axis] === state) {
+          delete volumeCache.currentDebounceByAxis[source.axis];
+        }
+        if (!shouldRun()) {
+          resolve(null);
+          return;
+        }
+        enqueue().then(resolve, reject);
+      }, MPR_SERVER_CURRENT_SLICE_DEBOUNCE_MS);
+      volumeCache.currentDebounceByAxis[source.axis] = state;
+    })
+    : enqueue();
+  const request = scheduledRequest.then((canvas) => {
+    if (canvas) rememberSliceCanvas(volumeCache, sliceKey, canvas);
+    return canvas;
+  }).finally(() => {
+    volumeCache.pendingSliceRequests.delete(sliceKey);
+  });
+  requestState.promise = request;
+  volumeCache.pendingSliceRequests.set(sliceKey, requestState);
+  return request;
 }
 
 function getMprSliceCachingMessage(progress = {}) {
@@ -1642,6 +1982,16 @@ async function buildMprVolumeCache(cacheKey, imageStack, dimensions, onProgress)
 
 function getCachedMprSliceCanvas(axis, slicePosition, dimensions, volumeCache) {
   if (!volumeCache || typeof document === 'undefined') return null;
+  if (isServerVolumeDescriptor(volumeCache)) {
+    const safeAxis = MPR_AXES.includes(axis) ? axis : 'axial';
+    const sourceMax = Math.max(0, (Number(dimensions?.[safeAxis]) || 1) - 1);
+    const targetLength = Number(volumeCache.dimensions?.[safeAxis]) || 1;
+    const sliceIndex = getScaledIndex(slicePosition?.[safeAxis], sourceMax, targetLength);
+    const sliceKey = `${safeAxis}:${sliceIndex}`;
+    const cachedCanvas = volumeCache.sliceCanvases.get(sliceKey);
+    if (cachedCanvas) rememberSliceCanvas(volumeCache, sliceKey, cachedCanvas);
+    return cachedCanvas || null;
+  }
   const sourceMaxByAxis = {
     axial: Math.max(0, (dimensions.axial || 1) - 1),
     coronal: Math.max(0, (dimensions.coronal || 1) - 1),
@@ -1744,10 +2094,11 @@ function createDefaultSegment(index = 0) {
 }
 
 function getMprAxisImageDimensions(axis, dimensions = {}, volumeCache = null) {
+  const cacheDimensions = isServerVolumeDescriptor(volumeCache) ? volumeCache.dimensions : null;
   const resolvedDimensions = {
-    axial: Number(volumeCache?.depth) || Number(dimensions.axial),
-    coronal: Number(volumeCache?.height) || Number(dimensions.coronal),
-    sagittal: Number(volumeCache?.width) || Number(dimensions.sagittal),
+    axial: Number(cacheDimensions?.axial) || Number(volumeCache?.depth) || Number(dimensions.axial),
+    coronal: Number(cacheDimensions?.coronal) || Number(volumeCache?.height) || Number(dimensions.coronal),
+    sagittal: Number(cacheDimensions?.sagittal) || Number(volumeCache?.width) || Number(dimensions.sagittal),
   };
   if (axis === 'coronal') {
     return {
@@ -1959,8 +2310,15 @@ function useMprVolumeCache(imageStack, dimensions) {
   const [cacheState, setCacheState] = useState({ key: '', status: 'idle', cache: null, progress: { loadedSlices: 0, totalSlices: 0 } });
 
   useEffect(() => {
-    if (!cacheKey || imageStack.length === 0) {
+    if (!cacheKey || !hasMprVolumeSource(imageStack)) {
       setCacheState({ key: '', status: 'idle', cache: null, progress: { loadedSlices: 0, totalSlices: 0 } });
+      return undefined;
+    }
+    if (isServerVolumeDescriptor(imageStack)) {
+      const cached = mprVolumeCacheStore.get(cacheKey);
+      const cache = cached || createServerMprVolumeCache(cacheKey, imageStack, dimensions);
+      if (!cached) rememberMprVolumeCache(cacheKey, cache);
+      setCacheState({ key: cacheKey, status: 'ready', cache, progress: { loadedSlices: 0, totalSlices: 0 } });
       return undefined;
     }
     if (typeof window !== 'undefined' && /jsdom/i.test(window.navigator?.userAgent || '')) {
@@ -2005,23 +2363,35 @@ function useMprVolumeCaches(imageStacks, dimensions) {
 
   useEffect(() => {
     const stacks = Array.isArray(imageStacks) ? imageStacks : [];
+    const sources = stacks.map((stack) => stack.stack || stack);
     if (stacks.length === 0) {
       setCacheStates([]);
       return undefined;
     }
     if (typeof window !== 'undefined' && /jsdom/i.test(window.navigator?.userAgent || '')) {
-      setCacheStates(cacheKeys.map((key) => ({ key, status: 'idle', cache: null })));
+      setCacheStates(cacheKeys.map((key, index) => {
+        const source = sources[index];
+        if (!key || !isServerVolumeDescriptor(source)) return { key, status: 'idle', cache: null };
+        const cached = mprVolumeCacheStore.get(key);
+        const cache = cached || createServerMprVolumeCache(key, source, dimensions);
+        if (!cached) rememberMprVolumeCache(key, cache);
+        return { key, status: 'ready', cache };
+      }));
       return undefined;
     }
 
     let cancelled = false;
     setCacheStates(cacheKeys.map((key) => ({ key, status: key ? 'loading' : 'idle', cache: key ? (mprVolumeCacheStore.get(key) || null) : null })));
-    Promise.all(stacks.map(async (stackEntry, index) => {
-      const stack = stackEntry.stack || stackEntry;
+    Promise.all(sources.map(async (stack, index) => {
       const key = cacheKeys[index];
-      if (!key || stack.length === 0) return { key: '', status: 'idle', cache: null };
+      if (!key || !hasMprVolumeSource(stack)) return { key: '', status: 'idle', cache: null };
       const cached = mprVolumeCacheStore.get(key);
       if (cached) return { key, status: 'ready', cache: cached };
+      if (isServerVolumeDescriptor(stack)) {
+        const cache = createServerMprVolumeCache(key, stack, dimensions);
+        rememberMprVolumeCache(key, cache);
+        return { key, status: 'ready', cache };
+      }
       const cache = await buildMprVolumeCache(key, stack, dimensions);
       if (!cache) return { key, status: 'error', cache: null };
       rememberMprVolumeCache(key, cache);
@@ -2237,13 +2607,82 @@ const MprSliceCanvas = React.forwardRef(function MprSliceCanvas({
   ...canvasProps
 }, externalRef) {
   const canvasRef = useRef(null);
+  const serverSliceRequestVersionRef = useRef(0);
+  const [serverSliceRevision, setServerSliceRevision] = useState(0);
+  const [serverSliceStatus, setServerSliceStatus] = useState('idle');
   const relevantSlicePosition = slicePosition[axis];
+  const relevantAxisLength = Number(dimensions?.[axis]) || 1;
   const fallbackDimensions = getMprAxisImageDimensions(axis, dimensions, volumeCache);
+  const serverVolumeCaches = [volumeCache, ...overlayCaches].filter(isServerVolumeDescriptor);
+  const serverVolumeCachesRef = useRef(serverVolumeCaches);
+  serverVolumeCachesRef.current = serverVolumeCaches;
+  const serverVolumeCacheKey = serverVolumeCaches.map((cache) => cache.key).join('|');
   const setCanvasRef = useCallback((node) => {
     canvasRef.current = node;
     if (typeof externalRef === 'function') externalRef(node);
     else if (externalRef) externalRef.current = node;
   }, [externalRef]);
+
+  useEffect(() => {
+    const serverCaches = serverVolumeCachesRef.current;
+    if (serverCaches.length === 0) {
+      setServerSliceStatus('idle');
+      return undefined;
+    }
+    if (typeof window !== 'undefined' && /jsdom/i.test(window.navigator?.userAgent || '')) {
+      return undefined;
+    }
+
+    const requestVersion = serverSliceRequestVersionRef.current + 1;
+    serverSliceRequestVersionRef.current = requestVersion;
+    let stale = false;
+    const hasServerBase = isServerVolumeDescriptor(volumeCache);
+    setServerSliceStatus(hasServerBase ? 'loading' : 'ready');
+    const sourceMax = Math.max(0, relevantAxisLength - 1);
+    const sourceGroups = serverCaches.map((cache) => {
+      const cacheIndex = getScaledIndex(
+        relevantSlicePosition,
+        sourceMax,
+        Number(cache.dimensions?.[axis]) || 1,
+      );
+      return {
+        prefetchGeneration: beginServerMprSlicePrefetch(cache, axis, cacheIndex),
+        sources: getServerVolumePrefetchSources(cache, axis, cacheIndex),
+      };
+    });
+    const currentRequests = sourceGroups.map((group, index) => (
+      requestServerMprSliceCanvas(serverCaches[index], group.sources[0], {
+        priority: true,
+        currentGeneration: group.prefetchGeneration,
+      })
+    ));
+    Promise.allSettled(currentRequests).then(() => {
+      if (stale || serverSliceRequestVersionRef.current !== requestVersion) return;
+      sourceGroups.forEach((group, cacheIndex) => {
+        group.sources.slice(1).forEach((source) => {
+          requestServerMprSliceCanvas(serverCaches[cacheIndex], source, {
+            prefetchGeneration: group.prefetchGeneration,
+          }).catch(() => {});
+        });
+      });
+    });
+
+    currentRequests.forEach((request, index) => {
+      request.then(() => {
+        if (stale || serverSliceRequestVersionRef.current !== requestVersion) return;
+        if (hasServerBase && index === 0) setServerSliceStatus('ready');
+        setServerSliceRevision((previous) => previous + 1);
+      }).catch(() => {
+        if (stale || serverSliceRequestVersionRef.current !== requestVersion) return;
+        if (hasServerBase && index === 0) setServerSliceStatus('error');
+      });
+    });
+
+    return () => {
+      stale = true;
+      serverCaches.forEach((cache) => invalidateServerMprSliceGeneration(cache, axis));
+    };
+  }, [axis, relevantAxisLength, relevantSlicePosition, serverVolumeCacheKey, volumeCache]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2262,7 +2701,12 @@ const MprSliceCanvas = React.forwardRef(function MprSliceCanvas({
     if (!ctx) return undefined;
 
     const sliceCanvas = getCachedMprSliceCanvas(axis, slicePosition, dimensions, volumeCache);
-    if (!sliceCanvas) return undefined;
+    if (!sliceCanvas) {
+      canvas.width = fallbackDimensions.width;
+      canvas.height = fallbackDimensions.height;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      return undefined;
+    }
     canvas.width = sliceCanvas.width || 1;
     canvas.height = sliceCanvas.height || 1;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -2278,7 +2722,7 @@ const MprSliceCanvas = React.forwardRef(function MprSliceCanvas({
       ctx.restore();
     });
     return undefined;
-  }, [axis, dimensions, displayDomain, displayWindow, overlayCaches, relevantSlicePosition, slicePosition, volumeCache]);
+  }, [axis, dimensions, displayDomain, displayWindow, fallbackDimensions.height, fallbackDimensions.width, overlayCaches, relevantSlicePosition, serverSliceRevision, slicePosition, volumeCache]);
 
   return (
     <canvas
@@ -2292,6 +2736,7 @@ const MprSliceCanvas = React.forwardRef(function MprSliceCanvas({
       data-mpr-axis={axis}
       data-mpr-slice-index={relevantSlicePosition}
       data-volume-cache-status={volumeCacheStatus}
+      data-slice-load-status={serverSliceStatus}
       data-display-window={`${formatWindowValue(displayWindow?.min ?? 0)}-${formatWindowValue(displayWindow?.max ?? 255)}`}
       data-display-domain={`${formatWindowValue(displayDomain?.min ?? 0)}-${formatWindowValue(displayDomain?.max ?? 255)}`}
     />
@@ -2797,19 +3242,23 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   };
 
   useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+
     const loadWorkbenchData = async () => {
       try {
         setLoading(true);
         setError(null);
 
-        const [batchResp, partResp, workspaceResp, configResp, metadataResp, imageResp] = await Promise.all([
-          fetch(`/api/projects/${projectId}/batches`),
-          fetch(`/api/projects/${projectId}/parts`),
-          fetch(`/api/projects/${projectId}/workspace-state`),
-          fetch(`/api/projects/${projectId}/configuration`),
-          fetch(`/api/projects/${projectId}/metadata-dict`),
-          fetch(`/api/projects/${projectId}/images?include_deleted=true&limit=5000`),
+        const [batchResp, partResp, workspaceResp, configResp, metadataResp, imagePageData] = await Promise.all([
+          fetch(`/api/projects/${projectId}/batches`, { signal: controller.signal }),
+          fetch(`/api/projects/${projectId}/parts`, { signal: controller.signal }),
+          fetch(`/api/projects/${projectId}/workspace-state`, { signal: controller.signal }),
+          fetch(`/api/projects/${projectId}/configuration`, { signal: controller.signal }),
+          fetch(`/api/projects/${projectId}/metadata-dict`, { signal: controller.signal }),
+          fetchProjectImagePages(projectId, { includeDeleted: true, signal: controller.signal }),
         ]);
+        if (!active) return;
         if (!batchResp.ok) {
           throw new Error(`Failed to load batches (${batchResp.status})`);
         }
@@ -2817,14 +3266,15 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
           throw new Error(`Failed to load parts (${partResp.status})`);
         }
 
-        const [batchData, partData, workspaceData, configData, metadataData, imageData] = await Promise.all([
+        const [batchData, partData, workspaceData, configData, metadataData] = await Promise.all([
           batchResp.json(),
           partResp.json(),
           workspaceResp.ok ? workspaceResp.json() : Promise.resolve({ state: {} }),
           configResp.ok ? configResp.json() : Promise.resolve({}),
           metadataResp.ok ? metadataResp.json() : Promise.resolve({}),
-          imageResp.ok ? imageResp.json() : Promise.resolve([]),
         ]);
+        if (!active) return;
+        const imageData = Array.isArray(imagePageData?.items) ? imagePageData.items : [];
         const safeBatches = Array.isArray(batchData) ? batchData : [];
         const safeParts = Array.isArray(partData) ? partData : [];
         const savedState = workspaceData?.state && typeof workspaceData.state === 'object' ? workspaceData.state : {};
@@ -2863,14 +3313,21 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
           setSelectedPartId(safeParts[0].id);
         }
       } catch (err) {
+        if (!active || err?.name === 'AbortError') return;
         setError(err.message || 'Failed to load inspection workbench data');
       } finally {
-        setWorkspaceStateLoaded(true);
-        setLoading(false);
+        if (active) {
+          setWorkspaceStateLoaded(true);
+          setLoading(false);
+        }
       }
     };
 
     loadWorkbenchData();
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, [projectId]);
 
   useEffect(() => {
@@ -3243,16 +3700,35 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
   );
   const volumeCacheState = useMprVolumeCache(volumeImageStack, mprDimensions);
   const volumeOverlayCacheStates = useMprVolumeCaches(volumeOverlayStacks, mprDimensions);
-  const activeVolumeOverlayCaches = renderCategories.includes('overlay')
-    ? volumeOverlayCacheStates.map((state) => state.cache).filter(Boolean)
-    : [];
+  const activeVolumeOverlayCaches = useMemo(
+    () => (renderCategories.includes('overlay')
+      ? volumeOverlayCacheStates.map((state) => state.cache).filter(Boolean)
+      : []),
+    [renderCategories, volumeOverlayCacheStates],
+  );
+  const hasVolumeImageSource = hasMprVolumeSource(volumeImageStack);
   const shellImageLayers = useMemo(
     () => getShellImageLayers(selectedPart, projectImageLookup),
     [projectImageLookup, selectedPart],
   );
   const volumePreviewLayers = useMemo(() => {
-    if (volumeImageStack.length === 0) return [];
     const maxLayers = 12;
+    if (isServerVolumeDescriptor(volumeImageStack)) {
+      const axialCount = Math.max(1, Number(volumeImageStack.dimensions?.axial) || 1);
+      const step = Math.max(1, Math.floor(axialCount / maxLayers));
+      return Array.from({ length: axialCount }, (_unused, sliceIndex) => sliceIndex)
+        .filter((sliceIndex) => sliceIndex % step === 0)
+        .slice(0, maxLayers)
+        .map((sliceIndex, index, entries) => ({
+          ...volumeImageStack,
+          id: `${volumeImageStack.imageId}:axial:${sliceIndex}`,
+          sliceIndex,
+          url: getServerVolumeSliceUrl(volumeImageStack, 'axial', sliceIndex),
+          depth: entries.length <= 1 ? 0 : -48 + (index / (entries.length - 1)) * 96,
+          opacity: entries.length <= 1 ? 0.86 : 0.18 + (index / (entries.length - 1)) * 0.26,
+        }));
+    }
+    if (!Array.isArray(volumeImageStack) || volumeImageStack.length === 0) return [];
     const step = Math.max(1, Math.floor(volumeImageStack.length / maxLayers));
     return volumeImageStack
       .filter((_, index) => index % step === 0)
@@ -3263,13 +3739,19 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
         opacity: entries.length <= 1 ? 0.86 : 0.18 + (index / (entries.length - 1)) * 0.26,
       }));
   }, [volumeImageStack]);
+  const volumeRendererImageStack = isServerVolumeDescriptor(volumeImageStack)
+    ? volumePreviewLayers
+    : getMprVolumeSourceEntries(volumeImageStack);
   const getMprAnnotationImage = useCallback((axis) => {
-    if (axis === 'axial' && volumeImageStack.length > 0) {
+    if (isServerVolumeDescriptor(volumeImageStack)) {
+      return volumeImageStack.imageId || selectedImageRef || null;
+    }
+    if (axis === 'axial' && Array.isArray(volumeImageStack) && volumeImageStack.length > 0) {
       const target = slicePosition.axial;
       const match = volumeImageStack.find((entry) => Number(entry.sliceIndex) === Number(target)) || volumeImageStack[Math.min(target, volumeImageStack.length - 1)] || volumeImageStack[0];
       return match?.id || match?.imageId || selectedImageRef || null;
     }
-    return volumeImageStack[0]?.id || volumeImageStack[0]?.imageId || selectedImageRef || null;
+    return getMprVolumeSourceEntries(volumeImageStack)[0]?.id || getMprVolumeSourceEntries(volumeImageStack)[0]?.imageId || selectedImageRef || null;
   }, [selectedImageRef, slicePosition.axial, volumeImageStack]);
 
   const getMprAnnotationSliceContext = useCallback((axis, explicitSliceIndex = slicePosition[axis]) => {
@@ -3291,7 +3773,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 
   const openMprAnnotationTool = useCallback((axis, mode) => {
     const sliceContext = getMprAnnotationSliceContext(axis);
-    const hasVolumeStack = volumeImageStack.length > 0;
+    const hasVolumeStack = hasMprVolumeSource(volumeImageStack);
     const fallbackImage = !hasVolumeStack
       ? getFallbackProjectionImage(sliceContext.axis, shellImageLayers)
       : null;
@@ -5432,7 +5914,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
             </div>
           </div>
           <div className="mpr-grid mpr-grid-four" data-testid="mpr-grid">
-            {volumeCacheState.status === 'loading' && volumeImageStack.length > 0 && (
+            {volumeCacheState.status === 'loading' && hasVolumeImageSource && (
               <div className="mpr-grid-loading" role="status" aria-live="polite">
                 <strong>Preparing MPR slices…</strong>
                 <span>{getMprSliceCachingMessage(volumeCacheState.progress)}</span>
@@ -5513,7 +5995,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                       }
                     }}
                   >
-                    {volumeImageStack.length > 0 ? (
+                    {hasVolumeImageSource ? (
                       <MprSliceCanvas
                         axis={axis}
                         volumeCache={volumeCacheState.cache}
@@ -5641,7 +6123,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   <Pt3GaussianSplatViewer
                     part={selectedPart}
                     projectId={projectId}
-                    volumeImageStack={volumeImageStack}
+                    volumeImageStack={volumeRendererImageStack}
                     splatParameters={splatParameters}
                     mode={effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.volume3d
                       ? 'volume'
@@ -5714,7 +6196,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                   ) : !canShowStackReconstruction && !canShowShellReconstruction ? (
                     <span className="volume-reconstruction-empty">No 3D reference</span>
                   ) : null}
-                  {volumeCacheState.status === 'loading' && volumeImageStack.length > 0 && (
+                  {volumeCacheState.status === 'loading' && hasVolumeImageSource && (
                     <span className="volume-cache-status">Caching slices</span>
                   )}
                   <span className="volume-box volume-face-front" />
@@ -6717,7 +7199,7 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
                 onDoubleClick={completeSegmentationPolygon}
                 data-testid="segmentation-helper-stage"
               >
-                {volumeImageStack.length > 0 ? (
+                {hasVolumeImageSource ? (
                   <MprSliceCanvas
                     axis={axis}
                     volumeCache={volumeCacheState.cache}
@@ -8305,5 +8787,19 @@ function InspectionWorkbenchPanel({ projectId, projectType, hierarchy, launchFil
 }
 
 export { getVolumeSourceImages, getVolumeOverlayStacks };
-export { MPR_AXES, MPR_AXIS_CONFIG, MprSliceCanvas, getMprAxisImageDimensions, getMprSliceCachingMessage, useMprVolumeCache };
+export {
+  MPR_AXES,
+  MPR_AXIS_CONFIG,
+  MPR_SERVER_VOLUME_KIND,
+  MprSliceCanvas,
+  getMprAxisImageDimensions,
+  getMprSliceCanvasCacheStats,
+  getMprSliceCachingMessage,
+  getServerVolumePrefetchSources,
+  getServerVolumeSliceUrl,
+  drawServerMprSliceImage,
+  rememberSliceCanvas,
+  resetMprSliceCanvasCacheForTests,
+  useMprVolumeCache,
+};
 export default InspectionWorkbenchPanel;

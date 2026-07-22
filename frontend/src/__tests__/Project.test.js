@@ -5,19 +5,24 @@ import { PROJECT_TYPE_OPTIONS } from '../projectTypes';
 
 let mockPendingAutosave = false;
 let mockSearch = '';
+let mockProjectId = 'proj-1';
 let mockFlushResolve = null;
+let mockUploadCompletionResult = null;
+let mockLatestUploadComplete = null;
+let mockLatestBundleImportComplete = null;
+let mockLatestUploaderSetError = null;
 const mockFlushPendingAutosave = jest.fn();
 const mockNavigate = jest.fn();
 const mockNavigateToLocation = (to) => {
   const search = to?.search ? `?${String(to.search).replace(/^\?/, '')}` : '';
   mockSearch = search;
-  window.history.pushState({}, '', `${to?.pathname || '/project/proj-1'}${search}`);
+  window.history.pushState({}, '', `${to?.pathname || `/project/${mockProjectId}`}${search}`);
 };
 
 jest.mock('react-router-dom', () => ({
-  useParams: () => ({ id: 'proj-1' }),
+  useParams: () => ({ id: mockProjectId }),
   useNavigate: () => mockNavigate,
-  useLocation: () => ({ pathname: '/project/proj-1', search: mockSearch }),
+  useLocation: () => ({ pathname: `/project/${mockProjectId}`, search: mockSearch }),
 }));
 
 jest.mock('../components/ProjectConfigurationPanel', () => {
@@ -38,9 +43,50 @@ jest.mock('../components/ProjectConfigurationPanel', () => {
   });
 });
 
-jest.mock('../components/ImageUploader', () => () => <div>Image uploader</div>);
-jest.mock('../components/MetadataManager', () => () => <div>Metadata manager</div>);
-jest.mock('../components/ClassManager', () => () => <div>Class manager</div>);
+jest.mock('../components/ImageUploader', () => function MockImageUploader({ onUploadComplete, setError }) {
+  mockLatestUploadComplete = onUploadComplete;
+  mockLatestUploaderSetError = setError;
+  return (
+    <div>
+      <div>Image uploader</div>
+      <button
+        type="button"
+        onClick={() => onUploadComplete?.(
+          [{ id: 'uploaded-image', filename: 'uploaded.png' }],
+          { source: 'local_upload', confirmedSucceeded: 1, completionUnknown: 0 },
+        )}
+      >
+        Complete mocked upload
+      </button>
+      <button
+        type="button"
+        onClick={async () => {
+          mockUploadCompletionResult = await onUploadComplete?.([], {
+            source: 's3_import',
+            confirmedSucceeded: 0,
+            completionUnknown: 1,
+            partsMayHaveChanged: true,
+            requiresAuthoritativeReconciliation: true,
+          });
+        }}
+      >
+        Complete uncertain mocked upload
+      </button>
+    </div>
+  );
+});
+jest.mock('../components/MetadataManager', () => ({ metadata }) => (
+  <div>
+    <div>Metadata manager</div>
+    <div data-testid="metadata-manager-value">{JSON.stringify(metadata)}</div>
+  </div>
+));
+jest.mock('../components/ClassManager', () => ({ classes }) => (
+  <div>
+    <div>Class manager</div>
+    <div data-testid="class-manager-value">{JSON.stringify(classes)}</div>
+  </div>
+));
 jest.mock('../components/InspectionWorkbenchPanel', () => {
   const React = require('react');
   const MockInspectionWorkbenchPanel = ({ launchFilters, onInspectionShareStateChange }) => (
@@ -80,15 +126,742 @@ jest.mock('../components/InspectionWorkbenchPanel', () => {
   };
 });
 jest.mock('../components/AnalyzeWorkbenchTab', () => () => <div>Analyze workbench</div>);
-jest.mock('../components/ProjectDataSummaryTab', () => () => <div>Project data summary</div>);
-jest.mock('../components/ProjectDataExportPanel', () => () => <div>Project data export</div>);
+jest.mock('../components/ProjectDataSummaryTab', () => ({ counts, loading }) => (
+  <div>
+    <div>Project data summary</div>
+    {!loading && <div data-testid="project-data-counts">{JSON.stringify(counts)}</div>}
+  </div>
+));
+jest.mock('../components/ProjectDataExportPanel', () => function MockProjectDataExportPanel({ onImportComplete }) {
+  mockLatestBundleImportComplete = onImportComplete;
+  return (
+    <div>
+      <div>Project data export</div>
+      <button type="button" onClick={() => onImportComplete?.({ project: {} })}>
+        Complete mocked bundle import
+      </button>
+    </div>
+  );
+});
 jest.mock('../components/ProjectReportTab', () => () => <div>Project report</div>);
 jest.mock('../components/ProjectPhaseFlow', () => () => <div>Project phase flow</div>);
-jest.mock('../components/ImagesToPartsTab', () => () => <div>Images to parts</div>);
-jest.mock('../components/OverlaysTab', () => () => <div>Overlays tab</div>);
+jest.mock('../components/ImagesToPartsTab', () => ({ images = [], parts = [] }) => (
+  <div>Images to parts ({images.length} images, {parts.length} parts)</div>
+));
+jest.mock('../components/OverlaysTab', () => ({ images = [], parts = [] }) => (
+  <div>Overlays tab ({images.length} images, {parts.length} parts)</div>
+));
 jest.mock('../components/BatchesTab', () => () => <div>Batches</div>);
 jest.mock('../components/RemoveImagesTab', () => () => <div>Remove images</div>);
 jest.mock('../components/ProjectDataMetadataTab', () => () => <div>Project data metadata</div>);
+
+beforeEach(() => {
+  mockProjectId = 'proj-1';
+  mockLatestUploadComplete = null;
+  mockLatestBundleImportComplete = null;
+  mockLatestUploaderSetError = null;
+});
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function jsonResponse(payload, { ok = true, status = 200 } = {}) {
+  return {
+    ok,
+    status,
+    statusText: '',
+    url: '',
+    headers: { get: () => null },
+    clone() { return this; },
+    json: async () => payload,
+    text: async () => '',
+  };
+}
+
+
+describe('Project image summary loading', () => {
+  beforeEach(() => {
+    mockPendingAutosave = false;
+    mockSearch = '?tab=project_data';
+    mockNavigate.mockClear();
+    mockUploadCompletionResult = null;
+    mockNavigate.mockImplementation(mockNavigateToLocation);
+    window.history.pushState({}, '', `/project/proj-1${mockSearch}`);
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/projects/proj-1') {
+        return Promise.resolve({ ok: true, json: async () => ({ id: 'proj-1', name: 'Large Image Project', project_type: 'PT1' }) });
+      }
+      if (url === '/api/projects/proj-1/metadata-dict') {
+        return Promise.resolve({ ok: true, json: async () => ({}) });
+      }
+      if (url === '/api/projects/proj-1/classes') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/projects/proj-1/data-summary') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            active_image_count: 2345,
+            deleted_image_count: 9,
+            total_image_bytes: 123456,
+            part_count: 2,
+            image_metadata_fields: 3,
+            annotation_count: 7,
+            overlay_layer_count: 4,
+          }),
+        });
+      }
+      if (url === '/api/projects/proj-1/parts') {
+        return Promise.resolve({ ok: true, json: async () => [{ id: 'part-1' }, { id: 'part-2' }] });
+      }
+      if (String(url).startsWith('/api/projects/proj-1/images-page?')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ items: [], total: 0, next_cursor: null, has_more: false }),
+        });
+      }
+      if (url === '/api/projects/proj-1/configuration') {
+        return Promise.resolve({ ok: true, json: async () => ({ config: {} }) });
+      }
+      if (String(url).startsWith('/interface-hierarchy.toml')) {
+        return Promise.resolve({ ok: false, text: async () => '' });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('loads lightweight project counts without fetching parts, exports, or image collections', async () => {
+    render(<Project />);
+
+    expect(await screen.findByTestId('project-data-counts')).toHaveTextContent(JSON.stringify({
+      partsLoaded: 2,
+      rawImages: 2345,
+      imageMetadata: 3,
+      overlayImages: 4,
+      annotations: 7,
+    }));
+    expect(screen.getByRole('tab', { name: 'Load Images' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Images to Parts' })).toBeInTheDocument();
+
+    const urls = global.fetch.mock.calls.map(([url]) => String(url));
+    expect(urls.filter((url) => url === '/api/projects/proj-1/data-summary')).toHaveLength(1);
+    expect(urls).not.toContain('/api/projects/proj-1/parts');
+    expect(urls).not.toContain('/api/projects/proj-1/export-bundle-json');
+    expect(urls.some((url) => url.includes('/images-page?') || url.includes('/images?'))).toBe(false);
+  });
+
+  test('refreshes the authoritative image summary once after upload completion', async () => {
+    render(<Project />);
+
+    await screen.findByTestId('project-data-counts');
+    expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/data-summary')).toHaveLength(1);
+    expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/metadata-dict')).toHaveLength(1);
+    expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/configuration')).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Complete mocked upload' }));
+
+    await waitFor(() => {
+      expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/data-summary')).toHaveLength(2);
+    });
+    const postUploadUrls = global.fetch.mock.calls.map(([url]) => String(url));
+    expect(postUploadUrls).not.toContain('/api/projects/proj-1/parts');
+    expect(postUploadUrls).not.toContain('/api/projects/proj-1/export-bundle-json');
+    expect(postUploadUrls.some((url) => url.includes('/images-page?') || url.includes('/images?'))).toBe(false);
+    expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/metadata-dict')).toHaveLength(1);
+    expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/configuration')).toHaveLength(1);
+  });
+
+  test('awaits complete image and part reconciliation for an uncertain upload', async () => {
+    render(<Project />);
+    await screen.findByTestId('project-data-counts');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Complete uncertain mocked upload' }));
+
+    await waitFor(() => expect(mockUploadCompletionResult).toEqual({
+      reconciled: true,
+      authoritative: true,
+    }));
+    expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/data-summary')).toHaveLength(2);
+    expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/parts')).toHaveLength(1);
+    expect(global.fetch.mock.calls.filter(([url]) => String(url).includes('/images-page?'))).toHaveLength(1);
+  });
+
+  test('reports an uncertain upload as unreconciled when an authoritative collection reload fails', async () => {
+    const defaultFetch = global.fetch.getMockImplementation();
+    global.fetch.mockImplementation((url, options) => {
+      if (String(url).startsWith('/api/projects/proj-1/images-page?')) {
+        return Promise.resolve({ ok: false, status: 503 });
+      }
+      return defaultFetch(url, options);
+    });
+
+    render(<Project />);
+    await screen.findByTestId('project-data-counts');
+    fireEvent.click(screen.getByRole('button', { name: 'Complete uncertain mocked upload' }));
+
+    await waitFor(() => expect(mockUploadCompletionResult).toEqual({
+      reconciled: false,
+      authoritative: true,
+    }));
+    expect(global.fetch.mock.calls.filter(([url]) => String(url).includes('/images-page?'))).toHaveLength(1);
+    expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/parts')).toHaveLength(1);
+  });
+
+  test('refreshes summary, metadata, and configuration after a bundle import without eager collection loads', async () => {
+    render(<Project />);
+    await screen.findByTestId('project-data-counts');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Complete mocked bundle import' }));
+
+    await waitFor(() => {
+      expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/data-summary')).toHaveLength(2);
+      expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/metadata-dict')).toHaveLength(2);
+      expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/configuration')).toHaveLength(2);
+    });
+    const urls = global.fetch.mock.calls.map(([url]) => String(url));
+    expect(urls).not.toContain('/api/projects/proj-1/parts');
+    expect(urls.some((url) => url.includes('/images-page?') || url.includes('/images?'))).toBe(false);
+  });
+
+  test('loads complete parts and all 2501 images only when a consuming tab is opened', async () => {
+    const defaultFetch = global.fetch.getMockImplementation();
+    const images = Array.from({ length: 2501 }, (_, index) => ({
+      id: `image-${index}`,
+      filename: `image-${index}.png`,
+    }));
+    global.fetch.mockImplementation((url, options) => {
+      if (String(url).startsWith('/api/projects/proj-1/images-page?')) {
+        const parsed = new URL(String(url), 'http://vista.test');
+        const offset = Number(parsed.searchParams.get('cursor') || 0);
+        const limit = Number(parsed.searchParams.get('limit'));
+        const pageItems = images.slice(offset, offset + limit);
+        const nextOffset = offset + pageItems.length;
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            items: pageItems,
+            total: images.length,
+            next_cursor: nextOffset < images.length ? String(nextOffset) : null,
+            has_more: nextOffset < images.length,
+          }),
+        });
+      }
+      return defaultFetch(url, options);
+    });
+
+    render(<Project />);
+    await screen.findByTestId('project-data-counts');
+    expect(global.fetch.mock.calls.some(([url]) => String(url).includes('/images-page?'))).toBe(false);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Images to Parts' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('Loading complete project data');
+    expect(await screen.findByText('Images to parts (2501 images, 2 parts)')).toBeInTheDocument();
+
+    expect(global.fetch.mock.calls.filter(([url]) => String(url).includes('/images-page?'))).toHaveLength(6);
+    expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/parts')).toHaveLength(1);
+  });
+
+  test('does not let an in-flight pre-upload image snapshot clear the stale marker', async () => {
+    const defaultFetch = global.fetch.getMockImplementation();
+    let resolveFirstImagePage;
+    let imagePageRequests = 0;
+    global.fetch.mockImplementation((url, options) => {
+      if (String(url).startsWith('/api/projects/proj-1/images-page?')) {
+        imagePageRequests += 1;
+        if (imagePageRequests === 1) {
+          return new Promise((resolve) => {
+            resolveFirstImagePage = resolve;
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            items: [{ id: 'fresh-image', filename: 'fresh.png' }],
+            total: 1,
+            next_cursor: null,
+            has_more: false,
+          }),
+        });
+      }
+      return defaultFetch(url, options);
+    });
+
+    render(<Project />);
+    await screen.findByTestId('project-data-counts');
+    fireEvent.click(screen.getByRole('tab', { name: 'Images to Parts' }));
+    await waitFor(() => expect(imagePageRequests).toBe(1));
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Load Images' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Complete mocked upload' }));
+    await waitFor(() => {
+      expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/data-summary')).toHaveLength(2);
+    });
+
+    await act(async () => {
+      resolveFirstImagePage({
+        ok: true,
+        json: async () => ({
+          items: [{ id: 'stale-image', filename: 'stale.png' }],
+          total: 1,
+          next_cursor: null,
+          has_more: false,
+        }),
+      });
+      await Promise.resolve();
+    });
+    expect(imagePageRequests).toBe(1);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Images to Parts' }));
+    expect(await screen.findByText('Images to parts (1 images, 2 parts)')).toBeInTheDocument();
+    expect(imagePageRequests).toBe(2);
+  });
+
+  test('continues authoritative reconciliation after an in-flight image snapshot becomes stale', async () => {
+    const defaultFetch = global.fetch.getMockImplementation();
+    let resolveFirstImagePage;
+    let imagePageRequests = 0;
+    global.fetch.mockImplementation((url, options) => {
+      if (String(url).startsWith('/api/projects/proj-1/images-page?')) {
+        imagePageRequests += 1;
+        if (imagePageRequests === 1) {
+          return new Promise((resolve) => {
+            resolveFirstImagePage = resolve;
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            items: [{ id: 'fresh-image', filename: 'fresh.png' }],
+            total: 1,
+            next_cursor: null,
+            has_more: false,
+          }),
+        });
+      }
+      return defaultFetch(url, options);
+    });
+
+    render(<Project />);
+    await screen.findByTestId('project-data-counts');
+    fireEvent.click(screen.getByRole('tab', { name: 'Images to Parts' }));
+    await waitFor(() => expect(imagePageRequests).toBe(1));
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Load Images' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Complete uncertain mocked upload' }));
+
+    await act(async () => {
+      resolveFirstImagePage({
+        ok: true,
+        json: async () => ({
+          items: [{ id: 'stale-image', filename: 'stale.png' }],
+          total: 1,
+          next_cursor: null,
+          has_more: false,
+        }),
+      });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(mockUploadCompletionResult).toEqual({
+      reconciled: true,
+      authoritative: true,
+    }));
+    expect(imagePageRequests).toBe(2);
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Images to Parts' }));
+    expect(await screen.findByText('Images to parts (1 images, 2 parts)')).toBeInTheDocument();
+  });
+
+  test('waits for an explicit retry after a lazy image page fails', async () => {
+    const defaultFetch = global.fetch.getMockImplementation();
+    let failImages = true;
+    global.fetch.mockImplementation((url, options) => {
+      if (String(url).startsWith('/api/projects/proj-1/images-page?')) {
+        if (failImages) return Promise.resolve({ ok: false, status: 503 });
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ items: [], total: 0, next_cursor: null, has_more: false }),
+        });
+      }
+      return defaultFetch(url, options);
+    });
+
+    render(<Project />);
+    await screen.findByTestId('project-data-counts');
+    fireEvent.click(screen.getByRole('tab', { name: 'Images to Parts' }));
+
+    expect(await screen.findByText('Failed to load project images (503)')).toBeInTheDocument();
+    expect(global.fetch.mock.calls.filter(([url]) => String(url).includes('/images-page?'))).toHaveLength(1);
+
+    failImages = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Images to parts (0 images, 2 parts)')).toBeInTheDocument();
+    expect(global.fetch.mock.calls.filter(([url]) => String(url).includes('/images-page?'))).toHaveLength(2);
+  });
+});
+
+
+describe('Project route transition quarantine', () => {
+  beforeEach(() => {
+    mockProjectId = 'project-a';
+    mockSearch = '?tab=project_data';
+    mockNavigate.mockClear();
+    mockNavigate.mockImplementation(mockNavigateToLocation);
+    window.history.pushState({}, '', `/project/${mockProjectId}${mockSearch}`);
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('aborts and ignores a deferred project A bootstrap response after navigating to project B', async () => {
+    const projectAResponse = deferred();
+    let projectASignal;
+    global.fetch = jest.fn((url, options = {}) => {
+      if (url === '/api/projects/project-a') {
+        projectASignal = options.signal;
+        return projectAResponse.promise;
+      }
+      if (url === '/api/projects/project-b') {
+        return Promise.resolve(jsonResponse({ id: 'project-b', name: 'Project B', project_type: 'PT1' }));
+      }
+      if (url === '/api/projects/project-b/metadata-dict') {
+        return Promise.resolve(jsonResponse({ owner: 'B' }));
+      }
+      if (url === '/api/projects/project-b/classes') {
+        return Promise.resolve(jsonResponse([{ id: 'class-b' }]));
+      }
+      if (url === '/api/projects/project-b/data-summary') {
+        return Promise.resolve(jsonResponse({
+          active_image_count: 22,
+          part_count: 2,
+          image_metadata_fields: 4,
+          annotation_count: 6,
+          overlay_layer_count: 8,
+        }));
+      }
+      if (url === '/api/projects/project-b/configuration') {
+        return Promise.resolve(jsonResponse({ config: {} }));
+      }
+      if (String(url).startsWith('/interface-hierarchy.toml')) {
+        return Promise.resolve({ ok: false, text: async () => '' });
+      }
+      return Promise.resolve(jsonResponse({}));
+    });
+
+    const view = render(<Project />);
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith(
+      '/api/projects/project-a',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    ));
+    expect(projectASignal.aborted).toBe(false);
+
+    await act(async () => {
+      mockProjectId = 'project-b';
+      window.history.pushState({}, '', `/project/${mockProjectId}${mockSearch}`);
+      view.rerender(<Project />);
+    });
+
+    expect(await screen.findByText('Project B')).toBeInTheDocument();
+    expect(await screen.findByTestId('project-data-counts')).toHaveTextContent('"rawImages":22');
+    expect(projectASignal.aborted).toBe(true);
+
+    await act(async () => {
+      projectAResponse.resolve(jsonResponse({ id: 'project-a', name: 'Late Project A', project_type: 'PT3' }));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Project B')).toBeInTheDocument();
+    expect(screen.queryByText('Late Project A')).not.toBeInTheDocument();
+    expect(screen.queryByText(/HTTP error/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading project data...')).not.toBeInTheDocument();
+  });
+
+  test('aborts project A lazy image pagination and parts loading when navigating to project B', async () => {
+    const projectASecondImagePage = deferred();
+    const projectAParts = deferred();
+    let projectAImagePageRequests = 0;
+    let projectAImageSignal;
+    let projectAPartsSignal;
+
+    const rejectOnAbort = (signal, request) => {
+      signal.addEventListener('abort', () => {
+        const abortError = new Error('The operation was aborted');
+        abortError.name = 'AbortError';
+        request.reject(abortError);
+      }, { once: true });
+    };
+
+    global.fetch = jest.fn((url, options = {}) => {
+      if (String(url).startsWith('/interface-hierarchy.toml')) {
+        return Promise.resolve({ ok: false, text: async () => '' });
+      }
+      if (String(url).startsWith('/api/projects/project-a/images-page?')) {
+        projectAImagePageRequests += 1;
+        projectAImageSignal = options.signal;
+        if (projectAImagePageRequests === 1) {
+          return Promise.resolve(jsonResponse({
+            items: [{ id: 'project-a-image-1', filename: 'a-1.png' }],
+            total: 3,
+            next_cursor: 'project-a-cursor-2',
+            has_more: true,
+          }));
+        }
+        rejectOnAbort(options.signal, projectASecondImagePage);
+        return projectASecondImagePage.promise;
+      }
+      if (url === '/api/projects/project-a/parts') {
+        projectAPartsSignal = options.signal;
+        rejectOnAbort(options.signal, projectAParts);
+        return projectAParts.promise;
+      }
+      if (String(url).startsWith('/api/projects/project-b/images-page?')) {
+        return Promise.resolve(jsonResponse({
+          items: [],
+          total: 0,
+          next_cursor: null,
+          has_more: false,
+        }));
+      }
+
+      const match = String(url).match(/^\/api\/projects\/(project-[ab])(?:\/(.*))?$/);
+      if (!match) return Promise.resolve(jsonResponse({}));
+      const [, projectId, suffix = ''] = match;
+      if (!suffix) {
+        return Promise.resolve(jsonResponse({
+          id: projectId,
+          name: projectId === 'project-a' ? 'Project A' : 'Project B',
+          project_type: 'PT1',
+        }));
+      }
+      if (suffix === 'metadata-dict') return Promise.resolve(jsonResponse({}));
+      if (suffix === 'classes') return Promise.resolve(jsonResponse([]));
+      if (suffix === 'configuration') return Promise.resolve(jsonResponse({ config: {} }));
+      if (suffix === 'data-summary') {
+        return Promise.resolve(jsonResponse({
+          active_image_count: 0,
+          part_count: 0,
+          image_metadata_fields: 0,
+          annotation_count: 0,
+          overlay_layer_count: 0,
+        }));
+      }
+      if (suffix === 'parts') return Promise.resolve(jsonResponse([]));
+      return Promise.resolve(jsonResponse({}));
+    });
+
+    const view = render(<Project />);
+    expect(await screen.findByText('Project A')).toBeInTheDocument();
+    await screen.findByTestId('project-data-counts');
+    fireEvent.click(screen.getByRole('tab', { name: 'Images to Parts' }));
+    await waitFor(() => {
+      expect(projectAImagePageRequests).toBe(2);
+      expect(projectAImageSignal).toEqual(expect.any(AbortSignal));
+      expect(projectAPartsSignal).toEqual(expect.any(AbortSignal));
+    });
+    expect(projectAImageSignal.aborted).toBe(false);
+    expect(projectAPartsSignal.aborted).toBe(false);
+
+    await act(async () => {
+      mockProjectId = 'project-b';
+      window.history.pushState({}, '', `/project/${mockProjectId}${mockSearch}`);
+      view.rerender(<Project />);
+    });
+
+    expect(await screen.findByText('Project B')).toBeInTheDocument();
+    expect(projectAImageSignal.aborted).toBe(true);
+    expect(projectAPartsSignal.aborted).toBe(true);
+    expect(projectAImagePageRequests).toBe(2);
+    expect(await screen.findByText('Images to parts (0 images, 0 parts)')).toBeInTheDocument();
+    expect(screen.queryByText(/operation was aborted/i)).not.toBeInTheDocument();
+  });
+
+  test('ignores deferred project A metadata, classes, summary, configuration, and errors after project B loads', async () => {
+    mockSearch = '?tab=project_configuration';
+    window.history.pushState({}, '', `/project/${mockProjectId}${mockSearch}`);
+    const deferredA = {
+      metadata: deferred(),
+      classes: deferred(),
+      summary: deferred(),
+      configuration: deferred(),
+    };
+    const projectASecondarySignals = [];
+
+    global.fetch = jest.fn((url, options = {}) => {
+      if (url === '/api/projects/project-a') {
+        return Promise.resolve(jsonResponse({ id: 'project-a', name: 'Project A', project_type: 'PT1' }));
+      }
+      const aKey = {
+        '/api/projects/project-a/metadata-dict': 'metadata',
+        '/api/projects/project-a/classes': 'classes',
+        '/api/projects/project-a/data-summary': 'summary',
+        '/api/projects/project-a/configuration': 'configuration',
+      }[url];
+      if (aKey) {
+        projectASecondarySignals.push(options.signal);
+        return deferredA[aKey].promise;
+      }
+      if (url === '/api/projects/project-b') {
+        return Promise.resolve(jsonResponse({ id: 'project-b', name: 'Project B', project_type: 'PT1' }));
+      }
+      if (url === '/api/projects/project-b/metadata-dict') {
+        return Promise.resolve(jsonResponse({ owner: 'B' }));
+      }
+      if (url === '/api/projects/project-b/classes') {
+        return Promise.resolve(jsonResponse([{ id: 'class-b' }]));
+      }
+      if (url === '/api/projects/project-b/data-summary') {
+        return Promise.resolve(jsonResponse({
+          active_image_count: 22,
+          part_count: 2,
+          image_metadata_fields: 4,
+          annotation_count: 6,
+          overlay_layer_count: 8,
+        }));
+      }
+      if (url === '/api/projects/project-b/configuration') {
+        return Promise.resolve(jsonResponse({ config: { ui_sections: { 'main.report': true } } }));
+      }
+      if (String(url).startsWith('/interface-hierarchy.toml')) {
+        return Promise.resolve({ ok: false, text: async () => '' });
+      }
+      return Promise.resolve(jsonResponse({}));
+    });
+
+    const view = render(<Project />);
+    await waitFor(() => expect(projectASecondarySignals).toHaveLength(4));
+
+    await act(async () => {
+      mockProjectId = 'project-b';
+      window.history.pushState({}, '', `/project/${mockProjectId}${mockSearch}`);
+      view.rerender(<Project />);
+    });
+
+    expect(await screen.findByText('Project B')).toBeInTheDocument();
+    expect(await screen.findByTestId('metadata-manager-value')).toHaveTextContent('{"owner":"B"}');
+    expect(screen.getByTestId('class-manager-value')).toHaveTextContent('[{"id":"class-b"}]');
+    expect(screen.getByRole('tab', { name: 'Project Data' })).toBeInTheDocument();
+    projectASecondarySignals.forEach((signal) => expect(signal.aborted).toBe(true));
+
+    await act(async () => {
+      deferredA.metadata.resolve(jsonResponse({ owner: 'A' }));
+      deferredA.classes.reject(new Error('late project A classes failure'));
+      deferredA.summary.resolve(jsonResponse({
+        active_image_count: 999,
+        part_count: 999,
+        image_metadata_fields: 999,
+        annotation_count: 999,
+        overlay_layer_count: 999,
+      }));
+      deferredA.configuration.resolve(jsonResponse({
+        config: { ui_sections: { 'main.project_data': false, 'main.report': false } },
+      }));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Project B')).toBeInTheDocument();
+    expect(screen.getByTestId('metadata-manager-value')).toHaveTextContent('{"owner":"B"}');
+    expect(screen.getByTestId('class-manager-value')).toHaveTextContent('[{"id":"class-b"}]');
+    expect(screen.queryByText(/late project A classes failure/)).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Project Data' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Project Data' }));
+    expect(await screen.findByTestId('project-data-counts')).toHaveTextContent(JSON.stringify({
+      partsLoaded: 2,
+      rawImages: 22,
+      imageMetadata: 4,
+      overlayImages: 8,
+      annotations: 6,
+    }));
+  });
+
+  test('quarantines project A upload, bundle, and child error completions invoked after project B navigation', async () => {
+    global.fetch = jest.fn((url) => {
+      if (String(url).startsWith('/interface-hierarchy.toml')) {
+        return Promise.resolve({ ok: false, text: async () => '' });
+      }
+      if (String(url).startsWith('/api/projects/project-b/images-page?')) {
+        return Promise.resolve(jsonResponse({
+          items: [{ id: 'project-b-image', filename: 'b.png' }],
+          total: 1,
+          next_cursor: null,
+          has_more: false,
+        }));
+      }
+      const match = String(url).match(/^\/api\/projects\/(project-[ab])(?:\/(.*))?$/);
+      if (!match) return Promise.resolve(jsonResponse({}));
+      const [, projectId, suffix = ''] = match;
+      const isB = projectId === 'project-b';
+      if (!suffix) return Promise.resolve(jsonResponse({ id: projectId, name: isB ? 'Project B' : 'Project A', project_type: 'PT1' }));
+      if (suffix === 'metadata-dict') return Promise.resolve(jsonResponse({ owner: isB ? 'B' : 'A' }));
+      if (suffix === 'classes') return Promise.resolve(jsonResponse([]));
+      if (suffix === 'configuration') return Promise.resolve(jsonResponse({ config: {} }));
+      if (suffix === 'data-summary') return Promise.resolve(jsonResponse({
+        active_image_count: isB ? 1 : 10,
+        part_count: isB ? 1 : 10,
+        image_metadata_fields: isB ? 1 : 10,
+        annotation_count: isB ? 1 : 10,
+        overlay_layer_count: isB ? 1 : 10,
+      }));
+      if (suffix === 'parts') return Promise.resolve(jsonResponse([{ id: `${projectId}-part` }]));
+      return Promise.resolve(jsonResponse({}));
+    });
+
+    const view = render(<Project />);
+    expect(await screen.findByText('Project A')).toBeInTheDocument();
+    await screen.findByTestId('project-data-counts');
+    const projectAUploadComplete = mockLatestUploadComplete;
+    const projectABundleComplete = mockLatestBundleImportComplete;
+    const projectASetError = mockLatestUploaderSetError;
+    expect(projectAUploadComplete).toEqual(expect.any(Function));
+    expect(projectABundleComplete).toEqual(expect.any(Function));
+
+    await act(async () => {
+      mockProjectId = 'project-b';
+      window.history.pushState({}, '', `/project/${mockProjectId}${mockSearch}`);
+      view.rerender(<Project />);
+    });
+    expect(await screen.findByText('Project B')).toBeInTheDocument();
+    expect(await screen.findByTestId('project-data-counts')).toHaveTextContent('"rawImages":1');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Images to Parts' }));
+    expect(await screen.findByText('Images to parts (1 images, 1 parts)')).toBeInTheDocument();
+    const projectARefreshesBeforeLateCallbacks = global.fetch.mock.calls.filter(
+      ([url]) => url === '/api/projects/project-a/data-summary',
+    ).length;
+
+    let uploadResult;
+    let bundleResult;
+    await act(async () => {
+      uploadResult = await projectAUploadComplete(
+        [{ id: 'late-project-a-image', filename: 'late-a.png' }],
+        { source: 'local_upload', requiresAuthoritativeReconciliation: false },
+      );
+      bundleResult = await projectABundleComplete({ project: { id: 'project-a' } });
+      projectASetError('late project A child error');
+    });
+
+    expect(uploadResult).toEqual({ reconciled: false, authoritative: false, stale: true });
+    expect(bundleResult).toBe('stale');
+    expect(screen.getByText('Images to parts (1 images, 1 parts)')).toBeInTheDocument();
+    expect(screen.getByTestId('project-data-counts')).toHaveTextContent('"rawImages":1');
+    expect(screen.queryByText(/late project A child error/)).not.toBeInTheDocument();
+    expect(global.fetch.mock.calls.filter(
+      ([url]) => url === '/api/projects/project-a/data-summary',
+    )).toHaveLength(projectARefreshesBeforeLateCallbacks);
+  });
+});
 
 
 describe('Project title bar type label', () => {
@@ -112,8 +885,8 @@ describe('Project title bar type label', () => {
       if (url === '/api/projects/proj-1/classes') {
         return Promise.resolve({ ok: true, json: async () => [] });
       }
-      if (String(url).startsWith('/api/projects/proj-1/images')) {
-        return Promise.resolve({ ok: true, json: async () => [] });
+      if (String(url).startsWith('/api/projects/proj-1/images-page?')) {
+        return Promise.resolve({ ok: true, json: async () => ({ items: [], total: 0, next_cursor: null, has_more: false }) });
       }
       if (url === '/api/projects/proj-1/parts') {
         return Promise.resolve({ ok: true, json: async () => [] });
@@ -170,8 +943,8 @@ describe('Project tab autosave coordination', () => {
       if (url === '/api/projects/proj-1/classes') {
         return Promise.resolve({ ok: true, json: async () => [] });
       }
-      if (String(url).startsWith('/api/projects/proj-1/images')) {
-        return Promise.resolve({ ok: true, json: async () => [] });
+      if (String(url).startsWith('/api/projects/proj-1/images-page?')) {
+        return Promise.resolve({ ok: true, json: async () => ({ items: [], total: 0, next_cursor: null, has_more: false }) });
       }
       if (url === '/api/projects/proj-1/parts') {
         return Promise.resolve({ ok: true, json: async () => [] });
@@ -232,8 +1005,8 @@ describe('Project query parameter tab selection', () => {
       if (url === '/api/projects/proj-1/classes') {
         return Promise.resolve({ ok: true, json: async () => [] });
       }
-      if (String(url).startsWith('/api/projects/proj-1/images')) {
-        return Promise.resolve({ ok: true, json: async () => [] });
+      if (String(url).startsWith('/api/projects/proj-1/images-page?')) {
+        return Promise.resolve({ ok: true, json: async () => ({ items: [], total: 0, next_cursor: null, has_more: false }) });
       }
       if (url === '/api/projects/proj-1/parts') {
         return Promise.resolve({ ok: true, json: async () => [] });
@@ -283,7 +1056,7 @@ describe('Project query parameter tab selection', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: 'Overlays' }));
 
-    await waitFor(() => expect(screen.getByText('Overlays tab')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Overlays tab/)).toBeInTheDocument());
     expect(mockNavigate).toHaveBeenCalledWith(
       { pathname: '/project/proj-1', search: 'tab=project_data&batch=batch-9&dataTab=overlays' },
       { replace: false },
@@ -356,7 +1129,7 @@ describe('Project session link sharing', () => {
       if (url === '/api/projects/proj-1') return Promise.resolve({ ok: true, json: async () => ({ id: 'proj-1', name: 'Share Project', project_type: 'PT1' }) });
       if (url === '/api/projects/proj-1/metadata-dict') return Promise.resolve({ ok: true, json: async () => ({}) });
       if (url === '/api/projects/proj-1/classes') return Promise.resolve({ ok: true, json: async () => [] });
-      if (String(url).startsWith('/api/projects/proj-1/images')) return Promise.resolve({ ok: true, json: async () => [] });
+      if (String(url).startsWith('/api/projects/proj-1/images-page?')) return Promise.resolve({ ok: true, json: async () => ({ items: [], total: 0, next_cursor: null, has_more: false }) });
       if (url === '/api/projects/proj-1/parts') return Promise.resolve({ ok: true, json: async () => [] });
       if (url === '/api/projects/proj-1/export-bundle-json') return Promise.resolve({ ok: true, json: async () => ({ bundle_summary: {} }) });
       if (url === '/api/projects/proj-1/configuration') return Promise.resolve({ ok: true, json: async () => ({ config: {} }) });
@@ -396,8 +1169,8 @@ describe('Project configurable UI sections', () => {
       if (url === '/api/projects/proj-1/classes') {
         return Promise.resolve({ ok: true, json: async () => [] });
       }
-      if (String(url).startsWith('/api/projects/proj-1/images')) {
-        return Promise.resolve({ ok: true, json: async () => [] });
+      if (String(url).startsWith('/api/projects/proj-1/images-page?')) {
+        return Promise.resolve({ ok: true, json: async () => ({ items: [], total: 0, next_cursor: null, has_more: false }) });
       }
       if (url === '/api/projects/proj-1/parts') {
         return Promise.resolve({ ok: true, json: async () => [] });

@@ -8,12 +8,14 @@ from PIL import Image
 
 from utils.volume_loader import (
     COMMON_VOLUME_FORMATS,
+    MAX_ZIP_CENTRAL_DIRECTORY_BYTES,
     VolumeReadLimits,
     load_slice_stack,
     load_volume,
     read_numpy_volume_array,
     supported_volume_extensions,
 )
+import utils.volume_loader as volume_loader
 
 
 def _write_minimal_npy(path: Path, shape=(3, 4, 5), dtype="|u1"):
@@ -55,6 +57,49 @@ def _limits(**overrides):
     }
     values.update(overrides)
     return VolumeReadLimits(**values)
+
+
+def _declared_zip_eocd(*, entries: int, central_size: int = 0) -> bytes:
+    return struct.pack(
+        "<4s4H2LH",
+        b"PK\x05\x06",
+        0,
+        0,
+        entries,
+        entries,
+        central_size,
+        0,
+        0,
+    )
+
+
+def _declared_zip64_eocd(*, entries: int) -> bytes:
+    zip64_eocd = struct.pack(
+        "<4sQ2H2L4Q",
+        b"PK\x06\x06",
+        44,
+        45,
+        45,
+        0,
+        0,
+        entries,
+        entries,
+        0,
+        0,
+    )
+    locator = struct.pack("<4sLQL", b"PK\x06\x07", 0, 0, 1)
+    legacy_eocd = struct.pack(
+        "<4s4H2LH",
+        b"PK\x05\x06",
+        0,
+        0,
+        0xFFFF,
+        0xFFFF,
+        0xFFFFFFFF,
+        0xFFFFFFFF,
+        0,
+    )
+    return zip64_eocd + locator + legacy_eocd
 
 
 def test_loads_one_image_file_per_slice_stack(tmp_path):
@@ -244,6 +289,90 @@ def test_npz_member_count_is_bounded_before_selected_array_decode(tmp_path):
 
     with pytest.raises(ValueError, match="3 members.*2-member limit"):
         load_volume(archive_path, limits=_limits(max_container_members=2))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _declared_zip_eocd(entries=5_000),
+        _declared_zip64_eocd(entries=1_000_000),
+    ],
+)
+def test_npz_member_limit_is_enforced_before_zipfile_constructs_entries(
+    tmp_path,
+    monkeypatch,
+    payload,
+):
+    archive_path = tmp_path / "too-many-declared-members.npz"
+    archive_path.write_bytes(payload)
+    zipfile_constructor_calls = 0
+
+    def forbidden_zipfile_constructor(*_args, **_kwargs):
+        nonlocal zipfile_constructor_calls
+        zipfile_constructor_calls += 1
+        raise AssertionError("unsafe archive must be rejected before ZipFile construction")
+
+    monkeypatch.setattr(volume_loader.zipfile, "ZipFile", forbidden_zipfile_constructor)
+
+    with pytest.raises(ValueError, match="configured/built-in 4-member limit"):
+        load_volume(archive_path, limits=_limits())
+
+    assert zipfile_constructor_calls == 0
+
+
+def test_npz_central_directory_size_is_bounded_before_zipfile_construction(
+    tmp_path,
+    monkeypatch,
+):
+    archive_path = tmp_path / "oversized-central-directory.npz"
+    archive_path.write_bytes(
+        _declared_zip_eocd(
+            entries=0,
+            central_size=MAX_ZIP_CENTRAL_DIRECTORY_BYTES + 1,
+        )
+    )
+    zipfile_constructor_calls = 0
+
+    def forbidden_zipfile_constructor(*_args, **_kwargs):
+        nonlocal zipfile_constructor_calls
+        zipfile_constructor_calls += 1
+        raise AssertionError("unsafe archive must be rejected before ZipFile construction")
+
+    monkeypatch.setattr(volume_loader.zipfile, "ZipFile", forbidden_zipfile_constructor)
+    limits = _limits(max_source_bytes=MAX_ZIP_CENTRAL_DIRECTORY_BYTES * 2)
+
+    with pytest.raises(ValueError, match="built-in .*metadata limit"):
+        load_volume(archive_path, limits=limits)
+
+    assert zipfile_constructor_calls == 0
+
+
+def test_npz_preflight_counts_central_entries_instead_of_trusting_eocd(
+    tmp_path,
+    monkeypatch,
+):
+    archive_path = tmp_path / "lying-entry-count.npz"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        for index in range(3):
+            archive.writestr(f"entry-{index}.txt", b"")
+    payload = bytearray(archive_path.read_bytes())
+    eocd_offset = payload.rfind(b"PK\x05\x06")
+    assert eocd_offset >= 0
+    struct.pack_into("<HH", payload, eocd_offset + 8, 1, 1)
+    archive_path.write_bytes(payload)
+    zipfile_constructor_calls = 0
+
+    def forbidden_zipfile_constructor(*_args, **_kwargs):
+        nonlocal zipfile_constructor_calls
+        zipfile_constructor_calls += 1
+        raise AssertionError("unsafe archive must be rejected before ZipFile construction")
+
+    monkeypatch.setattr(volume_loader.zipfile, "ZipFile", forbidden_zipfile_constructor)
+
+    with pytest.raises(ValueError, match="configured/built-in 2-member limit"):
+        load_volume(archive_path, limits=_limits(max_container_members=2))
+
+    assert zipfile_constructor_calls == 0
 
 
 def test_preflighted_npz_array_reader_decodes_only_selected_bounded_array(tmp_path):

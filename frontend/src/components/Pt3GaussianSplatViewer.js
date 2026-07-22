@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { generateTransferFunctionLut } from './pt3TransferFunctions';
 import {
   createPt3PerspectiveProjector,
@@ -8,7 +8,11 @@ import {
   pointInsideCropBox,
   voxelToPhysical,
 } from './pt3VolumeGeometry';
-import { createThreeMechanicalRenderer } from './pt3ThreeRenderer';
+import {
+  createThreeMechanicalRenderer,
+  DEFAULT_PT3_RECONSTRUCTION_OPTIONS,
+  normalizePt3ReconstructionOptions,
+} from './pt3ThreeRenderer';
 import { MECHANICAL_TRANSFER_PRESETS, getMechanicalCropBox, getMechanicalVolumeMetadata, makeMechanicalFallbackSplats } from './pt3MechanicalVisualization';
 import { getSegmentDisplayStyle, normalizePt3Segmentation, segmentColorToRgba } from './pt3Segmentation';
 import {
@@ -41,7 +45,114 @@ export const DEFAULT_RAY_MARCH_SETTINGS = Object.freeze({
   intensityThreshold: 0.08,
   quality: 'balanced',
   showSliceGuides: true,
+  ...DEFAULT_PT3_RECONSTRUCTION_OPTIONS,
 });
+
+const RAY_MARCH_QUALITY_IDS = new Set(Object.keys(QUALITY_PROFILES));
+const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
+
+function normalizeRayMarchNumber(value, fallback, minimum, maximum) {
+  if (value === null || value === undefined || typeof value === 'boolean') return fallback;
+  if (typeof value === 'string' && !value.trim()) return fallback;
+  let numeric;
+  try {
+    numeric = Number(value);
+  } catch {
+    return fallback;
+  }
+  return Number.isFinite(numeric) ? Math.min(maximum, Math.max(minimum, numeric)) : fallback;
+}
+
+function normalizeRayMarchBoolean(value, fallback) {
+  if (typeof value === 'boolean') return value;
+  if (value === 1 || value === '1') return true;
+  if (value === 0 || value === '0') return false;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', 'yes', 'on'].includes(normalized)) return true;
+    if (['false', 'no', 'off'].includes(normalized)) return false;
+  }
+  return fallback;
+}
+
+function normalizeRayMarchColor(value, fallback) {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return HEX_COLOR_PATTERN.test(normalized) ? normalized : fallback;
+}
+
+export function normalizeRayMarchSettings(settings = DEFAULT_RAY_MARCH_SETTINGS) {
+  const source = isPlainObject(settings) ? settings : {};
+  const reconstruction = normalizePt3ReconstructionOptions({
+    ...source,
+    boundaryEnhancement: normalizeRayMarchBoolean(
+      source.boundaryEnhancement,
+      DEFAULT_PT3_RECONSTRUCTION_OPTIONS.boundaryEnhancement,
+    ),
+  });
+  const requestedQuality = typeof source.quality === 'string'
+    ? source.quality.trim().toLowerCase()
+    : '';
+  return {
+    opacityRampWidth: normalizeRayMarchNumber(
+      source.opacityRampWidth,
+      DEFAULT_RAY_MARCH_SETTINGS.opacityRampWidth,
+      0.05,
+      1,
+    ),
+    colorLow: normalizeRayMarchColor(source.colorLow, DEFAULT_RAY_MARCH_SETTINGS.colorLow),
+    colorHigh: normalizeRayMarchColor(source.colorHigh, DEFAULT_RAY_MARCH_SETTINGS.colorHigh),
+    volumeOpacity: normalizeRayMarchNumber(
+      source.volumeOpacity,
+      DEFAULT_RAY_MARCH_SETTINGS.volumeOpacity,
+      0.25,
+      2.5,
+    ),
+    intensityThreshold: normalizeRayMarchNumber(
+      source.intensityThreshold,
+      DEFAULT_RAY_MARCH_SETTINGS.intensityThreshold,
+      0,
+      0.6,
+    ),
+    quality: RAY_MARCH_QUALITY_IDS.has(requestedQuality)
+      ? requestedQuality
+      : DEFAULT_RAY_MARCH_SETTINGS.quality,
+    showSliceGuides: normalizeRayMarchBoolean(
+      source.showSliceGuides,
+      DEFAULT_RAY_MARCH_SETTINGS.showSliceGuides,
+    ),
+    ...reconstruction,
+  };
+}
+
+const RAY_MARCH_RECONSTRUCTION_DETAILS = Object.freeze({
+  composite: {
+    label: 'Composite',
+    formula: 'α(I) = ρ · smoothstep(τ, τ + w, I); C(I) = mix(Cₗ, Cₕ, smoothstep(τ, 1, I)).',
+    summary: 'Accumulates color and opacity from front to back using the existing density, threshold, ramp, and color defaults. Opaque exterior material can hide internal features.',
+  },
+  mip: {
+    label: 'MIP',
+    formula: 'Iₘₐₓ = maxₛ I(s); C = mix(Cₗ, Cₕ, smoothstep(τ, 1, Iₘₐₓ)).',
+    summary: 'Keeps the highest-intensity sample on each ray to highlight dense features. MIP is a projection: it does not preserve depth, and a dense shell can still be the maximum.',
+  },
+  xray: {
+    label: 'X-ray',
+    formula: 'Ī = (1 / N) · Σₛ I(s); C = mix(Cₗ, Cₕ, smoothstep(τ, 1, Ī)).',
+    summary: 'Averages all samples through the part so enclosed density contributes instead of being occluded. This is an average-intensity projection, not a depth-resolved surface.',
+  },
+  iso: {
+    label: 'Iso',
+    formula: 'B(I) = 1 − smoothstep(0, δ, |I − τᵢₛₒ|); α(I) = ρ · B(I).',
+    summary: 'Reconstructs a narrow intensity boundary around the selected threshold. Adjust threshold to peel between material interfaces and width to control the boundary band.',
+  },
+  window: {
+    label: 'Window',
+    formula: 'L = c − b / 2; H = c + b / 2; α(I) > 0 only when L ≤ I ≤ H.',
+    summary: 'Suppresses samples outside a selected intensity band. Move the center and narrow the width to isolate internal material, voids, or inclusions.',
+  },
+});
+
+const BOUNDARY_ENHANCEMENT_STYLES = new Set(['composite', 'window', 'iso']);
 
 function disposeThreeRenderer(rendererRef, canvas) {
   const activeRenderer = rendererRef.current;
@@ -435,12 +546,33 @@ export default function Pt3GaussianSplatViewer({
   const threeRendererRef = useRef(null);
   const workerRef = useRef(null);
   const statsRef = useRef({ frames: 0, fps: 0, renderedSplats: 0 });
+  const rayMarchSummaryId = useId();
+  const rayMarchAvailabilityId = useId();
+  const boundaryInactiveId = useId();
   const activeMirrorScale = useMemo(
     () => normalizeAxisMirrorScale(mirrorScale),
     [mirrorScale],
   );
-  const activeRayMarchSettings = { ...DEFAULT_RAY_MARCH_SETTINGS, ...(rayMarchSettings || {}) };
-  const { quality, volumeOpacity, intensityThreshold, showSliceGuides, opacityRampWidth, colorLow, colorHigh } = activeRayMarchSettings;
+  const activeRayMarchSettings = normalizeRayMarchSettings(rayMarchSettings);
+  const {
+    quality,
+    volumeOpacity,
+    intensityThreshold,
+    showSliceGuides,
+    opacityRampWidth,
+    colorLow,
+    colorHigh,
+    reconstructionStyle,
+    windowCenter,
+    windowWidth,
+    isoThreshold,
+    isoWidth,
+    boundaryEnhancement,
+    boundaryStrength,
+    boundaryBandWidth,
+  } = activeRayMarchSettings;
+  const reconstructionDetail = RAY_MARCH_RECONSTRUCTION_DETAILS[reconstructionStyle];
+  const boundaryEnhancementSupported = BOUNDARY_ENHANCEMENT_STYLES.has(reconstructionStyle);
   const activeSplatViewSettings = { ...DEFAULT_SPLAT_VIEW_SETTINGS, ...(splatViewSettings || {}) };
   const {
     opacity: configuredSplatOpacity,
@@ -450,8 +582,13 @@ export default function Pt3GaussianSplatViewer({
   } = activeSplatViewSettings;
   const [status, setStatus] = useState('initializing');
   const [statusDetail, setStatusDetail] = useState(null);
-  const [rendererState, setRendererState] = useState({ mode: null, type: 'canvas2d-fallback' });
-  const rendererType = rendererState.mode === mode ? rendererState.type : 'canvas2d-fallback';
+  const [rendererState, setRendererState] = useState({
+    mode: null,
+    metadata: null,
+    volumeImageStack: null,
+    segmentationLabelSlices: null,
+    type: 'canvas2d-fallback',
+  });
   const [rayRendererFallback, setRayRendererFallback] = useState(null);
   const [splats, setSplats] = useState(null);
   const [realMaxSplats, setRealMaxSplats] = useState(DEFAULT_REAL_SPLAT_BUDGET);
@@ -465,6 +602,14 @@ export default function Pt3GaussianSplatViewer({
   const splatGuidesVisible = isPureSplatMode ? configuredSplatGuides : showSliceGuides;
   const metadata = useMemo(() => buildMetadata(part), [part]);
   const segmentationContract = useMemo(() => normalizePt3Segmentation(part), [part]);
+  const rendererMatchesCurrentVolume = rendererState.mode === mode
+    && rendererState.metadata === metadata
+    && rendererState.volumeImageStack === volumeImageStack
+    && rendererState.segmentationLabelSlices === segmentationContract.labelSlices;
+  const rendererType = rendererMatchesCurrentVolume
+    ? rendererState.type
+    : 'canvas2d-fallback';
+  const rayMarchControlsAvailable = mode === VIEWER_MODES.volume && rendererType.startsWith('three-');
   const realSplatCameras = useMemo(() => getPt3RealSplatCameras(part), [part]);
   const [segmentationSegments, setSegmentationSegments] = useState(segmentationContract.segments);
   const asset = useMemo(() => (
@@ -637,17 +782,55 @@ export default function Pt3GaussianSplatViewer({
     let cancelled = false;
     if (!canvas || isPureSplatMode) {
       disposeThreeRenderer(threeRendererRef, canvas);
-      setRendererState({ mode, type: 'canvas2d-fallback' });
+      setRendererState({
+        mode,
+        metadata,
+        volumeImageStack,
+        segmentationLabelSlices: segmentationContract.labelSlices,
+        type: 'canvas2d-fallback',
+      });
       setRayRendererFallback(null);
       return undefined;
     }
-    setRendererState({ mode, type: 'canvas2d-fallback' });
+    const initializationController = new AbortController();
+    setRendererState({
+      mode,
+      metadata,
+      volumeImageStack,
+      segmentationLabelSlices: segmentationContract.labelSlices,
+      type: 'canvas2d-fallback',
+    });
     setRayRendererFallback(null);
+    const showRendererFallback = (error) => {
+      if (cancelled) return;
+      const reason = error?.message || 'Could not initialize ray-marched volume';
+      disposeThreeRenderer(threeRendererRef, canvas);
+      setRendererState({
+        mode,
+        metadata,
+        volumeImageStack,
+        segmentationLabelSlices: segmentationContract.labelSlices,
+        type: 'canvas2d-fallback',
+      });
+      if (mode === VIEWER_MODES.volume) {
+        setStatus('fallback');
+        setStatusDetail({
+          error: reason,
+          note: 'Ray-marched volume unavailable. Showing deterministic volume bounds fallback.',
+        });
+      } else if (mode === VIEWER_MODES.hybrid) {
+        setRayRendererFallback(
+          `Ray-marched layer unavailable: ${reason}. Showing the aligned 3DGS fallback only.`,
+        );
+      }
+    };
     createThreeMechanicalRenderer(canvas, {
       metadata,
       mode,
       volumeImageStack,
       segmentationLabelSlices: segmentationContract.labelSlices,
+      signal: initializationController.signal,
+      onError: showRendererFallback,
     })
       .then((renderer) => {
         if (cancelled || !renderer) {
@@ -656,36 +839,31 @@ export default function Pt3GaussianSplatViewer({
         }
         threeRendererRef.current?.dispose?.();
         threeRendererRef.current = renderer;
-        setRendererState({ mode, type: renderer.rendererType || 'three-webgl' });
+        setRendererState({
+          mode,
+          metadata,
+          volumeImageStack,
+          segmentationLabelSlices: segmentationContract.labelSlices,
+          type: renderer.rendererType || 'three-webgl',
+        });
         setRayRendererFallback(null);
         if (mode === VIEWER_MODES.volume) setStatus('ready');
       })
-      .catch((error) => {
-        if (!cancelled) {
-          disposeThreeRenderer(threeRendererRef, canvas);
-          setRendererState({ mode, type: 'canvas2d-fallback' });
-          if (mode === VIEWER_MODES.volume) {
-            setStatus('fallback');
-            setStatusDetail({
-              error: error.message || 'Could not initialize ray-marched volume',
-              note: 'Ray-marched volume unavailable. Showing deterministic volume bounds fallback.',
-            });
-          } else if (mode === VIEWER_MODES.hybrid) {
-            setRayRendererFallback('Ray-marched layer unavailable. Showing the aligned 3DGS fallback only.');
-          }
-        }
-      });
+      .catch(showRendererFallback);
     return () => {
       cancelled = true;
+      initializationController.abort();
       disposeThreeRenderer(threeRendererRef, canvas);
     };
   }, [isPureSplatMode, metadata, mode, segmentationContract.labelSlices, volumeImageStack]);
 
   useEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return undefined;
-    let frameId = 0; let last = performance.now(); let frames = 0;
+    let frameId = null;
     const projectionCache = {};
-    const render = (time) => {
+    const render = () => {
+      frameId = null;
+      const startedAt = performance.now();
       const ratio = window.devicePixelRatio || 1; const profile = QUALITY_PROFILES[quality];
       const width = Math.max(1, Math.floor(canvas.clientWidth * ratio * profile.scale)); const height = Math.max(1, Math.floor(canvas.clientHeight * ratio * profile.scale));
       if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
@@ -702,6 +880,14 @@ export default function Pt3GaussianSplatViewer({
         slicePosition,
         showSliceGuides,
         segmentationPalette: segmentationSegments,
+        reconstructionStyle,
+        windowCenter,
+        windowWidth,
+        isoThreshold,
+        isoWidth,
+        boundaryEnhancement,
+        boundaryStrength,
+        boundaryBandWidth,
       });
       const ctx = canvas.getContext('2d');
       ctx.clearRect(0, 0, width, height);
@@ -728,11 +914,24 @@ export default function Pt3GaussianSplatViewer({
           statsRef,
         });
       }
-      frames += 1; if (time - last > 500) { statsRef.current.fps = Math.round((frames * 1000) / (time - last)); frames = 0; last = time; }
-      frameId = window.requestAnimationFrame(render);
+      const renderDuration = Math.max(0.1, performance.now() - startedAt);
+      statsRef.current.fps = Math.min(999, Math.max(1, Math.round(1000 / renderDuration)));
     };
-    frameId = window.requestAnimationFrame(render); return () => window.cancelAnimationFrame(frameId);
-  }, [activeMirrorScale, colorHigh, colorLow, cropEnabled, intensityThreshold, isPureSplatMode, metadata, mode, opacityRampWidth, quality, rendererType, rotation, segmentationSegments, showSliceGuides, slicePosition, splatContrast, splatGuidesVisible, splatOpacity, splatPointSize, splats, volumeOpacity, zoom]);
+    const scheduleRender = () => {
+      if (frameId === null) frameId = window.requestAnimationFrame(render);
+    };
+    const resizeObserver = typeof window.ResizeObserver === 'function'
+      ? new window.ResizeObserver(scheduleRender)
+      : null;
+    resizeObserver?.observe(canvas);
+    window.addEventListener('resize', scheduleRender);
+    scheduleRender();
+    return () => {
+      if (frameId !== null) window.cancelAnimationFrame(frameId);
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', scheduleRender);
+    };
+  }, [activeMirrorScale, boundaryBandWidth, boundaryEnhancement, boundaryStrength, colorHigh, colorLow, cropEnabled, intensityThreshold, isPureSplatMode, isoThreshold, isoWidth, metadata, mode, opacityRampWidth, quality, reconstructionStyle, rendererType, rotation, segmentationSegments, showSliceGuides, slicePosition, splatContrast, splatGuidesVisible, splatOpacity, splatPointSize, splats, volumeOpacity, windowCenter, windowWidth, zoom]);
 
   const updateRayMarchSetting = (key, value) => {
     onRayMarchSettingsChange?.({ ...activeRayMarchSettings, [key]: value });
@@ -819,7 +1018,8 @@ export default function Pt3GaussianSplatViewer({
     : mode === VIEWER_MODES.realSplat
       ? 'trained'
       : mode === VIEWER_MODES.hybrid && rayRendererFallback ? 'degraded' : 'ready';
-  const readyStatus = `${modeLabel} ${readyLabel}${canonicalMarker}${mode === VIEWER_MODES.hybrid ? ` • threshold ${splatParameters?.threshold ?? 'n/a'}` : ''} • ${metadata.dimensions.join('×')} voxels • ${bounds.size.map((v) => v.toFixed(1)).join('×')} mm • ${rendererType} • FPS ${stats.fps || '…'}${mode === VIEWER_MODES.volume ? ` • slices ${volumeImageStack.length}` : ` • splats ${loadedSplatCount}`}`;
+  const renderTimingStatus = 'render on change';
+  const readyStatus = `${modeLabel} ${readyLabel}${canonicalMarker}${mode === VIEWER_MODES.hybrid ? ` • threshold ${splatParameters?.threshold ?? 'n/a'}` : ''} • ${metadata.dimensions.join('×')} voxels • ${bounds.size.map((v) => v.toFixed(1)).join('×')} mm • ${rendererType} • ${renderTimingStatus}${mode === VIEWER_MODES.volume ? ` • slices ${volumeImageStack.length}` : ` • splats ${loadedSplatCount}`}`;
   const pendingStatus = `${directFitSelected ? 'Voxel splat fitting is running' : 'Real 3DGS training is running'}${statusDetail?.note ? ` • ${statusDetail.note}` : ''}`;
   return <div
     className={`pt3-gaussian-splat-viewer${mode === VIEWER_MODES.realSplat ? ' pt3-real-splat-mode' : ''}${segmentationSegments.length > 0 ? ' pt3-has-segmentation' : ''}`}
@@ -886,6 +1086,7 @@ export default function Pt3GaussianSplatViewer({
       <fieldset
         className="pt3-ray-march-controls"
         aria-label="Ray-march controls"
+        aria-describedby={rayMarchAvailabilityId}
         onClick={(event) => event.stopPropagation()}
         onPointerDown={(event) => event.stopPropagation()}
         onPointerMove={(event) => event.stopPropagation()}
@@ -894,53 +1095,147 @@ export default function Pt3GaussianSplatViewer({
         onKeyDown={(event) => { if (!['Tab', 'Escape'].includes(event.key)) event.stopPropagation(); }}
       >
         <legend>Ray march</legend>
-        <div className="pt3-ray-march-transfer-summary" data-testid="ray-march-transfer-summary">
-          <div>
-            Transfer function: α(I) = ρ · smoothstep(τ, τ + w, I); C(I) = mix(Cₗ, Cₕ, smoothstep(τ, 1, I)).
-          </div>
-          <dl>
-            <dt>I</dt><dd>normalized voxel intensity sampled by the ray marcher.</dd>
-            <dt>α(I)</dt><dd>opacity contributed by intensity I.</dd>
-            <dt>ρ</dt><dd>density multiplier from the Density control.</dd>
-            <dt>τ</dt><dd>intensity threshold from the Threshold control.</dd>
-            <dt>w</dt><dd>opacity ramp width.</dd>
-            <dt>C(I)</dt><dd>rendered color at intensity I.</dd>
-            <dt>Cₗ, Cₕ</dt><dd>low and high color coefficients.</dd>
-          </dl>
-        </div>
-        <label>
-          Opacity ramp width <output aria-hidden="true">{Number(opacityRampWidth).toFixed(2)}</output>
-          <input aria-label="Ray-march opacity ramp width" type="range" min="0.05" max="1" step="0.01" value={opacityRampWidth} onChange={(event) => updateRayMarchSetting('opacityRampWidth', Number(event.target.value))} />
+        <p
+          id={rayMarchAvailabilityId}
+          className={`pt3-ray-march-availability${rayMarchControlsAvailable ? ' is-active' : ''}`}
+          role="status"
+          aria-live="polite"
+        >
+          {rayMarchControlsAvailable
+            ? 'WebGL ray-march renderer active.'
+            : 'Reconstruction settings require an active WebGL volume renderer and are disabled while it initializes or a deterministic fallback is shown. Orbit, zoom, and reset view remain available.'}
+        </p>
+        <label className="pt3-ray-march-style-control">
+          Reconstruction style
+          <select
+            aria-label="Ray-march reconstruction style"
+            aria-describedby={rayMarchSummaryId}
+            value={reconstructionStyle}
+            disabled={!rayMarchControlsAvailable}
+            onChange={(event) => updateRayMarchSetting('reconstructionStyle', event.target.value)}
+          >
+            <option value="composite">Composite</option>
+            <option value="mip">MIP</option>
+            <option value="xray">X-ray</option>
+            <option value="iso">Iso</option>
+            <option value="window">Window</option>
+          </select>
         </label>
+        <div
+          id={rayMarchSummaryId}
+          className="pt3-ray-march-transfer-summary"
+          data-testid="ray-march-transfer-summary"
+          data-reconstruction-style={reconstructionStyle}
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <strong>{reconstructionDetail.label} reconstruction</strong>
+          <code>{reconstructionDetail.formula}</code>
+          <p>{reconstructionDetail.summary}</p>
+          <small>
+            Intensity controls use normalized 0–1 preview luminance decoded from browser-ready slices, not original CT scalar units. Server-backed NumPy volumes may use sampled axial preview slices. {' '}
+            {boundaryEnhancementSupported
+              ? `Boundary enhancement is ${boundaryEnhancement ? 'enabled' : 'available'} for this style.`
+              : `Boundary enhancement is saved as ${boundaryEnhancement ? 'on' : 'off'} but inactive for ${reconstructionDetail.label}.`}
+          </small>
+        </div>
+        {reconstructionStyle === 'window' && (
+          <div className="pt3-ray-march-mode-parameters" data-testid="ray-march-window-controls">
+            <label>
+              Window center <output aria-hidden="true">{Number(windowCenter).toFixed(2)}</output>
+              <input aria-label="Ray-march window center" type="range" min="0" max="1" step="0.01" value={windowCenter} disabled={!rayMarchControlsAvailable} onChange={(event) => updateRayMarchSetting('windowCenter', Number(event.target.value))} />
+            </label>
+            <label>
+              Window width <output aria-hidden="true">{Number(windowWidth).toFixed(2)}</output>
+              <input aria-label="Ray-march window width" type="range" min="0.01" max="1" step="0.01" value={windowWidth} disabled={!rayMarchControlsAvailable} onChange={(event) => updateRayMarchSetting('windowWidth', Number(event.target.value))} />
+            </label>
+          </div>
+        )}
+        {reconstructionStyle === 'iso' && (
+          <div className="pt3-ray-march-mode-parameters" data-testid="ray-march-iso-controls">
+            <label>
+              Iso threshold <output aria-hidden="true">{Number(isoThreshold).toFixed(2)}</output>
+              <input aria-label="Ray-march iso threshold" type="range" min="0" max="1" step="0.01" value={isoThreshold} disabled={!rayMarchControlsAvailable} onChange={(event) => updateRayMarchSetting('isoThreshold', Number(event.target.value))} />
+            </label>
+            <label>
+              Iso width <output aria-hidden="true">{Number(isoWidth).toFixed(3)}</output>
+              <input aria-label="Ray-march iso width" type="range" min="0.001" max="1" step="0.001" value={isoWidth} disabled={!rayMarchControlsAvailable} onChange={(event) => updateRayMarchSetting('isoWidth', Number(event.target.value))} />
+            </label>
+          </div>
+        )}
+        <label className={`pt3-ray-march-checkbox${boundaryEnhancementSupported ? '' : ' is-disabled'}`}>
+          <input
+            aria-label="Ray-march boundary enhancement"
+            aria-describedby={boundaryEnhancementSupported ? undefined : boundaryInactiveId}
+            type="checkbox"
+            checked={Boolean(boundaryEnhancement)}
+            disabled={!rayMarchControlsAvailable || !boundaryEnhancementSupported}
+            onChange={(event) => updateRayMarchSetting('boundaryEnhancement', event.target.checked)}
+          />
+          <span>
+            Boundary enhancement
+            {!boundaryEnhancementSupported && (
+              <small id={boundaryInactiveId} className="pt3-ray-march-control-note">
+                Saved {boundaryEnhancement ? 'on' : 'off'}; inactive in {reconstructionDetail.label}
+              </small>
+            )}
+            {boundaryEnhancementSupported && (
+              <small className="pt3-ray-march-control-note">
+                Adds GPU gradient sampling; use Performance for large stacks
+              </small>
+            )}
+          </span>
+        </label>
+        <label className={!boundaryEnhancementSupported || !boundaryEnhancement ? 'is-disabled' : undefined}>
+          Boundary strength <output aria-hidden="true">{Number(boundaryStrength).toFixed(2)}</output>
+          <input
+            aria-label="Ray-march boundary strength"
+            type="range"
+            min="0"
+            max="2"
+            step="0.05"
+            value={boundaryStrength}
+            disabled={!rayMarchControlsAvailable || !boundaryEnhancementSupported || !boundaryEnhancement}
+            onChange={(event) => updateRayMarchSetting('boundaryStrength', Number(event.target.value))}
+          />
+        </label>
+        {reconstructionStyle !== 'iso' && (
+          <label>
+            Opacity ramp width <output aria-hidden="true">{Number(opacityRampWidth).toFixed(2)}</output>
+            <input aria-label="Ray-march opacity ramp width" type="range" min="0.05" max="1" step="0.01" value={opacityRampWidth} disabled={!rayMarchControlsAvailable} onChange={(event) => updateRayMarchSetting('opacityRampWidth', Number(event.target.value))} />
+          </label>
+        )}
         <label>
           Low color coefficient
-          <input aria-label="Ray-march low color coefficient" type="color" value={colorLow} onChange={(event) => updateRayMarchSetting('colorLow', event.target.value)} />
+          <input aria-label="Ray-march low color coefficient" type="color" value={colorLow} disabled={!rayMarchControlsAvailable} onChange={(event) => updateRayMarchSetting('colorLow', event.target.value)} />
         </label>
         <label>
           High color coefficient
-          <input aria-label="Ray-march high color coefficient" type="color" value={colorHigh} onChange={(event) => updateRayMarchSetting('colorHigh', event.target.value)} />
+          <input aria-label="Ray-march high color coefficient" type="color" value={colorHigh} disabled={!rayMarchControlsAvailable} onChange={(event) => updateRayMarchSetting('colorHigh', event.target.value)} />
         </label>
         <label>
           Density <output aria-hidden="true">{volumeOpacity.toFixed(2)}×</output>
-          <input aria-label="Ray-march density" type="range" min="0.25" max="2.5" step="0.05" value={volumeOpacity} onChange={(event) => updateRayMarchSetting('volumeOpacity', Number(event.target.value))} />
+          <input aria-label="Ray-march density" type="range" min="0.25" max="2.5" step="0.05" value={volumeOpacity} disabled={!rayMarchControlsAvailable} onChange={(event) => updateRayMarchSetting('volumeOpacity', Number(event.target.value))} />
         </label>
-        <label>
-          Threshold <output aria-hidden="true">{intensityThreshold.toFixed(2)}</output>
-          <input aria-label="Ray-march intensity threshold" type="range" min="0" max="0.6" step="0.01" value={intensityThreshold} onChange={(event) => onRayMarchSettingsChange?.({ ...activeRayMarchSettings, intensityThreshold: Number(event.target.value) })} />
-        </label>
+        {!['window', 'iso'].includes(reconstructionStyle) && (
+          <label>
+            Threshold <output aria-hidden="true">{intensityThreshold.toFixed(2)}</output>
+            <input aria-label="Ray-march intensity threshold" type="range" min="0" max="0.6" step="0.01" value={intensityThreshold} disabled={!rayMarchControlsAvailable} onChange={(event) => onRayMarchSettingsChange?.({ ...activeRayMarchSettings, intensityThreshold: Number(event.target.value) })} />
+          </label>
+        )}
         <label>
           Quality profile
-          <select value={quality} onChange={(event) => updateRayMarchSetting('quality', event.target.value)}>
+          <select aria-label="Ray-march quality profile" value={quality} disabled={!rayMarchControlsAvailable} onChange={(event) => updateRayMarchSetting('quality', event.target.value)}>
             <option value="performance">Performance</option>
             <option value="balanced">Balanced</option>
             <option value="quality">Quality</option>
           </select>
         </label>
         <label className="pt3-ray-march-checkbox">
-          <input type="checkbox" checked={showSliceGuides} onChange={(event) => updateRayMarchSetting('showSliceGuides', event.target.checked)} />
+          <input aria-label="Show slice guides" type="checkbox" checked={showSliceGuides} disabled={!rayMarchControlsAvailable} onChange={(event) => updateRayMarchSetting('showSliceGuides', event.target.checked)} />
           Show slice guides
         </label>
-        <button type="button" onClick={() => onRayMarchSettingsChange?.({ ...DEFAULT_RAY_MARCH_SETTINGS })}>Reset ray-march settings</button>
+        <button type="button" disabled={!rayMarchControlsAvailable} onClick={() => onRayMarchSettingsChange?.({ ...DEFAULT_RAY_MARCH_SETTINGS })}>Reset ray-march settings</button>
         <label>
           Orbit X <output aria-hidden="true">{Math.round(rotation.x)}°</output>
           <input aria-label="Orbit X" type="range" min="-72" max="72" step="1" value={rotation.x} onChange={(event) => onRotationChange?.({ ...rotation, x: Number(event.target.value) })} />

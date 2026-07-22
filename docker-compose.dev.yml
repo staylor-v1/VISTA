@@ -88,6 +88,7 @@ services:
       dockerfile: Dockerfile.dev
       target: backend-dev
     container_name: vista_backend_dev
+    user: root
     logging:
       driver: "json-file"
       options:
@@ -137,14 +138,7 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-    command: >
-      bash -c "
-        cd /app/backend &&
-        echo 'Running database migrations...' &&
-        python /app/backend/scripts/run_migrations.py &&
-        echo 'Starting backend server with hot reload...' &&
-        uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-      "
+    command: ["bash", "/app/backend/scripts/start_dev_server.sh"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 10s

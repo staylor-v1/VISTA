@@ -326,6 +326,49 @@ async function mockInspectionWorkbenchRoutes(page, {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ has_groups: false }) });
       return;
     }
+    if (url.endsWith(`/api/projects/${projectId}/data-summary`)) {
+      const activeImages = images.filter((image) => !image?.deleted_at);
+      const deletedImages = images.filter((image) => Boolean(image?.deleted_at));
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          project_id: projectId,
+          active_image_count: activeImages.length,
+          deleted_image_count: deletedImages.length,
+          total_image_bytes: activeImages.reduce((sum, image) => sum + (Number(image?.size) || 0), 0),
+          part_count: mutableParts.length,
+          image_metadata_fields: activeImages.reduce((sum, image) => (
+            sum + Object.keys(image?.metadata || {}).length
+          ), 0),
+          annotation_count: mutableParts.reduce((sum, part) => (
+            sum + (Array.isArray(part?.metadata?.annotations) ? part.metadata.annotations.length : 0)
+          ), 0),
+          overlay_layer_count: 0,
+        }),
+      });
+      return;
+    }
+    if (url.includes(`/api/projects/${projectId}/images-page`)) {
+      const parsedUrl = new URL(url);
+      const offset = Number(parsedUrl.searchParams.get('cursor') || 0);
+      const limit = Number(parsedUrl.searchParams.get('limit') || 500);
+      const includeDeleted = parsedUrl.searchParams.get('include_deleted') === 'true';
+      const availableImages = includeDeleted ? images : images.filter((image) => !image?.deleted_at);
+      const items = availableImages.slice(offset, offset + limit);
+      const nextOffset = offset + items.length;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items,
+          total: availableImages.length,
+          next_cursor: nextOffset < availableImages.length ? String(nextOffset) : null,
+          has_more: nextOffset < availableImages.length,
+        }),
+      });
+      return;
+    }
     if (url.includes(`/api/projects/${projectId}/images`)) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(images) });
       return;

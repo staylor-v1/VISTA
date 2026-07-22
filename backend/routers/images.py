@@ -1,18 +1,26 @@
 import uuid
 import base64
-import hashlib
+import asyncio
+import logging
 import io
+import math
 import os
 import mimetypes
+import threading
+import time
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from urllib.parse import urlparse, unquote
 from pathlib import Path, PurePosixPath
 from collections import OrderedDict
 import zipfile
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Body
-from sqlalchemy import update, select
+from sqlalchemy import insert, update, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 import utils.crud as crud
 from core import schemas, models
 from core.database import get_db
@@ -34,11 +42,63 @@ from utils.cache_manager import get_cache
 import json as _json
 import numpy as np
 from PIL import Image, ImageSequence
-from utils.volume_loader import MAX_VOLUME_LOAD_BYTES, read_npy_header
+from utils.volume_cache import (
+    InvalidVolumeSourceError,
+    VolumeCacheError,
+    VolumeSourceReadError,
+    VolumeSourceIdentity,
+    build_volume_source_identity,
+    get_materialized_npy_path,
+    get_npy_volume_handle,
+)
+from utils.volume_loader import (
+    MAX_NPY_HEADER_BYTES,
+    MAX_VOLUME_LOAD_BYTES,
+    REFERENCE_VOLUME_READ_LIMITS,
+    _inspect_npy_header,
+    _inspect_npz_archive,
+    preflight_zip_archive,
+    read_npy_header,
+)
 
 router = APIRouter(
     tags=["Images"],
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _encode_image_page_cursor(created_at: datetime, image_id: uuid.UUID) -> str:
+    normalized_created_at = (
+        created_at.replace(tzinfo=timezone.utc)
+        if created_at.tzinfo is None
+        else created_at.astimezone(timezone.utc)
+    )
+    payload = _json.dumps(
+        {"v": 1, "created_at": normalized_created_at.isoformat(), "id": str(image_id)},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_image_page_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
+    try:
+        if not cursor or len(cursor) > 512:
+            raise ValueError("invalid cursor length")
+        padded = cursor + ("=" * (-len(cursor) % 4))
+        raw = base64.b64decode(padded.encode("ascii"), altchars=b"-_", validate=True)
+        payload = _json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict) or set(payload) != {"v", "created_at", "id"} or payload.get("v") != 1:
+            raise ValueError("invalid cursor payload")
+        created_at = datetime.fromisoformat(payload["created_at"])
+        if created_at.tzinfo is None or created_at.utcoffset() is None:
+            raise ValueError("cursor timestamp must include a UTC offset")
+        created_at = created_at.astimezone(timezone.utc)
+        image_id = uuid.UUID(payload["id"])
+    except (TypeError, ValueError, UnicodeError, _json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid image page cursor") from exc
+    return created_at, image_id
 
 
 def _candidate_project_metadata_keys(metadata: Any) -> set[str]:
@@ -101,6 +161,83 @@ async def _remove_unreferenced_project_metadata_for_image(
 
 VOXEL_DATA_EXTENSIONS = {".npy", ".npz", ".inspiro"}
 MAX_UPLOAD_BYTES = MAX_VOLUME_LOAD_BYTES
+DEFAULT_BATCH_UPLOAD_MAX_FILES = 100
+DEFAULT_BATCH_UPLOAD_MAX_BYTES = 256 * 1024 * 1024
+DEFAULT_BATCH_UPLOAD_MAX_MANIFEST_BYTES = 8 * 1024 * 1024
+DEFAULT_BATCH_UPLOAD_CONCURRENCY = 6
+MAX_BATCH_UPLOAD_CONCURRENCY = 6
+DEFAULT_BATCH_METADATA_MAX_BYTES = 1024 * 1024
+DEFAULT_BATCH_METADATA_MAX_DEPTH = 32
+DEFAULT_BATCH_METADATA_MAX_ITEMS = 10_000
+DEFAULT_BATCH_METADATA_MAX_STRING_BYTES = 1024 * 1024
+DEFAULT_BATCH_METADATA_MAX_KEY_BYTES = 4096
+PROCESS_STORAGE_OPERATION_CONCURRENCY = 6
+DEFAULT_S3_LIST_MAX_KEYS = 5000
+DEFAULT_S3_IMPORT_CONCURRENCY = 6
+MAX_S3_IMPORT_CONCURRENCY = 6
+
+
+class _ProcessWideStorageLimiter:
+    """Async facade over one process-wide semaphore, safe across event loops.
+
+    Semaphore waits use a dedicated single worker. This avoids blocking an
+    application event loop and avoids exhausting the default executor with
+    waiting tasks while active S3 operations need that executor themselves.
+    """
+
+    def __init__(self, capacity: int) -> None:
+        if capacity <= 0:
+            raise ValueError("storage operation capacity must be positive")
+        self.capacity = capacity
+        self._semaphore = threading.BoundedSemaphore(capacity)
+        self._wait_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="vista-storage-limit",
+        )
+
+    def _release_cancelled_wait(self, future: Future[bool]) -> None:
+        if future.cancelled():
+            return
+        try:
+            acquired = future.result()
+        except BaseException:
+            return
+        if acquired:
+            self._semaphore.release()
+
+    @asynccontextmanager
+    async def slot(self):
+        wait_future = self._wait_executor.submit(self._semaphore.acquire)
+        acquired = False
+        try:
+            await asyncio.shield(asyncio.wrap_future(wait_future))
+            acquired = True
+            yield
+        except BaseException:
+            if not acquired:
+                # A cancelled coroutine must not leak the slot once its
+                # already-running semaphore wait eventually succeeds.
+                wait_future.add_done_callback(self._release_cancelled_wait)
+            raise
+        finally:
+            if acquired:
+                self._semaphore.release()
+
+    def shutdown(self) -> None:
+        """Release the dedicated waiter thread (used by focused tests)."""
+
+        self._wait_executor.shutdown(wait=True, cancel_futures=True)
+
+
+_PROCESS_STORAGE_LIMITER = _ProcessWideStorageLimiter(PROCESS_STORAGE_OPERATION_CONCURRENCY)
+
+
+@asynccontextmanager
+async def _storage_operation_slot():
+    """Bound S3 operations across all requests handled by this worker."""
+
+    async with _PROCESS_STORAGE_LIMITER.slot():
+        yield
 
 
 def _format_byte_limit(byte_count: int) -> str:
@@ -110,6 +247,72 @@ def _format_byte_limit(byte_count: int) -> str:
 
 def _upload_size_limit() -> int:
     return int(os.getenv("MAX_UPLOAD_BYTES", str(MAX_UPLOAD_BYTES)))
+
+
+def _positive_env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _batch_upload_file_limit() -> int:
+    return _positive_env_int("MAX_BATCH_UPLOAD_FILES", DEFAULT_BATCH_UPLOAD_MAX_FILES)
+
+
+def _batch_upload_byte_limit() -> int:
+    return _positive_env_int("MAX_BATCH_UPLOAD_BYTES", DEFAULT_BATCH_UPLOAD_MAX_BYTES)
+
+
+def _batch_upload_manifest_byte_limit() -> int:
+    return _positive_env_int(
+        "MAX_BATCH_UPLOAD_MANIFEST_BYTES",
+        DEFAULT_BATCH_UPLOAD_MAX_MANIFEST_BYTES,
+    )
+
+
+def _batch_metadata_byte_limit() -> int:
+    return _positive_env_int("MAX_BATCH_METADATA_BYTES", DEFAULT_BATCH_METADATA_MAX_BYTES)
+
+
+def _batch_metadata_depth_limit() -> int:
+    return _positive_env_int("MAX_BATCH_METADATA_DEPTH", DEFAULT_BATCH_METADATA_MAX_DEPTH)
+
+
+def _batch_metadata_item_limit() -> int:
+    return _positive_env_int("MAX_BATCH_METADATA_ITEMS", DEFAULT_BATCH_METADATA_MAX_ITEMS)
+
+
+def _batch_metadata_string_byte_limit() -> int:
+    return _positive_env_int(
+        "MAX_BATCH_METADATA_STRING_BYTES",
+        DEFAULT_BATCH_METADATA_MAX_STRING_BYTES,
+    )
+
+
+def _batch_metadata_key_byte_limit() -> int:
+    return _positive_env_int(
+        "MAX_BATCH_METADATA_KEY_BYTES",
+        DEFAULT_BATCH_METADATA_MAX_KEY_BYTES,
+    )
+
+
+def _batch_upload_concurrency() -> int:
+    configured = _positive_env_int("MAX_BATCH_UPLOAD_CONCURRENCY", DEFAULT_BATCH_UPLOAD_CONCURRENCY)
+    return min(configured, MAX_BATCH_UPLOAD_CONCURRENCY)
+
+
+def _s3_list_key_limit() -> int:
+    return _positive_env_int("MAX_S3_LIST_KEYS", DEFAULT_S3_LIST_MAX_KEYS)
+
+
+def _s3_import_concurrency() -> int:
+    configured = _positive_env_int(
+        "MAX_S3_IMPORT_CONCURRENCY",
+        DEFAULT_S3_IMPORT_CONCURRENCY,
+    )
+    return min(configured, MAX_S3_IMPORT_CONCURRENCY)
 
 
 def _file_too_large_detail(filename: str | None, file_size: int, max_size: int) -> str:
@@ -122,6 +325,13 @@ def _file_too_large_detail(filename: str | None, file_size: int, max_size: int) 
 TIFF_EXTENSIONS = {".tif", ".tiff"}
 PNG_EXTENSIONS = {".png"}
 SCALAR_INTENSITY_EXTENSIONS = TIFF_EXTENSIONS | PNG_EXTENSIONS
+ORDINARY_IMAGE_EXTENSIONS = PNG_EXTENSIONS | TIFF_EXTENSIONS | {
+    ".bmp",
+    ".gif",
+    ".jpeg",
+    ".jpg",
+    ".webp",
+}
 
 
 def _flatten_image_extrema(extrema: Any) -> list[tuple[float, float]]:
@@ -165,6 +375,27 @@ def _dtype_from_pillow_mode(image: Image.Image) -> tuple[Optional[str], Optional
     if bit_depth:
         return f'uint{bit_depth}', bit_depth, False
     return None, None, False
+
+
+def _should_scan_image_intensity(
+    image: Image.Image,
+    *,
+    frame_count: int,
+    bit_depth: Optional[int],
+) -> bool:
+    """Return whether exact extrema justify decoding the image payload.
+
+    Exact intensity ranges are needed for scalar imagery, high-bit data, and
+    multi-frame volumes.  A single-frame, ordinary 8-bit color image does not
+    use scalar windowing, so decoding every pixel merely to compute channel
+    extrema is wasted work during bulk upload.
+    """
+
+    if frame_count > 1:
+        return True
+    if bit_depth is not None and bit_depth > 8:
+        return True
+    return len(image.getbands()) <= 1
 
 
 def _is_high_bit_scalar_image(image: Image.Image) -> bool:
@@ -234,63 +465,101 @@ def _dtype_metadata_from_numpy_descr(dtype_descr: str) -> Dict[str, Any]:
     return metadata
 
 
-def _npy_voxel_metadata(file: UploadFile) -> Dict[str, Any]:
+def _inspect_voxel_upload_metadata(
+    file: UploadFile,
+    *,
+    file_size: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Validate one voxel upload and return metadata from the same preflight.
+
+    Archive validation reads only the selected NPY header.  Central-directory
+    member counts and declared uncompressed sizes are checked before opening a
+    member, preventing a compressed archive from forcing a full inflate during
+    upload inspection.
+    """
+
     filename = (file.filename or "").lower()
     if not any(filename.endswith(ext) for ext in VOXEL_DATA_EXTENSIONS):
         return {}
 
     try:
         file.file.seek(0)
+        if (
+            file_size is not None
+            and file_size > REFERENCE_VOLUME_READ_LIMITS.max_source_bytes
+        ):
+            raise ValueError(
+                "Volume source exceeds the "
+                f"{REFERENCE_VOLUME_READ_LIMITS.max_source_bytes}-byte materialized-file limit"
+            )
         if filename.endswith(".npy"):
-            shape, dtype = read_npy_header(file.file)
+            header = _inspect_npy_header(
+                file.file,
+                limits=REFERENCE_VOLUME_READ_LIMITS,
+                available_bytes=file_size,
+            )
         else:
+            preflight_zip_archive(
+                file.file,
+                limits=REFERENCE_VOLUME_READ_LIMITS,
+                available_bytes=file_size,
+            )
             with zipfile.ZipFile(file.file) as archive:
-                npy_members = sorted(name for name in archive.namelist() if name.endswith(".npy"))
-                if not npy_members:
-                    return {}
-                with archive.open(npy_members[0]) as member:
-                    shape, dtype = read_npy_header(io.BytesIO(member.read()))
-    except Exception:
-        return {}
+                _selected, header = _inspect_npz_archive(
+                    archive,
+                    limits=REFERENCE_VOLUME_READ_LIMITS,
+                )
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid 3D voxel data: invalid NumPy archive",
+        ) from exc
+    except ValueError as exc:
+        detail = str(exc)
+        if filename.endswith(".inspiro") and "does not contain a .npy array" in detail:
+            detail = ".inspiro archive must contain at least one .npy voxel array"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid 3D voxel data: {detail}",
+        ) from exc
     finally:
         file.file.seek(0)
 
-    if len(shape) != 3:
-        return {}
-
-    metadata = _dtype_metadata_from_numpy_descr(dtype)
+    metadata = _dtype_metadata_from_numpy_descr(header.dtype_text)
     metadata["volume_shape"] = {
-        "axial": int(shape[0]),
-        "coronal": int(shape[1]),
-        "sagittal": int(shape[2]),
+        "axial": int(header.shape[0]),
+        "coronal": int(header.shape[1]),
+        "sagittal": int(header.shape[2]),
     }
-    metadata["frame_count"] = int(shape[0])
+    metadata["frame_count"] = int(header.shape[0])
     metadata["load_mode"] = "volume"
     return metadata
 
 
-def _image_intensity_metadata(file: UploadFile) -> Dict[str, Any]:
-    filename = (file.filename or '').lower()
-    if not any(filename.endswith(ext) for ext in SCALAR_INTENSITY_EXTENSIONS):
-        return {}
+def _npy_voxel_metadata(file: UploadFile) -> Dict[str, Any]:
+    """Compatibility wrapper for callers that only request voxel metadata."""
 
     try:
-        file.file.seek(0)
-        with Image.open(file.file) as image:
-            frame_ranges: list[tuple[float, float]] = []
-            frame_count = max(1, int(getattr(image, 'n_frames', 1) or 1))
-            pixel_dtype, bit_depth, signed = _dtype_from_pillow_mode(image)
-            for frame in ImageSequence.Iterator(image):
-                if pixel_dtype is None or bit_depth is None:
-                    candidate_dtype, candidate_bit_depth, candidate_signed = _dtype_from_pillow_mode(frame)
-                    pixel_dtype = pixel_dtype or candidate_dtype
-                    bit_depth = bit_depth or candidate_bit_depth
-                    signed = signed or candidate_signed
-                frame_ranges.extend(_flatten_image_extrema(frame.getextrema()))
-    except Exception:
+        file_size = _batch_upload_file_size(file)
+        return _inspect_voxel_upload_metadata(file, file_size=file_size)
+    except HTTPException:
         return {}
-    finally:
-        file.file.seek(0)
+
+
+def _image_intensity_metadata_from_open_image(image: Image.Image) -> Dict[str, Any]:
+    frame_ranges: list[tuple[float, float]] = []
+    frame_count = max(1, int(getattr(image, 'n_frames', 1) or 1))
+    pixel_dtype, bit_depth, signed = _dtype_from_pillow_mode(image)
+    if not _should_scan_image_intensity(image, frame_count=frame_count, bit_depth=bit_depth):
+        return {}
+
+    for frame in ImageSequence.Iterator(image):
+        if pixel_dtype is None or bit_depth is None:
+            candidate_dtype, candidate_bit_depth, candidate_signed = _dtype_from_pillow_mode(frame)
+            pixel_dtype = pixel_dtype or candidate_dtype
+            bit_depth = bit_depth or candidate_bit_depth
+            signed = signed or candidate_signed
+        frame_ranges.extend(_flatten_image_extrema(frame.getextrema()))
 
     if not frame_ranges or (pixel_dtype is None and bit_depth is None):
         return {}
@@ -319,19 +588,24 @@ def _image_intensity_metadata(file: UploadFile) -> Dict[str, Any]:
     return metadata
 
 
-def _tiff_dimensionality_metadata(file: UploadFile) -> Dict[str, Any]:
-    filename = (file.filename or "").lower()
-    if not (filename.endswith(".tif") or filename.endswith(".tiff")):
+def _image_intensity_metadata(file: UploadFile) -> Dict[str, Any]:
+    filename = (file.filename or '').lower()
+    if not any(filename.endswith(ext) for ext in SCALAR_INTENSITY_EXTENSIONS):
         return {}
+
     try:
         file.file.seek(0)
         with Image.open(file.file) as image:
-            frame_count = int(getattr(image, "n_frames", 1) or 1)
-            width, height = image.size
+            return _image_intensity_metadata_from_open_image(image)
     except Exception:
         return {}
     finally:
         file.file.seek(0)
+
+
+def _tiff_dimensionality_metadata_from_open_image(image: Image.Image) -> Dict[str, Any]:
+    frame_count = max(1, int(getattr(image, "n_frames", 1) or 1))
+    width, height = image.size
     metadata: Dict[str, Any] = {
         "tiff_dimensionality": "3d" if frame_count > 1 else "2d",
         "load_mode": "volume" if frame_count > 1 else "single_image",
@@ -346,31 +620,67 @@ def _tiff_dimensionality_metadata(file: UploadFile) -> Dict[str, Any]:
     return metadata
 
 
-def _validate_voxel_data(file: UploadFile) -> None:
+def _tiff_dimensionality_metadata(file: UploadFile) -> Dict[str, Any]:
     filename = (file.filename or "").lower()
-    if not any(filename.endswith(ext) for ext in VOXEL_DATA_EXTENSIONS):
-        return
-
+    if not (filename.endswith(".tif") or filename.endswith(".tiff")):
+        return {}
     try:
-        if filename.endswith(".npy"):
-            shape, _dtype = read_npy_header(file.file)
-            if len(shape) != 3:
-                raise ValueError("NumPy volume must be exactly 3D")
-        else:
-            with zipfile.ZipFile(file.file) as archive:
-                npy_members = sorted(name for name in archive.namelist() if name.endswith(".npy"))
-                if not npy_members:
-                    if filename.endswith(".inspiro"):
-                        raise ValueError(".inspiro archive must contain at least one .npy voxel array")
-                    raise ValueError("NumPy .npz archive does not contain a .npy array")
-                with archive.open(npy_members[0]) as member:
-                    shape, _dtype = read_npy_header(io.BytesIO(member.read()))
-                    if len(shape) != 3:
-                        raise ValueError("NumPy volume must be exactly 3D")
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid 3D voxel data: {exc}") from exc
+        file.file.seek(0)
+        with Image.open(file.file) as image:
+            return _tiff_dimensionality_metadata_from_open_image(image)
+    except Exception:
+        return {}
     finally:
         file.file.seek(0)
+
+
+def _inspect_upload_image_metadata(
+    file: UploadFile,
+    *,
+    validate_ordinary_header: bool = False,
+) -> Dict[str, Any]:
+    """Inspect PNG/TIFF metadata with a single Pillow open per upload."""
+
+    filename = (file.filename or '').lower()
+    suffix = Path(filename).suffix
+    is_tiff = any(filename.endswith(ext) for ext in TIFF_EXTENSIONS)
+    is_png = any(filename.endswith(ext) for ext in PNG_EXTENSIONS)
+    is_ordinary_image = suffix in ORDINARY_IMAGE_EXTENSIONS
+    if not is_tiff and not is_png and not (validate_ordinary_header and is_ordinary_image):
+        return {}
+
+    try:
+        file.file.seek(0)
+        with Image.open(file.file) as image:
+            metadata = _tiff_dimensionality_metadata_from_open_image(image) if is_tiff else {}
+            if is_tiff or is_png:
+                try:
+                    metadata.update(_image_intensity_metadata_from_open_image(image))
+                except Exception:
+                    # Exact extrema are optional metadata.  Some otherwise valid
+                    # Pillow modes (notably big-endian ``I;16B`` TIFFs) cannot run
+                    # ``getextrema``; that must not turn a valid upload into a 400.
+                    pass
+            return metadata
+    except Exception as exc:
+        if is_tiff:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid TIFF image data: {exc}",
+            ) from exc
+        if validate_ordinary_header and is_ordinary_image:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid image data: the file header could not be read",
+            ) from exc
+        return {}
+    finally:
+        file.file.seek(0)
+
+
+def _validate_voxel_data(file: UploadFile) -> None:
+    file_size = _batch_upload_file_size(file)
+    _inspect_voxel_upload_metadata(file, file_size=file_size)
 
 
 def _inline_image_bytes(db_image: models.DataInstance) -> Optional[bytes]:
@@ -400,6 +710,39 @@ def _inspect_tiff_dimensionality(file: UploadFile) -> Optional[str]:
         ) from exc
     finally:
         file.file.seek(0)
+
+
+def _inspect_upload_file(
+    file: UploadFile,
+    *,
+    validate_ordinary_header: bool = False,
+) -> tuple[Dict[str, Any], Optional[int]]:
+    """Run blocking upload inspection before the object-storage stream starts."""
+
+    try:
+        file.file.seek(0, io.SEEK_END)
+        file_size = file.file.tell()
+        file.file.seek(0)
+    except Exception:
+        # If the stream does not support sizing, leave validation to storage.
+        file_size = None
+
+    if (
+        validate_ordinary_header
+        and file_size == 0
+        and Path(file.filename or "").suffix.lower() in ORDINARY_IMAGE_EXTENSIONS
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Empty image file: at least one byte of image data is required",
+        )
+
+    metadata = _inspect_upload_image_metadata(
+        file,
+        validate_ordinary_header=validate_ordinary_header,
+    )
+    metadata.update(_inspect_voxel_upload_metadata(file, file_size=file_size))
+    return metadata, file_size
 
 
 
@@ -457,6 +800,7 @@ async def _autoassign_pt3_volume_upload_to_part(
     project: models.Project,
     image: models.DataInstance,
     current_user: schemas.User,
+    commit: bool = True,
 ) -> None:
     image_metadata = image.metadata_json if isinstance(image.metadata_json, dict) else {}
     if project.project_type != "PT3" or not _is_volume_upload_metadata(image_metadata):
@@ -484,6 +828,7 @@ async def _autoassign_pt3_volume_upload_to_part(
                 metadata={"source_images": [source_entry]},
             ),
             created_by=current_user.email,
+            commit=commit,
         )
         return
 
@@ -504,6 +849,7 @@ async def _autoassign_pt3_volume_upload_to_part(
         part_id=existing_part.id,
         metadata_patch={**metadata, "source_images": source_images},
         updated_by=current_user.email,
+        commit=commit,
     )
 
 
@@ -524,7 +870,7 @@ SUPPORTED_S3_IMPORT_EXTENSIONS = {
 
 class S3ListRequest(BaseModel):
     s3_url: str
-    max_keys: int = 1000
+    max_keys: int = DEFAULT_S3_LIST_MAX_KEYS
 
 
 class S3ObjectSummary(BaseModel):
@@ -607,6 +953,43 @@ def _ensure_key_under_prefix(key: str, prefix: str) -> None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Selected key is outside the requested S3 URL prefix: {key}")
 
 
+def _validate_s3_import_request_metadata(request: S3ImportRequest) -> None:
+    """Apply the batch upload resource bounds to JSON-only S3 imports."""
+
+    try:
+        serialized_request = _json.dumps(
+            request.model_dump(),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError, UnicodeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="S3 import metadata must be valid JSON",
+        ) from exc
+
+    metadata_limit = _batch_upload_manifest_byte_limit()
+    if len(serialized_request) > metadata_limit:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                f"S3 import request metadata is too large: {len(serialized_request)} bytes "
+                f"exceeds the configured limit of {metadata_limit} bytes. "
+                "Set MAX_BATCH_UPLOAD_MANIFEST_BYTES to adjust this limit."
+            ),
+        )
+
+    _validate_batch_metadata_structure(request.metadata or {}, position=0)
+    for position, metadata in enumerate((request.per_file_metadata or {}).values(), start=1):
+        _validate_batch_metadata_structure(metadata, position=position)
+
+
+def _s3_import_failure(key: str, error: Any) -> Dict[str, str]:
+    cleaned_error = " ".join(str(error).replace("\x00", "").split())[:512]
+    return {"key": key, "error": cleaned_error or "S3 object could not be imported"}
+
+
 @router.post("/projects/{project_id}/s3/list", response_model=S3ListResponse)
 async def list_project_s3_files(
     project_id: uuid.UUID,
@@ -617,10 +1000,18 @@ async def list_project_s3_files(
     """List supported files under an S3 URL so the user can choose imports."""
     await get_project_or_403(project_id, db, current_user)
     bucket, prefix = _parse_s3_url(request.s3_url)
-    max_keys = max(1, min(request.max_keys or 1000, 1000))
+    configured_limit = _s3_list_key_limit()
+    max_keys = max(1, min(request.max_keys or configured_limit, configured_limit))
 
     try:
-        objects = await list_s3_objects(bucket, prefix, max_keys=max_keys + 1)
+        objects = await list_s3_objects(
+            bucket,
+            prefix,
+            max_keys=max_keys + 1,
+            key_filter=lambda key: bool(key)
+            and not key.endswith("/")
+            and _is_supported_s3_file(key),
+        )
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Unable to list S3 objects: {exc}") from exc
 
@@ -641,7 +1032,10 @@ async def list_project_s3_files(
         bucket=bucket,
         prefix=prefix,
         objects=summaries,
-        truncated=len(objects) > max_keys,
+        truncated=(
+            len(objects) > max_keys
+            or bool(getattr(objects, "scan_truncated", False))
+        ),
     )
 
 
@@ -652,7 +1046,8 @@ async def import_project_s3_files(
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
 ):
-    """Copy selected S3 objects into the project bucket and create image records."""
+    """Copy selected S3 objects with bounded storage work and one DB commit."""
+    started_at = time.perf_counter()
     if not request.keys:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Select at least one S3 file to import")
     if len(request.keys) > 100:
@@ -661,69 +1056,1048 @@ async def import_project_s3_files(
     db_project = await get_project_or_403_writable(project_id, db, current_user)
     db_project_id = db_project.id
     bucket, prefix = _parse_s3_url(request.s3_url)
+    _validate_s3_import_request_metadata(request)
     max_size = _upload_size_limit()
-    imported: List[schemas.DataInstance] = []
-    failed: List[Dict[str, str]] = []
+    failures_by_position: Dict[int, Dict[str, str]] = {}
+    validated_items: list[Dict[str, Any]] = []
 
-    for key in request.keys:
+    # Validate every key and all metadata before the first HEAD/COPY side
+    # effect. In particular, an out-of-prefix key cannot arrive after valid
+    # keys have already been copied.
+    for position, key in enumerate(request.keys):
+        _ensure_key_under_prefix(key, prefix)
         try:
-            _ensure_key_under_prefix(key, prefix)
             if not _is_supported_s3_file(key):
                 raise ValueError("Unsupported file type")
             filename = _filename_from_s3_key(key)
-            source_info = await get_s3_object_info(bucket, key)
-            if not source_info:
-                raise ValueError("S3 object not found or inaccessible")
-            size_bytes = int(source_info.get("size") or 0)
-            if size_bytes and size_bytes > max_size:
-                raise ValueError(_file_too_large_detail(filename, size_bytes, max_size))
-
-            image_id = uuid.uuid4()
-            object_storage_key = f"{db_project_id}/{image_id}/{filename}"
-            copied = await copy_s3_object_to_s3(bucket, key, settings.S3_BUCKET, object_storage_key)
-            if not copied:
-                raise ValueError("Failed to copy file to project storage")
-
+            # Provenance is assigned last and cannot be overridden by shared
+            # or per-file user metadata.
             merged_metadata = {
+                **(request.metadata or {}),
+                **((request.per_file_metadata or {}).get(key) or {}),
                 "source": "s3_import",
                 "source_s3_url": request.s3_url,
                 "source_s3_bucket": bucket,
                 "source_s3_key": key,
-                **(request.metadata or {}),
-                **((request.per_file_metadata or {}).get(key) or {}),
             }
-            content_type = source_info.get("content_type") or mimetypes.guess_type(filename)[0]
-
-            resolved_group_id: Optional[uuid.UUID] = None
-            group_identifier = (request.group_identifiers or {}).get(key)
-            if group_identifier and group_identifier.strip():
-                group = await crud.get_or_create_image_group(
-                    db, project_id, group_identifier.strip(), created_by=current_user.email
-                )
-                resolved_group_id = group.id
-
-            data_instance_create = schemas.DataInstanceCreate(
-                project_id=db_project_id,
+            _validate_batch_metadata_structure(merged_metadata, position=position)
+            validated_entry = schemas.BatchImageUploadManifestEntry(
+                client_index=position,
                 filename=filename,
-                object_storage_key=object_storage_key,
-                content_type=content_type,
-                size_bytes=size_bytes,
                 metadata=merged_metadata,
-                uploaded_by_user_id=current_user.email,
-                group_id=resolved_group_id,
+                group_identifier=(request.group_identifiers or {}).get(key),
             )
-            db_data_instance = await crud.create_data_instance(db=db, data_instance=data_instance_create)
-            imported.append(to_data_instance_schema(db_data_instance))
+            validated_items.append(
+                {
+                    "position": position,
+                    "key": key,
+                    "filename": validated_entry.filename,
+                    "metadata": validated_entry.metadata,
+                    "group_identifier": validated_entry.group_identifier,
+                }
+            )
         except HTTPException:
             raise
-        except Exception as exc:
-            failed.append({"key": key, "error": str(exc)})
+        except (ValidationError, ValueError) as exc:
+            failures_by_position[position] = _s3_import_failure(key, exc)
 
-    if imported:
-        cache = get_cache()
-        cache.clear_pattern(f"project_images:{project_id}")
+    validation_finished_at = time.perf_counter()
+    request_semaphore = asyncio.Semaphore(_s3_import_concurrency())
+
+    async def inspect_source(item: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            async with request_semaphore:
+                async with _storage_operation_slot():
+                    source_info = await get_s3_object_info(bucket, item["key"])
+            if not source_info:
+                raise ValueError("S3 object not found or inaccessible")
+            size_bytes = int(source_info.get("size") or 0)
+            if size_bytes < 0:
+                raise ValueError("S3 object reported an invalid negative size")
+            if size_bytes > max_size:
+                raise ValueError(
+                    _file_too_large_detail(item["filename"], size_bytes, max_size)
+                )
+            source_etag = str(source_info.get("etag") or "").strip()
+            if not source_etag:
+                raise ValueError(
+                    "S3 object did not provide an ETag required for a size-safe conditional copy"
+                )
+            return {
+                **item,
+                "source_info": source_info,
+                "source_etag": source_etag,
+                "size_bytes": size_bytes,
+            }
+        except Exception as exc:
+            return {**item, "failure": _s3_import_failure(item["key"], exc)}
+
+    inspected_results = await asyncio.gather(
+        *(inspect_source(item) for item in validated_items)
+    )
+    inspected_items: list[Dict[str, Any]] = []
+    for item in inspected_results:
+        if "failure" in item:
+            failures_by_position[item["position"]] = item["failure"]
+        else:
+            inspected_items.append(item)
+
+    inspection_finished_at = time.perf_counter()
+
+    async def copy_source(item: Dict[str, Any]) -> Dict[str, Any]:
+        image_id = uuid.uuid4()
+        object_storage_key = f"{db_project_id}/{image_id}/{item['filename']}"
+        try:
+            async with request_semaphore:
+                copied = await _copy_target_with_cleanup(
+                    source_bucket=bucket,
+                    source_key=item["key"],
+                    source_etag=item["source_etag"],
+                    object_storage_key=object_storage_key,
+                )
+            if not copied:
+                raise ValueError("Failed to copy file to project storage")
+            return {
+                **item,
+                "image_id": image_id,
+                "object_storage_key": object_storage_key,
+                "content_type": (
+                    item["source_info"].get("content_type")
+                    or mimetypes.guess_type(item["filename"])[0]
+                ),
+            }
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return {**item, "failure": _s3_import_failure(item["key"], exc)}
+
+    copied_target_keys: list[str] = []
+
+    async def tracked_copy_source(item: Dict[str, Any]) -> Dict[str, Any]:
+        result = await copy_source(item)
+        if "object_storage_key" in result and "failure" not in result:
+            copied_target_keys.append(result["object_storage_key"])
+        return result
+
+    try:
+        copied_results = await asyncio.gather(
+            *(tracked_copy_source(item) for item in inspected_items)
+        )
+    except asyncio.CancelledError:
+        # Completed sibling tasks are not themselves cancelled, so clean their
+        # successful copies here in addition to each interrupted task's target.
+        await _cleanup_batch_upload_objects(copied_target_keys)
+        raise
+    copied_items: list[Dict[str, Any]] = []
+    for item in copied_results:
+        if "failure" in item:
+            failures_by_position[item["position"]] = item["failure"]
+        else:
+            copied_items.append(item)
+
+    copy_finished_at = time.perf_counter()
+    db_images: list[tuple[int, models.DataInstance]] = []
+    if copied_items:
+        object_storage_keys = [item["object_storage_key"] for item in copied_items]
+        try:
+            groups_by_identifier = await _resolve_batch_image_groups(
+                db,
+                project_id=db_project_id,
+                identifiers=[
+                    item["group_identifier"]
+                    for item in copied_items
+                    if item["group_identifier"]
+                ],
+            )
+            for item in copied_items:
+                group = (
+                    groups_by_identifier.get(item["group_identifier"])
+                    if item["group_identifier"]
+                    else None
+                )
+                db_image = models.DataInstance(
+                    id=item["image_id"],
+                    project_id=db_project_id,
+                    group_id=group.id if group else None,
+                    filename=item["filename"],
+                    object_storage_key=item["object_storage_key"],
+                    content_type=item["content_type"],
+                    size_bytes=item["size_bytes"],
+                    metadata_json=item["metadata"],
+                    uploaded_by_user_id=current_user.email,
+                )
+                db.add(db_image)
+                db_images.append((item["position"], db_image))
+
+            await db.flush()
+            await _commit_database_transaction(db)
+        except asyncio.CancelledError as exc:
+            if getattr(exc, "vista_commit_succeeded", False):
+                _clear_project_images_cache_best_effort(project_id)
+            else:
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+                await _cleanup_batch_upload_objects(object_storage_keys)
+            raise
+        except Exception as exc:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            await _cleanup_batch_upload_objects(object_storage_keys)
+            logger.error(
+                "S3 image import database transaction failed",
+                extra={
+                    "project_id": str(project_id),
+                    "requested_count": len(request.keys),
+                    "copied_count": len(copied_items),
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 1),
+                },
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Unable to save imported image records",
+            ) from exc
+
+        _clear_project_images_cache_best_effort(project_id)
+
+    finished_at = time.perf_counter()
+    imported = [
+        to_data_instance_schema(db_image)
+        for _, db_image in sorted(db_images, key=lambda entry: entry[0])
+    ]
+    failed = [
+        failure
+        for _, failure in sorted(failures_by_position.items())
+    ]
+    logger.info(
+        "S3 image import completed",
+        extra={
+            "project_id": str(project_id),
+            "requested_count": len(request.keys),
+            "validated_count": len(validated_items),
+            "imported_count": len(imported),
+            "failed_count": len(failed),
+            "validation_ms": round((validation_finished_at - started_at) * 1000, 1),
+            "inspection_ms": round((inspection_finished_at - validation_finished_at) * 1000, 1),
+            "copy_ms": round((copy_finished_at - inspection_finished_at) * 1000, 1),
+            "database_ms": round((finished_at - copy_finished_at) * 1000, 1),
+            "duration_ms": round((finished_at - started_at) * 1000, 1),
+        },
+    )
 
     return S3ImportResponse(imported=imported, failed=failed)
+
+
+def _batch_upload_file_size(file: UploadFile) -> int:
+    """Return a seekable multipart file's exact size without retaining its bytes."""
+
+    try:
+        file.file.seek(0, io.SEEK_END)
+        file_size = int(file.file.tell())
+        if file_size < 0:
+            raise ValueError("negative file size")
+        return file_size
+    except Exception as exc:
+        raise ValueError("Unable to determine uploaded file size") from exc
+    finally:
+        try:
+            file.file.seek(0)
+        except Exception:
+            pass
+
+
+def _batch_manifest_size_bytes(manifest_json: str) -> int:
+    try:
+        manifest_size = len(manifest_json.encode("utf-8"))
+    except (AttributeError, UnicodeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Batch upload manifest must be valid UTF-8 text",
+        ) from exc
+
+    manifest_limit = _batch_upload_manifest_byte_limit()
+    if manifest_size > manifest_limit:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                f"Batch upload manifest is too large: {manifest_size} bytes exceeds the "
+                f"configured manifest limit of {manifest_limit} bytes. "
+                "Set MAX_BATCH_UPLOAD_MANIFEST_BYTES to adjust this limit."
+            ),
+        )
+    return manifest_size
+
+
+async def _read_batch_upload_manifest(manifest_file: UploadFile) -> tuple[str, int]:
+    """Read a multipart manifest with an application-level byte ceiling."""
+
+    manifest_limit = _batch_upload_manifest_byte_limit()
+    try:
+        raw_manifest = await manifest_file.read(manifest_limit + 1)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unable to read batch upload manifest",
+        ) from exc
+    if len(raw_manifest) > manifest_limit:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                f"Batch upload manifest is too large: more than {manifest_limit} bytes "
+                f"exceeds the configured manifest limit of {manifest_limit} bytes. "
+                "Set MAX_BATCH_UPLOAD_MANIFEST_BYTES to adjust this limit."
+            ),
+        )
+    try:
+        return raw_manifest.decode("utf-8"), len(raw_manifest)
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Batch upload manifest must be valid UTF-8 text",
+        ) from exc
+
+
+def _raise_batch_metadata_limit(
+    *,
+    position: int,
+    resource: str,
+    observed: int,
+    limit: int,
+    environment_name: str,
+) -> None:
+    raise HTTPException(
+        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        detail=(
+            f"Batch upload manifest entry {position} metadata {resource} is {observed}; "
+            f"the configured limit is {limit}. Set {environment_name} to adjust this limit."
+        ),
+    )
+
+
+def _validate_batch_metadata_structure(metadata: Any, *, position: int) -> None:
+    """Bound metadata work before Pydantic or database JSON serialization."""
+
+    if not isinstance(metadata, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Batch upload manifest entry {position} metadata must be a JSON object",
+        )
+
+    depth_limit = _batch_metadata_depth_limit()
+    item_limit = _batch_metadata_item_limit()
+    string_limit = _batch_metadata_string_byte_limit()
+    key_limit = _batch_metadata_key_byte_limit()
+    item_count = 0
+    stack: list[tuple[Any, int]] = [(metadata, 1)]
+
+    while stack:
+        value, depth = stack.pop()
+        if depth > depth_limit:
+            _raise_batch_metadata_limit(
+                position=position,
+                resource="nesting depth",
+                observed=depth,
+                limit=depth_limit,
+                environment_name="MAX_BATCH_METADATA_DEPTH",
+            )
+
+        if isinstance(value, dict):
+            item_count += len(value)
+            if item_count > item_limit:
+                _raise_batch_metadata_limit(
+                    position=position,
+                    resource="item count",
+                    observed=item_count,
+                    limit=item_limit,
+                    environment_name="MAX_BATCH_METADATA_ITEMS",
+                )
+            for key, child in value.items():
+                key_size = len(key.encode("utf-8"))
+                if key_size > key_limit:
+                    _raise_batch_metadata_limit(
+                        position=position,
+                        resource="key size in bytes",
+                        observed=key_size,
+                        limit=key_limit,
+                        environment_name="MAX_BATCH_METADATA_KEY_BYTES",
+                    )
+                if isinstance(child, (dict, list)):
+                    stack.append((child, depth + 1))
+                elif isinstance(child, str):
+                    string_size = len(child.encode("utf-8"))
+                    if string_size > string_limit:
+                        _raise_batch_metadata_limit(
+                            position=position,
+                            resource="string size in bytes",
+                            observed=string_size,
+                            limit=string_limit,
+                            environment_name="MAX_BATCH_METADATA_STRING_BYTES",
+                        )
+                elif isinstance(child, float) and not math.isfinite(child):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=(
+                            f"Batch upload manifest entry {position} metadata contains "
+                            "a non-finite number"
+                        ),
+                    )
+        elif isinstance(value, list):
+            item_count += len(value)
+            if item_count > item_limit:
+                _raise_batch_metadata_limit(
+                    position=position,
+                    resource="item count",
+                    observed=item_count,
+                    limit=item_limit,
+                    environment_name="MAX_BATCH_METADATA_ITEMS",
+                )
+            for child in value:
+                if isinstance(child, (dict, list)):
+                    stack.append((child, depth + 1))
+                elif isinstance(child, str):
+                    string_size = len(child.encode("utf-8"))
+                    if string_size > string_limit:
+                        _raise_batch_metadata_limit(
+                            position=position,
+                            resource="string size in bytes",
+                            observed=string_size,
+                            limit=string_limit,
+                            environment_name="MAX_BATCH_METADATA_STRING_BYTES",
+                        )
+                elif isinstance(child, float) and not math.isfinite(child):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=(
+                            f"Batch upload manifest entry {position} metadata contains "
+                            "a non-finite number"
+                        ),
+                    )
+
+    try:
+        metadata_size = len(
+            _json.dumps(
+                metadata,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Batch upload manifest entry {position} metadata is not valid JSON",
+        ) from exc
+    metadata_limit = _batch_metadata_byte_limit()
+    if metadata_size > metadata_limit:
+        _raise_batch_metadata_limit(
+            position=position,
+            resource="serialized size in bytes",
+            observed=metadata_size,
+            limit=metadata_limit,
+            environment_name="MAX_BATCH_METADATA_BYTES",
+        )
+
+
+def _parse_batch_upload_manifest(
+    manifest_json: str,
+    *,
+    file_count: int,
+) -> tuple[list[schemas.BatchImageUploadManifestEntry], int]:
+    manifest_size = _batch_manifest_size_bytes(manifest_json)
+    try:
+        raw_manifest = _json.loads(manifest_json)
+    except RecursionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                "Batch upload manifest nesting exceeds the JSON parser's built-in limit; "
+                "reduce its depth. MAX_BATCH_METADATA_DEPTH controls the application limit."
+            ),
+        ) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid JSON format for batch upload manifest",
+        ) from exc
+
+    if not isinstance(raw_manifest, list):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Batch upload manifest must be a JSON array",
+        )
+    if len(raw_manifest) != file_count:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Batch upload manifest must contain exactly one entry for each file",
+        )
+
+    entries: list[schemas.BatchImageUploadManifestEntry] = []
+    for position, raw_entry in enumerate(raw_manifest):
+        if not isinstance(raw_entry, dict):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Batch upload manifest entry {position} must be a JSON object",
+            )
+        _validate_batch_metadata_structure(raw_entry.get("metadata", {}), position=position)
+        try:
+            entries.append(schemas.BatchImageUploadManifestEntry.model_validate(raw_entry))
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Batch upload manifest entry {position} is invalid",
+            ) from exc
+
+    client_indices = [entry.client_index for entry in entries]
+    if len(client_indices) != len(set(client_indices)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Batch upload manifest client_index values must be unique",
+        )
+    return entries, manifest_size
+
+
+def _batch_item_failure(
+    entry: schemas.BatchImageUploadManifestEntry,
+    *,
+    code: str,
+    detail: str,
+) -> schemas.BatchImageUploadFailure:
+    cleaned_detail = " ".join(str(detail).replace("\x00", "").split())[:512]
+    return schemas.BatchImageUploadFailure(
+        client_index=entry.client_index,
+        filename=entry.filename,
+        code=code,
+        detail=cleaned_detail or "File could not be uploaded",
+    )
+
+
+async def _commit_database_transaction(db: AsyncSession) -> None:
+    """Do not abandon an in-flight commit when its request is cancelled.
+
+    The caught ``CancelledError`` is annotated so callers can distinguish a
+    commit that completed successfully from one that failed and still needs
+    rollback/storage cleanup.
+    """
+
+    commit_task = asyncio.create_task(db.commit())
+    try:
+        await asyncio.shield(commit_task)
+    except asyncio.CancelledError as cancelled:
+        while not commit_task.done():
+            try:
+                await asyncio.shield(commit_task)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        commit_succeeded = False
+        if commit_task.done() and not commit_task.cancelled():
+            try:
+                commit_task.result()
+                commit_succeeded = True
+            except BaseException:
+                pass
+        setattr(cancelled, "vista_commit_succeeded", commit_succeeded)
+        raise cancelled
+
+
+async def _cleanup_batch_upload_objects(object_storage_keys: list[str]) -> None:
+    """Best-effort cleanup for objects uploaded before a database failure."""
+
+    semaphore = asyncio.Semaphore(_batch_upload_concurrency())
+
+    async def delete_one(object_storage_key: str) -> None:
+        async with semaphore:
+            try:
+                async with _storage_operation_slot():
+                    loop = asyncio.get_running_loop()
+                    delete_future = loop.run_in_executor(
+                        None,
+                        delete_file_from_s3,
+                        settings.S3_BUCKET,
+                        object_storage_key,
+                    )
+                    try:
+                        result = await asyncio.shield(delete_future)
+                    except asyncio.CancelledError as cancelled:
+                        while not delete_future.done():
+                            try:
+                                await asyncio.shield(delete_future)
+                            except asyncio.CancelledError:
+                                continue
+                            except BaseException:
+                                break
+                        if delete_future.done():
+                            try:
+                                result = delete_future.result()
+                            except BaseException:
+                                result = False
+                        raise cancelled
+                if asyncio.iscoroutine(result):
+                    await result
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # The database error remains the primary failure. Storage
+                # helpers log cleanup failures without exposing object keys.
+                pass
+
+    cleanup_task = asyncio.ensure_future(
+        asyncio.gather(*(delete_one(key) for key in object_storage_keys))
+    ) if object_storage_keys else None
+    if cleanup_task is None:
+        return
+    try:
+        await asyncio.shield(cleanup_task)
+    except asyncio.CancelledError as cancelled:
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        raise cancelled
+
+
+async def _upload_target_with_cleanup(
+    *,
+    object_storage_key: str,
+    file_data: Any,
+    length: int,
+    content_type: Optional[str],
+) -> bool:
+    """Upload one unique target and remove it on every non-success outcome."""
+
+    try:
+        async with _storage_operation_slot():
+            uploaded = await upload_file_to_s3(
+                bucket_name=settings.S3_BUCKET,
+                object_name=object_storage_key,
+                file_data=file_data,
+                length=length,
+                content_type=content_type or "application/octet-stream",
+            )
+    except asyncio.CancelledError:
+        await _cleanup_batch_upload_objects([object_storage_key])
+        raise
+    except Exception:
+        await _cleanup_batch_upload_objects([object_storage_key])
+        return False
+    if not uploaded:
+        await _cleanup_batch_upload_objects([object_storage_key])
+        return False
+    return True
+
+
+async def _copy_target_with_cleanup(
+    *,
+    source_bucket: str,
+    source_key: str,
+    source_etag: str,
+    object_storage_key: str,
+) -> bool:
+    """Copy one unique target and remove ambiguous/failed destinations."""
+
+    try:
+        async with _storage_operation_slot():
+            copied = await copy_s3_object_to_s3(
+                source_bucket,
+                source_key,
+                settings.S3_BUCKET,
+                object_storage_key,
+                source_etag=source_etag,
+            )
+    except asyncio.CancelledError:
+        await _cleanup_batch_upload_objects([object_storage_key])
+        raise
+    except Exception:
+        await _cleanup_batch_upload_objects([object_storage_key])
+        return False
+    if not copied:
+        await _cleanup_batch_upload_objects([object_storage_key])
+        return False
+    return True
+
+
+async def _resolve_batch_image_groups(
+    db: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    identifiers: list[str],
+) -> Dict[str, models.ImageGroup]:
+    """Resolve groups with a unique-key upsert safe under concurrent batches."""
+
+    unique_identifiers = sorted(set(identifiers))
+    if not unique_identifiers:
+        return {}
+
+    # Always issue the idempotent insert first. Besides eliminating a query,
+    # this closes the classic SELECT-then-INSERT race between two requests.
+    values = [
+        {
+            "id": uuid.uuid4(),
+            "project_id": project_id,
+            "identifier": identifier,
+        }
+        for identifier in unique_identifiers
+    ]
+    dialect_name = db.get_bind().dialect.name
+    if dialect_name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as dialect_insert
+
+        statement = dialect_insert(models.ImageGroup).values(values).on_conflict_do_nothing(
+            constraint="uix_image_groups_project_identifier"
+        )
+        await db.execute(statement)
+    elif dialect_name == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as dialect_insert
+
+        statement = dialect_insert(models.ImageGroup).values(values).on_conflict_do_nothing(
+            index_elements=["project_id", "identifier"]
+        )
+        await db.execute(statement)
+    else:
+        # Preserve support for other SQLAlchemy dialects. A savepoint keeps
+        # the outer image transaction usable if another request wins the
+        # unique-key race between our INSERT and INSERT.
+        for value in values:
+            try:
+                async with db.begin_nested():
+                    await db.execute(insert(models.ImageGroup).values(**value))
+            except IntegrityError:
+                pass
+
+    # In PostgreSQL READ COMMITTED, an ON CONFLICT statement waits for the
+    # winning transaction and this new statement snapshot sees its row.
+    resolved_result = await db.execute(
+        select(models.ImageGroup).where(
+            models.ImageGroup.project_id == project_id,
+            models.ImageGroup.identifier.in_(unique_identifiers),
+        )
+    )
+    groups_by_identifier = {
+        group.identifier: group for group in resolved_result.scalars().all()
+    }
+
+    unresolved = set(unique_identifiers) - set(groups_by_identifier)
+    if unresolved:
+        raise RuntimeError("Unable to resolve one or more image groups")
+    return groups_by_identifier
+
+
+def _clear_project_images_cache_best_effort(project_id: uuid.UUID) -> None:
+    """Never report a committed upload as failed because cache eviction failed."""
+
+    try:
+        get_cache().clear_pattern(f"project_images:{project_id}")
+    except Exception:
+        logger.warning(
+            "Image batch committed but project image cache invalidation failed",
+            extra={"project_id": str(project_id)},
+            exc_info=True,
+        )
+
+
+@router.post(
+    "/projects/{project_id}/images/batch",
+    response_model=schemas.BatchImageUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_images_to_project_batch(
+    project_id: uuid.UUID,
+    files: List[UploadFile] = File(...),
+    manifest_file: UploadFile = File(..., alias="manifest"),
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """Upload a bounded batch with one authorization and one database commit.
+
+    ``files`` and ``manifest`` are positional peers. ``client_index`` is the
+    stable response identity and does not depend on filenames, so duplicate
+    final filenames remain unambiguous.
+    """
+    started_at = time.perf_counter()
+
+    db_project = await get_project_or_403_writable(project_id, db, current_user)
+    db_project_id = db_project.id
+    project_type = db_project.project_type
+
+    if not files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Select at least one image file to upload",
+        )
+    file_limit = _batch_upload_file_limit()
+    if len(files) > file_limit:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Batch contains {len(files)} files; the configured limit is {file_limit}",
+        )
+
+    manifest_json, manifest_size = await _read_batch_upload_manifest(manifest_file)
+    manifest, _ = _parse_batch_upload_manifest(
+        manifest_json,
+        file_count=len(files),
+    )
+    for file, entry in zip(files, manifest):
+        # Inspection and object naming must use the requested final filename,
+        # rather than a possibly duplicated or browser-normalized source name.
+        file.filename = entry.filename
+
+    try:
+        file_sizes = await asyncio.gather(
+            *(asyncio.to_thread(_batch_upload_file_size, file) for file in files)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    per_file_limit = _upload_size_limit()
+    for entry, file_size in zip(manifest, file_sizes):
+        if file_size > per_file_limit:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=_file_too_large_detail(entry.filename, file_size, per_file_limit),
+            )
+
+    aggregate_size = sum(file_sizes) + manifest_size
+    aggregate_limit = _batch_upload_byte_limit()
+    if aggregate_size > aggregate_limit:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                f"Batch request is too large: {aggregate_size} file-and-manifest bytes "
+                f"exceeds the configured batch upload limit of {_format_byte_limit(aggregate_limit)}. "
+                "Set MAX_BATCH_UPLOAD_BYTES to adjust this limit."
+            ),
+        )
+    preflight_finished_at = time.perf_counter()
+
+    semaphore = asyncio.Semaphore(_batch_upload_concurrency())
+    failures: list[schemas.BatchImageUploadFailure] = []
+
+    async def inspect_one(
+        position: int,
+        file: UploadFile,
+        entry: schemas.BatchImageUploadManifestEntry,
+    ) -> Optional[Dict[str, Any]]:
+        async with semaphore:
+            try:
+                inspected_metadata, inspected_size = await asyncio.to_thread(
+                    _inspect_upload_file,
+                    file,
+                    validate_ordinary_header=True,
+                )
+            except HTTPException as exc:
+                failures.append(
+                    _batch_item_failure(
+                        entry,
+                        code="validation_failed",
+                        detail=str(exc.detail),
+                    )
+                )
+                return None
+            except Exception:
+                failures.append(
+                    _batch_item_failure(
+                        entry,
+                        code="inspection_failed",
+                        detail="File inspection failed",
+                    )
+                )
+                return None
+
+        merged_metadata = dict(entry.metadata)
+        merged_metadata.update(inspected_metadata)
+        if project_type == "PT3" and _is_volume_upload_metadata(merged_metadata):
+            failures.append(
+                _batch_item_failure(
+                    entry,
+                    code="legacy_route_required",
+                    detail=(
+                        "PT3 volume files must use the single-image upload endpoint "
+                        "so inspection-part assignment remains atomic"
+                    ),
+                )
+            )
+            return None
+        return {
+            "position": position,
+            "file": file,
+            "entry": entry,
+            "file_size": inspected_size if inspected_size is not None else file_sizes[position],
+            "metadata": merged_metadata,
+        }
+
+    inspected = await asyncio.gather(
+        *(inspect_one(position, file, entry) for position, (file, entry) in enumerate(zip(files, manifest)))
+    )
+    upload_candidates = [item for item in inspected if item is not None]
+    inspection_finished_at = time.perf_counter()
+
+    async def upload_one(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        entry = item["entry"]
+        image_id = uuid.uuid4()
+        object_storage_key = f"{db_project_id}/{image_id}/{entry.filename}"
+        content_type = (
+            item["file"].content_type
+            or mimetypes.guess_type(entry.filename)[0]
+            or "application/octet-stream"
+        )
+        async with semaphore:
+            uploaded = await _upload_target_with_cleanup(
+                object_storage_key=object_storage_key,
+                file_data=item["file"].file,
+                length=item["file_size"],
+                content_type=content_type,
+            )
+        if not uploaded:
+            failures.append(
+                _batch_item_failure(
+                    entry,
+                    code="storage_upload_failed",
+                    detail="Failed to upload file to object storage",
+                )
+            )
+            return None
+        return {
+            **item,
+            "image_id": image_id,
+            "object_storage_key": object_storage_key,
+            "content_type": content_type,
+        }
+
+    completed_upload_keys: list[str] = []
+
+    async def tracked_upload_one(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        result = await upload_one(item)
+        if result is not None:
+            completed_upload_keys.append(result["object_storage_key"])
+        return result
+
+    try:
+        upload_results = await asyncio.gather(
+            *(tracked_upload_one(item) for item in upload_candidates)
+        )
+    except asyncio.CancelledError:
+        await _cleanup_batch_upload_objects(completed_upload_keys)
+        raise
+    uploaded_items = [item for item in upload_results if item is not None]
+    storage_finished_at = time.perf_counter()
+
+    if not uploaded_items:
+        finished_at = time.perf_counter()
+        logger.info(
+            "Image batch upload completed",
+            extra={
+                "project_id": str(project_id),
+                "requested_count": len(files),
+                "uploaded_count": 0,
+                "failed_count": len(failures),
+                "request_bytes": aggregate_size,
+                "preflight_ms": round((preflight_finished_at - started_at) * 1000, 1),
+                "inspection_ms": round((inspection_finished_at - preflight_finished_at) * 1000, 1),
+                "storage_ms": round((storage_finished_at - inspection_finished_at) * 1000, 1),
+                "database_ms": 0.0,
+                "duration_ms": round((finished_at - started_at) * 1000, 1),
+            },
+        )
+        return schemas.BatchImageUploadResponse(
+            uploaded=[],
+            failed=sorted(failures, key=lambda item: item.client_index),
+        )
+
+    object_storage_keys = [item["object_storage_key"] for item in uploaded_items]
+    db_images: list[tuple[int, models.DataInstance]] = []
+    try:
+        requested_group_identifiers = sorted(
+            {
+                item["entry"].group_identifier
+                for item in uploaded_items
+                if item["entry"].group_identifier
+            }
+        )
+        groups_by_identifier = await _resolve_batch_image_groups(
+            db,
+            project_id=db_project_id,
+            identifiers=requested_group_identifiers,
+        )
+
+        for item in uploaded_items:
+            entry = item["entry"]
+            group = groups_by_identifier.get(entry.group_identifier) if entry.group_identifier else None
+            db_image = models.DataInstance(
+                id=item["image_id"],
+                project_id=db_project_id,
+                group_id=group.id if group else None,
+                filename=entry.filename,
+                object_storage_key=item["object_storage_key"],
+                content_type=item["content_type"],
+                size_bytes=item["file_size"],
+                metadata_json=item["metadata"],
+                uploaded_by_user_id=current_user.email,
+            )
+            db.add(db_image)
+            db_images.append((entry.client_index, db_image))
+
+        await db.flush()
+        await _commit_database_transaction(db)
+    except asyncio.CancelledError as exc:
+        if getattr(exc, "vista_commit_succeeded", False):
+            _clear_project_images_cache_best_effort(project_id)
+        else:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            await _cleanup_batch_upload_objects(object_storage_keys)
+        raise
+    except Exception as exc:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        await _cleanup_batch_upload_objects(object_storage_keys)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to save uploaded image records",
+        ) from exc
+
+    # One invalidation covers every row committed above. It is deliberately
+    # best-effort because the database and object-storage writes are durable.
+    _clear_project_images_cache_best_effort(project_id)
+    finished_at = time.perf_counter()
+    uploaded_response = [
+        schemas.BatchImageUploadSuccess(
+            client_index=client_index,
+            image=to_data_instance_schema(db_image),
+        )
+        for client_index, db_image in db_images
+    ]
+    logger.info(
+        "Image batch upload completed",
+        extra={
+            "project_id": str(project_id),
+            "requested_count": len(files),
+            "uploaded_count": len(uploaded_response),
+            "failed_count": len(failures),
+            "request_bytes": aggregate_size,
+            "preflight_ms": round((preflight_finished_at - started_at) * 1000, 1),
+            "inspection_ms": round((inspection_finished_at - preflight_finished_at) * 1000, 1),
+            "storage_ms": round((storage_finished_at - inspection_finished_at) * 1000, 1),
+            "database_ms": round((finished_at - storage_finished_at) * 1000, 1),
+            "duration_ms": round((finished_at - started_at) * 1000, 1),
+        },
+    )
+    return schemas.BatchImageUploadResponse(
+        uploaded=sorted(uploaded_response, key=lambda item: item.client_index),
+        failed=sorted(failures, key=lambda item: item.client_index),
+    )
+
 
 @router.post("/projects/{project_id}/images", response_model=schemas.DataInstance, status_code=status.HTTP_201_CREATED)
 async def upload_image_to_project(
@@ -754,71 +2128,83 @@ async def upload_image_to_project(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON format for metadata")
     if parsed_metadata is None:
         parsed_metadata = {}
-    parsed_metadata.update(_tiff_dimensionality_metadata(file))
-    parsed_metadata.update(_image_intensity_metadata(file))
-    parsed_metadata.update(_npy_voxel_metadata(file))
-    # If metadata_json is None or empty string, parsed_metadata remains None
-    # Basic validation
-    _validate_voxel_data(file)
-    tiff_dimensionality = _inspect_tiff_dimensionality(file)
-    if tiff_dimensionality:
-        if parsed_metadata is None:
-            parsed_metadata = {}
-        parsed_metadata["tiff_dimensionality"] = tiff_dimensionality
-        parsed_metadata["load_mode"] = "volume" if tiff_dimensionality == "3d" else "single_image"
+    if not isinstance(parsed_metadata, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Image metadata must be a JSON object",
+        )
+    inspected_metadata, file_size = await asyncio.to_thread(_inspect_upload_file, file)
+    parsed_metadata.update(inspected_metadata)
     max_size = _upload_size_limit()
-    # Try to read a small chunk to estimate streaming health, but do not load all into memory.
-    try:
-        file.file.seek(0, io.SEEK_END)
-        file_size = file.file.tell()
-        file.file.seek(0)
-    except Exception:
-        # If we cannot get size ahead of time, proceed to stream; S3 client will handle.
-        file_size = None
     if file_size and file_size > max_size:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=_file_too_large_detail(file.filename, file_size, max_size),
         )
-    success = await upload_file_to_s3(
-        bucket_name=settings.S3_BUCKET,
-        object_name=object_storage_key,
+    success = await _upload_target_with_cleanup(
+        object_storage_key=object_storage_key,
         file_data=file.file,
         length=file_size or 0,
-        content_type=file.content_type
+        content_type=file.content_type,
     )
     if not success:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to upload file to object storage")
 
-    # Resolve group_id if a group_identifier was supplied
-    resolved_group_id: Optional[uuid.UUID] = None
-    if group_identifier and group_identifier.strip():
-        group = await crud.get_or_create_image_group(
-            db, project_id, group_identifier.strip(), created_by=current_user.email
+    try:
+        resolved_group_id: Optional[uuid.UUID] = None
+        normalized_group_identifier = (group_identifier or "").strip()
+        if normalized_group_identifier:
+            groups = await _resolve_batch_image_groups(
+                db,
+                project_id=db_project_id,
+                identifiers=[normalized_group_identifier],
+            )
+            resolved_group_id = groups[normalized_group_identifier].id
+
+        db_data_instance = models.DataInstance(
+            id=image_id,
+            project_id=db_project_id,
+            filename=file.filename,
+            object_storage_key=object_storage_key,
+            content_type=file.content_type,
+            size_bytes=file_size,
+            metadata_json=parsed_metadata,
+            uploaded_by_user_id=current_user.email,
+            group_id=resolved_group_id,
         )
-        resolved_group_id = group.id
+        db.add(db_data_instance)
+        await db.flush()
+        await _autoassign_pt3_volume_upload_to_part(
+            db=db,
+            project=db_project,
+            image=db_data_instance,
+            current_user=current_user,
+            commit=False,
+        )
+        await db.flush()
+        await _commit_database_transaction(db)
+    except asyncio.CancelledError as exc:
+        if getattr(exc, "vista_commit_succeeded", False):
+            _clear_project_images_cache_best_effort(project_id)
+        else:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            await _cleanup_batch_upload_objects([object_storage_key])
+        raise
+    except Exception as exc:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        await _cleanup_batch_upload_objects([object_storage_key])
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to save uploaded image record",
+        ) from exc
 
-    data_instance_create = schemas.DataInstanceCreate(
-        project_id=db_project_id,
-        filename=file.filename,
-        object_storage_key=object_storage_key,
-        content_type=file.content_type,
-        size_bytes=file_size,
-        metadata=parsed_metadata,
-        uploaded_by_user_id=current_user.email,
-        group_id=resolved_group_id,
-    )
-    db_data_instance = await crud.create_data_instance(db=db, data_instance=data_instance_create)
-    await _autoassign_pt3_volume_upload_to_part(
-        db=db,
-        project=db_project,
-        image=db_data_instance,
-        current_user=current_user,
-    )
-
-    # Invalidate project images cache
-    cache = get_cache()
-    cache.clear_pattern(f"project_images:{project_id}")
+    _clear_project_images_cache_best_effort(project_id)
 
     # Use utility function for consistent metadata serialization
     return to_data_instance_schema(db_data_instance)
@@ -880,6 +2266,7 @@ async def list_images_in_project(
             search_value=search_value,
             group_id=group_id,
             ungrouped=ungrouped,
+            include_deleted=include_deleted,
         )
 
     # Process images using utility function for consistent serialization
@@ -900,6 +2287,71 @@ async def list_images_in_project(
     cache.set(cache_key, response_images, expire=30*60)
 
     return response_images
+
+
+@router.get("/projects/{project_id}/images-page", response_model=schemas.DataInstancePage)
+async def list_images_in_project_page(
+    project_id: uuid.UUID,
+    limit: int = Query(100, ge=1, le=500),
+    cursor: Optional[str] = Query(None, max_length=512),
+    include_deleted: bool = Query(False),
+    deleted_only: bool = Query(False),
+    search_field: Optional[str] = Query(None),
+    search_value: Optional[str] = Query(None),
+    group_id: Optional[uuid.UUID] = Query(None),
+    ungrouped: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """Return an exact-count, stable keyset page of project images."""
+    if group_id is not None and ungrouped:
+        raise HTTPException(status_code=400, detail="group_id and ungrouped=true are mutually exclusive")
+    if deleted_only and (group_id is not None or ungrouped):
+        raise HTTPException(status_code=400, detail="group_id and ungrouped filters cannot be combined with deleted_only")
+
+    await get_project_or_403(project_id, db, current_user)
+    cursor_created_at: Optional[datetime] = None
+    cursor_id: Optional[uuid.UUID] = None
+    if cursor is not None:
+        cursor_created_at, cursor_id = _decode_image_page_cursor(cursor)
+
+    started = time.perf_counter()
+    raw_items, total = await crud.get_data_instance_page(
+        db,
+        project_id=project_id,
+        limit=limit,
+        cursor_created_at=cursor_created_at,
+        cursor_id=cursor_id,
+        include_deleted=include_deleted,
+        deleted_only=deleted_only,
+        search_field=search_field,
+        search_value=search_value,
+        group_id=group_id,
+        ungrouped=ungrouped,
+    )
+    has_more = len(raw_items) > limit
+    page_items = raw_items[:limit]
+    next_cursor = None
+    if has_more and page_items:
+        last_item = page_items[-1]
+        next_cursor = _encode_image_page_cursor(last_item.created_at, last_item.id)
+
+    logger.info(
+        "PROJECT_IMAGES_PAGE",
+        extra={
+            "project_id": str(project_id),
+            "returned": len(page_items),
+            "total": total,
+            "has_more": has_more,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
+        },
+    )
+    return schemas.DataInstancePage(
+        items=[to_data_instance_schema(item) for item in page_items],
+        total=total,
+        next_cursor=next_cursor,
+        has_more=has_more,
+    )
 
 # Add trailing slash version to handle frontend requests
 @router.get("/projects/{project_id}/images/", response_model=List[schemas.DataInstance])
@@ -967,6 +2419,25 @@ async def get_image_metadata(
 
 import httpx
 from fastapi.responses import StreamingResponse
+
+
+def _storage_http_exception(exc: Exception) -> HTTPException:
+    if isinstance(exc, httpx.TimeoutException) or getattr(exc, 'timed_out', False):
+        return HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Object storage request timed out",
+        )
+    return HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail="Unable to retrieve image data from object storage",
+    )
+
+
+def _volume_cache_http_exception() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Volume cache is temporarily unavailable",
+    )
 
 @router.get("/images/{image_id}/download", response_model=schemas.PresignedUrlResponse)
 async def get_image_download_url(
@@ -1060,17 +2531,26 @@ _VOLUME_SLICE_CACHE_MAX_ITEMS = 256
 _volume_slice_png_cache: "OrderedDict[tuple[str, str, int, str], bytes]" = OrderedDict()
 
 
-def _volume_slice_cache_key(db_image: models.DataInstance, axis: str, index: int, payload: bytes) -> tuple[str, str, int, str]:
+def _volume_source_identity(db_image: models.DataInstance) -> VolumeSourceIdentity:
     metadata = db_image.metadata_json if isinstance(db_image.metadata_json, dict) else {}
-    version_parts = [
-        str(db_image.id),
-        db_image.filename or '',
-        db_image.object_storage_key or '',
-        str(metadata.get('updated_at') or metadata.get('checksum') or metadata.get('content_sha256') or ''),
-        str(len(payload)),
-    ]
-    version = hashlib.sha256('|'.join(version_parts).encode('utf-8') + payload[:4096] + payload[-4096:]).hexdigest()
-    return (str(db_image.id), axis, int(index), version)
+    return build_volume_source_identity(
+        image_id=db_image.id,
+        storage_key=db_image.object_storage_key,
+        size_bytes=db_image.size_bytes,
+        metadata=metadata,
+        created_at=db_image.created_at,
+        updated_at=db_image.updated_at,
+    )
+
+
+def _volume_slice_cache_key(
+    db_image: models.DataInstance,
+    axis: str,
+    index: int,
+    identity: VolumeSourceIdentity | None = None,
+) -> tuple[str, str, int, str]:
+    source = identity or _volume_source_identity(db_image)
+    return (str(db_image.id), axis, int(index), source.version)
 
 
 def _get_cached_volume_slice_png(cache_key: tuple[str, str, int, str]) -> Optional[bytes]:
@@ -1152,23 +2632,100 @@ def _volume_meta_from_shape(shape: tuple[int, ...], dtype: np.dtype, *, source_k
 
 
 def _load_numpy_volume(payload: bytes, filename: str) -> np.ndarray:
+    limits = REFERENCE_VOLUME_READ_LIMITS
+    if len(payload) > limits.max_source_bytes:
+        raise ValueError(
+            "NumPy volume source exceeds the configured/built-in "
+            f"{limits.max_source_bytes}-byte materialized-file limit"
+        )
     lower = filename.lower()
     if lower.endswith('.npy'):
-        return np.load(io.BytesIO(payload), allow_pickle=False)
-    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
-        members = sorted(name for name in archive.namelist() if name.endswith('.npy'))
-        if not members:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Archive does not contain a NumPy array')
-        with archive.open(members[0]) as member:
-            return np.load(io.BytesIO(member.read()), allow_pickle=False)
+        source = io.BytesIO(payload)
+        expected = _inspect_npy_header(
+            source,
+            limits=limits,
+            available_bytes=len(payload),
+        )
+        source.seek(0)
+        loaded = np.lib.format.read_array(source, allow_pickle=False)
+        array = np.asarray(loaded)
+        if array.shape != expected.shape or array.dtype != expected.dtype:
+            raise ValueError("NumPy volume changed between preflight and decode")
+        return array
+    source = io.BytesIO(payload)
+    preflight_zip_archive(
+        source,
+        limits=limits,
+        available_bytes=len(payload),
+    )
+    with zipfile.ZipFile(source) as archive:
+        selected, expected = _inspect_npz_archive(archive, limits=limits)
+        with archive.open(selected) as member:
+            loaded = np.lib.format.read_array(member, allow_pickle=False)
+    array = np.asarray(loaded)
+    if array.shape != expected.shape or array.dtype != expected.dtype:
+        raise ValueError("NumPy volume changed between preflight and decode")
+    return array
 
 
 def _load_tiff_volume(payload: bytes) -> np.ndarray:
+    limits = REFERENCE_VOLUME_READ_LIMITS
+    if len(payload) > limits.max_source_bytes:
+        raise ValueError(
+            "TIFF source exceeds the configured/built-in "
+            f"{limits.max_source_bytes}-byte materialized-file limit"
+        )
     with Image.open(io.BytesIO(payload)) as image:
-        frames = [np.asarray(frame.copy()) for frame in ImageSequence.Iterator(image)]
-    if not frames:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='TIFF has no frames')
-    return np.stack(frames, axis=0)
+        frame_count = int(getattr(image, 'n_frames', 1) or 0)
+        if frame_count < 1:
+            raise ValueError('TIFF has no frames')
+        if frame_count > limits.max_container_members:
+            raise ValueError(
+                f"TIFF contains {frame_count} frames, exceeding the configured/built-in "
+                f"{limits.max_container_members}-member limit"
+            )
+        image.seek(0)
+        width, height = image.size
+        expected_mode = image.mode
+        expected_bands = image.getbands()
+        band_count = max(1, len(expected_bands))
+        voxel_count = frame_count * int(height) * int(width)
+        if voxel_count > limits.max_voxels:
+            raise ValueError(
+                f"TIFF declares {voxel_count} voxels, exceeding the configured/built-in "
+                f"{limits.max_voxels}-voxel limit"
+            )
+        # Match the reference TIFF reader's conservative float64 working-set
+        # accounting, extended by channel count for color frames.
+        decoded_bytes = voxel_count * band_count * np.dtype(np.float64).itemsize
+        if decoded_bytes > limits.max_decoded_bytes:
+            raise ValueError(
+                f"TIFF declares {decoded_bytes} decoded bytes, exceeding the "
+                f"configured/built-in {limits.max_decoded_bytes}-byte limit"
+            )
+
+        # ``n_frames`` and frame zero are not sufficient: TIFF permits later
+        # IFDs with different dimensions or pixel modes. Walk metadata for all
+        # frames before allocating or decoding any one of them so a tiny first
+        # frame cannot hide an oversized later frame.
+        for frame_index in range(1, frame_count):
+            image.seek(frame_index)
+            if image.size != (width, height):
+                raise ValueError("All TIFF frames must share the same dimensions")
+            if image.mode != expected_mode or image.getbands() != expected_bands:
+                raise ValueError("All TIFF frames must share the same pixel mode")
+
+        image.seek(0)
+        first_frame = np.asarray(image.copy())
+        volume = np.empty((frame_count, *first_frame.shape), dtype=first_frame.dtype)
+        volume[0] = first_frame
+        for frame_index in range(1, frame_count):
+            image.seek(frame_index)
+            frame = np.asarray(image.copy())
+            if frame.shape != first_frame.shape or frame.dtype != first_frame.dtype:
+                raise ValueError("All TIFF frames must share the same shape and dtype")
+            volume[frame_index] = frame
+    return volume
 
 
 def _volume_source_kind(filename: str) -> Optional[str]:
@@ -1191,10 +2748,132 @@ async def _read_authorized_image_bytes(db_image: models.DataInstance) -> bytes:
     internal_url = get_presigned_download_url(bucket_name=settings.S3_BUCKET, object_name=db_image.object_storage_key)
     if not internal_url:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Could not generate download URL')
-    async with httpx.AsyncClient() as client:
-        response = await client.get(internal_url)
-        response.raise_for_status()
-        return await response.aread()
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(internal_url)
+            response.raise_for_status()
+            return await response.aread()
+    except httpx.HTTPError as exc:
+        raise _storage_http_exception(exc) from exc
+
+
+async def _iter_authorized_npy_bytes(db_image: models.DataInstance):
+    """Stream one authorized NumPy object without buffering it in RAM."""
+
+    inline_data = _inline_image_bytes(db_image)
+    if inline_data is not None:
+        yield inline_data
+        return
+    internal_url = get_presigned_download_url(
+        bucket_name=settings.S3_BUCKET,
+        object_name=db_image.object_storage_key,
+    )
+    if not internal_url:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Could not generate download URL',
+        )
+    try:
+        async with httpx.AsyncClient() as client:
+            async with client.stream('GET', internal_url) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes(chunk_size=8 * 1024 * 1024):
+                    if chunk:
+                        yield chunk
+    except httpx.HTTPError as exc:
+        raise VolumeSourceReadError(timed_out=isinstance(exc, httpx.TimeoutException)) from exc
+
+
+async def _read_authorized_npy_header(db_image: models.DataInstance) -> tuple[tuple[int, ...], str]:
+    """Read at most the bounded NumPy header prefix from object storage."""
+
+    max_prefix_bytes = MAX_NPY_HEADER_BYTES + 12
+    inline_data = _inline_image_bytes(db_image)
+    if inline_data is not None:
+        return read_npy_header(io.BytesIO(inline_data[:max_prefix_bytes]))
+
+    internal_url = get_presigned_download_url(
+        bucket_name=settings.S3_BUCKET,
+        object_name=db_image.object_storage_key,
+    )
+    if not internal_url:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Could not generate download URL',
+        )
+    prefix = bytearray()
+    try:
+        async with httpx.AsyncClient() as client:
+            async with client.stream(
+                'GET',
+                internal_url,
+                headers={'Range': f'bytes=0-{max_prefix_bytes - 1}'},
+            ) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes():
+                    remaining = max_prefix_bytes - len(prefix)
+                    if remaining <= 0:
+                        break
+                    prefix.extend(chunk[:remaining])
+                    if len(prefix) >= max_prefix_bytes:
+                        break
+    except httpx.HTTPError as exc:
+        raise _storage_http_exception(exc) from exc
+    return read_npy_header(io.BytesIO(prefix))
+
+
+def _validated_npy_shape_dtype(shape: tuple[int, ...], dtype: np.dtype) -> tuple[tuple[int, int, int], np.dtype]:
+    if (
+        len(shape) != 3
+        or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in shape)
+    ):
+        raise ValueError('NumPy volume dimensions must be positive integers')
+    safe_dtype = np.dtype(dtype)
+    if (
+        safe_dtype.hasobject
+        or safe_dtype.fields is not None
+        or safe_dtype.subdtype is not None
+        or safe_dtype.kind not in {'b', 'u', 'i', 'f'}
+    ):
+        raise ValueError('NumPy volume must use a scalar real numeric or boolean dtype')
+    safe_shape = tuple(int(value) for value in shape)
+    voxel_count = math.prod(safe_shape)
+    decoded_bytes = voxel_count * int(safe_dtype.itemsize)
+    if voxel_count > REFERENCE_VOLUME_READ_LIMITS.max_voxels:
+        raise ValueError(
+            f'NumPy volume exceeds the {REFERENCE_VOLUME_READ_LIMITS.max_voxels}-voxel limit'
+        )
+    if decoded_bytes > REFERENCE_VOLUME_READ_LIMITS.max_decoded_bytes:
+        raise ValueError(
+            f'NumPy volume exceeds the {REFERENCE_VOLUME_READ_LIMITS.max_decoded_bytes}-byte decoded limit'
+        )
+    return safe_shape, safe_dtype
+
+
+def _persisted_npy_volume_meta(metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    shape = metadata.get('volume_shape')
+    if not isinstance(shape, dict):
+        return None
+    dimensions = []
+    for axis in ('axial', 'coronal', 'sagittal'):
+        value = shape.get(axis)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            return None
+        dimensions.append(value)
+    dtype_text = metadata.get('voxel_dtype') or metadata.get('pixel_dtype')
+    if not dtype_text:
+        return None
+    try:
+        dtype = np.dtype(dtype_text)
+        safe_shape, dtype = _validated_npy_shape_dtype(tuple(dimensions), dtype)
+    except (TypeError, ValueError):
+        return None
+    return _volume_meta_from_shape(safe_shape, dtype, source_kind='npy')
+
+
+def _read_npy_header_from_path(path: Path) -> tuple[tuple[int, ...], str]:
+    with path.open('rb') as file_obj:
+        return read_npy_header(file_obj)
 
 
 async def _get_authorized_image(db: AsyncSession, image_id: uuid.UUID, current_user: schemas.User, include_deleted: bool = False) -> models.DataInstance:
@@ -1218,14 +2897,49 @@ async def get_image_volume_metadata(
     if not kind:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported multi-image file type')
     metadata = db_image.metadata_json if isinstance(db_image.metadata_json, dict) else {}
-    payload = await _read_authorized_image_bytes(db_image)
     try:
-        volume = _load_tiff_volume(payload) if kind == 'tiff' else _load_numpy_volume(payload, db_image.filename or '')
+        if kind == 'npy':
+            meta = _persisted_npy_volume_meta(metadata)
+            if meta is None:
+                identity = _volume_source_identity(db_image)
+                materialized_path = get_materialized_npy_path(identity)
+                if materialized_path is not None:
+                    try:
+                        shape, dtype_text = await asyncio.to_thread(
+                            _read_npy_header_from_path,
+                            materialized_path,
+                        )
+                    except FileNotFoundError:
+                        shape, dtype_text = await _read_authorized_npy_header(db_image)
+                    except ValueError:
+                        try:
+                            await asyncio.to_thread(materialized_path.unlink, missing_ok=True)
+                        except OSError as exc:
+                            raise VolumeCacheError("Could not discard invalid cached volume metadata") from exc
+                        shape, dtype_text = await _read_authorized_npy_header(db_image)
+                    except OSError as exc:
+                        raise VolumeCacheError("Could not read cached volume metadata") from exc
+                else:
+                    shape, dtype_text = await _read_authorized_npy_header(db_image)
+                safe_shape, safe_dtype = _validated_npy_shape_dtype(shape, np.dtype(dtype_text))
+                meta = _volume_meta_from_shape(safe_shape, safe_dtype, source_kind=kind)
+        else:
+            payload = await _read_authorized_image_bytes(db_image)
+            volume = _load_tiff_volume(payload) if kind == 'tiff' else _load_numpy_volume(payload, db_image.filename or '')
+            meta = _volume_meta_from_shape(volume.shape, volume.dtype, source_kind=kind)
     except HTTPException:
         raise
+    except VolumeSourceReadError as exc:
+        raise _storage_http_exception(exc) from exc
+    except InvalidVolumeSourceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Unable to read volume: {exc}',
+        ) from exc
+    except VolumeCacheError as exc:
+        raise _volume_cache_http_exception() from exc
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'Unable to read volume: {exc}') from exc
-    meta = _volume_meta_from_shape(volume.shape, volume.dtype, source_kind=kind)
     meta.update({
         'filename': db_image.filename,
         'content_type': db_image.content_type,
@@ -1247,21 +2961,41 @@ async def get_image_volume_slice(
     kind = _volume_source_kind(db_image.filename or '')
     if not kind:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Unsupported multi-image file type')
-    payload = await _read_authorized_image_bytes(db_image)
+    safe_axis = axis if axis in {'axial', 'coronal', 'sagittal'} else 'axial'
+    identity = _volume_source_identity(db_image)
+    cache_key = _volume_slice_cache_key(db_image, safe_axis, index, identity)
+    png = _get_cached_volume_slice_png(cache_key)
     try:
-        volume = _load_tiff_volume(payload) if kind == 'tiff' else _load_numpy_volume(payload, db_image.filename or '')
-        meta = _volume_meta_from_shape(volume.shape, volume.dtype, source_kind=kind)
-        dimensions = meta['dimensions']
-        safe_axis = axis if axis in dimensions else 'axial'
-        if index >= int(dimensions[safe_axis]):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Slice index is outside the selected axis')
-        cache_key = _volume_slice_cache_key(db_image, safe_axis, index, payload)
-        png = _get_cached_volume_slice_png(cache_key)
         if png is None:
-            png = _normalize_array_slice_to_png(_axis_slice(volume, safe_axis, index))
+            if kind == 'npy':
+                handle = await get_npy_volume_handle(
+                    identity,
+                    lambda: _iter_authorized_npy_bytes(db_image),
+                )
+                volume = handle.array
+            else:
+                payload = await _read_authorized_image_bytes(db_image)
+                volume = _load_tiff_volume(payload) if kind == 'tiff' else _load_numpy_volume(payload, db_image.filename or '')
+            meta = _volume_meta_from_shape(volume.shape, volume.dtype, source_kind=kind)
+            dimensions = meta['dimensions']
+            if index >= int(dimensions[safe_axis]):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Slice index is outside the selected axis')
+            png = await asyncio.to_thread(
+                _normalize_array_slice_to_png,
+                _axis_slice(volume, safe_axis, index),
+            )
             _set_cached_volume_slice_png(cache_key, png)
     except HTTPException:
         raise
+    except VolumeSourceReadError as exc:
+        raise _storage_http_exception(exc) from exc
+    except InvalidVolumeSourceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Unable to render volume slice: {exc}',
+        ) from exc
+    except VolumeCacheError as exc:
+        raise _volume_cache_http_exception() from exc
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f'Unable to render volume slice: {exc}') from exc
     return StreamingResponse(
@@ -1369,17 +3103,15 @@ async def get_image_content(
                     "Content-Disposition": get_content_disposition_header(db_image.filename, "inline")
                 }
             )
-        except httpx.HTTPError as e:
+        except httpx.HTTPError as exc:
+            raise _storage_http_exception(exc) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Error fetching image from storage: {str(e)}"
-            )
-        except Exception as e:
-            # Ensure any unexpected exception is returned as 500 per tests
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Unexpected error fetching image: {str(e)}"
-            )
+                detail="Unexpected error while retrieving image data",
+            ) from exc
 
 @router.get("/images/{image_id}/thumbnail", response_class=StreamingResponse)
 async def get_image_thumbnail(
@@ -1513,11 +3245,8 @@ async def get_image_thumbnail(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Error generating thumbnail: {str(e)}"
                 )
-        except httpx.HTTPError as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Error fetching image from storage: {str(e)}"
-            )
+        except httpx.HTTPError as exc:
+            raise _storage_http_exception(exc) from exc
 
 class MetadataUpdate(BaseModel):
     key: str

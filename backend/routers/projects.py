@@ -1,4 +1,6 @@
 import uuid
+import logging
+import time
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
@@ -12,6 +14,8 @@ from aiocache import Cache
 router = APIRouter(
     tags=["Projects"],
 )
+
+logger = logging.getLogger(__name__)
 
 @router.post("/", response_model=schemas.Project, status_code=status.HTTP_201_CREATED)
 async def create_new_project(
@@ -104,6 +108,35 @@ async def read_project(
             detail=f"User '{current_user.email}' does not have access to project '{project_id}' (group '{db_project.meta_group_id}'). Please contact an administrator if you need access to this project.",
         )
     return db_project
+
+
+@router.get("/{project_id}/data-summary", response_model=schemas.ProjectDataSummary)
+async def read_project_data_summary(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """Return exact project data counts without loading full project records."""
+    started = time.perf_counter()
+    db_project = await crud.get_project(db=db, project_id=project_id)
+    if db_project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    if not is_user_in_group(current_user.email, db_project.meta_group_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access forbidden")
+    access_ms = (time.perf_counter() - started) * 1000
+
+    summary, query_timings = await crud.get_project_data_summary(db, project_id)
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    logger.info(
+        "PROJECT_DATA_SUMMARY",
+        extra={
+            "project_id": str(project_id),
+            "access_ms": round(access_ms, 3),
+            **query_timings,
+            "total_ms": round(elapsed_ms, 3),
+        },
+    )
+    return schemas.ProjectDataSummary(project_id=project_id, **summary)
 
 
 @router.put("/{project_id}", response_model=schemas.Project)

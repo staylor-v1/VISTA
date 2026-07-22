@@ -139,7 +139,7 @@ function ProjectDataExportPanel({ projectId, projectName, counts = {}, setError,
       });
       if (importInputRef.current) importInputRef.current.value = '';
       if (setError) setError(null);
-      onImportComplete?.(payload);
+      await onImportComplete?.(payload);
     } catch (err) {
       setImportState((prev) => ({ ...prev, loading: false, detail: null, modalOpen: false }));
       if (setError) setError(err.message || 'Failed to import project data');
@@ -246,7 +246,7 @@ function ProjectDataExportPanel({ projectId, projectName, counts = {}, setError,
       const projectResult = payload.project || {};
       setImportState({ loading: false, detail: `${mode === 'overwrite_active' ? 'Overwrote' : 'Appended'} S3 project bundle: ${projectResult.images_created || 0} images imported.`, file: null, mode, modalOpen: false });
       if (setError) setError(null);
-      onImportComplete?.(payload);
+      await onImportComplete?.(payload);
     } catch (err) {
       setImportState((prev) => ({ ...prev, loading: false, detail: null, modalOpen: false }));
       if (setError) setError(err.message || 'Failed to import project bundle from S3');
