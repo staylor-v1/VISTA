@@ -153,6 +153,25 @@ function mockFetch(config, projectType, mockOptions = {}) {
           }),
         });
       }
+      if (mockOptions.cloneInvalidPt3GuideSettings) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            config: {
+              ...config,
+              display_settings: {
+                ...config.display_settings,
+                pt3_3d_guides: {
+                  crosshair_transparency_percent: 101,
+                  crosshair_line_width_px: 1.25,
+                  plane_outline_transparency_percent: 0,
+                  plane_outline_line_width_px: 1.25,
+                },
+              },
+            },
+          }),
+        });
+      }
       if (mockOptions.cloneInvalidConfigDomainFields) {
         return Promise.resolve({
           ok: true,
@@ -436,6 +455,127 @@ describe('ProjectConfigurationPanel', () => {
     expect(savedConfig.ui_sections['analyze.toolbox']).toBe(false);
     expect(savedConfig.ui_sections['project_data.batches']).toBe(false);
     expect(savedConfig.ui_sections['project_data.images_to_parts']).toBe(true);
+  });
+
+  test('deep-normalizes legacy PT3 guide settings and renders their live preview', async () => {
+    const config = {
+      ...makeConfig('PT3', 'advanced'),
+      display_settings: {
+        ...makeConfig('PT3', 'advanced').display_settings,
+        deployment_display_hint: 'preserve-me',
+      },
+    };
+    mockFetch(config, 'PT3');
+    render(<ProjectConfigurationPanel projectId="proj-1" projectType="PT3" />);
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'UI Configuration' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'UI Configuration' }));
+
+    expect(screen.getByTestId('pt3-guide-configuration-card')).toBeInTheDocument();
+    expect(screen.getByLabelText('Crosshair transparency')).toHaveValue('50');
+    expect(screen.getByLabelText('Crosshair line width')).toHaveValue('1.25');
+    expect(screen.getByLabelText('Plane outline transparency')).toHaveValue('0');
+    expect(screen.getByLabelText('Plane outline line width')).toHaveValue('1.25');
+    expect(screen.getByLabelText('Plane outline line width')).toHaveAccessibleDescription(
+      'The selected plane uses this width; the other planes use half for visual hierarchy.',
+    );
+    expect(screen.getByTestId('pt3-guide-preview')).toHaveAccessibleName('Live 3D guide appearance preview');
+    expect(screen.getByTestId('pt3-guide-preview').closest('figure')).toHaveTextContent('Crosshair 50% transparent');
+    expect(screen.getByRole('button', { name: 'Reset 3D view guides to defaults' })).toBeDisabled();
+  });
+
+  test('autosaves custom PT3 guide settings, preserves display siblings, and supports reset', async () => {
+    jest.useFakeTimers();
+    const config = {
+      ...makeConfig('PT3', 'advanced'),
+      display_settings: {
+        ...makeConfig('PT3', 'advanced').display_settings,
+        deployment_display_hint: 'preserve-me',
+      },
+    };
+    mockFetch(config, 'PT3');
+    render(<ProjectConfigurationPanel projectId="proj-1" projectType="PT3" />);
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'UI Configuration' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'UI Configuration' }));
+
+    fireEvent.change(screen.getByLabelText('Crosshair transparency'), { target: { value: '72' } });
+    fireEvent.change(screen.getByLabelText('Crosshair line width'), { target: { value: '2.5' } });
+    fireEvent.change(screen.getByLabelText('Plane outline transparency'), { target: { value: '35' } });
+    fireEvent.change(screen.getByLabelText('Plane outline line width'), { target: { value: '3' } });
+    expect(screen.getByTestId('pt3-guide-preview').closest('figure')).toHaveTextContent('Crosshair 72% transparent');
+    expect(screen.getByTestId('pt3-guide-preview').closest('figure')).toHaveTextContent('Plane outlines 35% transparent');
+
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith(
+      '/api/projects/proj-1/configuration',
+      expect.objectContaining({ method: 'PUT' }),
+    ));
+    expect(await screen.findByText('Configuration autosaved.')).toBeInTheDocument();
+
+    const autosaveCall = global.fetch.mock.calls.find(
+      ([url, options = {}]) => url === '/api/projects/proj-1/configuration' && options.method === 'PUT',
+    );
+    const autosavedConfig = JSON.parse(autosaveCall[1].body).config;
+    expect(autosavedConfig.display_settings).toEqual(expect.objectContaining({
+      deployment_display_hint: 'preserve-me',
+      pt3_3d_guides: {
+        crosshair_transparency_percent: 72,
+        crosshair_line_width_px: 2.5,
+        plane_outline_transparency_percent: 35,
+        plane_outline_line_width_px: 3,
+      },
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset 3D view guides to defaults' }));
+    expect(screen.getByLabelText('Crosshair transparency')).toHaveValue('50');
+    expect(screen.getByLabelText('Crosshair line width')).toHaveValue('1.25');
+    expect(screen.getByLabelText('Plane outline transparency')).toHaveValue('0');
+    expect(screen.getByLabelText('Plane outline line width')).toHaveValue('1.25');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+    await waitFor(() => {
+      const putCalls = global.fetch.mock.calls.filter(
+        ([url, options = {}]) => url === '/api/projects/proj-1/configuration' && options.method === 'PUT',
+      );
+      expect(putCalls.length).toBeGreaterThanOrEqual(2);
+      const savedConfig = JSON.parse(putCalls.at(-1)[1].body).config;
+      expect(savedConfig.display_settings.pt3_3d_guides).toEqual({
+        crosshair_transparency_percent: 50,
+        crosshair_line_width_px: 1.25,
+        plane_outline_transparency_percent: 0,
+        plane_outline_line_width_px: 1.25,
+      });
+    });
+  });
+
+  test.each(['PT1', 'PT2'])('hides 3D View Guides for %s projects', async (projectType) => {
+    const config = makeConfig(projectType, 'basic');
+    mockFetch(config, projectType);
+    render(<ProjectConfigurationPanel projectId="proj-1" projectType={projectType} />);
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'UI Configuration' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'UI Configuration' }));
+    expect(screen.queryByTestId('pt3-guide-configuration-card')).not.toBeInTheDocument();
+  });
+
+  test('keeps PT3 guide controls available when the Available UI Sections tree is disabled', async () => {
+    const config = {
+      ...makeConfig('PT3', 'advanced'),
+      ui_sections: {
+        'project_configuration.available_ui_sections': false,
+      },
+    };
+    mockFetch(config, 'PT3');
+    render(<ProjectConfigurationPanel projectId="proj-1" projectType="PT3" />);
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'UI Configuration' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'UI Configuration' }));
+    expect(screen.queryByRole('heading', { name: 'Available UI Sections' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('pt3-guide-configuration-card')).toBeInTheDocument();
+    expect(screen.queryByText('No UI Configuration sections are enabled.')).not.toBeInTheDocument();
   });
 
 
@@ -752,6 +892,12 @@ describe('ProjectConfigurationPanel', () => {
         default_colormap: 'magma',
         anomaly_colormap: 'grayscale',
         grayscale_base_image: false,
+        pt3_3d_guides: {
+          crosshair_transparency_percent: 50,
+          crosshair_line_width_px: 1.25,
+          plane_outline_transparency_percent: 0,
+          plane_outline_line_width_px: 1.25,
+        },
       },
     }));
     expect(savedConfig.file_naming_scheme.image_descriptors[0]).toEqual({ id: 'operator', label: 'Operator', abbreviation: 'OP' });
@@ -839,6 +985,12 @@ describe('ProjectConfigurationPanel', () => {
       'file_naming_scheme',
       'configurable_hotkeys',
       'defect_types',
+      'display_settings',
+      'pt3_3d_guides',
+      'crosshair_transparency_percent',
+      'crosshair_line_width_px',
+      'plane_outline_transparency_percent',
+      'plane_outline_line_width_px',
     ];
     fieldsWithDownstreamEffects.forEach((fieldName) => {
       expect(downstreamSource).toContain(fieldName);
@@ -852,7 +1004,6 @@ describe('ProjectConfigurationPanel', () => {
       'sub_batching_enabled',
       'sub_batch_sn_enabled',
       'part_sn_enabled',
-      'display_settings',
       'default_colormap',
       'anomaly_colormap',
       'grayscale_base_image',
@@ -1295,6 +1446,22 @@ describe('ProjectConfigurationPanel', () => {
 
         await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
 
+        fireEvent.change(screen.getByLabelText('Source project'), { target: { value: 'proj-copy' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Copy from Project' }));
+
+        await waitFor(() => {
+          expect(screen.getByText('Failed to copy project configuration (invalid config settings fields)')).toBeInTheDocument();
+        });
+        expect(screen.queryByText('Configuration copied from Template Project.')).not.toBeInTheDocument();
+      });
+
+      test(`rejects clone success payloads with invalid PT3 guide settings for ${projectType} ${syntheticUser} synthetic user`, async () => {
+        const config = makeConfig(projectType, syntheticUser);
+        mockFetch(config, projectType, { cloneInvalidPt3GuideSettings: true });
+
+        render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+        await waitFor(() => expect(screen.getByLabelText('Source project')).toBeInTheDocument());
         fireEvent.change(screen.getByLabelText('Source project'), { target: { value: 'proj-copy' } });
         fireEvent.click(screen.getByRole('button', { name: 'Copy from Project' }));
 

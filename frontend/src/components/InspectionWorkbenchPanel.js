@@ -44,6 +44,10 @@ import { fetchProjectImagePages } from '../utils/projectImages';
 import {
   scheduleMprServerSliceTask,
 } from './mprServerSliceScheduler';
+import {
+  getPt3GuideAppearance,
+  normalizePt3GuideSettings,
+} from '../utils/pt3GuideSettings';
 
 const VIEW_ORDER = ['front', 'back', 'left', 'right', 'top', 'bottom'];
 const MPR_AXES = ['axial', 'coronal', 'sagittal'];
@@ -3811,6 +3815,16 @@ function InspectionWorkbenchPanel({
   const [tileGeometryDragPreview, setTileGeometryDragPreview] = useState(null);
   const [inspectorHotkeys, setInspectorHotkeys] = useState(DEFAULT_INSPECTOR_HOTKEYS);
   const [projectConfiguration, setProjectConfiguration] = useState(null);
+  const pt3GuideSettings = useMemo(
+    () => normalizePt3GuideSettings(
+      projectConfiguration?.display_settings?.pt3_3d_guides,
+    ),
+    [projectConfiguration],
+  );
+  const pt3GuideAppearance = useMemo(
+    () => getPt3GuideAppearance(pt3GuideSettings),
+    [pt3GuideSettings],
+  );
   const [projectMetadata, setProjectMetadata] = useState({});
   const [inspectionColumnWidths, setInspectionColumnWidths] = useState(DEFAULT_INSPECTION_COLUMN_WIDTHS);
   const [shortcutHelpVisible, setShortcutHelpVisible] = useState(false);
@@ -4496,13 +4510,13 @@ function InspectionWorkbenchPanel({
       ctx.moveTo(line[0].x, line[0].y);
       line.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
       ctx.closePath();
-      ctx.globalAlpha = 0.45;
+      ctx.globalAlpha = pt3GuideAppearance.planeOutlineOpacity;
       ctx.setLineDash([4, 4]);
-      ctx.lineWidth = 1;
+      ctx.lineWidth = pt3GuideAppearance.planeOutlineLineWidthPx / 2;
       ctx.strokeStyle = color;
       ctx.stroke();
       ctx.setLineDash([]);
-      const active = activeMprPane === axis ? axis : null;
+      const active = lastActiveMprAxis === axis ? axis : null;
       if (active) {
         const quad = focus[axis].map(([x, y, z]) => projectMprPointToOverlay(x, y, z, dims, mprRotation, fallbackMprModelZoom, canvas.width, canvas.height, mprAxisMirrorScale));
         ctx.beginPath();
@@ -4512,8 +4526,8 @@ function InspectionWorkbenchPanel({
         ctx.globalAlpha = 0.18;
         ctx.fillStyle = color;
         ctx.fill();
-        ctx.globalAlpha = 0.9;
-        ctx.lineWidth = 2;
+        ctx.globalAlpha = pt3GuideAppearance.planeOutlineOpacity;
+        ctx.lineWidth = pt3GuideAppearance.planeOutlineLineWidthPx;
         ctx.strokeStyle = color;
         ctx.stroke();
       }
@@ -4563,7 +4577,7 @@ function InspectionWorkbenchPanel({
       });
       ctx.globalAlpha = 1;
     }
-  }, [activeMprPane, annotationLayerVisible, annotationOpacityMultiplier, fallbackMprModelZoom, mprAxisMirrorScale, mprDimensions, mprFallbackOverlaySize, mprFullscreenOpen, mprReconstructionMode, mprRotation, slicePosition, vectorSegmentAnnotations]);
+  }, [activeMprPane, annotationLayerVisible, annotationOpacityMultiplier, fallbackMprModelZoom, lastActiveMprAxis, mprAxisMirrorScale, mprDimensions, mprFallbackOverlaySize, mprFullscreenOpen, mprReconstructionMode, mprRotation, pt3GuideAppearance.planeOutlineLineWidthPx, pt3GuideAppearance.planeOutlineOpacity, slicePosition, vectorSegmentAnnotations]);
 
   const modalityOptions = useMemo(() => getModalities(selectedPart), [selectedPart]);
   const activeViewName = useMemo(() => {
@@ -8340,6 +8354,7 @@ function InspectionWorkbenchPanel({
                     vectorAnnotations={vectorSegmentAnnotations}
                     showAnnotations={annotationLayerVisible}
                     annotationOpacityMultiplier={annotationOpacityMultiplier}
+                    pt3GuideSettings={pt3GuideSettings}
                   />
                   )}
                 {!PT3_RENDERER_RECONSTRUCTION_MODES.includes(effectiveMprReconstructionMode) && <div
@@ -8354,7 +8369,13 @@ function InspectionWorkbenchPanel({
                     '--slice-axial-depth': `${(getFraction(slicePosition.axial, mprDimensions.axial - 1) - 0.5) * 108}px`,
                     '--slice-coronal-y': `${(getFraction(slicePosition.coronal, mprDimensions.coronal - 1) - 0.5) * 138}px`,
                     '--slice-sagittal-x': `${(getFraction(slicePosition.sagittal, mprDimensions.sagittal - 1) - 0.5) * 190}px`,
-                    '--reticle-active-color': MPR_AXIS_CONFIG[activeMprPane]?.color || '#f8fafc',
+                    '--reticle-active-color': MPR_AXIS_CONFIG[lastActiveMprAxis]?.color || '#f8fafc',
+                    '--pt3-crosshair-opacity': pt3GuideAppearance.crosshairOpacity,
+                    '--pt3-crosshair-line-width': `${pt3GuideAppearance.crosshairLineWidthPx}px`,
+                    '--pt3-crosshair-half-line-width': `${pt3GuideAppearance.crosshairLineWidthPx / 2}px`,
+                    '--pt3-plane-outline-opacity': pt3GuideAppearance.planeOutlineOpacity,
+                    '--pt3-plane-outline-line-width': `${pt3GuideAppearance.planeOutlineLineWidthPx}px`,
+                    '--pt3-inactive-plane-outline-line-width': `${pt3GuideAppearance.planeOutlineLineWidthPx / 2}px`,
                   }}
                 >
                   {effectiveMprReconstructionMode === MPR_RECONSTRUCTION_MODES.stack ? (
@@ -8405,9 +8426,9 @@ function InspectionWorkbenchPanel({
                   <span className="volume-box volume-face-right" />
                   <span className="volume-box volume-face-top" />
                   <span className="volume-box volume-face-bottom" />
-                  <span className={`volume-plane volume-keepout plane-axial ${activeMprPane === 'axial' ? 'active' : ''}`} />
-                  <span className={`volume-plane volume-keepout plane-coronal ${activeMprPane === 'coronal' ? 'active' : ''}`} />
-                  <span className={`volume-plane volume-keepout plane-sagittal ${activeMprPane === 'sagittal' ? 'active' : ''}`} />
+                  <span className={`volume-plane volume-keepout plane-axial ${lastActiveMprAxis === 'axial' ? 'active' : ''}`} />
+                  <span className={`volume-plane volume-keepout plane-coronal ${lastActiveMprAxis === 'coronal' ? 'active' : ''}`} />
+                  <span className={`volume-plane volume-keepout plane-sagittal ${lastActiveMprAxis === 'sagittal' ? 'active' : ''}`} />
                   <span className="volume-reticle reticle-x" />
                   <span className="volume-reticle reticle-y" />
                   <span className="volume-reticle reticle-z" />
@@ -9856,6 +9877,7 @@ function InspectionWorkbenchPanel({
                     vectorAnnotations={helper3dAnnotations}
                     showAnnotations
                     annotationOpacityMultiplier={annotationOpacityMultiplier}
+                    pt3GuideSettings={pt3GuideSettings}
                   />
                   <div className="segmentation-helper-3d-hint">
                     <strong>Volume context</strong>

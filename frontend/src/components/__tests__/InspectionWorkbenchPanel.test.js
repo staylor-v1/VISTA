@@ -12,6 +12,7 @@ import InspectionWorkbenchPanel, {
   shouldApplyDisplayWindowToVolumeCache,
 } from '../InspectionWorkbenchPanel';
 import ImagesToPartsTab from '../ImagesToPartsTab';
+import * as pt3SliceLocator from '../pt3SliceLocator';
 import * as pt3ThreeRenderer from '../pt3ThreeRenderer';
 import * as pt3VectorAnnotations from '../pt3VectorAnnotations';
 
@@ -403,6 +404,7 @@ function mockWorkbenchFetch({
   hotkeys,
   metadataDict = { calibration_default: defaultCalibration },
   projectImages = null,
+  projectConfiguration = {},
   volumeMetadataById = {},
 }) {
   let mutableParts = [...parts];
@@ -547,13 +549,20 @@ function mockWorkbenchFetch({
         ok: true,
         json: async () => ({
           config: {
-            ui_sections: { 'inspection.part_summary.views_row': true },
+            ...projectConfiguration,
+            ui_sections: {
+              'inspection.part_summary.views_row': true,
+              ...(projectConfiguration.ui_sections || {}),
+            },
             process_settings: {
-              configurable_hotkeys: hotkeys || {
+              ...(projectConfiguration.process_settings || {}),
+              configurable_hotkeys: hotkeys
+                || projectConfiguration.process_settings?.configurable_hotkeys
+                || {
                 accept_classification: 'a',
                 reject_classification: 'r',
                 toggle_shortcut_help: 'h',
-              },
+                },
             },
           },
         }),
@@ -2005,6 +2014,107 @@ describe('InspectionWorkbenchPanel', () => {
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: '3D reconstruction' })).not.toBeInTheDocument();
     expect(document.querySelectorAll('.mpr-volume-scene')).toHaveLength(1);
+  });
+
+  test('normalizes legacy project configurations to canonical shared 3D guide defaults', async () => {
+    mockWorkbenchFetch({
+      ...scenarioByUser[2],
+      projectConfiguration: {
+        display_settings: {
+          default_colormap: 'grayscale',
+        },
+      },
+    });
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await screen.findByTestId('mpr-panel');
+    await waitFor(() => {
+      const model = document.querySelector('.mpr-volume-model');
+      expect(model).toBeInTheDocument();
+      expect(model.style.getPropertyValue('--pt3-crosshair-opacity')).toBe('0.5');
+      expect(model.style.getPropertyValue('--pt3-crosshair-line-width')).toBe('1.25px');
+      expect(model.style.getPropertyValue('--pt3-crosshair-half-line-width')).toBe('0.625px');
+      expect(model.style.getPropertyValue('--pt3-plane-outline-opacity')).toBe('1');
+      expect(model.style.getPropertyValue('--pt3-plane-outline-line-width')).toBe('1.25px');
+      expect(model.style.getPropertyValue('--pt3-inactive-plane-outline-line-width')).toBe('0.625px');
+    });
+  });
+
+  test('applies configured 3D guide appearance to legacy, renderer, and helper views', async () => {
+    const guideSettings = {
+      crosshair_transparency_percent: 75,
+      crosshair_line_width_px: 4,
+      plane_outline_transparency_percent: 40,
+      plane_outline_line_width_px: 3,
+    };
+    const locatorSpy = jest.spyOn(pt3SliceLocator, 'drawPt3SliceLocator')
+      .mockReturnValue(null);
+    const rendererSpy = jest.spyOn(pt3ThreeRenderer, 'createThreeMechanicalRenderer')
+      .mockResolvedValue({
+        rendererType: 'three-webgl-raymarch',
+        render: jest.fn(),
+        dispose: jest.fn(),
+      });
+
+    try {
+      mockWorkbenchFetch({
+        ...scenarioByUser[2],
+        projectConfiguration: {
+          display_settings: { pt3_3d_guides: guideSettings },
+        },
+      });
+      render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+      await screen.findByTestId('mpr-panel');
+      await waitFor(() => {
+        const model = document.querySelector('.mpr-volume-model');
+        expect(model).toBeInTheDocument();
+        expect(model.style.getPropertyValue('--pt3-crosshair-opacity')).toBe('0.25');
+        expect(model.style.getPropertyValue('--pt3-crosshair-line-width')).toBe('4px');
+        expect(model.style.getPropertyValue('--pt3-crosshair-half-line-width')).toBe('2px');
+        expect(model.style.getPropertyValue('--pt3-plane-outline-opacity')).toBe('0.6');
+        expect(model.style.getPropertyValue('--pt3-plane-outline-line-width')).toBe('3px');
+        expect(model.style.getPropertyValue('--pt3-inactive-plane-outline-line-width')).toBe('1.5px');
+      });
+
+      fireEvent.click(screen.getByTestId('mpr-pane-sagittal'));
+      await waitFor(() => {
+        expect(document.querySelector('.plane-sagittal')).toHaveClass('active');
+        expect(document.querySelector('.plane-axial')).not.toHaveClass('active');
+        expect(document.querySelector('.plane-coronal')).not.toHaveClass('active');
+      });
+      fireEvent.click(screen.getByTestId('mpr-pane-3d'));
+      await waitFor(() => {
+        expect(document.querySelector('.plane-sagittal')).toHaveClass('active');
+        expect(document.querySelector('.plane-axial')).not.toHaveClass('active');
+        expect(document.querySelector('.plane-coronal')).not.toHaveClass('active');
+      });
+
+      fireEvent.change(screen.getByLabelText('3D view'), {
+        target: { value: 'ray-march:composite' },
+      });
+      await waitFor(() => expect(locatorSpy.mock.calls.some(([, options]) => (
+        options?.guideSettings
+          && Object.entries(guideSettings).every(([key, value]) => (
+            options.guideSettings[key] === value
+          ))
+      ))).toBe(true));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Segmentation Helpers' }));
+      const helperTabs = screen.getByRole('tablist', { name: 'Segmentation workspace views' });
+      locatorSpy.mockClear();
+      fireEvent.click(within(helperTabs).getByRole('tab', { name: '3D' }));
+      await screen.findByTestId('segmentation-helper-3d-stage');
+      await waitFor(() => expect(locatorSpy.mock.calls.some(([, options]) => (
+        options?.guideSettings
+          && Object.entries(guideSettings).every(([key, value]) => (
+            options.guideSettings[key] === value
+          ))
+      ))).toBe(true));
+    } finally {
+      locatorSpy.mockRestore();
+      rendererSpy.mockRestore();
+    }
   });
 
   test('opens XY, XZ, and YZ slices as frozen fullscreen MPR canvases', async () => {

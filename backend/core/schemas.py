@@ -1245,10 +1245,61 @@ class InspectionProjectProcessSettingsConfig(BaseModel):
         return normalized
 
 
+class InspectionProjectPt33DGuidesConfig(BaseModel):
+    crosshair_transparency_percent: int = Field(default=50, ge=0, le=100, strict=True)
+    crosshair_line_width_px: float = Field(
+        default=1.25,
+        ge=0.5,
+        le=6.0,
+        strict=True,
+        allow_inf_nan=False,
+    )
+    plane_outline_transparency_percent: int = Field(default=0, ge=0, le=100, strict=True)
+    plane_outline_line_width_px: float = Field(
+        default=1.25,
+        ge=0.5,
+        le=6.0,
+        strict=True,
+        allow_inf_nan=False,
+    )
+
+    @field_validator(
+        "crosshair_transparency_percent",
+        "plane_outline_transparency_percent",
+        mode="before",
+    )
+    @classmethod
+    def reject_non_finite_transparency(cls, value):
+        if isinstance(value, float) and not math.isfinite(value):
+            # FastAPI includes rejected values in its validation response.
+            # Replace non-JSON-safe sentinels so malformed requests still
+            # produce a serializable 422 rather than a response-time 500.
+            return "non-finite"
+        return value
+
+    @field_validator("crosshair_line_width_px", "plane_outline_line_width_px", mode="before")
+    @classmethod
+    def accept_integer_line_widths(cls, value):
+        # JSON has a single number type from a caller's perspective. Preserve
+        # strict rejection of strings and booleans while accepting ordinary
+        # integer-valued widths such as 1 or 2.
+        if isinstance(value, int) and not isinstance(value, bool):
+            return float(value)
+        if isinstance(value, float) and not math.isfinite(value):
+            # FastAPI includes the rejected input in its validation response.
+            # Replace non-JSON-safe float sentinels before strict validation so
+            # NaN/Infinity requests produce a serializable 422 response.
+            return "non-finite"
+        return value
+
+
 class InspectionProjectDisplaySettingsConfig(BaseModel):
     default_colormap: str = Field(default="grayscale", min_length=1, max_length=64)
     anomaly_colormap: str = Field(default="viridis", min_length=1, max_length=64)
     grayscale_base_image: bool = True
+    pt3_3d_guides: InspectionProjectPt33DGuidesConfig = Field(
+        default_factory=InspectionProjectPt33DGuidesConfig
+    )
 
 
 class InspectionProjectPhaseSettingsConfig(BaseModel):

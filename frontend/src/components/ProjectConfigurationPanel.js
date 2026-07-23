@@ -2,9 +2,155 @@ import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo
 import { PROJECT_PHASE_LABELS, PROJECT_PHASE_SEQUENCE } from '../utils/projectPhases';
 import { UI_SECTION_GROUPS, isUiSectionEnabled, normalizeUiSections } from '../utils/uiSections';
 import { buildErrorWithServiceDiagnostics } from '../utils/serviceDiagnostics';
+import {
+  DEFAULT_PT3_3D_GUIDE_SETTINGS,
+  PT3_3D_GUIDE_LIMITS,
+  getPt3GuideAppearance,
+  normalizePt3GuideSettings,
+} from '../utils/pt3GuideSettings';
 import { metadataKeyFromFilenameEntry } from './FilenameMetadataExtractor';
 
 
+
+const PT3_GUIDE_FIELDS = Object.freeze({
+  crosshair_transparency_percent: Object.freeze({
+    label: 'Crosshair transparency',
+    limits: PT3_3D_GUIDE_LIMITS.transparencyPercent,
+    unit: '%',
+  }),
+  crosshair_line_width_px: Object.freeze({
+    label: 'Crosshair line width',
+    limits: PT3_3D_GUIDE_LIMITS.lineWidthPx,
+    unit: 'px',
+  }),
+  plane_outline_transparency_percent: Object.freeze({
+    label: 'Plane outline transparency',
+    limits: PT3_3D_GUIDE_LIMITS.transparencyPercent,
+    unit: '%',
+  }),
+  plane_outline_line_width_px: Object.freeze({
+    label: 'Plane outline line width',
+    limits: PT3_3D_GUIDE_LIMITS.lineWidthPx,
+    unit: 'px',
+    description: 'The selected plane uses this width; the other planes use half for visual hierarchy.',
+  }),
+});
+
+function formatPt3GuideValue(value, unit) {
+  if (unit === '%') return `${Math.round(value)}%`;
+  return `${Number(value).toFixed(2).replace(/\.?0+$/, '')} px`;
+}
+
+function Pt3GuideRangeControl({ field, value, onChange }) {
+  const definition = PT3_GUIDE_FIELDS[field];
+  const controlId = `pt3-guide-${field.replaceAll('_', '-')}`;
+  const descriptionId = definition.description ? `${controlId}-description` : undefined;
+  return (
+    <div className="pt3-guide-control">
+      <span className="pt3-guide-control-heading">
+        <label htmlFor={controlId}>{definition.label}</label>
+        <output>{formatPt3GuideValue(value, definition.unit)}</output>
+      </span>
+      <input
+        id={controlId}
+        type="range"
+        aria-label={definition.label}
+        min={definition.limits.min}
+        max={definition.limits.max}
+        step={definition.limits.step}
+        value={value}
+        aria-describedby={descriptionId}
+        onChange={(event) => onChange(field, Number(event.target.value))}
+      />
+      {definition.description && (
+        <small id={descriptionId} className="pt3-guide-control-note">
+          {definition.description}
+        </small>
+      )}
+    </div>
+  );
+}
+
+function Pt3GuidePreview({ settings }) {
+  const appearance = getPt3GuideAppearance(settings);
+  const inactivePlaneWidth = appearance.planeOutlineLineWidthPx / 2;
+  return (
+    <figure className="pt3-guide-preview">
+      <svg
+        viewBox="0 0 260 158"
+        role="img"
+        aria-label="Live 3D guide appearance preview"
+        data-testid="pt3-guide-preview"
+      >
+        <title>Live 3D guide appearance preview</title>
+        <desc>Three orthogonal slice planes and their shared crosshair.</desc>
+        <defs>
+          <linearGradient id="pt3-guide-preview-bg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor="#0f172a" />
+            <stop offset="1" stopColor="#020617" />
+          </linearGradient>
+        </defs>
+        <rect width="260" height="158" rx="12" fill="url(#pt3-guide-preview-bg)" />
+        <path
+          d="M53 43 L174 24 L218 61 L96 80 Z M53 43 L53 111 L96 139 L96 80 M96 139 L218 112 L218 61"
+          fill="none"
+          stroke="rgba(148,163,184,0.26)"
+          strokeWidth="1"
+        />
+        <g
+          fill="none"
+          opacity={appearance.planeOutlineOpacity}
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        >
+          <path
+            d="M62 72 L183 50 L211 73 L90 97 Z"
+            stroke="#3b82f6"
+            strokeWidth={appearance.planeOutlineLineWidthPx}
+          />
+          <path
+            d="M81 40 L160 31 L160 121 L81 132 Z"
+            stroke="#f59e0b"
+            strokeWidth={inactivePlaneWidth}
+          />
+          <path
+            d="M123 34 L199 66 L178 124 L103 91 Z"
+            stroke="#10b981"
+            strokeWidth={inactivePlaneWidth}
+          />
+        </g>
+        <g
+          fill="none"
+          opacity={appearance.crosshairOpacity}
+          strokeLinecap="round"
+          vectorEffect="non-scaling-stroke"
+        >
+          <path d="M62 83 L211 68" stroke="#3b82f6" strokeWidth={appearance.crosshairLineWidthPx} />
+          <path d="M82 86 L188 77" stroke="#f59e0b" strokeWidth={appearance.crosshairLineWidthPx} />
+          <path d="M136 37 L136 128" stroke="#10b981" strokeWidth={appearance.crosshairLineWidthPx} />
+          <circle cx="136" cy="78" r="4.2" fill="#f8fafc" stroke="#020617" strokeWidth="2" />
+        </g>
+      </svg>
+      <figcaption aria-live="polite">
+        Crosshair {settings.crosshair_transparency_percent}% transparent
+        <span aria-hidden="true"> · </span>
+        Plane outlines {settings.plane_outline_transparency_percent}% transparent
+      </figcaption>
+    </figure>
+  );
+}
+
+function isValidOptionalPt3GuideSettings(value) {
+  if (value === undefined) return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return Object.entries(PT3_GUIDE_FIELDS).every(([field, definition]) => {
+    const candidate = value[field];
+    if (candidate === undefined) return true;
+    if (typeof candidate !== 'number' || !Number.isFinite(candidate)) return false;
+    if (candidate < definition.limits.min || candidate > definition.limits.max) return false;
+    return definition.unit !== '%' || Number.isInteger(candidate);
+  });
+}
 
 function collectUiSectionMatches(groups = UI_SECTION_GROUPS, query = '') {
   const normalizedQuery = query.trim().toLowerCase();
@@ -239,7 +385,8 @@ function getCloneConfigOrThrow(cloneResponseData) {
     typeof clonedConfig.process_settings.configurable_hotkeys.toggle_shortcut_help === 'string' &&
     typeof clonedConfig.display_settings.default_colormap === 'string' &&
     typeof clonedConfig.display_settings.anomaly_colormap === 'string' &&
-    typeof clonedConfig.display_settings.grayscale_base_image === 'boolean';
+    typeof clonedConfig.display_settings.grayscale_base_image === 'boolean' &&
+    isValidOptionalPt3GuideSettings(clonedConfig.display_settings.pt3_3d_guides);
 
   if (!hasValidSettingsFields) {
     throw new Error('Failed to copy project configuration (invalid config settings fields)');
@@ -382,6 +529,9 @@ const EMPTY_CONFIG = {
     default_colormap: 'grayscale',
     anomaly_colormap: 'viridis',
     grayscale_base_image: true,
+    pt3_3d_guides: {
+      ...DEFAULT_PT3_3D_GUIDE_SETTINGS,
+    },
   },
   serial_number_scheme: {
     batch_sn_enabled: true,
@@ -583,6 +733,18 @@ function normalizePhaseSettings(config) {
   };
 }
 
+function normalizeDisplaySettings(config) {
+  const candidate = config?.display_settings;
+  const source = candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+    ? candidate
+    : {};
+  return {
+    ...EMPTY_CONFIG.display_settings,
+    ...source,
+    pt3_3d_guides: normalizePt3GuideSettings(source.pt3_3d_guides),
+  };
+}
+
 function normalizeProjectConfiguration(config, projectType) {
   const incomingConfig = config && typeof config === 'object' ? config : {};
   const defectTypes = Array.isArray(incomingConfig.defect_types)
@@ -593,6 +755,7 @@ function normalizeProjectConfiguration(config, projectType) {
     ...EMPTY_CONFIG,
     ...incomingConfig,
     defect_types: defectTypes,
+    display_settings: normalizeDisplaySettings(incomingConfig),
     serial_number_scheme: normalizeSerialNumberScheme(incomingConfig),
     phase_settings: normalizePhaseSettings(incomingConfig),
     metadata_parsers: normalizeMetadataParsers(incomingConfig),
@@ -746,6 +909,40 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
     () => GENERAL_CONFIGURATION_SECTIONS.filter((sectionKey) => isUiSectionEnabled(config, sectionKey)).length,
     [config],
   );
+  const isPt3Project = normalizeProjectTypeSuffix(projectType || currentProjectType) === 'PT3';
+  const pt3GuideSettings = normalizePt3GuideSettings(
+    config.display_settings?.pt3_3d_guides,
+  );
+  const pt3GuideSettingsAreDefault = Object.entries(DEFAULT_PT3_3D_GUIDE_SETTINGS)
+    .every(([field, value]) => pt3GuideSettings[field] === value);
+
+  const updatePt3GuideSetting = useCallback((field, value) => {
+    setConfig((previous) => {
+      const displaySettings = normalizeDisplaySettings(previous);
+      return {
+        ...previous,
+        display_settings: {
+          ...displaySettings,
+          pt3_3d_guides: normalizePt3GuideSettings({
+            ...displaySettings.pt3_3d_guides,
+            [field]: value,
+          }),
+        },
+      };
+    });
+  }, []);
+
+  const resetPt3GuideSettings = useCallback(() => {
+    setConfig((previous) => ({
+      ...previous,
+      display_settings: {
+        ...normalizeDisplaySettings(previous),
+        pt3_3d_guides: {
+          ...DEFAULT_PT3_3D_GUIDE_SETTINGS,
+        },
+      },
+    }));
+  }, []);
 
 
   useEffect(() => {
@@ -991,6 +1188,7 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
         setConfig((previous) => ({
           ...previous,
           ...payload.config,
+          display_settings: normalizeDisplaySettings(payload.config),
           serial_number_scheme: normalizeSerialNumberScheme(payload.config),
           phase_settings: normalizePhaseSettings(payload.config),
           file_naming_scheme: normalizeFileNamingScheme(payload.config),
@@ -1197,15 +1395,10 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
       }
 
       const clonedConfig = getCloneConfigOrThrow(cloneData);
-      const nextClonedConfig = {
-        ...EMPTY_CONFIG,
-        ...clonedConfig,
-        serial_number_scheme: normalizeSerialNumberScheme(clonedConfig),
-        phase_settings: normalizePhaseSettings(clonedConfig),
-        metadata_parsers: normalizeMetadataParsers(clonedConfig),
-        ui_sections: normalizeUiSections(clonedConfig),
-        file_naming_scheme: normalizeFileNamingScheme(clonedConfig),
-      };
+      const nextClonedConfig = normalizeProjectConfiguration(
+        clonedConfig,
+        currentProjectType || projectType,
+      );
       lastSavedSignatureRef.current = getConfigurationSignature(nextClonedConfig);
       setConfig(nextClonedConfig);
       const copiedFromProject = selectedCopySourceProject?.name || 'existing project';
@@ -1738,7 +1931,7 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
             role="tabpanel"
             aria-label="UI Configuration"
           >
-          {isUiSectionEnabled(config, 'project_configuration.available_ui_sections') ? (
+          {isUiSectionEnabled(config, 'project_configuration.available_ui_sections') && (
           <section className="part-detail-panel configurable-ui-sections-panel" aria-label="Configurable UI sections">
             <div className="configurable-ui-sections-header">
               <div>
@@ -1774,9 +1967,49 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
               ))}
             </div>
           </section>
-          ) : (
+          )}
+          {!isUiSectionEnabled(config, 'project_configuration.available_ui_sections') && !isPt3Project && (
             <section className="part-detail-panel" aria-live="polite">
               <p className="muted">No UI Configuration sections are enabled.</p>
+            </section>
+          )}
+          {isPt3Project && (
+            <section
+              className="part-detail-panel pt3-guide-configuration-card"
+              aria-label="3D view guides"
+              data-testid="pt3-guide-configuration-card"
+            >
+              <div className="pt3-guide-card-header">
+                <div>
+                  <span className="pt3-guide-eyebrow">PT3 · 3D VIEW</span>
+                  <h3>3D View Guides</h3>
+                  <p>
+                    Tune the crosshair and slice-plane outlines used to locate X, Y, and Z positions in 3D.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  aria-label="Reset 3D view guides to defaults"
+                  disabled={pt3GuideSettingsAreDefault}
+                  onClick={resetPt3GuideSettings}
+                >
+                  Reset
+                </button>
+              </div>
+              <div className="pt3-guide-card-body">
+                <div className="pt3-guide-controls" role="group" aria-label="3D view guide appearance">
+                  {Object.keys(PT3_GUIDE_FIELDS).map((field) => (
+                    <Pt3GuideRangeControl
+                      key={field}
+                      field={field}
+                      value={pt3GuideSettings[field]}
+                      onChange={updatePt3GuideSetting}
+                    />
+                  ))}
+                </div>
+                <Pt3GuidePreview settings={pt3GuideSettings} />
+              </div>
             </section>
           )}
           </div>

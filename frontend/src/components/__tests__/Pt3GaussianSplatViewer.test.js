@@ -649,13 +649,20 @@ describe('Pt3GaussianSplatViewer renderer degradation', () => {
   test('draws the shared active-plane locator above WebGL without legacy duplicate guides', async () => {
     const renderer = makeRenderer();
     createThreeMechanicalRenderer.mockResolvedValue(renderer);
-    render(<Pt3GaussianSplatViewer
+    const guideSettings = {
+      crosshair_transparency_percent: 75,
+      crosshair_line_width_px: 4,
+      plane_outline_transparency_percent: 40,
+      plane_outline_line_width_px: 3,
+    };
+    const { rerender } = render(<Pt3GaussianSplatViewer
       part={part}
       mode="volume"
       activeSliceAxis="coronal"
       slicePosition={{ axial: 0, coronal: 0, sagittal: 64 }}
       volumeImageStack={[{ id: 'slice-1', url: '/slice.png', sliceIndex: 0 }]}
       rayMarchSettings={{ ...DEFAULT_RAY_MARCH_SETTINGS, showSliceGuides: true }}
+      pt3GuideSettings={guideSettings}
     />);
 
     await waitFor(() => expect(renderer.render).toHaveBeenCalled());
@@ -665,6 +672,7 @@ describe('Pt3GaussianSplatViewer renderer degradation', () => {
     }));
     expect(drawPt3SliceLocator).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       activeSliceAxis: 'coronal',
+      guideSettings,
       slicePosition: { axial: 0, coronal: 0, sagittal: 64 },
     }));
     expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveAttribute(
@@ -677,6 +685,25 @@ describe('Pt3GaussianSplatViewer renderer degradation', () => {
     expect(document.getElementById(descriptionId)).toHaveTextContent(
       'Active plane XZ • Y 0 / 0. X 64 / 127; Y 0 / 0; Z 0 / 0.',
     );
+
+    const updatedGuideSettings = {
+      ...guideSettings,
+      crosshair_line_width_px: 2.5,
+    };
+    drawPt3SliceLocator.mockClear();
+    rerender(<Pt3GaussianSplatViewer
+      part={part}
+      mode="volume"
+      activeSliceAxis="coronal"
+      slicePosition={{ axial: 0, coronal: 0, sagittal: 64 }}
+      volumeImageStack={[{ id: 'slice-1', url: '/slice.png', sliceIndex: 0 }]}
+      rayMarchSettings={{ ...DEFAULT_RAY_MARCH_SETTINGS, showSliceGuides: true }}
+      pt3GuideSettings={updatedGuideSettings}
+    />);
+    await waitFor(() => expect(drawPt3SliceLocator).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ guideSettings: updatedGuideSettings }),
+    ));
   });
 
   test.each([

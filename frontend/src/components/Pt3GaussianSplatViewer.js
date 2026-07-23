@@ -719,6 +719,7 @@ export default function Pt3GaussianSplatViewer({
   vectorAnnotations = EMPTY_VECTOR_ANNOTATIONS,
   showAnnotations = true,
   annotationOpacityMultiplier = 1,
+  pt3GuideSettings = null,
 }) {
   const canvasRef = useRef(null);
   const webglCanvasRef = useRef(null);
@@ -1173,6 +1174,7 @@ export default function Pt3GaussianSplatViewer({
           mirrorScale: activeMirrorScale,
           slicePosition,
           activeSliceAxis,
+          guideSettings: pt3GuideSettings,
         });
       }
       const renderDuration = Math.max(0.1, performance.now() - startedAt);
@@ -1192,7 +1194,7 @@ export default function Pt3GaussianSplatViewer({
       resizeObserver?.disconnect();
       window.removeEventListener('resize', scheduleRender);
     };
-  }, [activeMirrorScale, activeSliceAxis, boundaryBandWidth, boundaryEnhancement, boundaryStrength, colorHigh, colorLow, cropEnabled, externalOverlayPoints, intensityThreshold, isPureSplatMode, isoThreshold, isoWidth, metadata, mode, opacityRampWidth, quality, reconstructionStyle, renderableSegmentationSegments, rendererType, rotation, safeAnnotationOpacityMultiplier, showAnnotations, slicePosition, splatContrast, splatGuidesVisible, splatOpacity, splatPointSize, splats, vectorAnnotations, volumeOpacity, windowCenter, windowWidth, zoom]);
+  }, [activeMirrorScale, activeSliceAxis, boundaryBandWidth, boundaryEnhancement, boundaryStrength, colorHigh, colorLow, cropEnabled, externalOverlayPoints, intensityThreshold, isPureSplatMode, isoThreshold, isoWidth, metadata, mode, opacityRampWidth, pt3GuideSettings, quality, reconstructionStyle, renderableSegmentationSegments, rendererType, rotation, safeAnnotationOpacityMultiplier, showAnnotations, slicePosition, splatContrast, splatGuidesVisible, splatOpacity, splatPointSize, splats, vectorAnnotations, volumeOpacity, windowCenter, windowWidth, zoom]);
 
   const updateRayMarchSetting = (key, value) => {
     onRayMarchSettingsChange?.({ ...activeRayMarchSettings, [key]: value });

@@ -10,6 +10,31 @@ const metadata = {
   origin: [4, -2, 10],
 };
 
+function createDrawingContext() {
+  const strokes = [];
+  const fills = [];
+  const ctx = {
+    canvas: { width: 800, height: 600 },
+    globalAlpha: 1,
+    save: jest.fn(),
+    restore: jest.fn(),
+    beginPath: jest.fn(),
+    moveTo: jest.fn(),
+    lineTo: jest.fn(),
+    closePath: jest.fn(),
+    stroke: jest.fn(() => strokes.push({
+      alpha: ctx.globalAlpha,
+      lineWidth: ctx.lineWidth,
+      style: ctx.strokeStyle,
+    })),
+    fill: jest.fn(() => fills.push({ alpha: ctx.globalAlpha, style: ctx.fillStyle })),
+    arc: jest.fn(),
+    fillRect: jest.fn(),
+    fillText: jest.fn(),
+  };
+  return { ctx, fills, strokes };
+}
+
 test('builds three colored planes, three intersection axes, and zero-based MPR readouts', () => {
   const geometry = buildPt3SliceLocatorGeometry({
     metadata,
@@ -104,27 +129,7 @@ test.each([
 });
 
 test('draws unlabeled half-width planes and 50%-transparent half-width crosshairs', () => {
-  const strokes = [];
-  const fills = [];
-  const ctx = {
-    canvas: { width: 800, height: 600 },
-    globalAlpha: 1,
-    save: jest.fn(),
-    restore: jest.fn(),
-    beginPath: jest.fn(),
-    moveTo: jest.fn(),
-    lineTo: jest.fn(),
-    closePath: jest.fn(),
-    stroke: jest.fn(() => strokes.push({
-      alpha: ctx.globalAlpha,
-      lineWidth: ctx.lineWidth,
-      style: ctx.strokeStyle,
-    })),
-    fill: jest.fn(() => fills.push({ alpha: ctx.globalAlpha, style: ctx.fillStyle })),
-    arc: jest.fn(),
-    fillRect: jest.fn(),
-    fillText: jest.fn(),
-  };
+  const { ctx, fills, strokes } = createDrawingContext();
 
   const geometry = drawPt3SliceLocator(ctx, {
     metadata,
@@ -155,4 +160,36 @@ test('draws unlabeled half-width planes and 50%-transparent half-width crosshair
   expect(ctx.fillText).not.toHaveBeenCalled();
   expect(ctx.save).toHaveBeenCalledTimes(1);
   expect(ctx.restore).toHaveBeenCalledTimes(1);
+});
+
+test('applies independently configured 3D plane and crosshair appearance', () => {
+  const { ctx, fills, strokes } = createDrawingContext();
+
+  drawPt3SliceLocator(ctx, {
+    metadata,
+    width: 800,
+    height: 600,
+    slicePosition: { axial: 99, coronal: 274, sagittal: 149 },
+    activeSliceAxis: 'coronal',
+    guideSettings: {
+      crosshair_transparency_percent: 75,
+      crosshair_line_width_px: 4,
+      plane_outline_transparency_percent: 40,
+      plane_outline_line_width_px: 3,
+    },
+  });
+
+  expect(strokes.slice(0, 6).map(({ alpha }) => alpha)).toEqual(Array(6).fill(0.6));
+  expect(strokes.slice(0, 6).map(({ lineWidth }) => lineWidth)).toEqual([
+    3, 1.5,
+    4.5, 3,
+    3, 1.5,
+  ]);
+  expect(strokes.slice(6).map(({ alpha }) => alpha)).toEqual(Array(6).fill(0.25));
+  expect(strokes.slice(6).map(({ lineWidth }) => lineWidth)).toEqual([
+    5.5, 4,
+    5.5, 4,
+    5.5, 4,
+  ]);
+  expect(fills.map(({ alpha }) => alpha)).toEqual([1, 0.25, 0.25]);
 });

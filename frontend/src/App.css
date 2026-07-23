@@ -7671,8 +7671,8 @@ ul li:hover {
   top: 33%;
   width: 34%;
   height: 34%;
-  opacity: 0.2;
-  border: 1px solid currentColor;
+  opacity: var(--pt3-plane-outline-opacity, 1);
+  border: var(--pt3-inactive-plane-outline-line-width, 0.625px) solid currentColor;
   background: transparent;
 }
 
@@ -7692,37 +7692,42 @@ ul li:hover {
 }
 
 .volume-plane.active {
-  opacity: 0.2;
+  opacity: var(--pt3-plane-outline-opacity, 1);
+  border-width: var(--pt3-plane-outline-line-width, 1.25px);
   box-shadow: 0 0 16px color-mix(in srgb, currentColor 65%, #ffffff);
 }
 
 .volume-reticle {
   left: 50%;
   top: 50%;
-  background: rgba(248, 250, 252, 0.62);
+  opacity: var(--pt3-crosshair-opacity, 0.5);
+  background: #f8fafc;
   transform-origin: center;
 }
 
 .reticle-x {
   width: 170px;
-  height: 1px;
+  height: var(--pt3-crosshair-line-width, 1.25px);
   margin-left: -85px;
+  margin-top: calc(0px - var(--pt3-crosshair-half-line-width, 0.625px));
   transform: translateY(var(--slice-coronal-y, 0));
 }
 
 .reticle-y {
-  width: 1px;
+  width: var(--pt3-crosshair-line-width, 1.25px);
   height: 118px;
+  margin-left: calc(0px - var(--pt3-crosshair-half-line-width, 0.625px));
   margin-top: -59px;
   transform: translateX(var(--slice-sagittal-x, 0));
 }
 
 .reticle-z {
-  width: 1px;
+  width: var(--pt3-crosshair-line-width, 1.25px);
   height: 104px;
+  margin-left: calc(0px - var(--pt3-crosshair-half-line-width, 0.625px));
   margin-top: -52px;
   transform: translateZ(var(--slice-axial-depth, 0)) rotateY(90deg);
-  background: var(--reticle-active-color, rgba(248, 250, 252, 0.62));
+  background: var(--reticle-active-color, #f8fafc);
 }
 
 .mpr-volume-legend {
@@ -8399,6 +8404,116 @@ ul li:hover {
   margin-bottom: 0;
 }
 
+.project-configuration-panel .pt3-guide-configuration-card {
+  position: relative;
+  overflow: hidden;
+  border-color: #cbd5e1;
+  background:
+    linear-gradient(135deg, rgba(14, 165, 233, 0.06), transparent 44%),
+    #ffffff;
+}
+
+.project-configuration-panel .pt3-guide-configuration-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: linear-gradient(#3b82f6 0 33%, #f59e0b 33% 66%, #10b981 66%);
+}
+
+.project-configuration-panel .pt3-guide-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.project-configuration-panel .pt3-guide-card-header h3 {
+  margin: 3px 0 5px;
+}
+
+.project-configuration-panel .pt3-guide-card-header p {
+  max-width: 58ch;
+  margin: 0;
+  color: #64748b;
+  font-size: 0.82rem;
+}
+
+.project-configuration-panel .pt3-guide-eyebrow {
+  color: #0369a1;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.project-configuration-panel .pt3-guide-card-body {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(210px, 0.78fr);
+  gap: 18px;
+  align-items: center;
+  margin-top: 16px;
+}
+
+.project-configuration-panel .pt3-guide-controls {
+  display: grid;
+  gap: 12px;
+}
+
+.project-configuration-panel .pt3-guide-control {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.project-configuration-panel .pt3-guide-control-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #334155;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.project-configuration-panel .pt3-guide-control output {
+  min-width: 54px;
+  color: #0369a1;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.project-configuration-panel .pt3-guide-control input[type='range'] {
+  width: 100%;
+  margin: 0;
+  accent-color: #0284c7;
+}
+
+.project-configuration-panel .pt3-guide-control-note {
+  color: #64748b;
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.project-configuration-panel .pt3-guide-preview {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.project-configuration-panel .pt3-guide-preview svg {
+  display: block;
+  width: 100%;
+  min-height: 132px;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 12px;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.14);
+}
+
+.project-configuration-panel .pt3-guide-preview figcaption {
+  color: #64748b;
+  font-size: 0.68rem;
+  text-align: center;
+}
+
 .configurable-ui-sections-header {
   display: flex;
   align-items: flex-start;
@@ -8444,6 +8559,15 @@ ul li:hover {
 @media (max-width: 760px) {
   .configuration-sections-grid {
     grid-template-columns: 1fr;
+  }
+
+  .project-configuration-panel .pt3-guide-card-body {
+    grid-template-columns: 1fr;
+  }
+
+  .project-configuration-panel .pt3-guide-preview {
+    max-width: 360px;
+    justify-self: center;
   }
 
   .project-configuration-panel .configuration-action-bar {

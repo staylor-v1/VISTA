@@ -4,6 +4,7 @@ import {
   normalizeVolumeMetadata,
   voxelToPhysical,
 } from './pt3VolumeGeometry';
+import { getPt3GuideAppearance } from '../utils/pt3GuideSettings';
 
 const LOCATOR_AXES = Object.freeze({
   axial: Object.freeze({ coordinate: 2, color: '#3b82f6', plane: 'XY', slice: 'Z' }),
@@ -12,10 +13,6 @@ const LOCATOR_AXES = Object.freeze({
 });
 
 const AXIS_ORDER = ['axial', 'coronal', 'sagittal'];
-const CROSSHAIR_OPACITY = 0.5;
-const ACTIVE_PLANE_WIDTH = 1.25;
-const INACTIVE_PLANE_WIDTH = 0.625;
-const CROSSHAIR_WIDTH = 1.25;
 
 function clamp(value, minimum, maximum, fallback = minimum) {
   const numeric = Number(value);
@@ -143,7 +140,7 @@ function drawOutlinedPath(
   width,
   close = false,
   displayScale = 1,
-  haloWidth = width + 3,
+  haloWidth = width + 1.5,
   opacity = 1,
 ) {
   const previousAlpha = Number.isFinite(ctx.globalAlpha) ? ctx.globalAlpha : 1;
@@ -162,6 +159,7 @@ function drawOutlinedPath(
 export function drawPt3SliceLocator(ctx, options = {}) {
   if (!ctx) return null;
   const geometry = buildPt3SliceLocatorGeometry(options);
+  const appearance = getPt3GuideAppearance(options.guideSettings);
   const cssWidth = Number(ctx.canvas?.clientWidth);
   const displayScale = clamp(
     options.displayScale,
@@ -180,25 +178,35 @@ export function drawPt3SliceLocator(ctx, options = {}) {
     ctx.fill();
   }
   geometry.planes.forEach((plane) => {
-    const width = plane.active ? ACTIVE_PLANE_WIDTH : INACTIVE_PLANE_WIDTH;
-    const haloWidth = plane.active ? 2.75 : 2.125;
-    drawOutlinedPath(ctx, plane.points, plane.color, width, true, displayScale, haloWidth);
+    const width = plane.active
+      ? appearance.planeOutlineLineWidthPx
+      : appearance.planeOutlineLineWidthPx / 2;
+    drawOutlinedPath(
+      ctx,
+      plane.points,
+      plane.color,
+      width,
+      true,
+      displayScale,
+      width + 1.5,
+      appearance.planeOutlineOpacity,
+    );
   });
   geometry.intersectionLines.forEach((line) => {
     drawOutlinedPath(
       ctx,
       line.points,
       line.color,
-      CROSSHAIR_WIDTH,
+      appearance.crosshairLineWidthPx,
       false,
       displayScale,
-      2.75,
-      CROSSHAIR_OPACITY,
+      appearance.crosshairLineWidthPx + 1.5,
+      appearance.crosshairOpacity,
     );
   });
 
   const previousAlpha = Number.isFinite(ctx.globalAlpha) ? ctx.globalAlpha : 1;
-  ctx.globalAlpha = previousAlpha * CROSSHAIR_OPACITY;
+  ctx.globalAlpha = previousAlpha * appearance.crosshairOpacity;
   ctx.beginPath();
   ctx.arc(geometry.center.x, geometry.center.y, 6 * displayScale, 0, Math.PI * 2);
   ctx.fillStyle = 'rgba(2, 6, 23, 0.96)';

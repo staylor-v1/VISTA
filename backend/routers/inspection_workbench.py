@@ -618,6 +618,12 @@ def _default_project_configuration(project_type: Optional[str] = DEFAULT_PROJECT
             "default_colormap": "grayscale",
             "anomaly_colormap": "viridis",
             "grayscale_base_image": True,
+            "pt3_3d_guides": {
+                "crosshair_transparency_percent": 50,
+                "crosshair_line_width_px": 1.25,
+                "plane_outline_transparency_percent": 0,
+                "plane_outline_line_width_px": 1.25,
+            },
         },
         "phase_settings": {
             "manual_phase_selection_enabled": False,

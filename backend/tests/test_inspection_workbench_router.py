@@ -3,6 +3,7 @@ from unittest.mock import patch
 import base64
 import io
 import json
+import math
 import uuid
 
 import numpy as np
@@ -1188,6 +1189,183 @@ def test_part_annotation_collection_limits_have_exact_and_legacy_safe_boundaries
     circular_annotation["self"] = circular_annotation
     with pytest.raises(HTTPException, match="JSON-compatible finite values"):
         inspection_workbench._validate_annotation_collection_limits([circular_annotation])
+
+
+def _create_pt3_guide_configuration_project(client, suffix, headers=None):
+    resolved_headers = headers or {
+        "X-User-Id": f"pt3-guide-{suffix}@example.com",
+        "X-User-Groups": f'["pt3-guide-{suffix}"]',
+    }
+    response = client.post(
+        "/api/projects/",
+        json={
+            "name": f"PT3 guide configuration {suffix}",
+            "description": "PT3 3D guide configuration persistence",
+            "meta_group_id": json.loads(resolved_headers["X-User-Groups"])[0],
+            "project_type": "PT3",
+        },
+        headers=resolved_headers,
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["id"], resolved_headers
+
+
+def test_project_configuration_defaults_pt3_3d_guides(client):
+    project_id, headers = _create_pt3_guide_configuration_project(client, "defaults")
+
+    response = client.get(f"/api/projects/{project_id}/configuration", headers=headers)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["config"]["display_settings"]["pt3_3d_guides"] == {
+        "crosshair_transparency_percent": 50,
+        "crosshair_line_width_px": 1.25,
+        "plane_outline_transparency_percent": 0,
+        "plane_outline_line_width_px": 1.25,
+    }
+
+
+def test_project_configuration_pt3_3d_guides_round_trip(client):
+    project_id, headers = _create_pt3_guide_configuration_project(client, "round-trip")
+    initial_response = client.get(f"/api/projects/{project_id}/configuration", headers=headers)
+    assert initial_response.status_code == 200, initial_response.text
+    config = initial_response.json()["config"]
+    config["display_settings"]["pt3_3d_guides"] = {
+        "crosshair_transparency_percent": 25,
+        "crosshair_line_width_px": 2,
+        "plane_outline_transparency_percent": 80,
+        "plane_outline_line_width_px": 4.75,
+    }
+
+    save_response = client.put(
+        f"/api/projects/{project_id}/configuration",
+        json={"config": config},
+        headers=headers,
+    )
+
+    assert save_response.status_code == 200, save_response.text
+    saved_guides = save_response.json()["config"]["display_settings"]["pt3_3d_guides"]
+    assert saved_guides == {
+        "crosshair_transparency_percent": 25,
+        "crosshair_line_width_px": 2.0,
+        "plane_outline_transparency_percent": 80,
+        "plane_outline_line_width_px": 4.75,
+    }
+    assert isinstance(saved_guides["crosshair_line_width_px"], float)
+
+    reload_response = client.get(f"/api/projects/{project_id}/configuration", headers=headers)
+    assert reload_response.status_code == 200, reload_response.text
+    assert reload_response.json()["config"]["display_settings"]["pt3_3d_guides"] == saved_guides
+
+
+def test_project_configuration_accepts_legacy_display_settings_without_pt3_3d_guides(client):
+    project_id, headers = _create_pt3_guide_configuration_project(client, "legacy")
+    initial_response = client.get(f"/api/projects/{project_id}/configuration", headers=headers)
+    assert initial_response.status_code == 200, initial_response.text
+    legacy_config = initial_response.json()["config"]
+    legacy_config["display_settings"].pop("pt3_3d_guides")
+
+    save_response = client.put(
+        f"/api/projects/{project_id}/configuration",
+        json={"config": legacy_config},
+        headers=headers,
+    )
+
+    assert save_response.status_code == 200, save_response.text
+    assert "pt3_3d_guides" not in save_response.json()["config"]["display_settings"]
+    reload_response = client.get(f"/api/projects/{project_id}/configuration", headers=headers)
+    assert reload_response.status_code == 200, reload_response.text
+    assert "pt3_3d_guides" not in reload_response.json()["config"]["display_settings"]
+
+
+def test_project_configuration_clone_preserves_pt3_3d_guides(client):
+    headers = {
+        "X-User-Id": "pt3-guide-clone@example.com",
+        "X-User-Groups": '["pt3-guide-clone"]',
+    }
+    source_project_id, _ = _create_pt3_guide_configuration_project(client, "clone-source", headers=headers)
+    target_project_id, _ = _create_pt3_guide_configuration_project(client, "clone-target", headers=headers)
+    source_response = client.get(f"/api/projects/{source_project_id}/configuration", headers=headers)
+    assert source_response.status_code == 200, source_response.text
+    source_config = source_response.json()["config"]
+    expected_guides = {
+        "crosshair_transparency_percent": 100,
+        "crosshair_line_width_px": 0.5,
+        "plane_outline_transparency_percent": 35,
+        "plane_outline_line_width_px": 6.0,
+    }
+    source_config["display_settings"]["pt3_3d_guides"] = expected_guides
+    save_response = client.put(
+        f"/api/projects/{source_project_id}/configuration",
+        json={"config": source_config},
+        headers=headers,
+    )
+    assert save_response.status_code == 200, save_response.text
+
+    clone_response = client.post(
+        f"/api/projects/{target_project_id}/configuration/clone",
+        json={"source_project_id": source_project_id},
+        headers=headers,
+    )
+
+    assert clone_response.status_code == 200, clone_response.text
+    assert clone_response.json()["config"]["display_settings"]["pt3_3d_guides"] == expected_guides
+    target_response = client.get(f"/api/projects/{target_project_id}/configuration", headers=headers)
+    assert target_response.status_code == 200, target_response.text
+    assert target_response.json()["config"]["display_settings"]["pt3_3d_guides"] == expected_guides
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("crosshair_transparency_percent", True),
+        ("crosshair_transparency_percent", "50"),
+        ("crosshair_transparency_percent", 50.0),
+        ("crosshair_transparency_percent", float("nan")),
+        ("crosshair_transparency_percent", -1),
+        ("plane_outline_transparency_percent", 101),
+        ("plane_outline_transparency_percent", float("inf")),
+        ("crosshair_line_width_px", True),
+        ("crosshair_line_width_px", "1.25"),
+        ("crosshair_line_width_px", float("nan")),
+        ("plane_outline_line_width_px", float("inf")),
+        ("crosshair_line_width_px", 0.49),
+        ("plane_outline_line_width_px", 6.01),
+    ],
+)
+def test_project_configuration_rejects_invalid_pt3_3d_guides(
+    client,
+    field_name,
+    invalid_value,
+):
+    project_id, headers = _create_pt3_guide_configuration_project(client, f"invalid-{field_name}")
+    initial_response = client.get(f"/api/projects/{project_id}/configuration", headers=headers)
+    assert initial_response.status_code == 200, initial_response.text
+    config = initial_response.json()["config"]
+    config["display_settings"]["pt3_3d_guides"][field_name] = invalid_value
+    payload = {"config": config}
+
+    if isinstance(invalid_value, float) and not math.isfinite(invalid_value):
+        response = client.put(
+            f"/api/projects/{project_id}/configuration",
+            content=json.dumps(payload),
+            headers={**headers, "Content-Type": "application/json"},
+        )
+    else:
+        response = client.put(
+            f"/api/projects/{project_id}/configuration",
+            json=payload,
+            headers=headers,
+        )
+
+    assert response.status_code == 422, response.text
+    reload_response = client.get(f"/api/projects/{project_id}/configuration", headers=headers)
+    assert reload_response.status_code == 200, reload_response.text
+    assert reload_response.json()["config"]["display_settings"]["pt3_3d_guides"] == {
+        "crosshair_transparency_percent": 50,
+        "crosshair_line_width_px": 1.25,
+        "plane_outline_transparency_percent": 0,
+        "plane_outline_line_width_px": 1.25,
+    }
 
 
 @pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
