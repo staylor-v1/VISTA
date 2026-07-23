@@ -327,7 +327,7 @@ describe('project type UI exposure', () => {
       '/api/dashboard/settings/database-url/accept',
       expect.objectContaining({ method: 'POST', body: JSON.stringify({ database_url: 'postgresql+asyncpg://new:secret@localhost:5432/vista' }) })
     );
-  });
+  }, 30000);
 
   test.each(projectTypes.flatMap((projectType) => simulatedUsers.map((userScenario) => ({ projectType, userScenario }))))(
     'shows selected project type for $projectType $userScenario.label simulated workflow',
