@@ -180,7 +180,7 @@ class TestRequireProxyUser:
 
         assert user.email == "admin@example.com"
 
-    def test_api_key_create_rejected_with_bearer(self, client):
+    def test_api_key_create_rejected_with_bearer(self, client):  # smoke-selected in conftest.py
         """POST /api/api-keys with Bearer token returns 403."""
         resp = client.post(
             "/api/api-keys",
@@ -482,7 +482,7 @@ class TestMeEndpoint:
 class TestApiKeyEndToEnd:
     """Create an API key via proxy auth, then use it as Bearer token."""
 
-    def test_api_key_authenticates_to_me_endpoint(self, client):
+    def test_api_key_authenticates_to_me_endpoint(self, client):  # smoke-selected in conftest.py
         """Full flow: create key, then use it to call /api/users/me."""
         # Step 1: create key (proxy auth in debug mode)
         create_resp = client.post("/api/api-keys", json={"name": "e2e-key"})

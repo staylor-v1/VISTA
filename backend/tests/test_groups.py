@@ -249,6 +249,7 @@ class TestGroupCRUD:
 class TestGroupImageAssignment:
     """Test assigning/removing images from groups."""
 
+    @pytest.mark.smoke
     def test_assign_images(self, client, _setup_project_and_images):
         project_id, img1, img2 = _setup_project_and_images
         group = client.post(

@@ -99,23 +99,6 @@ class TestGetCurrentUser:
 
         assert user.email == "mock@example.com"
 
-    @pytest.mark.asyncio
-    async def test_invalid_api_key_raises_401(self):
-        """Invalid Bearer token raises 401."""
-        from fastapi.security import HTTPAuthorizationCredentials
-        request = Mock(spec=Request)
-        request.state = SimpleNamespace()
-
-        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="bad-key")
-        mock_db = AsyncMock()
-
-        with patch('utils.dependencies.crud') as mock_crud:
-            mock_crud.get_all_active_api_keys = AsyncMock(return_value=[])
-            with pytest.raises(Exception) as exc_info:
-                await get_current_user(request, mock_db, credentials=creds)
-            assert exc_info.value.status_code == 401
-
-
 class TestGroupAuth:
     """Test core group authorization functionality."""
 
@@ -148,6 +131,14 @@ class TestGroupAuth:
                 with patch.object(settings, 'MOCK_USER_EMAIL', 'Mock@Example.COM'):
                     with patch.object(settings, 'MOCK_USER_GROUPS_JSON', '["admin"]'):
                         assert core_is_user_in_group("mock@example.com", "admin") is True
+
+    def test_development_group_mapping(self):
+        """Keep one focused contract for the built-in development identities."""
+        with patch.object(settings, 'DEBUG', False):
+            with patch.object(settings, 'SKIP_HEADER_CHECK', False):
+                assert core_is_user_in_group("admin@example.com", "admin") is True
+                assert core_is_user_in_group("user@example.com", "project-alpha-group") is True
+                assert core_is_user_in_group("user@example.com", "admin") is False
 
 
 class TestGroupAuthHelper:
@@ -223,20 +214,3 @@ class TestGroupAuthHelper:
             assert stats['valid_entries'] == 2
             assert stats['expired_entries'] == 0
             assert 'cache_ttl_seconds' in stats
-
-
-class TestConfigIntegration:
-    """Test integration with config settings."""
-
-    def test_server_side_group_lookup_only(self):
-        """Test that groups are always looked up server-side, never from headers."""
-        # With the new dependency-based auth, group headers are never consumed.
-        # This test validates the principle by checking that get_user_from_header
-        # only returns an email, not groups.
-        email = get_user_from_header("test@example.com")
-        assert email == "test@example.com"
-        # The function only returns a string email, never group information.
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

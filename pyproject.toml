@@ -47,6 +47,9 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
+markers = [
+    "smoke: representative backend user workflows for fast local validation",
+]
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",

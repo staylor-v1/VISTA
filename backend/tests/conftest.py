@@ -29,12 +29,25 @@ from main import app
 from core.database import Base, get_db
 from core.schemas import User
 
+SMOKE_TEST_NODE_SUFFIXES = {
+    "test_unified_auth.py::TestRequireProxyUser::test_api_key_create_rejected_with_bearer",
+    "test_unified_auth.py::TestApiKeyEndToEnd::test_api_key_authenticates_to_me_endpoint",
+}
+
+
+def pytest_collection_modifyitems(items):
+    """Tag focused auth journeys without rewriting the legacy CRLF test module."""
+    for item in items:
+        if any(item.nodeid.endswith(suffix) for suffix in SMOKE_TEST_NODE_SUFFIXES):
+            item.add_marker(pytest.mark.smoke)
+
+
 # Test database setup
 SQLALCHEMY_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 engine = create_async_engine(
     SQLALCHEMY_DATABASE_URL,
-    echo=True,
+    echo=False,
 )
 
 TestingSessionLocal = sessionmaker(

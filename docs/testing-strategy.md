@@ -6,6 +6,7 @@ Vista's tests are organized as a layered, efficient pyramid: deterministic unit 
 
 | Layer | Command | Purpose |
 | --- | --- | --- |
+| Backend smoke | `pytest -q -m smoke` | Runs representative authentication, project, upload, grouping, inspection, analysis, export, and deletion workflows in seconds. |
 | Backend unit and API integration | `pytest -q` | Runs FastAPI router, CRUD, model/schema, cache, security, export, metadata, and analysis toolbox tests. |
 | Frontend unit/component | `cd frontend && CI=true npm run test:unit:ci` | Runs React Testing Library/Jest tests once in-band for deterministic CI behavior. |
 | Frontend end-to-end | `cd frontend && npm run test:e2e` | Runs Playwright workflows against the React app with network mocks. |
@@ -30,6 +31,7 @@ Vista's tests are organized as a layered, efficient pyramid: deterministic unit 
 3. Prefer frontend component tests for user-visible states, form validation, keyboard/pointer interactions, and API failure rendering.
 4. Keep Playwright specs focused on high-value journeys only: project setup, inspection workbench, overlay assignment, upload-to-report flow, and failure recovery that must be validated in a real browser.
 5. Every new bug fix should add the lowest-layer regression test that would have caught it; only add E2E coverage when browser integration is the risk.
+6. Keep the `smoke` marker on representative existing workflows rather than maintaining a duplicate smoke-only implementation.
 
 ## Red-team robustness checklist
 
@@ -41,6 +43,20 @@ Use this checklist when adding or refactoring tests:
 - Rapid repeated clicks, interrupted uploads, stale cache entries, and deleted resources reopened from history.
 - Large metadata payloads, unusual Unicode filenames, duplicate names, and mixed project types.
 - Browser viewport changes, splitter resizing, keyboard-only operation, and focus restoration after modals.
+
+### Backend follow-up risks
+
+The streamlined suite deliberately does not encode the following behaviors as
+accepted contracts. They need production-level decisions before adding
+regression coverage:
+
+- Deletion-audit events currently sort only by descending timestamp, so events
+  with identical timestamps have no deterministic secondary order.
+- Image-deletion reasons accept whitespace-only values because validation
+  checks the untrimmed string length.
+- SQLite test normalization masks database-specific server defaults and nullable
+  restore-deadline behavior; PostgreSQL integration coverage is the appropriate
+  place to pin those contracts.
 
 ## Done criteria for test refactors
 

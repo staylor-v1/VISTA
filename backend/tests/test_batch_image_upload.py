@@ -69,6 +69,7 @@ def _image_bytes(*, image_format="PNG", marker=b""):
     return payload.getvalue() + marker
 
 
+@pytest.mark.smoke
 def test_batch_upload_authorizes_and_commits_once_preserving_client_order_and_groups(
     client,
     monkeypatch,

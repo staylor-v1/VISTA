@@ -1,7 +1,14 @@
+import asyncio
 import io
-import uuid
 import json
+import uuid
+import pytest
 from PIL import Image
+from sqlalchemy import update
+
+from core import models
+from routers import images as images_router
+from tests.conftest import TestingSessionLocal
 
 # Helper to make png bytes
 
@@ -23,91 +30,159 @@ def _upload_image(client, project_id, filename="d.png", metadata=None):
     data = {"metadata": json.dumps(metadata)} if metadata is not None else None
     r = client.post(f"/api/projects/{project_id}/images", files=files, data=data)
     assert r.status_code == 201
-    return r.json()
+    image = r.json()
+
+    async def normalize_sqlite_boolean_default():
+        async with TestingSessionLocal() as session:
+            await session.execute(
+                update(models.DataInstance)
+                .where(models.DataInstance.id == uuid.UUID(image["id"]))
+                .values(storage_deleted=False)
+            )
+            await session.commit()
+
+    asyncio.get_event_loop().run_until_complete(normalize_sqlite_boolean_default())
+    image["storage_deleted"] = False
+    return image
 
 
-def test_soft_delete_and_exclusion_from_default_list(client):
+@pytest.mark.smoke
+def test_soft_delete_list_and_audit_lifecycle(client):
     pid = _create_project(client)
     img = _upload_image(client, pid)
     image_id = img["id"]
 
-    # Delete (soft)
-    del_r = client.request("DELETE", f"/api/projects/{pid}/images/{image_id}", json={"reason": "cleanup test data"})
-    # Endpoint not yet implemented; ensure 404 not raised for placeholder once implemented
-    assert del_r.status_code in (200, 404)  # Relaxed until endpoint added
-    if del_r.status_code == 200:
-        body = del_r.json()
-        # Check that the image has been soft deleted
-        assert body.get("deleted_at") is not None
+    deleted = client.request(
+        "DELETE",
+        f"/api/projects/{pid}/images/{image_id}",
+        json={"reason": "cleanup test data"},
+    )
+    assert deleted.status_code == 200, deleted.text
+    deleted_body = deleted.json()
+    assert deleted_body["deleted_at"] is not None
+    assert deleted_body["pending_hard_delete_at"] is not None
+    assert deleted_body["storage_deleted"] is False
 
-        # List should exclude by default
-        lst = client.get(f"/api/projects/{pid}/images")
-        assert lst.status_code == 200
-        assert all(it["id"] != image_id for it in lst.json())
+    active = client.get(f"/api/projects/{pid}/images")
+    assert active.status_code == 200
+    assert image_id not in {item["id"] for item in active.json()}
 
-        # Include deleted flag (once implemented)
-        lst2 = client.get(f"/api/projects/{pid}/images?include_deleted=true")
-        assert lst2.status_code == 200
-        ids = [i["id"] for i in lst2.json()]
-        assert image_id in ids
+    with_deleted = client.get(f"/api/projects/{pid}/images?include_deleted=true")
+    assert with_deleted.status_code == 200
+    assert image_id in {item["id"] for item in with_deleted.json()}
 
+    events = client.get(
+        f"/api/projects/{pid}/images/deletion-events",
+        params={"image_id": image_id},
+    )
+    assert events.status_code == 200
+    assert [(event["action"], event["reason"]) for event in events.json()["events"]] == [
+        ("soft_delete", "cleanup test data"),
+    ]
 
-def test_delete_requires_reason_min_length(client):
+def test_delete_requires_reason_min_length_and_leaves_image_active(client):
     pid = _create_project(client)
     img = _upload_image(client, pid, filename="r.png")
     image_id = img["id"]
 
-    # Too short reason (expect validation failure once implemented)
-    del_r = client.request("DELETE", f"/api/projects/{pid}/images/{image_id}", json={"reason": "x"})
-    assert del_r.status_code in (400, 422, 404)
+    rejected = client.request(
+        "DELETE",
+        f"/api/projects/{pid}/images/{image_id}",
+        json={"reason": "x"},
+    )
+    assert rejected.status_code == 400
+    assert "Reason must be at least" in rejected.json()["detail"]
+
+    active = client.get(f"/api/projects/{pid}/images")
+    assert active.status_code == 200
+    assert image_id in {item["id"] for item in active.json()}
 
 
-def test_restore_after_soft_delete(client):
+def test_restore_soft_deleted_image_clears_deletion_state(client, monkeypatch):
     pid = _create_project(client)
     img = _upload_image(client, pid, filename="rest.png")
     image_id = img["id"]
+    original_soft_delete = images_router.crud.soft_delete_image
 
-    del_r = client.request("DELETE", f"/api/projects/{pid}/images/{image_id}", json={"reason": "restore check"})
-    assert del_r.status_code in (200, 404)
+    async def soft_delete_without_sqlite_timezone(*args, **kwargs):
+        image = await original_soft_delete(*args, **kwargs)
+        image.pending_hard_delete_at = None
+        await args[0].flush()
+        return image
 
-    if del_r.status_code == 200:
-        # Restore
-        r = client.post(f"/api/projects/{pid}/images/{image_id}/restore")
-        assert r.status_code in (200, 404, 409, 410)  # 409/410 for retention issues
-        if r.status_code == 200:
-            body = r.json()
-            # Check that the image has been restored (deleted_at should be None)
-            assert body.get("deleted_at") is None
-            # Image should appear again in default list
-            lst = client.get(f"/api/projects/{pid}/images")
-            assert any(it["id"] == image_id for it in lst.json())
+    monkeypatch.setattr(
+        images_router.crud,
+        "soft_delete_image",
+        soft_delete_without_sqlite_timezone,
+    )
+
+    deleted = client.request(
+        "DELETE",
+        f"/api/projects/{pid}/images/{image_id}",
+        json={"reason": "restore check"},
+    )
+    assert deleted.status_code == 200, deleted.text
+
+    restored = client.post(f"/api/projects/{pid}/images/{image_id}/restore")
+    assert restored.status_code == 200, restored.text
+    restored_body = restored.json()
+    assert restored_body["deleted_at"] is None
+    assert restored_body["pending_hard_delete_at"] is None
+    assert restored_body["storage_deleted"] is False
+
+    active = client.get(f"/api/projects/{pid}/images")
+    assert active.status_code == 200
+    assert image_id in {item["id"] for item in active.json()}
+
+    events = client.get(
+        f"/api/projects/{pid}/images/deletion-events",
+        params={"image_id": image_id},
+    )
+    assert events.status_code == 200
+    assert {event["action"] for event in events.json()["events"]} == {
+        "soft_delete",
+        "restore",
+    }
 
 
-def test_force_delete_marks_storage_deleted(client):
-    pid = _create_project(client)
-    img = _upload_image(client, pid, filename="force.png")
-    image_id = img["id"]
-
-    del_r = client.request("DELETE", f"/api/projects/{pid}/images/{image_id}", json={"reason": "force rm", "force": True})
-    assert del_r.status_code in (200, 404, 403, 400)
-    if del_r.status_code == 200:
-        body = del_r.json()
-        # storage_deleted flag should be true for force delete
-        assert body.get("storage_deleted") == True
-
-
-def test_deleted_image_cannot_be_restored_after_force(client):
+def test_force_delete_is_permanent_and_audited(client, monkeypatch):
     pid = _create_project(client)
     img = _upload_image(client, pid, filename="f2.png")
     image_id = img["id"]
+    deleted_storage_keys = []
 
-    del_r = client.request("DELETE", f"/api/projects/{pid}/images/{image_id}", json={"reason": "force rm2", "force": True})
-    assert del_r.status_code in (200, 404, 403, 400)
+    def delete_storage_file(bucket_name, object_name):
+        deleted_storage_keys.append((bucket_name, object_name))
+        return True
 
-    if del_r.status_code == 200:
-        r = client.post(f"/api/projects/{pid}/images/{image_id}/restore")
-        # Expect 409 or 400 once logic added; allow 404 for now
-        assert r.status_code in (409, 400, 404)
+    monkeypatch.setattr("routers.images.delete_file_from_s3", delete_storage_file)
+    deleted = client.request(
+        "DELETE",
+        f"/api/projects/{pid}/images/{image_id}",
+        json={"reason": "force rm2", "force": True},
+    )
+    assert deleted.status_code == 200, deleted.text
+    deleted_body = deleted.json()
+    assert deleted_body["storage_deleted"] is True
+    assert deleted_body["hard_deleted_at"] is not None
+    assert deleted_storage_keys == [("test-bucket", img["object_storage_key"])]
+
+    restore = client.post(f"/api/projects/{pid}/images/{image_id}/restore")
+    assert restore.status_code == 409
+    assert restore.json()["detail"] == "Image permanently deleted"
+
+    events = client.get(
+        f"/api/projects/{pid}/images/deletion-events",
+        params={"image_id": image_id},
+    )
+    assert events.status_code == 200
+    assert {
+        (event["action"], event["storage_deleted"])
+        for event in events.json()["events"]
+    } == {
+        ("force_delete", True),
+        ("soft_delete", False),
+    }
 
 
 def test_soft_delete_image_removes_inspection_part_references(client):

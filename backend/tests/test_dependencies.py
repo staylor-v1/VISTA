@@ -25,6 +25,7 @@ def test_generate_and_hash_api_key():
     assert h != key1
 
 
+@pytest.mark.smoke
 def test_server_side_auth_flow(client, monkeypatch):
     # Force production mode with server-side group lookup
     monkeypatch.setattr(settings, "DEBUG", False)

@@ -110,6 +110,7 @@ def test_analyze_input_source_defaults_to_loaded_part_images(client):
     assert payload["images"][0]["slice_index"] == 2
 
 
+@pytest.mark.smoke
 def test_analyze_workflow_validation_and_execution_use_pydantic_contract(client):
     headers, project_id, _image = _create_project_with_part_image(client)
     source_resp = client.get(f"/api/projects/{project_id}/analyze/input-source", headers=headers)

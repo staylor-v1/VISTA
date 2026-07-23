@@ -500,6 +500,7 @@ def test_export_excel_excludes_measurements_metadata(client):
 
 
 @pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
+@pytest.mark.smoke
 def test_project_json_report_supports_three_progressive_users(client, project_type):
     scenarios = [
         {"user": "report-basic", "level": 1, "batch_count": 1, "part_count": 1, "review_state": "unreviewed"},

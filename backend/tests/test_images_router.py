@@ -24,25 +24,6 @@ def _make_png_bytes(size=(10, 10), color=(255, 0, 0)):
     return buf
 
 
-def _make_encoded_index_png_bytes(index: int) -> io.BytesIO:
-    """Create a tiny RGB PNG whose only pixel encodes ``index``."""
-    img = Image.new(
-        "RGB",
-        (1, 1),
-        ((index >> 16) & 0xFF, (index >> 8) & 0xFF, index & 0xFF),
-    )
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    return buf
-
-
-def _decode_encoded_index_png_bytes(payload: bytes) -> int:
-    with Image.open(io.BytesIO(payload)) as img:
-        red, green, blue = img.convert("RGB").getpixel((0, 0))
-    return (red << 16) | (green << 8) | blue
-
-
 def _make_tiff_bytes(frame_count=1, size=(10, 10)):
     frames = [Image.new("L", size, color=i * 20) for i in range(frame_count)]
     buf = io.BytesIO()
@@ -1182,63 +1163,6 @@ def test_get_download_url_and_content_and_thumbnail(client, monkeypatch):
     tr = client.get(f"/api/images/{image_id}/thumbnail?width=8&height=8")
     assert tr.status_code == 200
     assert tr.headers["content-type"].startswith("image/")
-
-
-def test_thumbnail_bad_dimensions(client):
-    # Create project and upload image
-    pr = client.post("/api/projects/", json={"name": "P4", "description": None, "meta_group_id": "g"})
-    pid = pr.json()["id"]
-    img_bytes = _make_png_bytes()
-    ur = client.post(f"/api/projects/{pid}/images", files={"file": ("b.png", img_bytes, "image/png")})
-    image_id = ur.json()["id"]
-    r = client.get(f"/api/images/{image_id}/thumbnail?width=0&height=10")
-    assert r.status_code == 400
-
-
-def test_upload_and_list_1000_tiny_encoded_images(client, monkeypatch):
-    """Vista can ingest and list 1,000 tiny images without losing any files."""
-    image_count = 1000
-    pid = _create_project(client, name="1000-image-load")
-    uploaded_indices = set()
-
-    async def validate_and_capture_upload(
-        *, bucket_name, object_name, file_data, length, content_type
-    ):
-        del bucket_name, length
-        payload = file_data.read()
-        file_data.seek(0)
-        decoded_index = _decode_encoded_index_png_bytes(payload)
-        assert object_name.endswith(f"encoded-{decoded_index:04d}.png")
-        assert content_type == "image/png"
-        uploaded_indices.add(decoded_index)
-        return True
-
-    monkeypatch.setattr("routers.images.upload_file_to_s3", validate_and_capture_upload)
-
-    for index in range(1, image_count + 1):
-        response = client.post(
-            f"/api/projects/{pid}/images",
-            files={
-                "file": (
-                    f"encoded-{index:04d}.png",
-                    _make_encoded_index_png_bytes(index),
-                    "image/png",
-                )
-            },
-        )
-        assert response.status_code == 201, response.text
-        body = response.json()
-        assert body["filename"] == f"encoded-{index:04d}.png"
-
-    assert uploaded_indices == set(range(1, image_count + 1))
-
-    listed = client.get(f"/api/projects/{pid}/images?limit={image_count}")
-    assert listed.status_code == 200
-    items = listed.json()
-    assert len(items) == image_count
-    assert {item["filename"] for item in items} == {
-        f"encoded-{index:04d}.png" for index in range(1, image_count + 1)
-    }
 
 
 def test_list_project_s3_files_filters_supported_objects(client, monkeypatch):

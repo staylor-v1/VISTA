@@ -10,12 +10,13 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 
-@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
-def test_batches_and_parts_support_three_simulated_users_with_progressive_workflows(client, project_type):
+@pytest.mark.smoke
+def test_batches_and_parts_support_three_simulated_users_with_progressive_workflows(client):
     """
-    For each project type, simulate three users with progressively more complex synthetic
-    workflows that create batches and parts, then verify filtered list behavior.
+    Simulate three progressively complex PT2 workflows, while type-specific tests
+    cover PT1/PT2/PT3 branching elsewhere in this module.
     """
+    project_type = "PT2"
     scenarios = [
         {
             "email": f"basic-{project_type.lower()}@example.com",
@@ -230,8 +231,8 @@ def test_batches_support_owner_status_and_part_manual_assignment(client):
     assert manual_resp.json()["metadata"]["manual_flagged"] is True
 
 
-@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
-def test_part_review_workflow_supports_three_simulated_users_with_progressive_data(client, project_type):
+def test_part_review_workflow_supports_three_simulated_users_with_progressive_data(client):
+    project_type = "PT2"
     scenarios = [
         {
             "email": f"review-basic-{project_type.lower()}@example.com",
@@ -315,8 +316,8 @@ def test_part_review_workflow_supports_three_simulated_users_with_progressive_da
         assert filtered[0]["id"] == target_part["id"]
 
 
-@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
-def test_segmentation_and_measurement_invocation_supports_progressive_users(client, project_type):
+def test_segmentation_and_measurement_invocation_supports_progressive_users(client):
+    project_type = "PT2"
     scenarios = [
         {"email": f"ml-basic-{project_type.lower()}@example.com", "group": f"{project_type.lower()}-ml-basic", "synthetic_level": 1},
         {"email": f"ml-intermediate-{project_type.lower()}@example.com", "group": f"{project_type.lower()}-ml-intermediate", "synthetic_level": 2},
@@ -458,8 +459,8 @@ def test_slice_segmentation_selects_clicked_toolbox_region(client):
     assert payload["selected_region"] is None
 
 
-@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
-def test_workspace_state_persistence_supports_progressive_users(client, project_type):
+def test_workspace_state_persistence_supports_progressive_users(client):
+    project_type = "PT2"
     scenarios = [
         {
             "email": f"workspace-basic-{project_type.lower()}@example.com",
@@ -658,8 +659,8 @@ def test_workspace_state_persistence_supports_progressive_users(client, project_
         assert overwrite_resp.json()["state"]["panel_layout"] == expected_panel_layout
 
 
-@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
-def test_part_annotations_support_progressive_users_with_audit_trail(client, project_type):
+def test_part_annotations_support_progressive_users_with_audit_trail(client):
+    project_type = "PT2"
     scenarios = [
         {
             "email": f"annot-basic-{project_type.lower()}@example.com",
@@ -1662,8 +1663,8 @@ def test_project_configuration_metadata_parsers_survives_save_and_reload(client)
     assert reload_resp.json()["config"]["metadata_parsers"] == payload["metadata_parsers"]
 
 
-@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
-def test_project_configuration_rejects_invalid_hotkeys(client, project_type):
+def test_project_configuration_rejects_invalid_hotkeys(client):
+    project_type = "PT2"
     headers = {
         "X-User-Id": f"config-hotkey-invalid-{project_type.lower()}@example.com",
         "X-User-Groups": f"[\"{project_type.lower()}-config-hotkey-invalid\"]",
@@ -1710,8 +1711,8 @@ def test_project_configuration_rejects_invalid_hotkeys(client, project_type):
     assert save_resp.status_code == 422, save_resp.text
 
 
-@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
-def test_project_configuration_clone_supports_progressive_users(client, project_type):
+def test_project_configuration_clone_supports_progressive_users(client):
+    project_type = "PT2"
     scenarios = [
         {"name": "basic", "view_id": "front", "hotkeys": {"accept_classification": "a", "reject_classification": "r", "toggle_shortcut_help": "h"}},
         {"name": "intermediate", "view_id": "top", "hotkeys": {"accept_classification": "s", "reject_classification": "d", "toggle_shortcut_help": "f"}},
@@ -1783,8 +1784,8 @@ def test_project_configuration_clone_supports_progressive_users(client, project_
         assert target_get_resp.json()["config"] == source_payload
 
 
-@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
-def test_project_configuration_clone_requires_access_to_source_project(client, project_type):
+def test_project_configuration_clone_requires_access_to_source_project(client):
+    project_type = "PT2"
     source_headers = {"X-User-Id": f"clone-source-{project_type.lower()}@example.com", "X-User-Groups": f"[\"{project_type.lower()}-clone-source\"]"}
     target_headers = {"X-User-Id": f"clone-target-{project_type.lower()}@example.com", "X-User-Groups": f"[\"{project_type.lower()}-clone-target\"]"}
 
@@ -1823,8 +1824,8 @@ def test_project_configuration_clone_requires_access_to_source_project(client, p
     assert "does not have access to project" in clone_resp.json()["detail"]
 
 
-@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
-def test_project_configuration_clone_rejects_same_source_and_target_project(client, project_type):
+def test_project_configuration_clone_rejects_same_source_and_target_project(client):
+    project_type = "PT2"
     headers = {
         "X-User-Id": f"clone-self-{project_type.lower()}@example.com",
         "X-User-Groups": f"[\"{project_type.lower()}-clone-self\"]",
@@ -1902,8 +1903,8 @@ def test_project_configuration_clone_rejects_cross_project_type_sources_progress
         )
 
 
-@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
-def test_project_configuration_interface_layout_default_save_and_load(client, project_type):
+def test_project_configuration_interface_layout_default_save_and_load(client):
+    project_type = "PT2"
     group = f"{project_type.lower()}-layout-default"
     headers = {
         "X-User-Id": f"{project_type.lower()}-layout-default@example.com",

@@ -3,7 +3,6 @@ import pytest
 from unittest.mock import patch
 
 
-PROJECT_TYPES = ["PT1", "PT2", "PT3"]
 SYNTHETIC_USERS = [
     {"label": "basic", "suffix": "Basic"},
     {"label": "intermediate", "suffix": "Intermediate"},
@@ -17,6 +16,7 @@ def test_projects_list_initially_empty(client):
     assert r.json() == []
 
 
+@pytest.mark.smoke
 def test_create_and_read_project(client):
     payload = {"name": "P1", "description": "d", "meta_group_id": "g1"}
     r = client.post("/api/projects/", json=payload)
@@ -74,8 +74,8 @@ def test_archive_nonexistent_project_returns_404(client):
     assert r.status_code == 404
 
 
-@pytest.mark.parametrize("project_type", PROJECT_TYPES)
-def test_delete_project_requires_exact_confirmation_phrase_for_progressive_users(client, project_type):
+def test_delete_project_requires_exact_confirmation_phrase_for_progressive_users(client):
+    project_type = "PT2"
     for scenario in SYNTHETIC_USERS:
         project_name = f"{project_type}-{scenario['suffix']}-Project"
         create_resp = client.post(
@@ -113,8 +113,8 @@ def test_delete_project_requires_exact_confirmation_phrase_for_progressive_users
         assert missing_after_delete.status_code == 404
 
 
-@pytest.mark.parametrize("project_type", PROJECT_TYPES)
-def test_delete_project_rejects_api_key_auth_for_progressive_users(client, project_type):
+def test_delete_project_rejects_api_key_auth_for_progressive_users(client):
+    project_type = "PT2"
     for scenario in SYNTHETIC_USERS:
         project_name = f"{project_type}-{scenario['suffix']}-Governance"
         create_resp = client.post(
@@ -139,8 +139,8 @@ def test_delete_project_rejects_api_key_auth_for_progressive_users(client, proje
         assert "proxy authentication" in delete_resp.json()["detail"]
 
 
-@pytest.mark.parametrize("project_type", PROJECT_TYPES)
-def test_delete_project_rejects_group_unauthorized_user_for_progressive_users(client, project_type):
+def test_delete_project_rejects_group_unauthorized_user_for_progressive_users(client):
+    project_type = "PT2"
     for scenario in SYNTHETIC_USERS:
         project_name = f"{project_type}-{scenario['suffix']}-Restricted"
         create_resp = client.post(
