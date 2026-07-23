@@ -18,6 +18,16 @@ import ImageGroupPanel from './components/ImageGroupPanel';
 import { loadGalleryState, loadGalleryStateFromUrl, hasGalleryQueryParams, applyGalleryFilters, sortImages, preserveGalleryQueryParams } from './utils/galleryState';
 import { copyCurrentShareUrl } from './utils/shareLink';
 
+function getImageMeasurements(imageData) {
+  const metadataMeasurements = imageData?.metadata?.measurements;
+  if (Array.isArray(metadataMeasurements)) return metadataMeasurements;
+
+  const legacyMetadataMeasurements = imageData?.metadata_?.measurements;
+  if (Array.isArray(legacyMetadataMeasurements)) return legacyMetadataMeasurements;
+
+  return [];
+}
+
 function ImageView() {
   const { imageId } = useParams();
   const [searchParams] = useSearchParams();
@@ -131,11 +141,17 @@ function ImageView() {
         }
         
         setImage(imageData);
+        const imageMeasurements = getImageMeasurements(imageData);
+        setMeasurements(imageMeasurements);
+        setVisibleMeasurementIds(imageMeasurements.length > 0 ? imageMeasurements.map(m => m.id) : null);
         // Update document title
         document.title = `${imageData.filename || 'Image'} - Image Manager`;
       } else {
         const imageData = await response.json();
         setImage(imageData);
+        const imageMeasurements = getImageMeasurements(imageData);
+        setMeasurements(imageMeasurements);
+        setVisibleMeasurementIds(imageMeasurements.length > 0 ? imageMeasurements.map(m => m.id) : null);
         // Update document title
         document.title = `${imageData.filename || 'Image'} - Image Manager`;
       }
@@ -372,17 +388,10 @@ function ImageView() {
 
   // Load measurements when image changes (syncs state with image metadata)
   useEffect(() => {
-    // Check both metadata and metadata_ for compatibility
-    const metadata = image?.metadata || image?.metadata_;
+    const imageMeasurements = getImageMeasurements(image);
 
-    if (metadata?.measurements) {
-      setMeasurements(metadata.measurements);
-      const ids = metadata.measurements.map(m => m.id);
-      setVisibleMeasurementIds(ids);
-    } else {
-      setMeasurements([]);
-      setVisibleMeasurementIds(null);
-    }
+    setMeasurements(imageMeasurements);
+    setVisibleMeasurementIds(imageMeasurements.length > 0 ? imageMeasurements.map(m => m.id) : null);
   }, [imageId, image]);
 
   // Save overlay options to localStorage when they change
