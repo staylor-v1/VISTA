@@ -2,6 +2,7 @@ import asyncio
 import copy
 import uuid
 import json
+import hashlib
 import mimetypes
 import re
 import base64
@@ -61,6 +62,15 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
 from backend.analyze_toolbox import WorkflowGraph, WorkflowImageInput, execute_image_workflow
+from backend.metadata.nsipro_fields import (
+    NsiproField,
+    NsiproFieldError,
+    NsiproFieldLimitError,
+    NsiproMetadataSource,
+    collect_active_nsipro_source_refs,
+    collect_indexable_nsipro_sources,
+    flatten_nsipro_metadata,
+)
 from backend.metadata.nsipro_parsers import get_nsipro_parser, parse_nsipro_text
 
 
@@ -70,6 +80,8 @@ WORKSPACE_STATE_KEY_PREFIX = "inspection_workbench.workspace_state"
 PROJECT_CONFIGURATION_KEY = "inspection_workbench.project_configuration"
 PROJECT_TYPE_INTERFACE_LAYOUT_KEY_PREFIX = "inspection_workbench.project_type_interface_layout_default"
 ANNOTATIONS_METADATA_KEY = "annotations"
+MAX_NSIPRO_FIELD_ROWS_PER_PART = 20_000
+MAX_NSIPRO_FIELD_ROWS_PER_INGEST = 1_000_000
 WORKSPACE_PANEL_LAYOUT_DEFAULTS = {
     "part_list": {
         "is_open": True,
@@ -1477,6 +1489,94 @@ def _dict_or_empty(candidate: object) -> dict:
     return candidate if isinstance(candidate, dict) else {}
 
 
+def _metadata_field_values_for_sources(
+    sources: list[NsiproMetadataSource],
+    *,
+    field_cache: dict[tuple[str, str], list[NsiproField]],
+) -> list[dict]:
+    """Build ORM-ready values while flattening shared source payloads once."""
+
+    values: list[dict] = []
+    for source in sources:
+        if len(source.source_ref) > 255:
+            raise NsiproFieldLimitError(
+                ".nsipro metadata source reference exceeds the 255-character limit"
+            )
+        if source.source_filename and len(source.source_filename) > 1024:
+            raise NsiproFieldLimitError(
+                ".nsipro metadata source filename exceeds the 1024-character limit"
+            )
+
+        try:
+            serialized_metadata = json.dumps(
+                source.metadata,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+            metadata_fingerprint = hashlib.sha256(
+                serialized_metadata.encode("utf-8")
+            ).hexdigest()
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            # Let the flattener produce the domain-specific validation error.
+            # Invalid trees are not shared through the cache.
+            metadata_fingerprint = f"invalid:{id(source.metadata)}"
+
+        cache_key = (source.source_ref, metadata_fingerprint)
+        fields = field_cache.get(cache_key)
+        if fields is None:
+            fields = flatten_nsipro_metadata(source.metadata)
+            field_cache[cache_key] = fields
+
+        if len(values) + len(fields) > MAX_NSIPRO_FIELD_ROWS_PER_PART:
+            raise NsiproFieldLimitError(
+                ".nsipro metadata exceeds the aggregate field-row limit "
+                f"of {MAX_NSIPRO_FIELD_ROWS_PER_PART} for one part"
+            )
+        values.extend(
+            {
+                "source_ref": source.source_ref,
+                "source_filename": source.source_filename,
+                "field_path": field.field_path,
+                "field_path_hash": field.field_path_hash,
+                "field_name": field.field_name,
+                "ordinal": field.ordinal,
+                "value_type": field.value_type,
+                "value_json": field.value_json,
+                "value_text": field.value_text,
+                "value_text_hash": field.value_text_hash,
+                "value_number": field.value_number,
+                "value_boolean": field.value_boolean,
+            }
+            for field in fields
+        )
+    return values
+
+
+def _has_explicit_nsipro_metadata_sync_intent(metadata: object) -> bool:
+    """Return whether an ingest payload explicitly supplies ``nsipro_*`` data."""
+
+    if not isinstance(metadata, dict):
+        return False
+    nsipro_keys = {
+        "nsipro_metadata",
+        "nsipro_metadata_sources",
+        "nsipro_payload",
+        "nsipro_payload_ref",
+        "nsipro_payloads_by_ref",
+    }
+    if nsipro_keys.intersection(metadata):
+        return True
+    source_images = metadata.get("source_images")
+    if not isinstance(source_images, list):
+        return False
+    return any(
+        isinstance(source_image, dict)
+        and bool(nsipro_keys.intersection(source_image))
+        for source_image in source_images
+    )
+
+
 def _resolve_configured_nsipro_parser(project_config: dict):
     nsipro_config = _dict_or_empty(_dict_or_empty(project_config.get("metadata_parsers")).get("nsipro"))
     parser = get_nsipro_parser(nsipro_config.get("parser_id"))
@@ -1906,6 +2006,91 @@ def _merge_existing_part_ingest_metadata(existing_metadata: object, incoming_met
     return patch
 
 
+def _synchronize_authoritative_nsipro_payloads(
+    metadata: object,
+    *,
+    authoritative_payloads_by_ref: dict[str, dict],
+) -> dict:
+    """Refresh active canonical payload snapshots before deriving field rows."""
+
+    current = metadata if isinstance(metadata, dict) else {}
+    active_refs = collect_active_nsipro_source_refs(current)
+    canonical_refs = [
+        source_ref
+        for source_ref in active_refs
+        if source_ref in authoritative_payloads_by_ref
+    ]
+    if not canonical_refs:
+        return current
+
+    synchronized = {**current}
+    primary_ref = str(current.get("nsipro_payload_ref") or "").strip()
+    metadata_sources = current.get("nsipro_metadata_sources")
+    if primary_ref and primary_ref in authoritative_payloads_by_ref:
+        primary_payload = authoritative_payloads_by_ref[primary_ref]
+        synchronized["nsipro_payload"] = primary_payload
+        synchronized["nsipro_metadata"] = primary_payload.get("metadata", {})
+
+        metadata_source_refs = {
+            str(source.get("key") or source.get("project_metadata_key") or "").strip()
+            for source in metadata_sources
+            if isinstance(source, dict)
+        } if isinstance(metadata_sources, list) else set()
+        additional_payloads = {
+            str(source_ref): payload
+            for source_ref, payload in _dict_or_empty(
+                current.get("nsipro_payloads_by_ref")
+            ).items()
+            if (
+                str(source_ref) != primary_ref
+                and str(source_ref) in active_refs
+                and str(source_ref) not in metadata_source_refs
+                and isinstance(payload, dict)
+            )
+        }
+        additional_payloads.update(
+            {
+                source_ref: authoritative_payloads_by_ref[source_ref]
+                for source_ref in canonical_refs
+                if (
+                    source_ref != primary_ref
+                    and source_ref not in metadata_source_refs
+                )
+            }
+        )
+        if additional_payloads:
+            synchronized["nsipro_payloads_by_ref"] = additional_payloads
+        else:
+            synchronized.pop("nsipro_payloads_by_ref", None)
+
+    if isinstance(metadata_sources, list):
+        synchronized_sources = []
+        for source in metadata_sources:
+            if not isinstance(source, dict):
+                synchronized_sources.append(source)
+                continue
+            source_ref = str(
+                source.get("key") or source.get("project_metadata_key") or ""
+            ).strip()
+            canonical_payload = authoritative_payloads_by_ref.get(source_ref)
+            synchronized_sources.append(
+                {**source, **canonical_payload}
+                if isinstance(canonical_payload, dict)
+                else source
+            )
+        synchronized["nsipro_metadata_sources"] = synchronized_sources
+        if not primary_ref:
+            synchronized["nsipro_metadata"] = _combine_metadata_source_values(
+                [
+                    source
+                    for source in synchronized_sources
+                    if isinstance(source, dict)
+                ]
+            )
+
+    return synchronized
+
+
 def _collect_ingest_metadata_reference_keys(payload: schemas.InspectionBulkIngestPayload) -> list[str]:
     """Collect every project-metadata reference used by a bulk ingest request."""
 
@@ -1975,10 +2160,23 @@ async def _bulk_ingest_project_parts(
             payload=payload,
         )
         nsipro_payload_by_ref: dict[str, dict] = {}
+        parts_needing_metadata_field_sync: dict[uuid.UUID, models.InspectionPart] = {}
 
         existing_batches = await crud.list_inspection_batches(db=db, project_id=project_id)
         batches_by_name = {batch.name: batch for batch in existing_batches}
-        existing_parts = await crud.list_inspection_parts(db=db, project_id=project_id)
+        payload_parts = [
+            part
+            for batch in payload.batches
+            for part in batch.parts
+        ]
+        payload_parts.extend(payload.unassigned_parts)
+        existing_parts = (
+            await crud.list_inspection_parts_for_update_by_serial_numbers(
+                db=db,
+                project_id=project_id,
+                serial_numbers=[part.serial_number for part in payload_parts],
+            )
+        )
         parts_by_serial = {part.serial_number: part for part in existing_parts}
 
         async def ingest_parts(
@@ -2015,6 +2213,11 @@ async def _bulk_ingest_project_parts(
                             }
                         )
                         continue
+                    metadata_field_sync_requested = (
+                        _has_explicit_nsipro_metadata_sync_intent(
+                            ingest_part.metadata_json
+                        )
+                    )
                     normalized_existing_metadata = await _normalize_ingest_part_metadata(
                         db=db,
                         project_id=project_id,
@@ -2026,6 +2229,11 @@ async def _bulk_ingest_project_parts(
                         project_metadata_by_key=project_metadata_by_key,
                         nsipro_payload_by_ref=nsipro_payload_by_ref,
                     )
+                    if collect_indexable_nsipro_sources(
+                        normalized_existing_metadata,
+                        authoritative_payloads_by_ref=nsipro_payload_by_ref,
+                    ):
+                        metadata_field_sync_requested = True
                     if isinstance(normalized_existing_metadata, dict):
                         metadata_patch = _merge_existing_part_ingest_metadata(existing_part.metadata_json, normalized_existing_metadata)
                         if metadata_patch:
@@ -2043,6 +2251,11 @@ async def _bulk_ingest_project_parts(
                                 **current_metadata,
                                 **metadata_patch,
                             }
+                    if metadata_field_sync_requested:
+                        # Rebuild from post-merge metadata. This also deletes
+                        # stale derived rows when an ingest explicitly clears
+                        # its .nsipro association.
+                        parts_needing_metadata_field_sync[existing_part.id] = existing_part
                     counters["parts_skipped_existing"] += 1
                     continue
 
@@ -2070,7 +2283,11 @@ async def _bulk_ingest_project_parts(
                     created_by=current_user.email,
                     commit=False,
                 )
+                if created_part.id is None:
+                    created_part.id = uuid.uuid4()
                 parts_by_serial[serial_number] = created_part
+                if collect_active_nsipro_source_refs(normalized_metadata):
+                    parts_needing_metadata_field_sync[created_part.id] = created_part
                 counters["parts_created"] += 1
 
         resolved_ingest_batches: list[
@@ -2112,8 +2329,92 @@ async def _bulk_ingest_project_parts(
             ingest_batch_name=None,
             target_batch_id=None,
         )
+        active_source_refs_by_part = {
+            part_id: collect_active_nsipro_source_refs(part.metadata_json)
+            for part_id, part in parts_needing_metadata_field_sync.items()
+        }
+        active_source_refs = {
+            source_ref
+            for source_refs in active_source_refs_by_part.values()
+            for source_ref in source_refs
+        }
+        missing_source_refs = sorted(
+            active_source_refs.difference(project_metadata_by_key)
+        )
+        if missing_source_refs:
+            result = await db.execute(
+                select(models.ProjectMetadata).where(
+                    models.ProjectMetadata.project_id == project_id,
+                    models.ProjectMetadata.key.in_(missing_source_refs),
+                )
+            )
+            project_metadata_by_key.update(
+                {
+                    metadata.key: metadata
+                    for metadata in result.scalars().all()
+                }
+            )
+        for source_ref in sorted(active_source_refs):
+            if source_ref in nsipro_payload_by_ref:
+                continue
+            project_metadata = project_metadata_by_key.get(source_ref)
+            bundle = (
+                project_metadata.value
+                if project_metadata and isinstance(project_metadata.value, dict)
+                else None
+            )
+            if not bundle:
+                continue
+            canonical_payload = _normalize_nsipro_bundle_payload(
+                bundle=bundle,
+                reference={"project_metadata_key": source_ref},
+                configured_parser=configured_parser,
+                expected_version=expected_version,
+                expected_hash=expected_hash,
+                strict=strict_parser_match,
+            )
+            if canonical_payload:
+                nsipro_payload_by_ref[source_ref] = canonical_payload
+
+        for part in parts_needing_metadata_field_sync.values():
+            synchronized_metadata = _synchronize_authoritative_nsipro_payloads(
+                part.metadata_json,
+                authoritative_payloads_by_ref=nsipro_payload_by_ref,
+            )
+            if synchronized_metadata is not part.metadata_json:
+                part.metadata_json = synchronized_metadata
+
+        metadata_field_cache: dict[tuple[str, str], list[NsiproField]] = {}
+        fields_by_part: dict[uuid.UUID, list[dict]] = {}
+        total_metadata_field_rows = 0
+        for part_id, part in parts_needing_metadata_field_sync.items():
+            field_values = _metadata_field_values_for_sources(
+                collect_indexable_nsipro_sources(
+                    part.metadata_json,
+                    authoritative_payloads_by_ref=nsipro_payload_by_ref,
+                ),
+                field_cache=metadata_field_cache,
+            )
+            total_metadata_field_rows += len(field_values)
+            if total_metadata_field_rows > MAX_NSIPRO_FIELD_ROWS_PER_INGEST:
+                raise NsiproFieldLimitError(
+                    ".nsipro metadata exceeds the aggregate field-row limit "
+                    f"of {MAX_NSIPRO_FIELD_ROWS_PER_INGEST} for one ingest"
+                )
+            fields_by_part[part_id] = field_values
+        await crud.replace_inspection_part_metadata_fields(
+            db=db,
+            project_id=project_id,
+            fields_by_part=fields_by_part,
+        )
         await db.flush()
         await db.commit()
+    except NsiproFieldError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
     except Exception:
         await db.rollback()
         raise
@@ -2314,10 +2615,13 @@ async def update_inspection_part_metadata_sources(
     source_refs: list[dict] = []
     source_payloads: list[dict] = []
     nsipro_sources: list[dict] = []
+    project_metadata_by_key: dict[str, models.ProjectMetadata] = {}
+    authoritative_payloads_by_ref: dict[str, dict] = {}
     for key in payload.metadata_source_keys:
         project_metadata = await crud.get_project_metadata_by_key(db=db, project_id=project_id, key=key)
         if project_metadata is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Metadata source '{key}' not found")
+        project_metadata_by_key[key] = project_metadata
         value = project_metadata.value if isinstance(project_metadata.value, dict) else {"value": project_metadata.value}
         reference = {"project_metadata_key": key, "key": key}
         nsipro_payload = _normalize_nsipro_bundle_payload(
@@ -2346,6 +2650,7 @@ async def update_inspection_part_metadata_sources(
         })
         if nsipro_payload:
             nsipro_sources.append({"key": key, **nsipro_payload})
+            authoritative_payloads_by_ref[key] = nsipro_payload
 
     current_metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
     metadata_patch = {
@@ -2363,15 +2668,93 @@ async def update_inspection_part_metadata_sources(
         metadata_patch["associated_metadata_ref"] = None
         metadata_patch["associated_metadata"] = None
 
-    updated = await crud.update_inspection_part_metadata(
-        db=db,
-        project_id=project_id,
-        part_id=part_id,
-        metadata_patch=metadata_patch,
-        updated_by=current_user.email,
+    post_patch_metadata = {**current_metadata, **metadata_patch}
+    for source_ref in collect_active_nsipro_source_refs(post_patch_metadata):
+        if source_ref in authoritative_payloads_by_ref:
+            continue
+        project_metadata = project_metadata_by_key.get(source_ref)
+        if project_metadata is None:
+            project_metadata = await crud.get_project_metadata_by_key(
+                db=db,
+                project_id=project_id,
+                key=source_ref,
+            )
+        if project_metadata is None or not isinstance(project_metadata.value, dict):
+            continue
+        nsipro_payload = _normalize_nsipro_bundle_payload(
+            bundle=project_metadata.value,
+            reference={"project_metadata_key": source_ref, "key": source_ref},
+            configured_parser=parser,
+            expected_version=expected_version,
+            expected_hash=expected_hash,
+            strict=strict_parser_match,
+        )
+        if nsipro_payload:
+            authoritative_payloads_by_ref[source_ref] = nsipro_payload
+
+    synchronized_metadata = _synchronize_authoritative_nsipro_payloads(
+        post_patch_metadata,
+        authoritative_payloads_by_ref=authoritative_payloads_by_ref,
     )
-    if not updated:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
+    metadata_patch = {
+        key: value
+        for key, value in synchronized_metadata.items()
+        if key not in current_metadata or current_metadata[key] != value
+    }
+    if (
+        "nsipro_payloads_by_ref" in current_metadata
+        and "nsipro_payloads_by_ref" not in synchronized_metadata
+    ):
+        metadata_patch["nsipro_payloads_by_ref"] = {}
+    index_sources = collect_indexable_nsipro_sources(
+        synchronized_metadata,
+        authoritative_payloads_by_ref=authoritative_payloads_by_ref,
+    )
+    try:
+        field_values = _metadata_field_values_for_sources(
+            index_sources,
+            field_cache={},
+        )
+        updated = await crud.update_inspection_part_metadata(
+            db=db,
+            project_id=project_id,
+            part_id=part_id,
+            metadata_patch=metadata_patch,
+            updated_by=current_user.email,
+            commit=False,
+        )
+        if not updated:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Inspection part not found",
+            )
+        await crud.replace_inspection_part_metadata_fields(
+            db=db,
+            project_id=project_id,
+            fields_by_part={part_id: field_values},
+        )
+        await db.commit()
+        await db.refresh(updated)
+    except NsiproFieldError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except Exception:
+        await db.rollback()
+        raise
+
+    crud.log_db_operation(
+        "UPDATE",
+        "inspection_parts",
+        updated.id,
+        current_user.email,
+        {
+            "project_id": str(project_id),
+            "metadata_keys": sorted(metadata_patch),
+        },
+    )
     return _serialize_inspection_part(updated)
 
 

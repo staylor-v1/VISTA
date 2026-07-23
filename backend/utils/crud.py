@@ -479,6 +479,45 @@ async def create_inspection_part(
     return db_part
 
 
+async def replace_inspection_part_metadata_fields(
+    db: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    fields_by_part: Dict[uuid.UUID, List[Dict[str, Any]]],
+) -> None:
+    """Replace derived metadata-field rows for several parts in one transaction.
+
+    The caller owns the surrounding transaction. An empty list is meaningful:
+    it clears all indexed fields for that part.
+    """
+
+    part_ids = list(fields_by_part)
+    if not part_ids:
+        return
+
+    delete_statement = (
+        delete(models.InspectionPartMetadataField)
+        .where(
+            models.InspectionPartMetadataField.project_id == project_id,
+            models.InspectionPartMetadataField.part_id.in_(part_ids),
+        )
+        .execution_options(synchronize_session=False, autoflush=False)
+    )
+    await db.execute(delete_statement)
+
+    field_rows = [
+        models.InspectionPartMetadataField(
+            project_id=project_id,
+            part_id=part_id,
+            **field_values,
+        )
+        for part_id, part_fields in fields_by_part.items()
+        for field_values in part_fields
+    ]
+    if field_rows:
+        db.add_all(field_rows)
+
+
 async def list_inspection_parts(
     db: AsyncSession,
     project_id: uuid.UUID,
@@ -495,6 +534,40 @@ async def list_inspection_parts(
     if review_state:
         query = query.where(models.InspectionPart.review_state == review_state)
 
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
+async def list_inspection_parts_for_update_by_serial_numbers(
+    db: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    serial_numbers: List[str],
+) -> List[models.InspectionPart]:
+    """Lock selected parts in deterministic order for transactional ingest."""
+
+    normalized_serial_numbers = sorted(
+        {
+            str(serial_number).strip()
+            for serial_number in serial_numbers
+            if str(serial_number).strip()
+        }
+    )
+    if not normalized_serial_numbers:
+        return []
+
+    query = (
+        select(models.InspectionPart)
+        .where(
+            models.InspectionPart.project_id == project_id,
+            models.InspectionPart.serial_number.in_(normalized_serial_numbers),
+        )
+        .order_by(
+            models.InspectionPart.serial_number.asc(),
+            models.InspectionPart.id.asc(),
+        )
+        .with_for_update()
+    )
     result = await db.execute(query)
     return result.scalars().all()
 

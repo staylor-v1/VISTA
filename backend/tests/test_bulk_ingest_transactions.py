@@ -1,12 +1,17 @@
+import hashlib
 import json
-from unittest.mock import patch
+import uuid
+from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import event, func, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import models, schemas
+from backend.metadata.nsipro_fields import NsiproFieldLimitError, NsiproMetadataSource
 import routers.inspection_workbench as inspection_workbench
 from routers.inspection_workbench import _bulk_ingest_project_parts, _merge_existing_part_ingest_metadata
 import utils.crud as crud
@@ -33,6 +38,106 @@ def _test_user() -> schemas.User:
 async def _project_row_count(db: AsyncSession, model, project_id) -> int:
     result = await db.execute(select(func.count()).select_from(model).where(model.project_id == project_id))
     return result.scalar_one()
+
+
+def _sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_bulk_existing_part_lookup_uses_deterministic_row_locks():
+    db = AsyncMock(spec=AsyncSession)
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = []
+    db.execute.return_value = result
+
+    await crud.list_inspection_parts_for_update_by_serial_numbers(
+        db=db,
+        project_id=uuid.uuid4(),
+        serial_numbers=["SN-B", "SN-A"],
+    )
+
+    statement = db.execute.await_args.args[0]
+    sql = " ".join(
+        str(statement.compile(dialect=postgresql.dialect())).split()
+    )
+    assert "FOR UPDATE" in sql
+    assert (
+        "ORDER BY inspection_parts.serial_number ASC, "
+        "inspection_parts.id ASC"
+    ) in sql
+
+
+def test_metadata_field_cache_distinguishes_changed_content_for_one_source_ref():
+    source_ref = "associated_upload_metadata:mutable.nsipro"
+    cache = {}
+
+    first = inspection_workbench._metadata_field_values_for_sources(
+        [
+            NsiproMetadataSource(
+                source_ref=source_ref,
+                source_filename="mutable.nsipro",
+                metadata={"capture": {"operator": "alice"}},
+            )
+        ],
+        field_cache=cache,
+    )
+    second = inspection_workbench._metadata_field_values_for_sources(
+        [
+            NsiproMetadataSource(
+                source_ref=source_ref,
+                source_filename="mutable.nsipro",
+                metadata={"capture": {"operator": "bob"}},
+            )
+        ],
+        field_cache=cache,
+    )
+
+    assert first[0]["value_text"] == "alice"
+    assert second[0]["value_text"] == "bob"
+    assert len(cache) == 2
+
+
+def test_metadata_field_values_enforce_per_part_aggregate_limit():
+    source = NsiproMetadataSource(
+        source_ref="associated_upload_metadata:bounded.nsipro",
+        source_filename="bounded.nsipro",
+        metadata={"first": 1, "second": 2},
+    )
+
+    with (
+        patch.object(
+            inspection_workbench,
+            "MAX_NSIPRO_FIELD_ROWS_PER_PART",
+            1,
+        ),
+        pytest.raises(NsiproFieldLimitError, match="for one part"),
+    ):
+        inspection_workbench._metadata_field_values_for_sources(
+            [source],
+            field_cache={},
+        )
+
+
+def test_metadata_field_cache_defers_deep_tree_errors_to_iterative_flattener():
+    metadata = {}
+    cursor = metadata
+    for _ in range(1_100):
+        child = {}
+        cursor["nested"] = child
+        cursor = child
+
+    with pytest.raises(NsiproFieldLimitError, match="maximum depth"):
+        inspection_workbench._metadata_field_values_for_sources(
+            [
+                NsiproMetadataSource(
+                    source_ref="associated_upload_metadata:deep.nsipro",
+                    source_filename="deep.nsipro",
+                    metadata=metadata,
+                )
+            ],
+            field_cache={},
+        )
 
 
 def test_source_image_merge_keeps_different_ids_with_the_same_filename_distinct():
@@ -191,6 +296,14 @@ async def test_bulk_ingest_commits_two_thousand_parts_once(db_session: AsyncSess
     }
     assert await _project_row_count(db_session, models.InspectionBatch, project.id) == 2
     assert await _project_row_count(db_session, models.InspectionPart, project.id) == 2000
+    assert (
+        await _project_row_count(
+            db_session,
+            models.InspectionPartMetadataField,
+            project.id,
+        )
+        == 0
+    )
 
 
 @pytest.mark.asyncio
@@ -391,6 +504,65 @@ async def test_bulk_ingest_stores_one_shared_payload_for_two_thousand_source_ref
 
 
 @pytest.mark.asyncio
+async def test_bulk_ingest_flattens_one_shared_source_once_for_two_thousand_parts(
+    db_session: AsyncSession,
+):
+    project = await _create_project(db_session, name="bulk-shared-field-template")
+    metadata_key = "associated_upload_metadata:shared-fields.nsipro"
+    db_session.add(
+        models.ProjectMetadata(
+            project_id=project.id,
+            key=metadata_key,
+            value={
+                "file_type": "nsipro",
+                "source_filename": "shared-fields.nsipro",
+                "metadata": {"capture": {"operator": "shared"}},
+            },
+        )
+    )
+    await db_session.commit()
+    payload = schemas.InspectionBulkIngestPayload(
+        unassigned_parts=[
+            schemas.InspectionIngestPartRecord(
+                serial_number=f"SN-SHARED-FIELDS-{index:04d}",
+                metadata={"associated_metadata_ref": metadata_key},
+            )
+            for index in range(2_000)
+        ]
+    )
+
+    with (
+        patch.object(
+            inspection_workbench,
+            "flatten_nsipro_metadata",
+            wraps=inspection_workbench.flatten_nsipro_metadata,
+        ) as flatten_spy,
+        patch.object(db_session, "flush", wraps=db_session.flush) as flush_spy,
+        patch.object(db_session, "commit", wraps=db_session.commit) as commit_spy,
+    ):
+        result = await _bulk_ingest_project_parts(
+            project_id=project.id,
+            payload=payload,
+            db=db_session,
+            current_user=_test_user(),
+            project_type=project.project_type,
+        )
+
+    assert result["counters"]["parts_created"] == 2_000
+    assert flatten_spy.call_count == 1
+    assert flush_spy.await_count == 1
+    assert commit_spy.await_count == 1
+    assert (
+        await _project_row_count(
+            db_session,
+            models.InspectionPartMetadataField,
+            project.id,
+        )
+        == 2_000
+    )
+
+
+@pytest.mark.asyncio
 async def test_bulk_ingest_stores_each_distinct_nsipro_reference_once(db_session: AsyncSession):
     project = await _create_project(db_session, name="bulk-distinct-metadata-references")
     primary_key = "associated_upload_metadata:primary.nsipro"
@@ -479,6 +651,23 @@ async def test_bulk_ingest_stores_each_distinct_nsipro_reference_once(db_session
     compact_json = json.dumps(metadata, separators=(",", ":"))
     assert compact_json.count(primary_warning) == 1
     assert compact_json.count(secondary_warning) == 1
+    field_rows = (
+        await db_session.execute(
+            select(models.InspectionPartMetadataField)
+            .where(models.InspectionPartMetadataField.part_id == stored_part.id)
+            .order_by(
+                models.InspectionPartMetadataField.source_ref,
+                models.InspectionPartMetadataField.ordinal,
+            )
+        )
+    ).scalars().all()
+    assert [
+        (field.source_ref, field.field_path, field.value_text)
+        for field in field_rows
+    ] == [
+        (primary_key, "/capture/operator", "primary"),
+        (secondary_key, "/capture/operator", "secondary"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -550,6 +739,75 @@ async def test_bulk_ingest_preserves_stored_legacy_inline_source_payload(db_sess
     assert existing.metadata_json["nsipro_payload"]["metadata"] == {
         "capture": {"operator": "canonical"}
     }
+    indexed_fields = (
+        await db_session.execute(
+            select(models.InspectionPartMetadataField).where(
+                models.InspectionPartMetadataField.part_id == existing.id
+            )
+        )
+    ).scalars().all()
+    assert [
+        (field.source_ref, field.field_path, field.value_text)
+        for field in indexed_fields
+    ] == [
+        (metadata_key, "/capture/operator", "canonical"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_bulk_ingest_does_not_index_unresolved_caller_supplied_payloads(
+    db_session: AsyncSession,
+):
+    project = await _create_project(db_session, name="bulk-untrusted-inline")
+    caller_ref = "associated_upload_metadata:caller-only.nsipro"
+    payload = schemas.InspectionBulkIngestPayload(
+        unassigned_parts=[
+            schemas.InspectionIngestPartRecord(
+                serial_number="SN-UNTRUSTED-INLINE",
+                metadata={
+                    "nsipro_payload_ref": caller_ref,
+                    "nsipro_payload": {
+                        "source_filename": "caller-only.nsipro",
+                        "metadata": {"capture": {"operator": "attacker"}},
+                    },
+                    "associated_metadata_refs": [caller_ref],
+                    "nsipro_metadata_sources": [
+                        {
+                            "key": caller_ref,
+                            "metadata": {"capture": {"operator": "attacker"}},
+                        }
+                    ],
+                },
+            )
+        ]
+    )
+
+    await _bulk_ingest_project_parts(
+        project_id=project.id,
+        payload=payload,
+        db=db_session,
+        current_user=_test_user(),
+        project_type=project.project_type,
+    )
+
+    part = (
+        await db_session.execute(
+            select(models.InspectionPart).where(
+                models.InspectionPart.project_id == project.id,
+                models.InspectionPart.serial_number == "SN-UNTRUSTED-INLINE",
+            )
+        )
+    ).scalar_one()
+    field_count = (
+        await db_session.execute(
+            select(func.count())
+            .select_from(models.InspectionPartMetadataField)
+            .where(models.InspectionPartMetadataField.part_id == part.id)
+        )
+    ).scalar_one()
+
+    assert part.metadata_json["nsipro_payload_ref"] == caller_ref
+    assert field_count == 0
 
 
 @pytest.mark.asyncio
@@ -610,6 +868,14 @@ async def test_bulk_ingest_strict_nsipro_contract_still_rejects_mismatch(db_sess
 
     assert exc_info.value.status_code == 422
     assert await _project_row_count(db_session, models.InspectionPart, project_id) == 0
+    assert (
+        await _project_row_count(
+            db_session,
+            models.InspectionPartMetadataField,
+            project_id,
+        )
+        == 0
+    )
 
 
 @pytest.mark.asyncio
@@ -806,6 +1072,72 @@ async def test_bulk_ingest_rolls_back_all_parts_and_batches_on_late_failure(db_s
     assert rollback_spy.await_count == 1
     assert await _project_row_count(db_session, models.InspectionBatch, project_id) == 0
     assert await _project_row_count(db_session, models.InspectionPart, project_id) == 0
+    assert (
+        await _project_row_count(
+            db_session,
+            models.InspectionPartMetadataField,
+            project_id,
+        )
+        == 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_bulk_ingest_aggregate_field_limit_rolls_back_all_rows(
+    db_session: AsyncSession,
+):
+    project = await _create_project(db_session, name="bulk-field-limit-rollback")
+    project_id = project.id
+    metadata_key = "associated_upload_metadata:field-limit.nsipro"
+    db_session.add(
+        models.ProjectMetadata(
+            project_id=project_id,
+            key=metadata_key,
+            value={
+                "file_type": "nsipro",
+                "source_filename": "field-limit.nsipro",
+                "metadata": {"operator": "shared"},
+            },
+        )
+    )
+    await db_session.commit()
+    payload = schemas.InspectionBulkIngestPayload(
+        unassigned_parts=[
+            schemas.InspectionIngestPartRecord(
+                serial_number=f"SN-FIELD-LIMIT-{index}",
+                metadata={"associated_metadata_ref": metadata_key},
+            )
+            for index in range(2)
+        ]
+    )
+
+    with (
+        patch.object(
+            inspection_workbench,
+            "MAX_NSIPRO_FIELD_ROWS_PER_INGEST",
+            1,
+        ),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        await _bulk_ingest_project_parts(
+            project_id=project_id,
+            payload=payload,
+            db=db_session,
+            current_user=_test_user(),
+            project_type=project.project_type,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert "for one ingest" in str(exc_info.value.detail)
+    assert await _project_row_count(db_session, models.InspectionPart, project_id) == 0
+    assert (
+        await _project_row_count(
+            db_session,
+            models.InspectionPartMetadataField,
+            project_id,
+        )
+        == 0
+    )
 
 
 @pytest.mark.asyncio
@@ -837,3 +1169,524 @@ async def test_inspection_crud_defaults_still_commit_each_operation(db_session: 
     assert commit_spy.await_count == 3
     assert updated is not None
     assert updated.metadata_json == {"original": True, "added": True}
+
+
+@pytest.mark.asyncio
+async def test_bulk_ingest_materializes_distinct_typed_nsipro_fields_once(
+    db_session: AsyncSession,
+):
+    project = await _create_project(db_session, name="bulk-queryable-nsipro-fields")
+    metadata_key = "associated_upload_metadata:queryable.nsipro"
+    db_session.add(
+        models.ProjectMetadata(
+            project_id=project.id,
+            key=metadata_key,
+            value={
+                "file_type": "nsipro",
+                "source_filename": "queryable.nsipro",
+                "metadata": {
+                    "capture": {
+                        "operator": "alice",
+                        "exposure_ms": 12.5,
+                        "attempts": 3,
+                        "valid": True,
+                        "note": None,
+                        "empty": {},
+                        "channels": [
+                            {"name": "brightfield"},
+                            {"name": "DAPI"},
+                        ],
+                    }
+                },
+            },
+        )
+    )
+    await db_session.commit()
+    payload = schemas.InspectionBulkIngestPayload(
+        unassigned_parts=[
+            schemas.InspectionIngestPartRecord(
+                serial_number="SN-QUERYABLE",
+                metadata={
+                    "source_images": [
+                        {
+                            "filename": "front.png",
+                            "associated_metadata_ref": metadata_key,
+                        },
+                        {
+                            "filename": "back.png",
+                            "associated_metadata_ref": metadata_key,
+                        },
+                    ]
+                },
+            )
+        ]
+    )
+
+    with (
+        patch.object(
+            inspection_workbench,
+            "flatten_nsipro_metadata",
+            wraps=inspection_workbench.flatten_nsipro_metadata,
+        ) as flatten_spy,
+        patch.object(db_session, "flush", wraps=db_session.flush) as flush_spy,
+        patch.object(db_session, "commit", wraps=db_session.commit) as commit_spy,
+    ):
+        await _bulk_ingest_project_parts(
+            project_id=project.id,
+            payload=payload,
+            db=db_session,
+            current_user=_test_user(),
+            project_type=project.project_type,
+        )
+
+    assert flatten_spy.call_count == 1
+    assert flush_spy.await_count == 1
+    assert commit_spy.await_count == 1
+    part = (
+        await db_session.execute(
+            select(models.InspectionPart).where(
+                models.InspectionPart.project_id == project.id,
+                models.InspectionPart.serial_number == "SN-QUERYABLE",
+            )
+        )
+    ).scalar_one()
+    fields = (
+        await db_session.execute(
+            select(models.InspectionPartMetadataField)
+            .where(models.InspectionPartMetadataField.part_id == part.id)
+            .order_by(models.InspectionPartMetadataField.ordinal)
+        )
+    ).scalars().all()
+
+    assert len(fields) == 8
+    assert {field.source_ref for field in fields} == {metadata_key}
+    assert [field.field_path for field in fields] == [
+        "/capture/operator",
+        "/capture/exposure_ms",
+        "/capture/attempts",
+        "/capture/valid",
+        "/capture/note",
+        "/capture/empty",
+        "/capture/channels/0/name",
+        "/capture/channels/1/name",
+    ]
+    assert [field.value_type for field in fields] == [
+        "string",
+        "number",
+        "integer",
+        "boolean",
+        "null",
+        "object",
+        "string",
+        "string",
+    ]
+
+    operator_part_id = (
+        await db_session.execute(
+            select(models.InspectionPartMetadataField.part_id).where(
+                models.InspectionPartMetadataField.project_id == project.id,
+                models.InspectionPartMetadataField.field_path_hash
+                == _sha256("/capture/operator"),
+                models.InspectionPartMetadataField.value_text_hash
+                == _sha256("alice"),
+                models.InspectionPartMetadataField.field_path
+                == "/capture/operator",
+                models.InspectionPartMetadataField.value_text == "alice",
+            )
+        )
+    ).scalar_one()
+    numeric_part_id = (
+        await db_session.execute(
+            select(models.InspectionPartMetadataField.part_id).where(
+                models.InspectionPartMetadataField.project_id == project.id,
+                models.InspectionPartMetadataField.field_path_hash
+                == _sha256("/capture/exposure_ms"),
+                models.InspectionPartMetadataField.field_path
+                == "/capture/exposure_ms",
+                models.InspectionPartMetadataField.value_number
+                > Decimal("12"),
+            )
+        )
+    ).scalar_one()
+    assert operator_part_id == part.id
+    assert numeric_part_id == part.id
+
+
+@pytest.mark.asyncio
+async def test_bulk_reingest_replaces_changed_nsipro_fields_and_removes_stale_paths(
+    db_session: AsyncSession,
+):
+    project = await _create_project(db_session, name="bulk-replace-nsipro-fields")
+    metadata_key = "associated_upload_metadata:replace.nsipro"
+    project_metadata = models.ProjectMetadata(
+        project_id=project.id,
+        key=metadata_key,
+        value={
+            "file_type": "nsipro",
+            "source_filename": "replace.nsipro",
+            "metadata": {
+                "capture": {
+                    "operator": "alice",
+                    "stale": "remove-me",
+                }
+            },
+        },
+    )
+    db_session.add(project_metadata)
+    await db_session.commit()
+    payload = schemas.InspectionBulkIngestPayload(
+        unassigned_parts=[
+            schemas.InspectionIngestPartRecord(
+                serial_number="SN-REPLACE-FIELDS",
+                metadata={
+                    "source_images": [
+                        {
+                            "image_id": "11111111-1111-1111-1111-111111111111",
+                            "filename": "view.png",
+                            "associated_metadata_ref": metadata_key,
+                        }
+                    ]
+                },
+            )
+        ]
+    )
+    await _bulk_ingest_project_parts(
+        project_id=project.id,
+        payload=payload,
+        db=db_session,
+        current_user=_test_user(),
+        project_type=project.project_type,
+    )
+
+    project_metadata.value = {
+        "file_type": "nsipro",
+        "source_filename": "replace.nsipro",
+        "metadata": {
+            "capture": {
+                "operator": "bob",
+                "fresh": "new-value",
+            }
+        },
+    }
+    await db_session.commit()
+
+    result = await _bulk_ingest_project_parts(
+        project_id=project.id,
+        payload=payload,
+        db=db_session,
+        current_user=_test_user(),
+        project_type=project.project_type,
+    )
+
+    assert result["counters"]["parts_skipped_existing"] == 1
+    part = (
+        await db_session.execute(
+            select(models.InspectionPart).where(
+                models.InspectionPart.project_id == project.id,
+                models.InspectionPart.serial_number == "SN-REPLACE-FIELDS",
+            )
+        )
+    ).scalar_one()
+    fields = (
+        await db_session.execute(
+            select(models.InspectionPartMetadataField)
+            .where(models.InspectionPartMetadataField.part_id == part.id)
+            .order_by(models.InspectionPartMetadataField.ordinal)
+        )
+    ).scalars().all()
+
+    assert [(field.field_path, field.value_text) for field in fields] == [
+        ("/capture/operator", "bob"),
+        ("/capture/fresh", "new-value"),
+    ]
+    assert part.metadata_json["nsipro_metadata"] == {
+        "capture": {
+            "operator": "bob",
+            "fresh": "new-value",
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_bulk_partial_source_reingest_keeps_other_active_source_fields(
+    db_session: AsyncSession,
+):
+    project = await _create_project(db_session, name="bulk-partial-source-refresh")
+    primary_key = "associated_upload_metadata:partial-primary.nsipro"
+    secondary_key = "associated_upload_metadata:partial-secondary.nsipro"
+    primary_metadata = models.ProjectMetadata(
+        project_id=project.id,
+        key=primary_key,
+        value={
+            "file_type": "nsipro",
+            "source_filename": "partial-primary.nsipro",
+            "metadata": {"capture": {"operator": "primary"}},
+        },
+    )
+    secondary_metadata = models.ProjectMetadata(
+        project_id=project.id,
+        key=secondary_key,
+        value={
+            "file_type": "nsipro",
+            "source_filename": "partial-secondary.nsipro",
+            "metadata": {"capture": {"operator": "secondary"}},
+        },
+    )
+    db_session.add_all([primary_metadata, secondary_metadata])
+    await db_session.commit()
+    initial_payload = schemas.InspectionBulkIngestPayload(
+        unassigned_parts=[
+            schemas.InspectionIngestPartRecord(
+                serial_number="SN-PARTIAL-SOURCE-REFRESH",
+                metadata={
+                    "source_images": [
+                        {
+                            "image_id": "11111111-1111-1111-1111-111111111111",
+                            "filename": "primary.png",
+                            "associated_metadata_ref": primary_key,
+                        },
+                        {
+                            "image_id": "22222222-2222-2222-2222-222222222222",
+                            "filename": "secondary.png",
+                            "associated_metadata_ref": secondary_key,
+                        },
+                    ]
+                },
+            )
+        ]
+    )
+    await _bulk_ingest_project_parts(
+        project_id=project.id,
+        payload=initial_payload,
+        db=db_session,
+        current_user=_test_user(),
+        project_type=project.project_type,
+    )
+
+    secondary_metadata.value = {
+        "file_type": "nsipro",
+        "source_filename": "partial-secondary.nsipro",
+        "metadata": {"capture": {"operator": "secondary-new"}},
+    }
+    await db_session.commit()
+
+    await _bulk_ingest_project_parts(
+        project_id=project.id,
+        payload=schemas.InspectionBulkIngestPayload(
+            unassigned_parts=[
+                schemas.InspectionIngestPartRecord(
+                    serial_number="SN-PARTIAL-SOURCE-REFRESH",
+                    metadata={
+                        "source_images": [
+                            {
+                                "image_id": "11111111-1111-1111-1111-111111111111",
+                                "filename": "primary-updated.png",
+                                "associated_metadata_ref": primary_key,
+                            }
+                        ]
+                    },
+                )
+            ]
+        ),
+        db=db_session,
+        current_user=_test_user(),
+        project_type=project.project_type,
+    )
+
+    part = (
+        await db_session.execute(
+            select(models.InspectionPart).where(
+                models.InspectionPart.project_id == project.id,
+                models.InspectionPart.serial_number
+                == "SN-PARTIAL-SOURCE-REFRESH",
+            )
+        )
+    ).scalar_one()
+    fields = (
+        await db_session.execute(
+            select(models.InspectionPartMetadataField)
+            .where(models.InspectionPartMetadataField.part_id == part.id)
+            .order_by(models.InspectionPartMetadataField.source_ref)
+        )
+    ).scalars().all()
+
+    assert [
+        (field.source_ref, field.field_path, field.value_text)
+        for field in fields
+    ] == [
+        (primary_key, "/capture/operator", "primary"),
+        (secondary_key, "/capture/operator", "secondary-new"),
+    ]
+    assert (
+        part.metadata_json["nsipro_payloads_by_ref"][secondary_key]["metadata"]
+        == {"capture": {"operator": "secondary-new"}}
+    )
+
+
+@pytest.mark.asyncio
+async def test_bulk_reingest_clears_fields_when_nsipro_association_is_removed(
+    db_session: AsyncSession,
+):
+    project = await _create_project(db_session, name="bulk-clear-nsipro-fields")
+    metadata_key = "associated_upload_metadata:clear.nsipro"
+    db_session.add(
+        models.ProjectMetadata(
+            project_id=project.id,
+            key=metadata_key,
+            value={
+                "file_type": "nsipro",
+                "source_filename": "clear.nsipro",
+                "metadata": {"capture": {"operator": "alice"}},
+            },
+        )
+    )
+    await db_session.commit()
+    referenced_payload = schemas.InspectionBulkIngestPayload(
+        unassigned_parts=[
+            schemas.InspectionIngestPartRecord(
+                serial_number="SN-CLEAR-FIELDS",
+                metadata={"associated_metadata_ref": metadata_key},
+            )
+        ]
+    )
+    await _bulk_ingest_project_parts(
+        project_id=project.id,
+        payload=referenced_payload,
+        db=db_session,
+        current_user=_test_user(),
+        project_type=project.project_type,
+    )
+
+    cleared_payload = schemas.InspectionBulkIngestPayload(
+        unassigned_parts=[
+            schemas.InspectionIngestPartRecord(
+                serial_number="SN-CLEAR-FIELDS",
+                metadata={
+                    "associated_metadata_ref": None,
+                    "associated_metadata": None,
+                    "nsipro_payload_ref": None,
+                    "nsipro_payload": None,
+                    "nsipro_metadata": {},
+                    "nsipro_payloads_by_ref": {},
+                },
+            )
+        ]
+    )
+    await _bulk_ingest_project_parts(
+        project_id=project.id,
+        payload=cleared_payload,
+        db=db_session,
+        current_user=_test_user(),
+        project_type=project.project_type,
+    )
+
+    part = (
+        await db_session.execute(
+            select(models.InspectionPart).where(
+                models.InspectionPart.project_id == project.id,
+                models.InspectionPart.serial_number == "SN-CLEAR-FIELDS",
+            )
+        )
+    ).scalar_one()
+    field_count = (
+        await db_session.execute(
+            select(func.count())
+            .select_from(models.InspectionPartMetadataField)
+            .where(models.InspectionPartMetadataField.part_id == part.id)
+        )
+    ).scalar_one()
+
+    assert field_count == 0
+    assert part.metadata_json["nsipro_payload_ref"] is None
+
+
+@pytest.mark.asyncio
+async def test_bulk_generic_json_association_preserves_existing_nsipro_fields(
+    db_session: AsyncSession,
+):
+    project = await _create_project(db_session, name="bulk-json-keeps-nsipro-fields")
+    nsipro_key = "associated_upload_metadata:keep.nsipro"
+    json_key = "associated_upload_metadata:ordinary.json"
+    db_session.add_all(
+        [
+            models.ProjectMetadata(
+                project_id=project.id,
+                key=nsipro_key,
+                value={
+                    "file_type": "nsipro",
+                    "source_filename": "keep.nsipro",
+                    "metadata": {"capture": {"operator": "alice"}},
+                },
+            ),
+            models.ProjectMetadata(
+                project_id=project.id,
+                key=json_key,
+                value={
+                    "file_type": "json",
+                    "source_filename": "ordinary.json",
+                    "metadata": {"lot": "LOT-42"},
+                },
+            ),
+        ]
+    )
+    await db_session.commit()
+    await _bulk_ingest_project_parts(
+        project_id=project.id,
+        payload=schemas.InspectionBulkIngestPayload(
+            unassigned_parts=[
+                schemas.InspectionIngestPartRecord(
+                    serial_number="SN-KEEP-NSIPRO-FIELDS",
+                    metadata={"associated_metadata_ref": nsipro_key},
+                )
+            ]
+        ),
+        db=db_session,
+        current_user=_test_user(),
+        project_type=project.project_type,
+    )
+
+    await _bulk_ingest_project_parts(
+        project_id=project.id,
+        payload=schemas.InspectionBulkIngestPayload(
+            unassigned_parts=[
+                schemas.InspectionIngestPartRecord(
+                    serial_number="SN-KEEP-NSIPRO-FIELDS",
+                    metadata={
+                        "source_images": [
+                            {
+                                "image_id": "11111111-1111-1111-1111-111111111111",
+                                "filename": "ordinary.png",
+                                "associated_metadata_ref": json_key,
+                            }
+                        ]
+                    },
+                )
+            ]
+        ),
+        db=db_session,
+        current_user=_test_user(),
+        project_type=project.project_type,
+    )
+
+    part = (
+        await db_session.execute(
+            select(models.InspectionPart).where(
+                models.InspectionPart.project_id == project.id,
+                models.InspectionPart.serial_number == "SN-KEEP-NSIPRO-FIELDS",
+            )
+        )
+    ).scalar_one()
+    fields = (
+        await db_session.execute(
+            select(models.InspectionPartMetadataField).where(
+                models.InspectionPartMetadataField.part_id == part.id
+            )
+        )
+    ).scalars().all()
+
+    assert [
+        (field.field_path, field.value_text)
+        for field in fields
+    ] == [("/capture/operator", "alice")]
+    assert part.metadata_json["nsipro_payload_ref"] == nsipro_key
+    assert part.metadata_json["source_images"][0]["associated_metadata_ref"] == json_key

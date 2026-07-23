@@ -17,6 +17,7 @@ const rgbaFullscreen3dScreenshotPath = path.resolve(__dirname, '../../artifacts/
 const rgbaFullscreen3dNarrowScreenshotPath = path.resolve(__dirname, '../../artifacts/rgba-segment-fullscreen-3d-narrow.png');
 const rgbaFullscreen3dCompactScreenshotPath = path.resolve(__dirname, '../../artifacts/rgba-segment-fullscreen-3d-compact.png');
 const annotationTransparencyScreenshotPath = path.resolve(__dirname, '../../artifacts/annotation-transparency-50.png');
+const nsiproMetadataScreenshotPath = path.resolve(__dirname, '../../artifacts/nsipro-part-metadata.png');
 const simulatedUsers = ['basic', 'intermediate', 'advanced'];
 
 function readMultipartJsonFilePart(bodyBuffer, fieldName) {
@@ -1100,5 +1101,52 @@ test.describe('Project Data metadata hierarchy screenshot artifact', () => {
     const panel = page.locator('.metadata-section');
     await expect(panel).toBeVisible();
     await panel.screenshot({ path: pr14ScreenshotPath });
+  });
+});
+
+test.describe('.nsipro part metadata screenshot artifact', () => {
+  test('preserves the nested metadata UI after field-table materialization', async ({ page }) => {
+    const { projectId } = await mockInspectionWorkbenchRoutes(page, {
+      type: 'PT3',
+      scenario: 'advanced',
+      mockParts: [
+        {
+          id: 'part-adv-001',
+          batch_id: 'batch-adv-a',
+          serial_number: 'SN-NSIPRO-QUERY-001',
+          display_name: 'Queryable .nsipro Part',
+          review_state: 'unreviewed',
+          metadata: {
+            nsipro_payload_ref: 'associated_upload_metadata:queryable.nsipro',
+            nsipro_metadata: {
+              capture: {
+                operator: 'alice',
+                exposure_ms: 12.5,
+                valid: true,
+              },
+              channels: [
+                { name: 'brightfield' },
+                { name: 'DAPI' },
+              ],
+            },
+          },
+        },
+      ],
+    });
+
+    await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
+    await page.getByRole('tab', { name: 'Inspection' }).click();
+    await page.getByRole('button', { name: 'Metadata' }).click();
+
+    const modal = page.locator('.workbench-utility-modal');
+    await expect(modal.getByRole('heading', { name: 'Part Metadata' })).toBeVisible();
+    await expect(modal.getByRole('tab', { name: '.nsipro' })).toHaveAttribute('aria-selected', 'true');
+    await expect(modal).toContainText('metadata.nsipro_metadata.capture.operator');
+    await expect(modal).toContainText('alice');
+    await expect(modal).toContainText('metadata.nsipro_metadata.capture.exposure_ms');
+    await expect(modal).toContainText('12.5');
+    await expect(modal).toContainText('metadata.nsipro_metadata.channels[1].name');
+    await expect(modal).toContainText('DAPI');
+    await modal.screenshot({ path: nsiproMetadataScreenshotPath });
   });
 });

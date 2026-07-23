@@ -1,5 +1,20 @@
 import uuid
-from sqlalchemy import Column, String, Text, ForeignKey, DateTime, JSON, BigInteger, Boolean, UniqueConstraint, Numeric, Integer, Float
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -81,9 +96,82 @@ class InspectionPart(Base):
 
     project = relationship("Project", back_populates="inspection_parts")
     batch = relationship("InspectionBatch", back_populates="parts")
+    metadata_fields = relationship(
+        "InspectionPartMetadataField",
+        back_populates="part",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         UniqueConstraint("project_id", "serial_number", name="uix_inspection_parts_project_serial_number"),
+    )
+
+
+class InspectionPartMetadataField(Base):
+    __tablename__ = "inspection_part_metadata_fields"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    part_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("inspection_parts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_ref = Column(String(255), nullable=False)
+    source_filename = Column(String(1024), nullable=True)
+    field_path = Column(Text, nullable=False)
+    field_path_hash = Column(String(64), nullable=False)
+    field_name = Column(Text, nullable=False)
+    ordinal = Column(Integer, nullable=False)
+    value_type = Column(String(16), nullable=False)
+    value_json = Column(JSON, nullable=True)
+    value_text = Column(Text, nullable=True)
+    value_text_hash = Column(String(64), nullable=True)
+    value_number = Column(Numeric, nullable=True)
+    value_boolean = Column(Boolean, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    part = relationship("InspectionPart", back_populates="metadata_fields")
+
+    __table_args__ = (
+        CheckConstraint(
+            "value_type IN ('string', 'integer', 'number', 'boolean', "
+            "'null', 'object', 'array')",
+            name="ck_inspection_part_metadata_fields_value_type",
+        ),
+        UniqueConstraint(
+            "part_id",
+            "source_ref",
+            "field_path_hash",
+            name="uix_inspection_part_metadata_fields_part_source_path_hash",
+        ),
+        Index(
+            "ix_inspection_part_metadata_fields_project_path_text",
+            "project_id",
+            "field_path_hash",
+            "value_text_hash",
+        ),
+        Index(
+            "ix_inspection_part_metadata_fields_project_path_number",
+            "project_id",
+            "field_path_hash",
+            "value_number",
+        ),
+        Index(
+            "ix_inspection_part_metadata_fields_project_path_boolean",
+            "project_id",
+            "field_path_hash",
+            "value_boolean",
+        ),
+        Index(
+            "ix_inspection_part_metadata_fields_part_source",
+            "part_id",
+            "source_ref",
+        ),
     )
 
 
