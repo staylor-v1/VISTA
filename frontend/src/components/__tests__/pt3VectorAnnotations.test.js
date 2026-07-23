@@ -294,6 +294,29 @@ describe('PT3 vector annotation registration', () => {
     expect(context.beginPath).not.toHaveBeenCalled();
   });
 
+  test('multiplies authored vector face alpha without changing annotation geometry', () => {
+    const context = makeContext();
+    const fillStyles = [];
+    const strokeStyles = [];
+    context.fill = jest.fn(() => fillStyles.push(context.fillStyle));
+    context.stroke = jest.fn(() => strokeStyles.push(context.strokeStyle));
+
+    const result = renderPt3VectorAnnotations(context, {
+      vectorAnnotations: [rectangleAnnotation({ opacity: 0.4 })],
+      metadata,
+      rotation: { x: -18, y: 32 },
+      zoom: 1,
+      opacityMultiplier: 0.25,
+    });
+
+    expect(result.renderedFaces).toBe(3);
+    expect(fillStyles).toEqual(expect.arrayContaining([
+      'rgba(34,211,238,0.07800000000000001)',
+      'rgba(34,211,238,0.05500000000000001)',
+    ]));
+    expect(strokeStyles.every((style) => style === 'rgba(34,211,238,0.205)')).toBe(true);
+  });
+
   test('caps adversarial connected masks and total face work', () => {
     const maskRuns = Array.from({ length: MAX_VECTOR_MASK_RUNS + 100 }, (_unused, index) => [index, 0, 1]);
     const built = buildPt3VectorAnnotationFaces([

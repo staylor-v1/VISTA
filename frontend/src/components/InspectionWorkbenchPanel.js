@@ -132,6 +132,7 @@ const DEFAULT_INSPECTION_COLUMN_WIDTHS = { leftPx: null, rightPx: null };
 const MEASUREMENT_COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#06b6d4'];
 const DEFAULT_ANNOTATION_COLOR = '#f97316';
 const DEFAULT_ANNOTATION_FILL_OPACITY = 0.5;
+const DEFAULT_ANNOTATION_TRANSPARENCY_PERCENT = 0;
 const DEFAULT_SEGMENT_COLOR = '#22c55e';
 const SEGMENT_COLORS = ['#22c55e', '#3b82f6', '#f97316', '#e11d48', '#a855f7', '#14b8a6', '#facc15'];
 const SEGMENTATION_HELPER_TOOLS = [
@@ -569,6 +570,16 @@ function getAnnotationFillOpacity(annotation, fallback = DEFAULT_ANNOTATION_FILL
   const value = Number(annotation?.metadata?.annotation_fill_opacity ?? annotation?.fillOpacity ?? annotation?.fill_opacity);
   if (!Number.isFinite(value)) return fallback;
   return Math.min(1, Math.max(0, value));
+}
+
+function normalizeAnnotationTransparencyPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return DEFAULT_ANNOTATION_TRANSPARENCY_PERCENT;
+  return Math.round(Math.min(100, Math.max(0, numeric)));
+}
+
+function getAnnotationOpacityMultiplier(transparencyPercent) {
+  return 1 - (normalizeAnnotationTransparencyPercent(transparencyPercent) / 100);
 }
 
 function getMprSliceKey(axis, sliceIndex) {
@@ -1136,10 +1147,11 @@ function getMprOverlayCompositeAlpha(volumeCache) {
   return volumeCache?.colorMode === 'rgba' ? 1 : 0.45;
 }
 
-function drawMprOverlaySlice(context, overlaySliceCanvas, overlayCache, width, height) {
+function drawMprOverlaySlice(context, overlaySliceCanvas, overlayCache, width, height, opacityMultiplier = 1) {
   if (!context || !overlaySliceCanvas) return;
   context.save();
-  context.globalAlpha = getMprOverlayCompositeAlpha(overlayCache);
+  context.globalAlpha = getMprOverlayCompositeAlpha(overlayCache)
+    * Math.min(1, Math.max(0, Number(opacityMultiplier) || 0));
   context.globalCompositeOperation = 'source-over';
   context.drawImage(overlaySliceCanvas, 0, 0, width, height);
   context.restore();
@@ -1903,14 +1915,21 @@ function getAnnotationSourceImageIdLookup(imageEntries, projectImageLookup) {
   }, {});
 }
 
-function renderAnnotationOverlay({ measurementLines = [], boxes = [], fontSize = 24, selectedAnnotationId = '' }) {
+function renderAnnotationOverlay({
+  measurementLines = [],
+  boxes = [],
+  fontSize = 24,
+  selectedAnnotationId = '',
+  opacityMultiplier = 1,
+}) {
+  const visualOpacity = Math.min(1, Math.max(0, Number(opacityMultiplier) || 0));
   return (
     <>
       {measurementLines.filter(isFiniteMeasurementLine).map((line) => {
         const labelPosition = getMeasurementLabelViewBoxPosition(line, fontSize);
         const isSelected = String(selectedAnnotationId || '') === String(line.id || '');
         return (
-          <g key={`line-${line.id}`} className={isSelected ? 'inspection-annotation-selected' : ''}>
+          <g key={`line-${line.id}`} className={isSelected ? 'inspection-annotation-selected' : ''} opacity={visualOpacity}>
             {isSelected && <line x1={(line.x1 / line.imageWidth) * 1000} y1={(line.y1 / line.imageHeight) * 1000} x2={(line.x2 / line.imageWidth) * 1000} y2={(line.y2 / line.imageHeight) * 1000} stroke="#ffffff" strokeWidth="10" />}
             <line x1={(line.x1 / line.imageWidth) * 1000} y1={(line.y1 / line.imageHeight) * 1000} x2={(line.x2 / line.imageWidth) * 1000} y2={(line.y2 / line.imageHeight) * 1000} stroke={line.color} strokeWidth={isSelected ? '6' : '3'} />
             <text x={labelPosition.x} y={labelPosition.y} fill={line.color} fontSize={fontSize} fontWeight={isSelected ? '800' : '400'}>
@@ -1928,7 +1947,7 @@ function renderAnnotationOverlay({ measurementLines = [], boxes = [], fontSize =
         const isSelected = String(selectedAnnotationId || '') === String(box.id || '');
         const fillOpacity = Number.isFinite(Number(box.fillOpacity)) ? Math.min(1, Math.max(0, Number(box.fillOpacity))) : DEFAULT_ANNOTATION_FILL_OPACITY;
         return (
-          <g key={`box-${box.id}`} className={isSelected ? 'inspection-annotation-selected' : ''}>
+          <g key={`box-${box.id}`} className={isSelected ? 'inspection-annotation-selected' : ''} opacity={visualOpacity}>
             {isSelected && <rect x={x} y={y} width={width} height={height} fill={box.color} fillOpacity={Math.min(1, fillOpacity + 0.18)} stroke="#ffffff" strokeWidth="10" />}
             <rect x={x} y={y} width={width} height={height} fill={box.color} fillOpacity={fillOpacity} stroke={box.color} strokeWidth={isSelected ? '6' : '3'} />
             <text x={Math.min(980, Math.max(20, x + (width / 2)))} y={Math.max(24, y - 8)} fill={box.color} fontSize={labelSize} fontWeight={isSelected ? '800' : '400'} textAnchor="middle">
@@ -3119,6 +3138,7 @@ const MprSliceCanvas = React.forwardRef(function MprSliceCanvas({
   dimensions,
   displayWindow,
   displayDomain,
+  overlayOpacityMultiplier = 1,
   className = '',
   ...canvasProps
 }, externalRef) {
@@ -3233,10 +3253,17 @@ const MprSliceCanvas = React.forwardRef(function MprSliceCanvas({
     overlayCaches.forEach((overlayCache) => {
       const overlaySliceCanvas = getCachedMprSliceCanvas(axis, slicePosition, dimensions, overlayCache);
       if (!overlaySliceCanvas) return;
-      drawMprOverlaySlice(ctx, overlaySliceCanvas, overlayCache, canvas.width, canvas.height);
+      drawMprOverlaySlice(
+        ctx,
+        overlaySliceCanvas,
+        overlayCache,
+        canvas.width,
+        canvas.height,
+        overlayOpacityMultiplier,
+      );
     });
     return undefined;
-  }, [axis, dimensions, displayDomain, displayWindow, fallbackDimensions.height, fallbackDimensions.width, overlayCaches, relevantSlicePosition, serverSliceRevision, slicePosition, volumeCache]);
+  }, [axis, dimensions, displayDomain, displayWindow, fallbackDimensions.height, fallbackDimensions.width, overlayCaches, overlayOpacityMultiplier, relevantSlicePosition, serverSliceRevision, slicePosition, volumeCache]);
 
   return (
     <canvas
@@ -3649,6 +3676,10 @@ function InspectionWorkbenchPanel({
   const [fullscreenImageZoom, setFullscreenImageZoom] = useState({ scale: 1, originX: 50, originY: 50, panX: 0, panY: 0 });
   const [fullscreenImagePanning, setFullscreenImagePanning] = useState(false);
   const [annotationsVisible, setAnnotationsVisible] = useState(true);
+  const [annotationTransparencyPercent, setAnnotationTransparencyPercent] = useState(
+    DEFAULT_ANNOTATION_TRANSPARENCY_PERCENT,
+  );
+  const annotationOpacityMultiplier = getAnnotationOpacityMultiplier(annotationTransparencyPercent);
   const [sessionCalibrationByImageId, setSessionCalibrationByImageId] = useState({});
   const configuredDefectTypes = useMemo(() => (Array.isArray(projectConfiguration?.defect_types) ? projectConfiguration.defect_types
     .map((entry) => String(entry?.name || '').trim())
@@ -4357,17 +4388,18 @@ function InspectionWorkbenchPanel({
           polygonCount += 1;
         });
         if (polygonCount === 0) return;
-        ctx.globalAlpha = face.surface === 'side' ? Math.min(0.3, face.opacity) : Math.min(0.48, face.opacity + 0.12);
+        ctx.globalAlpha = (face.surface === 'side' ? Math.min(0.3, face.opacity) : Math.min(0.48, face.opacity + 0.12))
+          * annotationOpacityMultiplier;
         ctx.fillStyle = face.color;
         ctx.fill();
-        ctx.globalAlpha = 0.88;
+        ctx.globalAlpha = 0.88 * annotationOpacityMultiplier;
         ctx.lineWidth = face.surface === 'side' ? 1 : 1.5;
         ctx.strokeStyle = face.color;
         ctx.stroke();
       });
       ctx.globalAlpha = 1;
     }
-  }, [activeMprPane, annotationLayerVisible, fallbackMprModelZoom, mprAxisMirrorScale, mprDimensions, mprFallbackOverlaySize, mprFullscreenOpen, mprReconstructionMode, mprRotation, slicePosition, vectorSegmentAnnotations]);
+  }, [activeMprPane, annotationLayerVisible, annotationOpacityMultiplier, fallbackMprModelZoom, mprAxisMirrorScale, mprDimensions, mprFallbackOverlaySize, mprFullscreenOpen, mprReconstructionMode, mprRotation, slicePosition, vectorSegmentAnnotations]);
 
   const modalityOptions = useMemo(() => getModalities(selectedPart), [selectedPart]);
   const activeViewName = useMemo(() => {
@@ -7361,6 +7393,7 @@ function InspectionWorkbenchPanel({
                         dimensions={mprDimensions}
                         displayWindow={displayWindow}
                         displayDomain={displayValueDomain}
+                        overlayOpacityMultiplier={annotationOpacityMultiplier}
                       />
                     ) : fallbackImage ? (
                       <MprWindowedImage
@@ -7388,6 +7421,7 @@ function InspectionWorkbenchPanel({
                           boxes: [...mprSliceBoxes, ...pendingCubeBoxes, ...mprPreviewBoxes],
                           fontSize: 26,
                           selectedAnnotationId,
+                          opacityMultiplier: annotationOpacityMultiplier,
                         })}
                         {mprSliceLines.map((line) => {
                           const endpointPositions = getMeasurementEndpointViewBoxPosition(line);
@@ -7505,6 +7539,7 @@ function InspectionWorkbenchPanel({
                         <g
                           key={`mpr-segment-${segment.id}`}
                           transform={`scale(${mprImageDimensions.width / segment.imageWidth} ${mprImageDimensions.height / segment.imageHeight})`}
+                          opacity={annotationOpacityMultiplier}
                         >
                           {renderCompositedSegmentationSegment(segment, {
                             color: segment.color,
@@ -7664,6 +7699,7 @@ function InspectionWorkbenchPanel({
                     showRealOptimizationControls={!mprFullscreenOpen || mprFullscreenReconstructionSettingsVisible}
                     vectorAnnotations={vectorSegmentAnnotations}
                     showAnnotations={annotationLayerVisible}
+                    annotationOpacityMultiplier={annotationOpacityMultiplier}
                   />
                 )}
                 {!PT3_RENDERER_RECONSTRUCTION_MODES.includes(effectiveMprReconstructionMode) && <div
@@ -7711,7 +7747,7 @@ function InspectionWorkbenchPanel({
                             onDragStart={preventMprNativeDrag}
                             style={{
                               '--slice-depth': `${layer.depth}px`,
-                              '--slice-opacity': 1,
+                              '--slice-opacity': annotationOpacityMultiplier,
                             }}
                           />
                         ))
@@ -7984,10 +8020,11 @@ function InspectionWorkbenchPanel({
                             src={`/api/images/${encodeURIComponent(String(imageId))}/content`}
                             alt={`${viewName} overlay`}
                             loading="lazy"
+                            style={{ opacity: annotationOpacityMultiplier }}
                           />
 	                          <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 ${tileOverlayWidth} ${tileOverlayHeight}`} preserveAspectRatio="xMidYMid meet" aria-label="tile measurement overlay">
 	                            <g transform={`scale(${tileOverlayWidth / 1000} ${tileOverlayHeight / 1000})`}>
-	                              {renderAnnotationOverlay({ measurementLines: [...tileMeasurementLines, ...tilePreviewLines], boxes: [...tileBoxes, ...tilePreviewBoxes], fontSize: 30, selectedAnnotationId })}
+	                              {renderAnnotationOverlay({ measurementLines: [...tileMeasurementLines, ...tilePreviewLines], boxes: [...tileBoxes, ...tilePreviewBoxes], fontSize: 30, selectedAnnotationId, opacityMultiplier: annotationOpacityMultiplier })}
                                   {renderTileAnnotationEditingTargets({
                                     measurementLines: tileMeasurementLines,
                                     boxes: tileBoxes,
@@ -8028,10 +8065,11 @@ function InspectionWorkbenchPanel({
                             src={`/api/images/${encodeURIComponent(String(imageId))}/content`}
                             alt={`${viewName} view`}
                             loading="lazy"
+	                            style={entry.overlay ? { opacity: annotationOpacityMultiplier } : undefined}
 	                          />
 	                          <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 ${tileOverlayWidth} ${tileOverlayHeight}`} preserveAspectRatio="xMidYMid meet" aria-label="tile measurement overlay">
 	                            <g transform={`scale(${tileOverlayWidth / 1000} ${tileOverlayHeight / 1000})`}>
-	                              {renderAnnotationOverlay({ measurementLines: [...tileMeasurementLines, ...tilePreviewLines], boxes: [...tileBoxes, ...tilePreviewBoxes], fontSize: 30, selectedAnnotationId })}
+	                              {renderAnnotationOverlay({ measurementLines: [...tileMeasurementLines, ...tilePreviewLines], boxes: [...tileBoxes, ...tilePreviewBoxes], fontSize: 30, selectedAnnotationId, opacityMultiplier: annotationOpacityMultiplier })}
                                   {renderTileAnnotationEditingTargets({
                                     measurementLines: tileMeasurementLines,
                                     boxes: tileBoxes,
@@ -8080,6 +8118,24 @@ function InspectionWorkbenchPanel({
 	            onChange={(event) => setAnnotationsVisible(event.target.checked)}
 	          />
 	          Show annotations
+	        </label>
+	        <label className="annotation-transparency-control" htmlFor="annotation-transparency-percent">
+	          <span>Transparency</span>
+	          <span className="annotation-transparency-input">
+	            <input
+	              id="annotation-transparency-percent"
+	              type="number"
+	              aria-label="Annotation transparency percent"
+	              min="0"
+	              max="100"
+	              step="1"
+	              value={annotationTransparencyPercent}
+	              onChange={(event) => setAnnotationTransparencyPercent(
+	                normalizeAnnotationTransparencyPercent(event.target.value),
+	              )}
+	            />
+	            <span aria-hidden="true">%</span>
+	          </span>
 	        </label>
 	        <p className="muted">For selected part: {selectedPart?.serial_number || 'No part selected'}</p>
 	        <div className="annotation-tool-buttons" aria-label="Annotation tools">
@@ -8923,6 +8979,7 @@ function InspectionWorkbenchPanel({
                     dimensions={mprDimensions}
                     displayWindow={displayWindow}
                     displayDomain={displayValueDomain}
+                    overlayOpacityMultiplier={annotationOpacityMultiplier}
                   />
                 ) : fallbackImage ? (
                   <MprWindowedImage
@@ -10542,6 +10599,9 @@ function InspectionWorkbenchPanel({
 	    const fullscreenSurfaceProps = {
 	      ref: fullscreenImageRef,
 	      className: fullscreenSurfaceClassName,
+	      style: !isMprFullscreen && fullscreenShowsExternalOverlay
+	        ? { opacity: annotationOpacityMultiplier }
+	        : undefined,
 	      'aria-label': `${fullscreenImageModal.label} fullscreen`,
 	      onMouseDown: (event) => {
 	        handleFullscreenMeasurePointerDown(event);
@@ -10696,6 +10756,7 @@ function InspectionWorkbenchPanel({
                       dimensions={mprDimensions}
                       displayWindow={displayWindow}
                       displayDomain={displayValueDomain}
+                      overlayOpacityMultiplier={annotationOpacityMultiplier}
                       style={fullscreenMprProjectionStyle}
                       data-testid="fullscreen-mpr-slice"
                       data-mpr-slice-key={fullscreenMprSliceKey}
@@ -10733,6 +10794,7 @@ function InspectionWorkbenchPanel({
                             stroke={line.color}
                             strokeWidth="3"
                             pointerEvents="none"
+                            opacity={annotationOpacityMultiplier}
                           />
                           <text
                             x={labelPosition.x}
@@ -10740,6 +10802,7 @@ function InspectionWorkbenchPanel({
                             fill={line.color}
                             fontSize="20"
                             pointerEvents="none"
+                            opacity={annotationOpacityMultiplier}
                           >
                             {getMeasurementLineLabel(line)}
                           </text>
@@ -10791,7 +10854,7 @@ function InspectionWorkbenchPanel({
                         </g>
 	                      );
 	                    })}
-	                    {renderAnnotationOverlay({ measurementLines: [], boxes: [...renderedFullscreenBoxAnnotations, ...fullscreenPreviewBoxes], fontSize: 20, selectedAnnotationId })}
+	                    {renderAnnotationOverlay({ measurementLines: [], boxes: [...renderedFullscreenBoxAnnotations, ...fullscreenPreviewBoxes], fontSize: 20, selectedAnnotationId, opacityMultiplier: annotationOpacityMultiplier })}
                     {renderedFullscreenBoxAnnotations.map((box) => {
                       const cornerPositions = getAnnotationBoxCornerViewBoxPosition(box);
                       const cornerActive = fullscreenEditingBoxCorner?.boxId === String(box.id)
@@ -10848,6 +10911,7 @@ function InspectionWorkbenchPanel({
 		              <g
 		                key={`fullscreen-segment-${segment.id}`}
 		                transform={`scale(${fullscreenOverlayWidth / segment.imageWidth} ${fullscreenOverlayHeight / segment.imageHeight})`}
+		                opacity={annotationOpacityMultiplier}
 		              >
 		                {renderCompositedSegmentationSegment(segment, {
 		                  color: segment.color,
@@ -11069,6 +11133,8 @@ export {
   getMprSliceCanvasCacheStats,
   getMprSliceCachingMessage,
   getMprOverlayCompositeAlpha,
+  getAnnotationOpacityMultiplier,
+  normalizeAnnotationTransparencyPercent,
   getServerVolumePrefetchSources,
   getServerVolumeSliceUrl,
   projectMprPointToOverlay,

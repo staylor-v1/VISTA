@@ -5116,6 +5116,30 @@ ul li:hover {
   margin-top: 8px;
 }
 
+.annotation-transparency-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  color: var(--text-color, #1f2937);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.annotation-transparency-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted-color, #64748b);
+  font-weight: 500;
+}
+
+.annotation-transparency-input input {
+  width: 72px;
+  min-width: 0;
+}
+
 .annotation-tool-buttons .btn {
   min-width: 0;
   padding: 9px 8px;

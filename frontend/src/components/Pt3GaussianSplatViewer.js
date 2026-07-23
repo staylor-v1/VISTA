@@ -70,8 +70,35 @@ export const DEFAULT_RAY_MARCH_SETTINGS = Object.freeze({
   ...DEFAULT_PT3_RECONSTRUCTION_OPTIONS,
 });
 
-export function getRenderablePt3SegmentationSegments(segments, showAnnotations = true) {
+export function getRenderablePt3SegmentationSegments(
+  segments,
+  showAnnotations = true,
+) {
   return showAnnotations ? segments : EMPTY_SEGMENTATION_SEGMENTS;
+}
+
+export function getPt3SegmentedSplatRgba({
+  baseColor,
+  baseAlpha,
+  segment,
+  opacityMultiplier = 1,
+}) {
+  const safeBaseColor = Array.from({ length: 3 }, (_unused, index) => (
+    Math.max(0, Math.min(255, Number(baseColor?.[index]) || 0))
+  ));
+  const safeBaseAlpha = Math.max(0, Number(baseAlpha) || 0);
+  if (!segment) return [...safeBaseColor, Math.min(1, safeBaseAlpha)];
+  const numericMultiplier = Number(opacityMultiplier);
+  const visualOpacity = Number.isFinite(numericMultiplier)
+    ? Math.min(1, Math.max(0, numericMultiplier))
+    : 1;
+  const segmentRgba = segmentColorToRgba(segment.color, segment.opacity);
+  return [
+    ...safeBaseColor.map((channel, index) => (
+      channel + (segmentRgba[index] - channel) * visualOpacity
+    )),
+    Math.min(1, safeBaseAlpha * (1 + (segmentRgba[3] - 1) * visualOpacity)),
+  ];
 }
 
 const RAY_MARCH_QUALITY_IDS = new Set(Object.keys(QUALITY_PROFILES));
@@ -470,6 +497,7 @@ function renderPreview(ctx, {
   projectionCache,
   segmentationSegments,
   externalOverlayPoints,
+  annotationOpacityMultiplier,
   statsRef,
 }) {
   if (!ctx?.canvas) return;
@@ -553,16 +581,22 @@ function renderPreview(ctx, {
       const ci = splatIndex * 4;
       const segment = getSegmentDisplayStyle(splats.segmentIds?.[splatIndex], segmentationSegments);
       if (segment && !segment.visible) return;
-      const segmentRgba = segment ? segmentColorToRgba(segment.color, segment.opacity) : null;
-      const alpha = Math.max(0, Math.min(1, (splats.colors?.[ci + 3] ?? 0.7) * splatOpacity * (segmentRgba?.[3] ?? 1)));
+      const baseColor = [
+        tuneColor(shColor?.[0] ?? splats.colors?.[ci], 0.4),
+        tuneColor(shColor?.[1] ?? splats.colors?.[ci + 1], 0.8),
+        tuneColor(shColor?.[2] ?? splats.colors?.[ci + 2], 1),
+      ];
+      const [red, green, blue, alpha] = getPt3SegmentedSplatRgba({
+        baseColor,
+        baseAlpha: (splats.colors?.[ci + 3] ?? 0.7) * splatOpacity,
+        segment,
+        opacityMultiplier: annotationOpacityMultiplier,
+      });
       const authoredScale = Math.max(0.1, Number(splats.scales?.[splatIndex]) || 1);
       const depthScale = Math.max(0.65, Math.min(1.8, pixelsPerWorldUnit / referencePixelsPerUnit));
       const radius = tunedSplatView
         ? Math.max(0.9, Math.min(18, authoredScale * splatPointSize * 1.4 * depthScale))
         : Math.max(1.4, 4 * depthScale);
-      const red = segmentRgba ? segmentRgba[0] : tuneColor(shColor?.[0] ?? splats.colors?.[ci], 0.4);
-      const green = segmentRgba ? segmentRgba[1] : tuneColor(shColor?.[1] ?? splats.colors?.[ci + 1], 0.8);
-      const blue = segmentRgba ? segmentRgba[2] : tuneColor(shColor?.[2] ?? splats.colors?.[ci + 2], 1);
       if (gaussian) {
         if (drawProjectedGaussian(ctx, {
           x,
@@ -598,7 +632,9 @@ function renderPreview(ctx, {
     sortSplatRenderEntriesBackToFront(projectedOverlayPoints);
     projectedOverlayPoints.forEach(({ pointIndex, x, y, pixelsPerWorldUnit }) => {
       const colorOffset = pointIndex * 4;
-      const alpha = Math.max(0, Math.min(1, externalOverlayPoints.colors[colorOffset + 3] || 0));
+      const alpha = Math.max(0, Math.min(1,
+        (externalOverlayPoints.colors[colorOffset + 3] || 0) * annotationOpacityMultiplier,
+      ));
       if (alpha <= 0) return;
       const radius = Math.max(1.25, Math.min(4.5, 1.8 * pixelsPerWorldUnit / referencePixelsPerUnit));
       const red = Math.round(externalOverlayPoints.colors[colorOffset] || 0);
@@ -681,6 +717,7 @@ export default function Pt3GaussianSplatViewer({
   showRealOptimizationControls = true,
   vectorAnnotations = EMPTY_VECTOR_ANNOTATIONS,
   showAnnotations = true,
+  annotationOpacityMultiplier = 1,
 }) {
   const canvasRef = useRef(null);
   const webglCanvasRef = useRef(null);
@@ -762,14 +799,21 @@ export default function Pt3GaussianSplatViewer({
   const rendererType = rendererMatchesCurrentVolume
     ? rendererState.type
     : isPureSplatMode ? 'canvas2d-fallback' : 'pending';
+  const safeAnnotationOpacityMultiplier = Math.min(
+    1,
+    Math.max(0, Number(annotationOpacityMultiplier) || 0),
+  );
   const rendererHasExternalOverlay = rendererMatchesCurrentVolume
     && Boolean(rendererState.hasExternalOverlay);
   const rayMarchControlsAvailable = mode === VIEWER_MODES.volume && rendererType.startsWith('three-');
   const realSplatCameras = useMemo(() => getPt3RealSplatCameras(part), [part]);
   const [segmentationSegments, setSegmentationSegments] = useState(segmentationContract.segments);
-  const renderableSegmentationSegments = getRenderablePt3SegmentationSegments(
-    segmentationSegments,
-    showAnnotations,
+  const renderableSegmentationSegments = useMemo(
+    () => getRenderablePt3SegmentationSegments(
+      segmentationSegments,
+      showAnnotations,
+    ),
+    [segmentationSegments, showAnnotations],
   );
   const asset = useMemo(() => (
     mode === VIEWER_MODES.realSplat ? getPt3RealGaussianSplatAsset(part) : getPt3GaussianSplatAsset(part)
@@ -1074,6 +1118,8 @@ export default function Pt3GaussianSplatViewer({
         boundaryStrength,
         boundaryBandWidth,
         showExternalOverlay: showAnnotations,
+        externalOverlayOpacity: safeAnnotationOpacityMultiplier,
+        segmentationOpacityMultiplier: safeAnnotationOpacityMultiplier,
       });
       const ctx = canvas.getContext('2d');
       ctx.clearRect(0, 0, width, height);
@@ -1098,6 +1144,7 @@ export default function Pt3GaussianSplatViewer({
           projectionCache,
           segmentationSegments: renderableSegmentationSegments,
           externalOverlayPoints: showAnnotations ? externalOverlayPoints : null,
+          annotationOpacityMultiplier: safeAnnotationOpacityMultiplier,
           statsRef,
         });
       }
@@ -1110,6 +1157,7 @@ export default function Pt3GaussianSplatViewer({
         mirrorScale: activeMirrorScale,
         width,
         height,
+        opacityMultiplier: safeAnnotationOpacityMultiplier,
       });
       if (splatGuidesVisible) {
         drawPt3SliceLocator(ctx, {
@@ -1140,7 +1188,7 @@ export default function Pt3GaussianSplatViewer({
       resizeObserver?.disconnect();
       window.removeEventListener('resize', scheduleRender);
     };
-  }, [activeMirrorScale, activeSliceAxis, boundaryBandWidth, boundaryEnhancement, boundaryStrength, colorHigh, colorLow, cropEnabled, externalOverlayPoints, intensityThreshold, isPureSplatMode, isoThreshold, isoWidth, metadata, mode, opacityRampWidth, quality, reconstructionStyle, renderableSegmentationSegments, rendererType, rotation, showAnnotations, slicePosition, splatContrast, splatGuidesVisible, splatOpacity, splatPointSize, splats, vectorAnnotations, volumeOpacity, windowCenter, windowWidth, zoom]);
+  }, [activeMirrorScale, activeSliceAxis, boundaryBandWidth, boundaryEnhancement, boundaryStrength, colorHigh, colorLow, cropEnabled, externalOverlayPoints, intensityThreshold, isPureSplatMode, isoThreshold, isoWidth, metadata, mode, opacityRampWidth, quality, reconstructionStyle, renderableSegmentationSegments, rendererType, rotation, safeAnnotationOpacityMultiplier, showAnnotations, slicePosition, splatContrast, splatGuidesVisible, splatOpacity, splatPointSize, splats, vectorAnnotations, volumeOpacity, windowCenter, windowWidth, zoom]);
 
   const updateRayMarchSetting = (key, value) => {
     onRayMarchSettingsChange?.({ ...activeRayMarchSettings, [key]: value });

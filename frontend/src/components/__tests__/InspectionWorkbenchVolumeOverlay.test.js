@@ -436,4 +436,21 @@ describe('PT3 volume overlay stack mapping', () => {
     expect(observed).toEqual({ alpha: expectedAlpha, operation: 'source-over' });
     expect(context.restore).toHaveBeenCalledTimes(1);
   });
+
+  test('multiplies assigned MPR overlay alpha by the session annotation opacity', () => {
+    const observed = {};
+    const context = {
+      globalAlpha: 0,
+      globalCompositeOperation: 'copy',
+      save: jest.fn(),
+      drawImage: jest.fn(() => {
+        observed.alpha = context.globalAlpha;
+      }),
+      restore: jest.fn(),
+    };
+
+    drawMprOverlaySlice(context, { width: 4, height: 3 }, { colorMode: 'rgba' }, 8, 6, 0.35);
+
+    expect(observed.alpha).toBe(0.35);
+  });
 });

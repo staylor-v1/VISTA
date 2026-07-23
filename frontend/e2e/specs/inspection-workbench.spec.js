@@ -15,6 +15,7 @@ const rgbaVolumePreviewScreenshotPath = path.resolve(__dirname, '../../artifacts
 const rgbaFullscreen2dScreenshotPath = path.resolve(__dirname, '../../artifacts/rgba-segment-fullscreen-2d.png');
 const rgbaFullscreen3dScreenshotPath = path.resolve(__dirname, '../../artifacts/rgba-segment-fullscreen-3d.png');
 const rgbaFullscreen3dNarrowScreenshotPath = path.resolve(__dirname, '../../artifacts/rgba-segment-fullscreen-3d-narrow.png');
+const annotationTransparencyScreenshotPath = path.resolve(__dirname, '../../artifacts/annotation-transparency-50.png');
 const simulatedUsers = ['basic', 'intermediate', 'advanced'];
 
 function readMultipartJsonFilePart(bodyBuffer, fieldName) {
@@ -890,6 +891,41 @@ test.describe('PR-09 annotation controls screenshot artifact', () => {
     const panel = page.locator('section[aria-label="Inspection Workbench"]');
     await expect(panel).toBeVisible();
     await panel.screenshot({ path: pr09ScreenshotPath });
+  });
+
+  test('configures annotation transparency locally without mutating annotations', async ({ page }) => {
+    const { projectId } = await mockInspectionWorkbenchRoutes(page, { type: 'PT1', scenario: 'advanced' });
+    const annotationMutationRequests = [];
+    page.on('request', (request) => {
+      const requestUrl = new URL(request.url());
+      if (
+        requestUrl.pathname.includes('/annotations')
+        && ['POST', 'PATCH', 'DELETE'].includes(request.method())
+      ) {
+        annotationMutationRequests.push(`${request.method()} ${requestUrl.pathname}`);
+      }
+    });
+
+    await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
+    await page.getByRole('tab', { name: 'Inspection' }).click();
+    const controls = page.getByTestId('annotation-controls');
+    await expect(controls).toBeVisible();
+
+    const transparencyInput = controls.getByRole('spinbutton', {
+      name: 'Annotation transparency percent',
+    });
+    await expect(transparencyInput).toHaveValue('0');
+    await expect(transparencyInput).toHaveAttribute('min', '0');
+    await expect(transparencyInput).toHaveAttribute('max', '100');
+    await expect(transparencyInput).toHaveAttribute('step', '1');
+
+    await transparencyInput.fill('120');
+    await expect(transparencyInput).toHaveValue('100');
+    await transparencyInput.fill('50');
+    await expect(transparencyInput).toHaveValue('50');
+    await controls.screenshot({ path: annotationTransparencyScreenshotPath });
+
+    expect(annotationMutationRequests).toEqual([]);
   });
 });
 

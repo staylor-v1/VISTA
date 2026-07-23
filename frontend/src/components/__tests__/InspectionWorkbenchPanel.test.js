@@ -2,10 +2,12 @@ import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import InspectionWorkbenchPanel, {
   createServerVolumeDescriptor,
+  getAnnotationOpacityMultiplier,
   getMprFallbackModelZoom,
   getMprVolumeCacheKey,
   getMprSliceCachingMessage,
   projectMprPointToOverlay,
+  normalizeAnnotationTransparencyPercent,
   shouldApplyDisplayWindowToVolumeCache,
 } from '../InspectionWorkbenchPanel';
 import ImagesToPartsTab from '../ImagesToPartsTab';
@@ -868,6 +870,16 @@ function scenarioNameIncludesAdvanced(payload) {
 
 
 describe('InspectionWorkbenchPanel', () => {
+
+  test('normalizes annotation transparency and converts it to an opacity multiplier', () => {
+    expect(normalizeAnnotationTransparencyPercent(-9)).toBe(0);
+    expect(normalizeAnnotationTransparencyPercent(44.6)).toBe(45);
+    expect(normalizeAnnotationTransparencyPercent(140)).toBe(100);
+    expect(normalizeAnnotationTransparencyPercent('invalid')).toBe(0);
+    expect(getAnnotationOpacityMultiplier(0)).toBe(1);
+    expect(getAnnotationOpacityMultiplier(25)).toBe(0.75);
+    expect(getAnnotationOpacityMultiplier(100)).toBe(0);
+  });
 
   test('formats MPR loading progress while volume slices are expected', () => {
     expect(getMprSliceCachingMessage({ loadedSlices: 1, totalSlices: 3 })).toBe('Caching MPR slices 1/3');
@@ -3544,6 +3556,46 @@ describe('InspectionWorkbenchPanel', () => {
 
     fireEvent.click(displayToggle);
     await waitFor(() => expect(screen.getByLabelText('tile measurement overlay')).toHaveTextContent('4.20 mm'));
+  });
+
+  test('configures annotation transparency without fading annotation edit targets', async () => {
+    mockWorkbenchFetch({
+      ...scenarioByUser[0],
+      parts: [{
+        ...scenarioByUser[0].parts[0],
+        metadata: {
+          ...scenarioByUser[0].parts[0].metadata,
+          annotations: [{
+            id: 'measurement-transparency-a',
+            image_id: 'part-basic-1-image-1',
+            defect_class: 'Measurement',
+            comment: 'Transparency line check',
+            geometry: { line: { x1: 100, y1: 80, x2: 280, y2: 160, imageWidth: 400, imageHeight: 200 } },
+            measurements: { length_mm: 4.2 },
+          }],
+        },
+      }],
+    });
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    const input = await screen.findByLabelText('Annotation transparency percent');
+    const overlay = await screen.findByLabelText('tile measurement overlay');
+    expect(input).toHaveAttribute('type', 'number');
+    expect(input).toHaveAttribute('min', '0');
+    expect(input).toHaveAttribute('max', '100');
+    expect(input).toHaveAttribute('step', '1');
+    expect(input).toHaveValue(0);
+
+    fireEvent.change(input, { target: { value: '25' } });
+    expect(input).toHaveValue(25);
+    expect(overlay.querySelector('g[opacity="0.75"]')).toBeInTheDocument();
+    expect(overlay.querySelector('.inspection-annotation-drag-target')).not.toHaveAttribute('opacity');
+
+    fireEvent.change(input, { target: { value: '120' } });
+    expect(input).toHaveValue(100);
+    expect(overlay.querySelector('g[opacity="0"]')).toBeInTheDocument();
+    expect(overlay.querySelector('.inspection-annotation-drag-target')).toBeInTheDocument();
   });
 
   test('crops bounding box annotations into child images assigned to the workbench', async () => {

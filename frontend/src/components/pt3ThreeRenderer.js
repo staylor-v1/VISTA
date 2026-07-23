@@ -125,6 +125,21 @@ export function getPt3BoundedProjectionOpacity(transferResponse, opacityMultipli
   return clamp(1 - Math.exp(-opticalDepth), 0, 1);
 }
 
+export function scalePt3PremultipliedOverlayLayer(overlayColor, opacityMultiplier) {
+  const multiplier = clamp(finiteNumberOr(opacityMultiplier, 1), 0, 1);
+  return Array.from({ length: 4 }, (_unused, index) => (
+    finiteNumberOr(overlayColor?.[index], 0) * multiplier
+  ));
+}
+
+export function shouldRenderPt3ExternalOverlay(externalOverlayTexture, showExternalOverlay, opacity) {
+  return Boolean(
+    externalOverlayTexture
+    && showExternalOverlay
+    && clamp(finiteNumberOr(opacity, 0), 0, 1) > 0,
+  );
+}
+
 function getWebGlErrorLabel(gl, errorCode) {
   return [
     ['INVALID_ENUM', gl.INVALID_ENUM],
@@ -715,6 +730,8 @@ export const PT3_VOLUME_FRAGMENT_SHADER = `
   uniform sampler2D segmentationState;
   uniform bool hasSegmentation;
   uniform bool hasExternalOverlay;
+  uniform float segmentationOpacityMultiplier;
+  uniform float externalOverlayOpacity;
   uniform vec3 cameraLocal;
   uniform vec3 voxelStep;
   uniform vec3 physicalSize;
@@ -874,8 +891,8 @@ export const PT3_VOLUME_FRAGMENT_SHADER = `
           }
         }
         if (segmentState > 0.5) {
-          color = segmentColor.rgb;
-          alpha *= segmentColor.a;
+          color = mix(color, segmentColor.rgb, segmentationOpacityMultiplier);
+          alpha *= mix(1.0, segmentColor.a, segmentationOpacityMultiplier);
         }
         alpha = clamp(alpha, 0.0, 1.0);
         accumulated.rgb += (1.0 - accumulated.a) * alpha * color;
@@ -893,8 +910,8 @@ export const PT3_VOLUME_FRAGMENT_SHADER = `
         vec3 color = mix(colorLow, colorHigh, windowPosition);
         applyBoundaryEnhancement(samplePoint, color, alpha);
         if (segmentState > 0.5) {
-          color = segmentColor.rgb;
-          alpha *= segmentColor.a;
+          color = mix(color, segmentColor.rgb, segmentationOpacityMultiplier);
+          alpha *= mix(1.0, segmentColor.a, segmentationOpacityMultiplier);
         }
         alpha = clamp(alpha, 0.0, 1.0);
         accumulated.rgb += (1.0 - accumulated.a) * alpha * color;
@@ -906,8 +923,8 @@ export const PT3_VOLUME_FRAGMENT_SHADER = `
         vec3 color = mix(colorLow, colorHigh, smoothstep(intensityThreshold, 1.0, value));
         applyBoundaryEnhancement(samplePoint, color, alpha);
         if (segmentState > 0.5) {
-          color = segmentColor.rgb;
-          alpha *= segmentColor.a;
+          color = mix(color, segmentColor.rgb, segmentationOpacityMultiplier);
+          alpha *= mix(1.0, segmentColor.a, segmentationOpacityMultiplier);
         }
         alpha = clamp(alpha, 0.0, 1.0);
         accumulated.rgb += (1.0 - accumulated.a) * alpha * color;
@@ -917,6 +934,8 @@ export const PT3_VOLUME_FRAGMENT_SHADER = `
     }
 
     vec4 reconstructedColor = vec4(0.0);
+    segmentProjection *= segmentationOpacityMultiplier;
+    externalOverlayProjection *= externalOverlayOpacity;
     if (renderStyle == 1) {
       if (maximumValue < 0.0) {
         reconstructedColor = vec4(0.0);
@@ -1088,6 +1107,8 @@ export async function createThreeMechanicalRenderer(canvas, {
       segmentationState: { value: segmentationStateTexture },
       hasSegmentation: { value: Boolean(segmentationTexture) },
       hasExternalOverlay: { value: Boolean(externalOverlayTexture) },
+      segmentationOpacityMultiplier: { value: 1 },
+      externalOverlayOpacity: { value: 1 },
       cameraLocal: { value: new THREE.Vector3() },
       voxelStep: {
         value: new THREE.Vector3(
@@ -1350,6 +1371,8 @@ export async function createThreeMechanicalRenderer(canvas, {
       boundaryStrength,
       boundaryBandWidth,
       showExternalOverlay = true,
+      externalOverlayOpacity = 1,
+      segmentationOpacityMultiplier = 1,
     }) {
       if (resourcesDisposed) return;
       const safeWidth = Math.max(1, width || canvas.clientWidth || 1);
@@ -1382,8 +1405,21 @@ export async function createThreeMechanicalRenderer(canvas, {
       const safeSampleStep = Math.min(3, Math.max(0.5, Number(sampleStep) || 1.25));
       material.uniforms.sampleStep.value = safeSampleStep;
       material.uniforms.stepSize.value = safeSampleStep / Math.max(...textureDimensions, 1);
+      const safeExternalOverlayOpacity = Math.min(
+        1,
+        Math.max(0, Number(externalOverlayOpacity) || 0),
+      );
       material.uniforms.hasExternalOverlay.value = Boolean(
-        externalOverlayTexture && showExternalOverlay,
+        shouldRenderPt3ExternalOverlay(
+          externalOverlayTexture,
+          showExternalOverlay,
+          safeExternalOverlayOpacity,
+        ),
+      );
+      material.uniforms.externalOverlayOpacity.value = safeExternalOverlayOpacity;
+      material.uniforms.segmentationOpacityMultiplier.value = Math.min(
+        1,
+        Math.max(0, Number(segmentationOpacityMultiplier) || 0),
       );
       updateSegmentationPalette(segmentationPaletteTexture, segmentationStateTexture, segmentationPalette);
       const parseColor = (hex, fallback) => {

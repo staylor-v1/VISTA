@@ -1002,10 +1002,11 @@ export function buildPt3VectorAnnotationFaces(vectorAnnotations, metadata, optio
   return result;
 }
 
-function drawProjectedFace(ctx, face, projectPolygon) {
+function drawProjectedFace(ctx, face, projectPolygon, opacityMultiplier = 1) {
   const [red, green, blue] = colorToRgb(face.color);
   const baseOpacity = clamp(face.opacity, 0, 1);
-  const fillOpacity = baseOpacity * (face.surface === 'side' ? 0.55 : 0.78);
+  const visualOpacity = clamp(finiteNumber(opacityMultiplier, 1), 0, 1);
+  const fillOpacity = baseOpacity * (face.surface === 'side' ? 0.55 : 0.78) * visualOpacity;
   ctx.beginPath();
   let polygonCount = 0;
   forEachPt3VectorFaceVoxelPolygon(face, (voxelPolygon) => {
@@ -1019,7 +1020,7 @@ function drawProjectedFace(ctx, face, projectPolygon) {
   });
   if (polygonCount === 0) return false;
   ctx.fillStyle = `rgba(${red},${green},${blue},${fillOpacity})`;
-  ctx.strokeStyle = `rgba(${red},${green},${blue},0.82)`;
+  ctx.strokeStyle = `rgba(${red},${green},${blue},${0.82 * visualOpacity})`;
   ctx.lineWidth = 1.15;
   ctx.setLineDash?.([]);
   ctx.fill();
@@ -1036,6 +1037,7 @@ export function renderPt3VectorAnnotations(ctx, {
   mirrorScale,
   width,
   height,
+  opacityMultiplier = 1,
 } = {}) {
   const build = buildPt3VectorAnnotationFaces(vectorAnnotations, metadata, { showAnnotations });
   const result = { ...build.stats, renderedFaces: 0 };
@@ -1074,7 +1076,7 @@ export function renderPt3VectorAnnotations(ctx, {
 
   ctx.save?.();
   projectedFaces.forEach(({ face }) => {
-    if (drawProjectedFace(ctx, face, projectPolygon)) result.renderedFaces += 1;
+    if (drawProjectedFace(ctx, face, projectPolygon, opacityMultiplier)) result.renderedFaces += 1;
   });
   ctx.setLineDash?.([]);
   ctx.restore?.();

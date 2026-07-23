@@ -17,6 +17,8 @@ import {
   PT3_VOLUME_MATERIAL_OPTIONS,
   PT3_VOLUME_FRAGMENT_SHADER,
   recreatePt3BaseRendererAfterContextLoss,
+  scalePt3PremultipliedOverlayLayer,
+  shouldRenderPt3ExternalOverlay,
 } from '../pt3ThreeRenderer';
 
 const PT3_THREE_RENDERER_SOURCE = readFileSync(
@@ -436,18 +438,39 @@ describe('PT3 reconstruction fragment shader', () => {
     expect(PT3_VOLUME_FRAGMENT_SHADER).toContain('if (segmentState > 1.5)');
     expect(PT3_VOLUME_FRAGMENT_SHADER).toContain('continue;');
     expect(PT3_VOLUME_FRAGMENT_SHADER).toContain('segmentColor = texture(segmentationPalette, palettePoint)');
-    expect(PT3_VOLUME_FRAGMENT_SHADER).toContain('color = segmentColor.rgb');
+    expect(PT3_VOLUME_FRAGMENT_SHADER).toContain(
+      'color = mix(color, segmentColor.rgb, segmentationOpacityMultiplier)',
+    );
     expect(PT3_VOLUME_FRAGMENT_SHADER).toContain('vec4 segmentProjection = vec4(0.0)');
     expect(PT3_VOLUME_FRAGMENT_SHADER).toContain('addProjectionOverlay');
+  });
+
+  test('global transparency restores base volume samples without alpha punching', () => {
+    expect(PT3_VOLUME_FRAGMENT_SHADER).toContain('uniform float segmentationOpacityMultiplier');
+    expect(PT3_VOLUME_FRAGMENT_SHADER).toContain(
+      'color = mix(color, segmentColor.rgb, segmentationOpacityMultiplier)',
+    );
+    expect(PT3_VOLUME_FRAGMENT_SHADER).toContain(
+      'alpha *= mix(1.0, segmentColor.a, segmentationOpacityMultiplier)',
+    );
+    expect(PT3_VOLUME_FRAGMENT_SHADER).not.toContain('alpha *= segmentColor.a;');
+    expect(PT3_VOLUME_FRAGMENT_SHADER).toContain(
+      'segmentProjection *= segmentationOpacityMultiplier;',
+    );
   });
 
   test('projects external RGBA overlays independently of reconstruction intensity in every style', () => {
     expect(PT3_VOLUME_FRAGMENT_SHADER).toContain('uniform sampler3D externalOverlayMap');
     expect(PT3_VOLUME_FRAGMENT_SHADER).toContain('uniform bool hasExternalOverlay');
+    expect(PT3_VOLUME_FRAGMENT_SHADER).toContain('uniform float externalOverlayOpacity');
     expect(PT3_VOLUME_FRAGMENT_SHADER).toContain(
       'vec4 externalOverlaySample = texture(externalOverlayMap, samplePoint)',
     );
     expect(PT3_VOLUME_FRAGMENT_SHADER).toContain('externalOverlayProjection.rgb +=');
+    expect(PT3_VOLUME_FRAGMENT_SHADER).not.toContain(') * externalOverlayOpacity;');
+    expect(PT3_VOLUME_FRAGMENT_SHADER).toContain(
+      'externalOverlayProjection *= externalOverlayOpacity;',
+    );
     expect(PT3_VOLUME_FRAGMENT_SHADER).toContain(
       'outputColor = addProjectionOverlay(reconstructedColor, externalOverlayProjection)',
     );
@@ -467,8 +490,27 @@ describe('PT3 reconstruction fragment shader', () => {
     expect(PT3_THREE_RENDERER_SOURCE).toContain(
       'hasExternalOverlay: Boolean(externalOverlayTexture)',
     );
-    expect(PT3_THREE_RENDERER_SOURCE).toMatch(
-      /material\.uniforms\.hasExternalOverlay\.value = Boolean\(\s*externalOverlayTexture && showExternalOverlay,?\s*\)/,
+    expect(shouldRenderPt3ExternalOverlay({}, true, 1)).toBe(true);
+    expect(shouldRenderPt3ExternalOverlay({}, true, 0)).toBe(false);
+    expect(shouldRenderPt3ExternalOverlay({}, false, 1)).toBe(false);
+    expect(shouldRenderPt3ExternalOverlay(null, true, 1)).toBe(false);
+    expect(PT3_THREE_RENDERER_SOURCE).toContain(
+      'shouldRenderPt3ExternalOverlay(',
     );
+    expect(PT3_THREE_RENDERER_SOURCE).toContain(
+      'material.uniforms.externalOverlayOpacity.value = safeExternalOverlayOpacity;',
+    );
+  });
+
+  test('scales the completed premultiplied overlay layer independently of ray depth', () => {
+    const twoSampleAlpha = 1 - ((1 - 0.4) ** 2);
+    const baselineLayer = [twoSampleAlpha * 0.75, twoSampleAlpha * 0.25, 0, twoSampleAlpha];
+
+    expect(scalePt3PremultipliedOverlayLayer(baselineLayer, 1)).toEqual(baselineLayer);
+    expect(scalePt3PremultipliedOverlayLayer(baselineLayer, 0.25)).toEqual([
+      0.12, 0.04, 0, 0.16,
+    ]);
+    expect(scalePt3PremultipliedOverlayLayer(baselineLayer, 0)).toEqual([0, 0, 0, 0]);
+    expect(0.16).not.toBeCloseTo(1 - ((1 - (0.4 * 0.25)) ** 2), 10);
   });
 });

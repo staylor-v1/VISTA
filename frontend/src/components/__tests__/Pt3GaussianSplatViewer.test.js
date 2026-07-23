@@ -7,6 +7,7 @@ import Pt3GaussianSplatViewer, {
   getPt3RealGaussianSplatAsset,
   getPt3RealSplatCameras,
   getRenderablePt3SegmentationSegments,
+  getPt3SegmentedSplatRgba,
   loadPt3ExternalVolumeOverlayPoints,
   normalizeRayMarchSettings,
   REAL_SPLAT_BROWSER_MAX,
@@ -894,7 +895,7 @@ describe('Pt3GaussianSplatViewer renderer degradation', () => {
       metadata: {
         ...part.metadata,
         pt3_segmentation: {
-          segments: [{ id: 1, label: 'Dense shell', color: '#f97316' }],
+          segments: [{ id: 1, label: 'Dense shell', color: '#f97316', opacity: 1 }],
           label_slices: [{ slice_index: 0, labels: denseLabels }],
         },
       },
@@ -933,20 +934,41 @@ describe('Pt3GaussianSplatViewer renderer degradation', () => {
       mode="volume"
       vectorAnnotations={vectorAnnotations}
       showAnnotations
+      annotationOpacityMultiplier={0.35}
     />);
     await waitFor(() => expect(renderPt3VectorAnnotations.mock.calls.some(([, options]) => (
-      options.vectorAnnotations === vectorAnnotations && options.showAnnotations === true
+      options.vectorAnnotations === vectorAnnotations
+      && options.showAnnotations === true
+      && options.opacityMultiplier === 0.35
     ))).toBe(true));
     await waitFor(() => expect(renderer.render.mock.calls.some(([options]) => (
       options.segmentationPalette.length === 1
       && options.segmentationPalette[0].label === 'Dense shell'
+      && options.segmentationPalette[0].opacity === 1
+      && options.externalOverlayOpacity === 0.35
+      && options.segmentationOpacityMultiplier === 0.35
     ))).toBe(true));
   });
 
-  test('removes dense segmentation styling from both volume and splat render inputs', () => {
-    const segments = [{ id: 1, label: 'Dense shell', visible: true, opacity: 1 }];
+  test('keeps authored dense segmentation state separate from global transparency', () => {
+    const segments = [{ id: 1, label: 'Dense shell', visible: true, opacity: 0.8 }];
     expect(getRenderablePt3SegmentationSegments(segments, false)).toEqual([]);
     expect(getRenderablePt3SegmentationSegments(segments, true)).toBe(segments);
+    expect(segments[0].opacity).toBe(0.8);
+  });
+
+  test('restores base splat color and alpha at 100% annotation transparency', () => {
+    const segment = { color: '#ff0000', opacity: 0.4 };
+    const base = { baseColor: [10, 20, 30], baseAlpha: 0.7, segment };
+
+    const baseline = getPt3SegmentedSplatRgba({ ...base, opacityMultiplier: 1 });
+    const fullyTransparent = getPt3SegmentedSplatRgba({ ...base, opacityMultiplier: 0 });
+    const halfway = getPt3SegmentedSplatRgba({ ...base, opacityMultiplier: 0.5 });
+    expect(baseline.slice(0, 3)).toEqual([255, 0, 0]);
+    expect(baseline[3]).toBeCloseTo(0.28, 10);
+    expect(fullyTransparent).toEqual([10, 20, 30, 0.7]);
+    expect(halfway.slice(0, 3)).toEqual([132.5, 10, 15]);
+    expect(halfway[3]).toBeCloseTo(0.49, 10);
   });
 
   test('keeps keyboard interaction inside every segmentation control', () => {
