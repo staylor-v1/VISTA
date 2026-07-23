@@ -1233,7 +1233,7 @@ async def import_project_s3_files(
             copied_items.append(item)
 
     copy_finished_at = time.perf_counter()
-    db_images: list[tuple[int, models.DataInstance]] = []
+    imported_by_position: list[tuple[int, Any]] = []
     if copied_items:
         object_storage_keys = [item["object_storage_key"] for item in copied_items]
         try:
@@ -1264,9 +1264,18 @@ async def import_project_s3_files(
                     uploaded_by_user_id=current_user.email,
                 )
                 db.add(db_image)
-                db_images.append((item["position"], db_image))
+                imported_by_position.append((item["position"], db_image))
 
             await db.flush()
+            # Materialize the response while flushed ORM attributes are known
+            # and before the transaction commit can expire or detach state in
+            # test/alternate session configurations. This prevents async ORM
+            # implicit IO during response serialization, which would otherwise
+            # raise MissingGreenlet outside SQLAlchemy's greenlet context.
+            imported_by_position = [
+                (position, to_data_instance_schema(db_image))
+                for position, db_image in imported_by_position
+            ]
             await _commit_database_transaction(db)
         except asyncio.CancelledError as exc:
             if getattr(exc, "vista_commit_succeeded", False):
@@ -1303,8 +1312,8 @@ async def import_project_s3_files(
 
     finished_at = time.perf_counter()
     imported = [
-        to_data_instance_schema(db_image)
-        for _, db_image in sorted(db_images, key=lambda entry: entry[0])
+        imported_schema
+        for _, imported_schema in sorted(imported_by_position, key=lambda entry: entry[0])
     ]
     failed = [
         failure
