@@ -76,6 +76,86 @@ describe('inspectionAnnotationAdapter', () => {
     expect(payload.metadata.annotation_fill_opacity).toBe(1);
   });
 
+  test('round-trips canonical volumetric area runs without changing legacy planar payloads', () => {
+    const payload = makeVistaSegmentAnnotationPayload({
+      axis: 'axial',
+      minSlice: 2,
+      maxSlice: 2,
+      imageWidth: 8,
+      imageHeight: 6,
+      volumeDimensions: [8, 6, 4],
+      areas: [
+        {
+          id: 'sphere-1',
+          tool: 'brush',
+          mode: '3d',
+          operation: 'add',
+          volumeDimensions: [8, 6, 4],
+          volumeRuns: [
+            [0, 1, 2, 5],
+            [1, 1, 2, 6],
+            [1, 1, 4, 4],
+            [Number.NaN, 1, 0, 1],
+          ],
+          seedVoxel: [3, 1, 1],
+          spacing: [0.5, 0.5, 1],
+          voxelCount: 7,
+          connectivity: 6,
+          truncated: false,
+        },
+      ],
+    });
+    expect(payload.geometry.segment).toMatchObject({
+      version: 2,
+      volume_dimensions: [8, 6, 4],
+      areas: [{
+        id: 'sphere-1',
+        tool: 'brush',
+        mode: '3d',
+        operation: 'add',
+        volumeDimensions: [8, 6, 4],
+        volumeRuns: [[0, 1, 2, 5], [1, 1, 2, 6]],
+        seedVoxel: [3, 1, 1],
+        spacing: [0.5, 0.5, 1],
+        voxelCount: 7,
+        connectivity: 6,
+        truncated: false,
+      }],
+    });
+    expect(annotationToVectorSegment({ id: 'volume-segment', ...payload })).toMatchObject({
+      id: 'volume-segment',
+      version: 2,
+      volumeDimensions: [8, 6, 4],
+      areas: [expect.objectContaining({ mode: '3d', volumeRuns: [[0, 1, 2, 5], [1, 1, 2, 6]] })],
+    });
+
+    const planar = makeVistaSegmentAnnotationPayload({
+      axis: 'axial',
+      imageWidth: 8,
+      imageHeight: 6,
+      areas: [{ tool: 'brush', points: [{ x: 1, y: 1 }] }],
+    });
+    expect(planar.geometry.segment.version).toBe(1);
+    expect(planar.geometry.segment).not.toHaveProperty('volume_dimensions');
+  });
+
+  test('does not let an empty volume-run alias hide populated legacy runs', () => {
+    const payload = makeVistaSegmentAnnotationPayload({
+      axis: 'axial',
+      imageWidth: 4,
+      imageHeight: 4,
+      volumeDimensions: [4, 4, 4],
+      areas: [{
+        tool: 'volume-mask',
+        mode: '3d',
+        volumeRuns: [],
+        volume_runs: [[1, 2, 0, 3]],
+      }],
+    });
+
+    expect(payload.geometry.segment.areas[0].volumeRuns).toEqual([[1, 2, 0, 3]]);
+  });
+
   test('persists only canonical source-space segment area geometry', () => {
     const transientPoint = (x, y) => ({
       x,
@@ -168,6 +248,8 @@ describe('inspectionAnnotationAdapter', () => {
         operation: 'subtract',
         axis: 'axial',
         sliceIndex: 8,
+        imageWidth: 90,
+        imageHeight: 60,
         brushSize: 7,
         points: [{ x: 3, y: 4 }, { x: 8, y: 9 }],
       },
@@ -214,6 +296,8 @@ describe('inspectionAnnotationAdapter', () => {
         methodId: 'segmentation.sam.placeholder',
         methodLabel: 'SAM',
         label: 4,
+        imageWidth: 90,
+        imageHeight: 60,
       },
     ]);
 
@@ -222,8 +306,6 @@ describe('inspectionAnnotationAdapter', () => {
       'displayY',
       'stageWidth',
       'stageHeight',
-      'imageWidth',
-      'imageHeight',
       'cachedPixels',
       'decodedPixels',
       'mlCache',

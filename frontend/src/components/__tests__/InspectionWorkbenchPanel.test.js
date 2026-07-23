@@ -2,6 +2,7 @@ import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import InspectionWorkbenchPanel, {
   createServerVolumeDescriptor,
+  getCanonicalSegmentationSliceIndex,
   getAnnotationOpacityMultiplier,
   getMprFallbackModelZoom,
   getMprVolumeCacheKey,
@@ -12,6 +13,7 @@ import InspectionWorkbenchPanel, {
 } from '../InspectionWorkbenchPanel';
 import ImagesToPartsTab from '../ImagesToPartsTab';
 import * as pt3ThreeRenderer from '../pt3ThreeRenderer';
+import * as pt3VectorAnnotations from '../pt3VectorAnnotations';
 
 jest.setTimeout(90000);
 
@@ -870,6 +872,29 @@ function scenarioNameIncludesAdvanced(payload) {
 
 
 describe('InspectionWorkbenchPanel', () => {
+  test('maps UI slice indices into the canonical cache dimensions used for editing', () => {
+    const uiDimensions = { sagittal: 160, coronal: 128, axial: 64 };
+    const canonicalDimensions = [80, 96, 32];
+    expect(getCanonicalSegmentationSliceIndex(
+      'coronal',
+      64,
+      uiDimensions,
+      canonicalDimensions,
+    )).toBe(48);
+    expect(getCanonicalSegmentationSliceIndex(
+      'sagittal',
+      159,
+      uiDimensions,
+      canonicalDimensions,
+    )).toBe(79);
+    expect(getCanonicalSegmentationSliceIndex(
+      'axial',
+      0,
+      uiDimensions,
+      canonicalDimensions,
+    )).toBe(0);
+  });
+
 
   test('normalizes annotation transparency and converts it to an opacity multiplier', () => {
     expect(normalizeAnnotationTransparencyPercent(-9)).toBe(0);
@@ -5474,14 +5499,21 @@ describe('InspectionWorkbenchPanel', () => {
 
     await waitFor(() => expect(screen.getByTestId('mpr-panel')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: 'Segmentation Helpers' }));
+    const segmentationHelperButton = screen.getByRole('button', { name: 'Segmentation Helpers' });
+    fireEvent.click(segmentationHelperButton);
     expect(screen.getByRole('dialog', { name: 'Segmentation Helpers' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Close Segmentation Helpers' })).toHaveFocus());
     expect(screen.getByTestId('segmentation-segment-list')).toHaveTextContent('Segment A');
-    expect(screen.getByLabelText('View orientation')).toHaveTextContent('XY');
-    expect(screen.getByLabelText('View orientation')).toHaveTextContent('XZ');
-    expect(screen.getByLabelText('View orientation')).toHaveTextContent('YZ');
+    const viewTabs = screen.getByRole('tablist', { name: 'Segmentation workspace views' });
+    expect(within(viewTabs).getByRole('tab', { name: 'X YZ' })).toBeInTheDocument();
+    expect(within(viewTabs).getByRole('tab', { name: 'Y XZ' })).toBeInTheDocument();
+    expect(within(viewTabs).getByRole('tab', { name: 'Z XY' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(viewTabs).getByRole('tab', { name: 'MPR' })).toBeInTheDocument();
+    expect(within(viewTabs).getByRole('tab', { name: '3D' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Brush dimensional mode' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Brush 2D mode' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByLabelText('Slice navigation')).toHaveTextContent('Z');
-    expect(screen.getByRole('button', { name: /Connected: Seed a contiguous area/i })).toHaveAttribute('data-tooltip', expect.stringContaining('Connected'));
+    expect(screen.getByRole('button', { name: /^Connected:/i })).toHaveAttribute('data-tooltip', expect.stringContaining('Connected'));
     expect(screen.getByRole('button', { name: /Level Trace: Trace an equal-intensity contour/i })).toHaveAttribute('data-tooltip', expect.stringContaining('Level Trace'));
     expect(screen.getByRole('button', { name: /Scissors: Mark cut paths/i })).toHaveAttribute('data-tooltip', expect.stringContaining('Scissors'));
 
@@ -5493,7 +5525,7 @@ describe('InspectionWorkbenchPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add new segment' }));
     expect(screen.getByTestId('segmentation-segment-list')).toHaveTextContent('Segment B');
 
-    fireEvent.click(screen.getByRole('button', { name: 'XZ' }));
+    fireEvent.click(within(viewTabs).getByRole('tab', { name: 'Y XZ' }));
     fireEvent.change(screen.getByLabelText('Y'), { target: { value: '12' } });
     expect(screen.getAllByText('Y 12 / 95').length).toBeGreaterThan(0);
 
@@ -5507,7 +5539,7 @@ describe('InspectionWorkbenchPanel', () => {
     expect(stage).toHaveClass('show-brush-pointer');
     expect(stage.style.getPropertyValue('--brush-pointer-size')).toBe('32px');
 
-    fireEvent.click(screen.getByRole('button', { name: /Connected/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Connected:/i }));
     const connectedCanvas = stage.querySelector('canvas.mpr-slice-canvas');
     const connectedWidth = 80;
     const connectedHeight = 96;
@@ -5572,6 +5604,457 @@ describe('InspectionWorkbenchPanel', () => {
     fireCoordinatePointerEvent(stage, 'pointerdown', { clientX: 221, clientY: 111, button: 0 });
     expect(global.fetch.mock.calls.filter((call) => call[0].includes('/slice-segmentation')).length).toBe(afterFirstMlCalls);
     HTMLCanvasElement.prototype.toDataURL = originalToDataURL;
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Segmentation Helpers' })).not.toBeInTheDocument());
+    await waitFor(() => expect(segmentationHelperButton).toHaveFocus());
+  });
+
+  test('uses canonical cache dimensions for ML helper pointer coordinates and persisted geometry', async () => {
+    const uiDimensions = { axial: 12, coronal: 14, sagittal: 16 };
+    const cacheDimensions = { axial: 6, coronal: 7, sagittal: 8 };
+    const volumeSource = {
+      filename: 'canonical-cache-volume.npy',
+      image_id: 'canonical-cache-volume',
+      metadata: {
+        load_mode: 'volume',
+        volume_shape: cacheDimensions,
+        channel_count: 1,
+        color_mode: 'scalar',
+      },
+    };
+    const segment = makeVistaSegmentAnnotation();
+    const scenario = makePt3ScenarioWithMetadata({
+      volume_shape: uiDimensions,
+      source_images: [volumeSource],
+      annotations: [segment],
+    });
+    mockWorkbenchFetch({
+      ...scenario,
+      projectImages: [{
+        id: volumeSource.image_id,
+        filename: volumeSource.filename,
+        metadata: volumeSource.metadata,
+      }],
+    });
+    const baseFetch = global.fetch;
+    global.fetch = jest.fn((url, options = {}) => {
+      if (url.includes('/slice-segmentation') && options.method === 'POST') {
+        const payload = JSON.parse(options.body);
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            axis: payload.axis,
+            slice_index: payload.slice_index,
+            method_id: payload.method_id,
+            regions: [{
+              label: 7,
+              area_px: 56,
+              bbox: [0, 0, cacheDimensions.sagittal, cacheDimensions.coronal],
+              centroid: [cacheDimensions.sagittal / 2, cacheDimensions.coronal / 2],
+            }],
+          }),
+        });
+      }
+      return baseFetch(url, options);
+    });
+    const dataUrlSpy = jest.spyOn(HTMLCanvasElement.prototype, 'toDataURL')
+      .mockReturnValue('data:image/png;base64,Y2Fub25pY2Fs');
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+    await screen.findByTestId('mpr-panel');
+    await within(screen.getByTestId('annotation-list')).findByText('Internal pore');
+    fireEvent.click(screen.getByRole('button', { name: 'Segmentation Helpers' }));
+    await waitFor(() => expect(screen.getByTestId('segmentation-segment-list')).toHaveTextContent('Internal pore'));
+    fireEvent.click(screen.getByRole('button', { name: /ML Helper/i }));
+
+    const stage = screen.getByTestId('segmentation-helper-stage');
+    stage.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      width: 400,
+      height: 350,
+      right: 400,
+      bottom: 350,
+    });
+    fireCoordinatePointerEvent(stage, 'pointerdown', {
+      clientX: 200,
+      clientY: 175,
+      button: 0,
+      pointerId: 61,
+    });
+
+    await waitFor(() => expect(screen.getByText(/Selected ML region 7/i)).toBeInTheDocument());
+    const mlCall = global.fetch.mock.calls.find(([url]) => url.includes('/slice-segmentation'));
+    expect(mlCall).toBeDefined();
+    const mlPayload = JSON.parse(mlCall[1].body);
+    expect(mlPayload.click_x).toBeCloseTo(4, 6);
+    expect(mlPayload.click_y).toBeCloseTo(3.5, 6);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add selection' }));
+    const annotationUrl = '/api/projects/proj-1/parts/part-adv-1/annotations/vista-segment-1';
+    await waitFor(() => {
+      const mutationUrls = global.fetch.mock.calls
+        .filter(([, options]) => ['PATCH', 'POST'].includes(options?.method))
+        .map(([url]) => url);
+      expect(mutationUrls).toContain(annotationUrl);
+      const saveCall = global.fetch.mock.calls.find(([url, options]) => (
+        url === annotationUrl && options?.method === 'PATCH'
+      ));
+      expect(saveCall).toBeDefined();
+      const saved = JSON.parse(saveCall[1].body).geometry.segment;
+      expect(saved.areas).toEqual(expect.arrayContaining([expect.objectContaining({
+        tool: 'ml-helper',
+        imageWidth: 8,
+        imageHeight: 7,
+        sliceIndex: 5,
+      })]));
+    });
+
+    const viewTabs = screen.getByRole('tablist', { name: 'Segmentation workspace views' });
+    fireEvent.click(within(viewTabs).getByRole('tab', { name: '3D' }));
+    const helper3dStage = screen.getByTestId('segmentation-helper-3d-stage');
+    const helperViewer = within(helper3dStage).getByTestId('pt3-gaussian-splat-viewer');
+    expect(helperViewer).toBeInTheDocument();
+    const helperCanvas = within(helper3dStage).getByLabelText('Mechanical 3DGS preview');
+    expect(document.getElementById(helperCanvas.getAttribute('aria-describedby'))).toHaveTextContent(
+      'Active plane XY • Z 5 / 5. X 3 / 7; Y 4 / 6; Z 5 / 5.',
+    );
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Segmentation Helpers' })).not.toBeInTheDocument());
+    dataUrlSpy.mockRestore();
+  });
+
+  test('keeps per-tool 3D mode across views and persists brush strokes as sphere voxels', async () => {
+    const segment = makeVistaSegmentAnnotation();
+    mockWorkbenchFetch(makePt3ScenarioWithMetadata({ annotations: [segment] }));
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    const annotationList = await screen.findByTestId('annotation-list');
+    await within(annotationList).findByText('Internal pore');
+    fireEvent.click(screen.getByRole('button', { name: 'Segmentation Helpers' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Brush 3D mode' }));
+    expect(screen.getByRole('button', { name: 'Brush 3D mode' })).toHaveAttribute('aria-pressed', 'true');
+
+    const viewTabs = screen.getByRole('tablist', { name: 'Segmentation workspace views' });
+    fireEvent.click(within(viewTabs).getByRole('tab', { name: 'Y XZ' }));
+    expect(screen.getByRole('button', { name: 'Brush 3D mode' })).toHaveAttribute('aria-pressed', 'true');
+
+    const stage = screen.getByTestId('segmentation-helper-stage');
+    stage.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      width: 400,
+      height: 300,
+      right: 400,
+      bottom: 300,
+    });
+    fireCoordinatePointerEvent(stage, 'pointerdown', {
+      clientX: 190,
+      clientY: 145,
+      button: 0,
+      pointerId: 31,
+    });
+    fireCoordinatePointerEvent(stage, 'pointermove', {
+      clientX: 210,
+      clientY: 150,
+      buttons: 1,
+      pointerId: 31,
+    });
+    fireCoordinatePointerEvent(stage, 'pointerup', {
+      clientX: 210,
+      clientY: 150,
+      button: 0,
+      pointerId: 31,
+    });
+
+    const annotationUrl = '/api/projects/proj-1/parts/part-adv-1/annotations/vista-segment-1';
+    await waitFor(() => {
+      const volumeCall = global.fetch.mock.calls.find(([url, options]) => {
+        if (url !== annotationUrl || options?.method !== 'PATCH') return false;
+        const savedSegment = JSON.parse(options.body).geometry?.segment;
+        return savedSegment?.version === 2
+          && savedSegment.areas?.some((area) => area.mode === '3d' && area.tool === 'volume-mask');
+      });
+      expect(volumeCall).toBeDefined();
+      const savedSegment = JSON.parse(volumeCall[1].body).geometry.segment;
+      expect(savedSegment.volume_dimensions).toEqual([80, 96, 128]);
+      expect(savedSegment.areas.at(-1)).toEqual(expect.objectContaining({
+        mode: '3d',
+        tool: 'volume-mask',
+        operation: 'add',
+        spacing: [0.08, 0.08, 0.12],
+        voxelCount: expect.any(Number),
+        volumeRuns: expect.arrayContaining([
+          expect.arrayContaining([
+            expect.any(Number),
+            expect.any(Number),
+            expect.any(Number),
+            expect.any(Number),
+          ]),
+        ]),
+      }));
+    });
+
+    fireEvent.click(within(viewTabs).getByRole('tab', { name: 'MPR' }));
+    expect(screen.getByTestId('segmentation-helper-mpr')).toBeInTheDocument();
+    expect(screen.getByTestId('segmentation-helper-mpr-axial')).toBeInTheDocument();
+    expect(screen.getByTestId('segmentation-helper-mpr-coronal')).toBeInTheDocument();
+    expect(screen.getByTestId('segmentation-helper-mpr-sagittal')).toBeInTheDocument();
+
+    fireEvent.click(within(viewTabs).getByRole('tab', { name: '3D' }));
+    expect(screen.getByTestId('segmentation-helper-3d-stage')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Polygon:/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Brush 3D mode' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  test('compacts a schema-maximum legacy segment before applying the newest 3D gesture', async () => {
+    const legacyAreas = Array.from({ length: 64 }, (_, index) => ({
+      id: `legacy-${index}`,
+      tool: 'rectangle',
+      mode: '2d',
+      operation: 'add',
+      axis: 'axial',
+      sliceIndex: 3,
+      imageWidth: 80,
+      imageHeight: 96,
+      start: { x: index % 8, y: Math.floor(index / 8) },
+      end: { x: (index % 8) + 1, y: Math.floor(index / 8) + 1 },
+    }));
+    const segment = makeVistaSegmentAnnotation({
+      geometry: {
+        segment: {
+          version: 1,
+          axis: 'axial',
+          min_slice: 3,
+          max_slice: 9,
+          image_width: 80,
+          image_height: 96,
+          areas: legacyAreas,
+        },
+      },
+    });
+    mockWorkbenchFetch(makePt3ScenarioWithMetadata({ annotations: [segment] }));
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+    await within(await screen.findByTestId('annotation-list')).findByText('Internal pore');
+    fireEvent.click(screen.getByRole('button', { name: 'Segmentation Helpers' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Brush 3D mode' }));
+    const stage = screen.getByTestId('segmentation-helper-stage');
+    stage.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      width: 400,
+      height: 300,
+      right: 400,
+      bottom: 300,
+    });
+    fireCoordinatePointerEvent(stage, 'pointerdown', {
+      clientX: 250,
+      clientY: 180,
+      button: 0,
+      pointerId: 55,
+    });
+    fireCoordinatePointerEvent(stage, 'pointerup', {
+      clientX: 250,
+      clientY: 180,
+      button: 0,
+      pointerId: 55,
+    });
+
+    const annotationUrl = '/api/projects/proj-1/parts/part-adv-1/annotations/vista-segment-1';
+    await waitFor(() => {
+      const saveCall = global.fetch.mock.calls.find(([url, options]) => {
+        if (url !== annotationUrl || options?.method !== 'PATCH') return false;
+        const saved = JSON.parse(options.body).geometry?.segment;
+        return saved?.version === 2 && saved.areas?.[0]?.tool === 'volume-mask';
+      });
+      expect(saveCall).toBeDefined();
+      const saved = JSON.parse(saveCall[1].body).geometry.segment;
+      expect(saved.areas).toHaveLength(1);
+      expect(saved.areas[0].truncated).toBe(false);
+      expect(saved.areas[0].volumeRuns.some((run) => run[0] !== 3)).toBe(true);
+    });
+  });
+
+  test('previews server-backed 3D connected growth before applying it to the segment', async () => {
+    const segment = makeVistaSegmentAnnotation({
+      geometry: {
+        segment: {
+          version: 1,
+          axis: 'axial',
+          min_slice: 0,
+          max_slice: 5,
+          image_width: 8,
+          image_height: 7,
+          areas: [],
+        },
+      },
+    });
+    const fillerSegments = Array.from({ length: 63 }, (_, index) => (
+      makeVistaSegmentAnnotation({
+        id: `volume-filler-${index}`,
+        defect_class: `Volume filler ${index}`,
+        ...(index === 0 ? {
+          geometry: {
+            segment: {
+              version: 2,
+              axis: 'axial',
+              min_slice: 0,
+              max_slice: 5,
+              image_width: 8,
+              image_height: 7,
+              volume_dimensions: [8, 7, 6],
+              areas: [{
+                id: 'filler-volume-mask',
+                tool: 'volume-mask',
+                mode: '3d',
+                operation: 'add',
+                volumeRuns: [[0, 0, 0, 8]],
+              }],
+            },
+          },
+        } : {}),
+      })
+    ));
+    const scenario = {
+      user: 'connected-volume',
+      batches: [{ id: 'batch-volume', name: 'Batch volume' }],
+      workspaceState: { selected_batch_id: 'batch-volume', selected_part_id: 'part-volume' },
+      parts: [{
+        id: 'part-volume',
+        batch_id: 'batch-volume',
+        serial_number: 'VOLUME-1',
+        display_name: 'Connected volume',
+        review_state: 'unreviewed',
+        metadata: {
+          annotations: [segment, ...fillerSegments],
+          source_images: [{
+            filename: 'connected.npy',
+            image_id: 'volume-image-id',
+            metadata: {
+              load_mode: 'volume',
+              volume_shape: { sagittal: 8, coronal: 7, axial: 6 },
+            },
+          }],
+        },
+      }],
+      projectImages: [{
+        id: 'volume-image-id',
+        filename: 'connected.npy',
+        metadata: {
+          load_mode: 'volume',
+          volume_shape: { sagittal: 8, coronal: 7, axial: 6 },
+        },
+      }],
+    };
+    mockWorkbenchFetch(scenario);
+    const vectorRenderSpy = jest.spyOn(pt3VectorAnnotations, 'renderPt3VectorAnnotations');
+    const baseFetch = global.fetch;
+    global.fetch = jest.fn((url, options = {}) => {
+      if (url === '/api/images/volume-image-id/volume-connected-selection' && options.method === 'POST') {
+        const payload = JSON.parse(options.body);
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            dimensions: [8, 7, 6],
+            seed: payload.seed,
+            volume_runs: [
+              [1, 2, 2, 5],
+              [2, 2, 2, 5],
+              [3, 2, 2, 5],
+            ],
+            voxel_count: 9,
+            examined: 21,
+            bounds: { min: [2, 2, 1], max: [4, 2, 3] },
+            truncated: false,
+            truncation_reason: '',
+            connectivity: 6,
+          }),
+        });
+      }
+      return baseFetch(url, options);
+    });
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+    const annotationList = await screen.findByTestId('annotation-list');
+    await within(annotationList).findByText('Internal pore');
+    fireEvent.click(screen.getByRole('button', { name: 'Segmentation Helpers' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Connected:/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Connected 3D mode' }));
+    fireEvent.click(within(screen.getByLabelText('Selection operation')).getByRole('button', { name: 'Subtract' }));
+
+    const stage = screen.getByTestId('segmentation-helper-stage');
+    stage.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      width: 400,
+      height: 350,
+      right: 400,
+      bottom: 350,
+    });
+    fireCoordinatePointerEvent(stage, 'pointerdown', {
+      clientX: 200,
+      clientY: 175,
+      button: 0,
+      pointerId: 41,
+    });
+
+    await waitFor(() => expect(screen.getByText(/3D preview: 9 voxels, 6-neighbor connectivity/i)).toBeInTheDocument());
+    expect(screen.getByLabelText('Segmentation helper overlay').querySelector('.volumetric-segment-mask')).toBeInTheDocument();
+    const endpointCall = global.fetch.mock.calls.find(([url]) => (
+      url === '/api/images/volume-image-id/volume-connected-selection'
+    ));
+    expect(endpointCall).toBeDefined();
+    expect(JSON.parse(endpointCall[1].body)).toEqual(expect.objectContaining({
+      seed: expect.arrayContaining([expect.any(Number), expect.any(Number), expect.any(Number)]),
+      sensitivity: 28,
+    }));
+    const annotationUrl = '/api/projects/proj-1/parts/part-volume/annotations/vista-segment-1';
+    expect(global.fetch.mock.calls.some(([url, options]) => (
+      url === annotationUrl && options?.method === 'PATCH'
+    ))).toBe(false);
+
+    const viewTabs = screen.getByRole('tablist', { name: 'Segmentation workspace views' });
+    fireEvent.click(within(viewTabs).getByRole('tab', { name: 'MPR' }));
+    expect(screen.getByText(/3D preview: 9 voxels, 6-neighbor connectivity/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add selection' })).toBeEnabled();
+    fireEvent.click(within(viewTabs).getByRole('tab', { name: '3D' }));
+    expect(screen.getByText(/3D preview: 9 voxels, 6-neighbor connectivity/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add selection' })).toBeEnabled();
+    await waitFor(() => {
+      const helperRender = vectorRenderSpy.mock.calls.find(([, options]) => (
+        options?.vectorAnnotations?.length === 65
+        && options.vectorAnnotations[0]?.id === 'pending-volume-selection'
+      ));
+      expect(helperRender).toBeDefined();
+      const firstRendererPage = helperRender[1].vectorAnnotations.slice(0, 64);
+      expect(firstRendererPage[0]).toEqual(expect.objectContaining({
+        id: 'pending-volume-selection',
+      }));
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add selection' }));
+    await waitFor(() => {
+      const saveCall = global.fetch.mock.calls.find(([url, options]) => {
+        if (url !== annotationUrl || options?.method !== 'PATCH') return false;
+        const savedSegment = JSON.parse(options.body).geometry?.segment;
+        return savedSegment?.version === 2
+          && savedSegment.areas?.some((area) => (
+            area.tool === 'volume-mask'
+            && area.mode === '3d'
+            && area.volumeRuns?.length > 0
+          ));
+      });
+      expect(saveCall).toBeDefined();
+    });
+
+    vectorRenderSpy.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Volume filler 0' }));
+    await waitFor(() => expect(vectorRenderSpy.mock.calls.some(([, options]) => (
+      options?.vectorAnnotations?.[0]?.id === 'volume-filler-0'
+      && options.vectorAnnotations[1]?.id === 'vista-segment-1'
+    ))).toBe(true));
+    vectorRenderSpy.mockRestore();
   });
 
   test('connected segmentation helper selects distinct contiguous black and white shapes at default sensitivity', async () => {
@@ -5618,7 +6101,7 @@ describe('InspectionWorkbenchPanel', () => {
 
     const assertConnectedShape = (shape) => {
       installSlicePixels(shape);
-      fireEvent.click(screen.getByRole('button', { name: /Connected/i }));
+      fireEvent.click(screen.getByRole('button', { name: /^Connected:/i }));
       fireCoordinatePointerEvent(stage, 'pointerdown', {
         clientX: ((shape.shape.x + Math.floor(shape.shape.width / 2)) / 80) * 400,
         clientY: ((shape.shape.y + Math.floor(shape.shape.height / 2)) / 96) * 480,

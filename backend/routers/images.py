@@ -12,7 +12,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse, unquote
 from pathlib import Path, PurePosixPath
-from collections import OrderedDict
+from collections import OrderedDict, deque
 import zipfile
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Body
@@ -55,6 +55,7 @@ from utils.volume_loader import (
     MAX_NPY_HEADER_BYTES,
     MAX_VOLUME_LOAD_BYTES,
     REFERENCE_VOLUME_READ_LIMITS,
+    VolumeReadLimits,
     _image_color_layout,
     _inspect_npy_header,
     _inspect_npz_archive,
@@ -2573,6 +2574,11 @@ _VOLUME_RENDER_SUMMARY_VERSION = 1
 _VOLUME_RENDER_SUMMARY_CACHE_MAX_ITEMS = 128
 _VOLUME_RENDER_SUMMARY_SCAN_MAX_PIXELS = 256 * 1024
 _VOLUME_RENDER_SUMMARY_SCAN_CONCURRENCY = 2
+_VOLUME_CONNECTED_SELECTION_CONCURRENCY = 2
+_VOLUME_CONNECTED_SELECTION_DECODE_CONCURRENCY = 1
+_VOLUME_CONNECTED_SELECTION_MAX_SOURCE_BYTES = 128 * 1024 * 1024
+_VOLUME_CONNECTED_SELECTION_MAX_VOXELS = 32 * 1024 * 1024
+_VOLUME_CONNECTED_SELECTION_MAX_DECODED_BYTES = 256 * 1024 * 1024
 _volume_render_summary_cache: "OrderedDict[tuple[str, str, int], Dict[str, Any]]" = OrderedDict()
 _volume_render_summary_cache_lock = threading.RLock()
 _volume_render_summary_futures: dict[
@@ -2581,6 +2587,97 @@ _volume_render_summary_futures: dict[
 _PROCESS_VOLUME_RENDER_SUMMARY_SCAN_LIMITER = _ProcessWideStorageLimiter(
     _VOLUME_RENDER_SUMMARY_SCAN_CONCURRENCY
 )
+_PROCESS_VOLUME_CONNECTED_SELECTION_SEMAPHORE = threading.BoundedSemaphore(
+    _VOLUME_CONNECTED_SELECTION_CONCURRENCY
+)
+_PROCESS_VOLUME_CONNECTED_SELECTION_DECODE_SEMAPHORE = threading.BoundedSemaphore(
+    _VOLUME_CONNECTED_SELECTION_DECODE_CONCURRENCY
+)
+_VOLUME_CONNECTED_SELECTION_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_VOLUME_CONNECTED_SELECTION_CONCURRENCY,
+    thread_name_prefix="vista-volume-connected",
+)
+
+
+class _VolumeConnectedSelectionLease:
+    """Keep one admission permit until its submitted worker truly finishes."""
+
+    def __init__(self, semaphore: threading.BoundedSemaphore) -> None:
+        self._semaphore = semaphore
+        self._release_on_exit = True
+
+    def release_when_done(self, worker_future: Future[Any]) -> None:
+        if not self._release_on_exit:
+            raise RuntimeError("volume connected-selection lease was already transferred")
+        self._release_on_exit = False
+        worker_future.add_done_callback(lambda _future: self._semaphore.release())
+
+    def release_if_owned(self) -> None:
+        if self._release_on_exit:
+            self._release_on_exit = False
+            self._semaphore.release()
+
+
+@asynccontextmanager
+async def _volume_connected_selection_slot():
+    """Reject excess flood-fill work instead of building an unbounded queue."""
+
+    acquired = _PROCESS_VOLUME_CONNECTED_SELECTION_SEMAPHORE.acquire(blocking=False)
+    if not acquired:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Volume connected-selection capacity is busy; retry shortly",
+            headers={"Retry-After": "1"},
+        )
+    lease = _VolumeConnectedSelectionLease(
+        _PROCESS_VOLUME_CONNECTED_SELECTION_SEMAPHORE
+    )
+    try:
+        yield lease
+    finally:
+        lease.release_if_owned()
+
+
+@asynccontextmanager
+async def _volume_connected_selection_decode_slot():
+    """Allow only one materialized TIFF/NPZ decode per process."""
+
+    acquired = _PROCESS_VOLUME_CONNECTED_SELECTION_DECODE_SEMAPHORE.acquire(
+        blocking=False
+    )
+    if not acquired:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Volume connected-selection decode capacity is busy; retry shortly",
+            headers={"Retry-After": "1"},
+        )
+    lease = _VolumeConnectedSelectionLease(
+        _PROCESS_VOLUME_CONNECTED_SELECTION_DECODE_SEMAPHORE
+    )
+    try:
+        yield lease
+    finally:
+        lease.release_if_owned()
+
+
+@asynccontextmanager
+async def _volume_connected_selection_materialization_slot(kind: str):
+    if kind == "npy":
+        yield None
+        return
+    async with _volume_connected_selection_decode_slot() as lease:
+        yield lease
+
+
+def _volume_connected_selection_read_limits() -> VolumeReadLimits:
+    """Return endpoint-local limits without changing shared volume readers."""
+
+    return VolumeReadLimits(
+        max_voxels=_VOLUME_CONNECTED_SELECTION_MAX_VOXELS,
+        max_decoded_bytes=_VOLUME_CONNECTED_SELECTION_MAX_DECODED_BYTES,
+        max_source_bytes=_VOLUME_CONNECTED_SELECTION_MAX_SOURCE_BYTES,
+        max_container_members=REFERENCE_VOLUME_READ_LIMITS.max_container_members,
+    )
 
 
 def _volume_source_identity(db_image: models.DataInstance) -> VolumeSourceIdentity:
@@ -3023,19 +3120,286 @@ def _volume_meta_from_shape(shape: tuple[int, ...], dtype: np.dtype, *, source_k
     }
 
 
-def _load_numpy_volume(payload: bytes, filename: str) -> np.ndarray:
-    limits = REFERENCE_VOLUME_READ_LIMITS
-    if len(payload) > limits.max_source_bytes:
+def _connected_volume_comparison_value(
+    value: Any,
+    dtype: np.dtype,
+    *,
+    display_min: float | None,
+    display_max: float | None,
+) -> np.ndarray | None:
+    channels = np.asarray(value).reshape(-1)
+    if channels.size == 0:
+        return None
+    try:
+        numeric = channels.astype(np.float64, copy=False)
+    except (TypeError, ValueError):
+        return None
+    if not np.all(np.isfinite(numeric)):
+        return None
+    if display_min is not None and display_max is not None:
+        scale = 255.0 / (display_max - display_min)
+        return np.clip((numeric - display_min) * scale, 0.0, 255.0)
+    resolved_dtype = np.dtype(dtype)
+    if np.issubdtype(resolved_dtype, np.bool_):
+        return numeric * 255.0
+    if resolved_dtype == np.dtype(np.uint8):
+        return numeric
+    if np.issubdtype(resolved_dtype, np.integer):
+        limits = np.iinfo(resolved_dtype)
+        return (numeric - float(limits.min)) * (
+            255.0 / (float(limits.max) - float(limits.min))
+        )
+    if np.issubdtype(resolved_dtype, np.floating):
+        if np.all((numeric >= 0.0) & (numeric <= 1.0)):
+            return numeric * 255.0
+        return numeric
+    return None
+
+
+def _connected_volume_selection(
+    volume: np.ndarray,
+    *,
+    seed: list[int],
+    sensitivity: float,
+    display_min: float | None,
+    display_max: float | None,
+    max_voxels: int,
+    max_examined: int,
+    max_runs: int,
+) -> Dict[str, Any]:
+    array = np.asarray(volume)
+    meta = _volume_meta_from_shape(array.shape, array.dtype, source_kind="selection")
+    width = int(meta["dimensions"]["sagittal"])
+    height = int(meta["dimensions"]["coronal"])
+    depth = int(meta["dimensions"]["axial"])
+    x_seed, y_seed, z_seed = seed
+    if (
+        x_seed < 0
+        or x_seed >= width
+        or y_seed < 0
+        or y_seed >= height
+        or z_seed < 0
+        or z_seed >= depth
+    ):
+        raise ValueError("Seed voxel is outside the volume")
+
+    def comparison_value(x: int, y: int, z: int) -> np.ndarray | None:
+        return _connected_volume_comparison_value(
+            array[z, y, x, ...],
+            array.dtype,
+            display_min=display_min,
+            display_max=display_max,
+        )
+
+    seed_value = comparison_value(x_seed, y_seed, z_seed)
+    if seed_value is None:
+        raise ValueError("Seed voxel does not contain a finite comparable value")
+    plane_size = width * height
+    to_index = lambda x, y, z: (z * plane_size) + (y * width) + x
+    pending = deque([(x_seed, y_seed, z_seed)])
+    visited: set[int] = set()
+    selected_rows: dict[tuple[int, int], list[int]] = {}
+    selected_count = 0
+    truncation_reason = ""
+    while pending:
+        x, y, z = pending.popleft()
+        flat_index = to_index(x, y, z)
+        if flat_index in visited:
+            continue
+        if len(visited) >= max_examined:
+            truncation_reason = "max-examined"
+            break
+        visited.add(flat_index)
+        candidate = comparison_value(x, y, z)
+        if candidate is None:
+            continue
+        channels = max(seed_value.size, candidate.size)
+        seed_channels = np.resize(seed_value, channels)
+        candidate_channels = np.resize(candidate, channels)
+        if float(np.max(np.abs(candidate_channels - seed_channels))) > sensitivity:
+            continue
+        if selected_count >= max_voxels:
+            truncation_reason = "max-voxels"
+            break
+        selected_rows.setdefault((z, y), []).append(x)
+        selected_count += 1
+        if x > 0:
+            pending.append((x - 1, y, z))
+        if x + 1 < width:
+            pending.append((x + 1, y, z))
+        if y > 0:
+            pending.append((x, y - 1, z))
+        if y + 1 < height:
+            pending.append((x, y + 1, z))
+        if z > 0:
+            pending.append((x, y, z - 1))
+        if z + 1 < depth:
+            pending.append((x, y, z + 1))
+
+    runs: list[list[int]] = []
+    run_overflow = False
+    run_detection_limit = max_runs + 1
+    for (z, y), raw_x_values in sorted(selected_rows.items()):
+        x_values = sorted(set(raw_x_values))
+        if not x_values:
+            continue
+        start = x_values[0]
+        previous = start
+        for x in x_values[1:]:
+            if x == previous + 1:
+                previous = x
+                continue
+            runs.append([z, y, start, previous + 1])
+            if len(runs) >= run_detection_limit:
+                run_overflow = True
+                break
+            start = x
+            previous = x
+        if run_overflow:
+            break
+        runs.append([z, y, start, previous + 1])
+        if len(runs) >= run_detection_limit:
+            run_overflow = True
+            break
+    if run_overflow:
+        runs = runs[:max_runs]
+        truncation_reason = truncation_reason or "max-runs"
+
+    represented_voxel_count = sum(run[3] - run[2] for run in runs)
+    bounds = None
+    if runs:
+        bounds = {
+            "min": [
+                min(run[2] for run in runs),
+                min(run[1] for run in runs),
+                min(run[0] for run in runs),
+            ],
+            "max": [
+                max(run[3] - 1 for run in runs),
+                max(run[1] for run in runs),
+                max(run[0] for run in runs),
+            ],
+        }
+    return {
+        "dimensions": [width, height, depth],
+        "seed": [x_seed, y_seed, z_seed],
+        "volume_runs": runs,
+        "voxel_count": represented_voxel_count,
+        "examined": len(visited),
+        "bounds": bounds,
+        "truncated": bool(truncation_reason),
+        "truncation_reason": truncation_reason,
+        "connectivity": 6,
+    }
+
+
+def _decode_and_select_connected_volume(
+    *,
+    kind: str,
+    source: bytes | None,
+    filename: str,
+    volume: np.ndarray | None,
+    seed: list[int],
+    sensitivity: float,
+    display_min: float | None,
+    display_max: float | None,
+    max_voxels: int,
+    max_examined: int,
+    max_runs: int,
+) -> Dict[str, Any]:
+    """Decode non-NPY sources and run flood-fill in one bounded worker job."""
+
+    limits = _volume_connected_selection_read_limits()
+    resolved_volume = volume
+    materialized_in_worker = resolved_volume is None
+    if resolved_volume is None:
+        if source is None:
+            raise ValueError("Volume source is unavailable")
+        if len(source) > limits.max_source_bytes:
+            raise ValueError(
+                "Volume source exceeds the connected-selection "
+                f"{limits.max_source_bytes}-byte source limit"
+            )
+        try:
+            resolved_volume = (
+                _load_tiff_volume(source, limits=limits)
+                if kind == "tiff"
+                else _load_numpy_volume(source, filename, limits=limits)
+            )
+        except (OSError, EOFError, zipfile.BadZipFile) as exc:
+            raise ValueError(
+                "Volume source is invalid or could not be decoded safely"
+            ) from exc
+    if materialized_in_worker:
+        _enforce_connected_selection_decoded_volume_limits(
+            resolved_volume,
+            limits=limits,
+        )
+    return _connected_volume_selection(
+        resolved_volume,
+        seed=seed,
+        sensitivity=sensitivity,
+        display_min=display_min,
+        display_max=display_max,
+        max_voxels=max_voxels,
+        max_examined=max_examined,
+        max_runs=max_runs,
+    )
+
+
+def _enforce_connected_selection_decoded_volume_limits(
+    volume: np.ndarray,
+    *,
+    limits: VolumeReadLimits | None = None,
+) -> None:
+    """Recheck actual decoded layout before flood-fill touches the array."""
+
+    active_limits = limits or _volume_connected_selection_read_limits()
+    array = np.asarray(volume)
+    meta = _volume_meta_from_shape(
+        array.shape,
+        array.dtype,
+        source_kind="selection",
+    )
+    dimensions = meta["dimensions"]
+    spatial_voxels = (
+        int(dimensions["axial"])
+        * int(dimensions["coronal"])
+        * int(dimensions["sagittal"])
+    )
+    decoded_bytes = int(array.size) * int(array.dtype.itemsize)
+    if spatial_voxels > active_limits.max_voxels:
+        raise ValueError(
+            "Volume declares "
+            f"{spatial_voxels} voxels, exceeding the connected-selection "
+            f"{active_limits.max_voxels}-voxel limit"
+        )
+    if decoded_bytes > active_limits.max_decoded_bytes:
+        raise ValueError(
+            "Volume occupies "
+            f"{decoded_bytes} decoded bytes, exceeding the connected-selection "
+            f"{active_limits.max_decoded_bytes}-byte limit"
+        )
+
+
+def _load_numpy_volume(
+    payload: bytes,
+    filename: str,
+    *,
+    limits: VolumeReadLimits | None = None,
+) -> np.ndarray:
+    active_limits = limits or REFERENCE_VOLUME_READ_LIMITS
+    if len(payload) > active_limits.max_source_bytes:
         raise ValueError(
             "NumPy volume source exceeds the configured/built-in "
-            f"{limits.max_source_bytes}-byte materialized-file limit"
+            f"{active_limits.max_source_bytes}-byte materialized-file limit"
         )
     lower = filename.lower()
     if lower.endswith('.npy'):
         source = io.BytesIO(payload)
         expected = _inspect_npy_header(
             source,
-            limits=limits,
+            limits=active_limits,
             available_bytes=len(payload),
         )
         source.seek(0)
@@ -3047,11 +3411,11 @@ def _load_numpy_volume(payload: bytes, filename: str) -> np.ndarray:
     source = io.BytesIO(payload)
     preflight_zip_archive(
         source,
-        limits=limits,
+        limits=active_limits,
         available_bytes=len(payload),
     )
     with zipfile.ZipFile(source) as archive:
-        selected, expected = _inspect_npz_archive(archive, limits=limits)
+        selected, expected = _inspect_npz_archive(archive, limits=active_limits)
         with archive.open(selected) as member:
             loaded = np.lib.format.read_array(member, allow_pickle=False)
     array = np.asarray(loaded)
@@ -3060,21 +3424,25 @@ def _load_numpy_volume(payload: bytes, filename: str) -> np.ndarray:
     return array
 
 
-def _load_tiff_volume(payload: bytes) -> np.ndarray:
-    limits = REFERENCE_VOLUME_READ_LIMITS
-    if len(payload) > limits.max_source_bytes:
+def _load_tiff_volume(
+    payload: bytes,
+    *,
+    limits: VolumeReadLimits | None = None,
+) -> np.ndarray:
+    active_limits = limits or REFERENCE_VOLUME_READ_LIMITS
+    if len(payload) > active_limits.max_source_bytes:
         raise ValueError(
             "TIFF source exceeds the configured/built-in "
-            f"{limits.max_source_bytes}-byte materialized-file limit"
+            f"{active_limits.max_source_bytes}-byte materialized-file limit"
         )
     with Image.open(io.BytesIO(payload)) as image:
         frame_count = int(getattr(image, 'n_frames', 1) or 0)
         if frame_count < 1:
             raise ValueError('TIFF has no frames')
-        if frame_count > limits.max_container_members:
+        if frame_count > active_limits.max_container_members:
             raise ValueError(
                 f"TIFF contains {frame_count} frames, exceeding the configured/built-in "
-                f"{limits.max_container_members}-member limit"
+                f"{active_limits.max_container_members}-member limit"
             )
         image.seek(0)
         width, height = image.size
@@ -3082,18 +3450,18 @@ def _load_tiff_volume(payload: bytes) -> np.ndarray:
         expected_bands = image.getbands()
         band_count, _color_mode = _image_color_layout(image)
         voxel_count = frame_count * int(height) * int(width)
-        if voxel_count > limits.max_voxels:
+        if voxel_count > active_limits.max_voxels:
             raise ValueError(
                 f"TIFF declares {voxel_count} voxels, exceeding the configured/built-in "
-                f"{limits.max_voxels}-voxel limit"
+                f"{active_limits.max_voxels}-voxel limit"
             )
         # Match the reference TIFF reader's conservative float64 working-set
         # accounting, extended by channel count for color frames.
         decoded_bytes = voxel_count * band_count * np.dtype(np.float64).itemsize
-        if decoded_bytes > limits.max_decoded_bytes:
+        if decoded_bytes > active_limits.max_decoded_bytes:
             raise ValueError(
                 f"TIFF declares {decoded_bytes} decoded bytes, exceeding the "
-                f"configured/built-in {limits.max_decoded_bytes}-byte limit"
+                f"configured/built-in {active_limits.max_decoded_bytes}-byte limit"
             )
 
         # ``n_frames`` and frame zero are not sufficient: TIFF permits later
@@ -3148,18 +3516,95 @@ def _builtin_pt3_fixture_path(db_image: models.DataInstance) -> Path | None:
     )
 
 
-async def _read_authorized_image_bytes(db_image: models.DataInstance) -> bytes:
+def _enforce_materialized_volume_source_limit(
+    source_bytes: int,
+    *,
+    max_bytes: int,
+) -> None:
+    if source_bytes < 0 or source_bytes > max_bytes:
+        raise ValueError(
+            "Volume source exceeds the connected-selection "
+            f"{max_bytes}-byte source limit"
+        )
+
+
+async def _read_authorized_image_bytes(
+    db_image: models.DataInstance,
+    *,
+    max_bytes: int | None = None,
+) -> bytes:
+    if max_bytes is not None:
+        metadata = (
+            db_image.metadata_json
+            if isinstance(db_image.metadata_json, dict)
+            else {}
+        )
+        encoded = metadata.get("analysis_inline_image_base64")
+        if isinstance(encoded, str) and encoded:
+            # Base64 expands source bytes by roughly four thirds. Refuse an
+            # obviously oversized inline object before allocating its decode.
+            maximum_encoded_bytes = ((max_bytes + 2) // 3) * 4
+            if len(encoded) > maximum_encoded_bytes:
+                _enforce_materialized_volume_source_limit(
+                    max_bytes + 1,
+                    max_bytes=max_bytes,
+                )
     inline_data = _inline_image_bytes(db_image)
     if inline_data is not None:
+        if max_bytes is not None:
+            _enforce_materialized_volume_source_limit(
+                len(inline_data),
+                max_bytes=max_bytes,
+            )
         return inline_data
     fixture_path = _builtin_pt3_fixture_path(db_image)
     if fixture_path is not None:
-        return await asyncio.to_thread(fixture_path.read_bytes)
+        if max_bytes is not None:
+            fixture_stat = await asyncio.to_thread(fixture_path.stat)
+            _enforce_materialized_volume_source_limit(
+                int(fixture_stat.st_size),
+                max_bytes=max_bytes,
+            )
+        fixture_bytes = await asyncio.to_thread(fixture_path.read_bytes)
+        if max_bytes is not None:
+            _enforce_materialized_volume_source_limit(
+                len(fixture_bytes),
+                max_bytes=max_bytes,
+            )
+        return fixture_bytes
     internal_url = get_presigned_download_url(bucket_name=settings.S3_BUCKET, object_name=db_image.object_storage_key)
     if not internal_url:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='Could not generate download URL')
     try:
         async with httpx.AsyncClient() as client:
+            if max_bytes is not None:
+                async with client.stream('GET', internal_url) as response:
+                    response.raise_for_status()
+                    content_length = response.headers.get("content-length")
+                    if content_length is not None:
+                        try:
+                            declared_length = int(content_length)
+                        except (TypeError, ValueError):
+                            declared_length = None
+                        if declared_length is not None:
+                            _enforce_materialized_volume_source_limit(
+                                declared_length,
+                                max_bytes=max_bytes,
+                            )
+                    buffered = io.BytesIO()
+                    source_bytes = 0
+                    async for chunk in response.aiter_bytes(
+                        chunk_size=8 * 1024 * 1024
+                    ):
+                        if not chunk:
+                            continue
+                        source_bytes += len(chunk)
+                        _enforce_materialized_volume_source_limit(
+                            source_bytes,
+                            max_bytes=max_bytes,
+                        )
+                        buffered.write(chunk)
+                    return buffered.getvalue()
             response = await client.get(internal_url)
             response.raise_for_status()
             return await response.aread()
@@ -3510,6 +3955,106 @@ async def get_image_volume_slice(
             'Cache-Control': 'private, max-age=3600',
         },
     )
+
+
+@router.post(
+    "/images/{image_id}/volume-connected-selection",
+    response_model=schemas.VolumeConnectedSelectionResponse,
+)
+async def select_connected_image_volume(
+    image_id: uuid.UUID,
+    payload: schemas.VolumeConnectedSelectionRequest,
+    include_deleted: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    """Select a guarded 6-connected intensity region from an authorized volume."""
+
+    db_image = await _get_authorized_image(db, image_id, current_user, include_deleted)
+    kind = _volume_source_kind(db_image.filename or "")
+    if not kind:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported multi-image file type",
+        )
+    try:
+        limits = _volume_connected_selection_read_limits()
+        if kind != "npy" and db_image.size_bytes is not None:
+            try:
+                materialized_source_bytes = int(db_image.size_bytes)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("Volume source size metadata is invalid") from exc
+            _enforce_materialized_volume_source_limit(
+                materialized_source_bytes,
+                max_bytes=limits.max_source_bytes,
+            )
+        async with _volume_connected_selection_slot() as selection_lease:
+            async with _volume_connected_selection_materialization_slot(
+                kind
+            ) as decode_lease:
+                identity = _volume_source_identity(db_image)
+                source = None
+                volume = None
+                if kind == "npy":
+                    handle = await get_npy_volume_handle(
+                        identity,
+                        lambda: _iter_authorized_npy_bytes(db_image),
+                    )
+                    volume = handle.array
+                else:
+                    source = await _read_authorized_image_bytes(
+                        db_image,
+                        max_bytes=limits.max_source_bytes,
+                    )
+                    _enforce_materialized_volume_source_limit(
+                        len(source),
+                        max_bytes=limits.max_source_bytes,
+                    )
+                worker_future = _VOLUME_CONNECTED_SELECTION_EXECUTOR.submit(
+                    _decode_and_select_connected_volume,
+                    kind=kind,
+                    source=source,
+                    filename=db_image.filename or "",
+                    volume=volume,
+                    seed=payload.seed,
+                    sensitivity=payload.sensitivity,
+                    display_min=payload.display_min,
+                    display_max=payload.display_max,
+                    max_voxels=payload.max_voxels,
+                    max_examined=payload.max_examined,
+                    max_runs=payload.max_runs,
+                )
+                selection_lease.release_when_done(worker_future)
+                if decode_lease is not None:
+                    decode_lease.release_when_done(worker_future)
+                return await asyncio.wrap_future(worker_future)
+    except HTTPException:
+        raise
+    except VolumeSourceReadError as exc:
+        raise _storage_http_exception(exc) from exc
+    except InvalidVolumeSourceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unable to select volume: {exc}",
+        ) from exc
+    except VolumeCacheError as exc:
+        raise _volume_cache_http_exception() from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except Exception as exc:
+        logger.exception(
+            "Unexpected volume connected-selection failure for image %s (%s)",
+            image_id,
+            kind,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to select volume",
+        ) from exc
+
 
 @router.get("/images/{image_id}/content", response_class=StreamingResponse)
 async def get_image_content(

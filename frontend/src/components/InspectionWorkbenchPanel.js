@@ -10,10 +10,18 @@ import Pt3GaussianSplatViewer, {
 import { getMprAxisMirrorScale } from './pt3VolumeGeometry';
 import {
   buildPt3SegmentMask,
+  buildPt3SegmentVolumeRuns,
+  buildPt3SegmentVolumeSliceMask,
   buildPt3VectorAnnotationFaces,
   forEachPt3VectorFaceVoxelPolygon,
+  mapVectorPlanePointToVoxel,
   pt3SegmentMaskToSvgPath,
 } from './pt3VectorAnnotations';
+import {
+  floodFillVolume3dAsync,
+  rasterizeSphereStroke,
+} from './pt3SegmentationVolume';
+import { getMechanicalVolumeMetadata } from './pt3MechanicalVisualization';
 import {
   annotationToVectorSegment,
   buildInspectionAnnotationItems,
@@ -136,9 +144,30 @@ const DEFAULT_ANNOTATION_TRANSPARENCY_PERCENT = 0;
 const DEFAULT_SEGMENT_COLOR = '#22c55e';
 const SEGMENT_COLORS = ['#22c55e', '#3b82f6', '#f97316', '#e11d48', '#a855f7', '#14b8a6', '#facc15'];
 const SEGMENTATION_HELPER_TOOLS = [
-  { id: 'brush', label: 'Brush', icon: 'brush', detail: 'Paint freehand strokes onto the current segment.' },
-  { id: 'eraser', label: 'Eraser', icon: 'eraser', detail: 'Remove painted areas with the same brush controls.' },
-  { id: 'connected', label: 'Connected', icon: 'target', detail: 'Seed a contiguous area using sensitivity around the clicked pixel.' },
+  {
+    id: 'brush',
+    label: 'Brush',
+    icon: 'brush',
+    detail: 'Paint a circle on one slice or a swept sphere through the volume.',
+    modes: ['2d', '3d'],
+    modeLabels: { '2d': 'Circle', '3d': 'Sphere' },
+  },
+  {
+    id: 'eraser',
+    label: 'Eraser',
+    icon: 'eraser',
+    detail: 'Erase with a circle on one slice or a swept sphere through the volume.',
+    modes: ['2d', '3d'],
+    modeLabels: { '2d': 'Circle', '3d': 'Sphere' },
+  },
+  {
+    id: 'connected',
+    label: 'Connected',
+    icon: 'target',
+    detail: 'Grow from a seed through similar pixels on one slice or all three dimensions.',
+    modes: ['2d', '3d'],
+    modeLabels: { '2d': 'Slice', '3d': 'Volume' },
+  },
   { id: 'polygon', label: 'Polygon', icon: 'polygon', detail: 'Click boundary vertices, double-click to close the perimeter.' },
   { id: 'circle', label: 'Circle', icon: 'circle', detail: 'Click the center, then drag to set the radius.' },
   { id: 'rectangle', label: 'Rectangle', icon: 'rectangle', detail: 'Drag from one corner to the opposite corner.' },
@@ -147,6 +176,23 @@ const SEGMENTATION_HELPER_TOOLS = [
   { id: 'scissors', label: 'Scissors', icon: 'scissors', detail: 'Mark cut paths for trimming a selected segment.' },
   { id: 'ml-helper', label: 'ML Helper', icon: 'spark', detail: 'Run a toolbox segmentation method once per slice, then select regions by click.' },
 ];
+const SEGMENTATION_HELPER_VIEWS = [
+  { id: 'x', label: 'X', axis: 'sagittal', plane: 'YZ', detail: 'X axis · YZ plane' },
+  { id: 'y', label: 'Y', axis: 'coronal', plane: 'XZ', detail: 'Y axis · XZ plane' },
+  { id: 'z', label: 'Z', axis: 'axial', plane: 'XY', detail: 'Z axis · XY plane' },
+  { id: 'mpr', label: 'MPR', detail: 'Linked orthogonal views' },
+  { id: '3d', label: '3D', detail: '3D volume context and exact segment surface' },
+];
+const SEGMENTATION_VIEW_BY_AXIS = {
+  sagittal: 'x',
+  coronal: 'y',
+  axial: 'z',
+};
+const DEFAULT_SEGMENTATION_TOOL_MODES = {
+  brush: '2d',
+  eraser: '2d',
+  connected: '2d',
+};
 const SEGMENTATION_POINT_MARKER_TOOLS = new Set(['polygon', 'circle', 'rectangle']);
 const SEGMENTATION_ML_METHOD_GROUPS = [
   {
@@ -2096,6 +2142,30 @@ function getScaledIndex(value, sourceMaxValue, targetLength) {
   return clampRange(Math.round(getFraction(value, sourceMaxValue) * upper), 0, upper, 0);
 }
 
+function getCanonicalSegmentationSliceIndex(
+  axis,
+  uiSliceIndex,
+  uiDimensions = {},
+  volumeDimensions = [],
+) {
+  const safeAxis = MPR_AXES.includes(axis) ? axis : 'axial';
+  const canonicalDimensions = Array.isArray(volumeDimensions)
+    ? volumeDimensions
+    : [
+      volumeDimensions?.x ?? volumeDimensions?.width ?? volumeDimensions?.sagittal,
+      volumeDimensions?.y ?? volumeDimensions?.height ?? volumeDimensions?.coronal,
+      volumeDimensions?.z ?? volumeDimensions?.depth ?? volumeDimensions?.axial,
+    ];
+  const targetLength = safeAxis === 'sagittal'
+    ? canonicalDimensions[0]
+    : (safeAxis === 'coronal' ? canonicalDimensions[1] : canonicalDimensions[2]);
+  return getScaledIndex(
+    uiSliceIndex,
+    Math.max(0, (Number(uiDimensions[safeAxis]) || 1) - 1),
+    targetLength,
+  );
+}
+
 function getMprVolumeCacheKey(imageStack, dimensions = {}) {
   if (!isServerVolumeDescriptor(imageStack) && (!Array.isArray(imageStack) || imageStack.length === 0)) return '';
   const resolvedDimensions = isServerVolumeDescriptor(imageStack) ? imageStack.dimensions : dimensions;
@@ -2414,6 +2484,7 @@ async function buildMprVolumeCache(cacheKey, imageStack, dimensions, onProgress)
   const slices = Array.from({ length: depth }, () => ({
     image: null,
     imageData: scratchContext.createImageData(width, height),
+    valid: false,
   }));
 
   loadedEntries.forEach(({ image, source, index }) => {
@@ -2429,8 +2500,10 @@ async function buildMprVolumeCache(cacheKey, imageStack, dimensions, onProgress)
     slices[sliceIndex] = {
       image,
       imageData: scratchContext.getImageData(0, 0, width, height),
+      valid: true,
     };
   });
+  const validSliceCount = slices.reduce((count, slice) => count + (slice.valid ? 1 : 0), 0);
 
   return {
     key: cacheKey,
@@ -2440,6 +2513,8 @@ async function buildMprVolumeCache(cacheKey, imageStack, dimensions, onProgress)
     channelCount: Number(imageStack[0]?.channelCount) || 1,
     colorMode: String(imageStack[0]?.colorMode || 'scalar'),
     slices,
+    validSliceCount,
+    complete: validSliceCount === depth,
     sliceCanvases: new Map(),
   };
 }
@@ -2561,6 +2636,9 @@ function createDefaultSegment(index = 0, context = {}) {
     maxSlice: sliceIndex,
     imageWidth: Math.max(1, Number(context.imageWidth) || 1),
     imageHeight: Math.max(1, Number(context.imageHeight) || 1),
+    volumeDimensions: Array.isArray(context.volumeDimensions)
+      ? context.volumeDimensions.slice(0, 3).map((value) => Math.max(1, Math.floor(Number(value) || 1)))
+      : null,
     visible: true,
     areas: [],
   };
@@ -2581,9 +2659,44 @@ function annotationToSegmentationHelperSegment(annotation) {
     maxSlice: vectorSegment.maxSlice,
     imageWidth: vectorSegment.imageWidth,
     imageHeight: vectorSegment.imageHeight,
+    version: vectorSegment.version,
+    volumeDimensions: vectorSegment.volumeDimensions,
     areas: vectorSegment.areas,
     annotation,
   };
+}
+
+function segmentHasVolumeAreas(segment) {
+  return (Array.isArray(segment?.areas) ? segment.areas : []).some((area) => (
+    (Array.isArray(area?.volumeRuns) && area.volumeRuns.length > 0)
+    || (Array.isArray(area?.volume_runs) && area.volume_runs.length > 0)
+  ));
+}
+
+function segmentHasPlanarAreaOnSlice(segment, axis, sliceIndex) {
+  const safeAxis = MPR_AXES.includes(axis) ? axis : 'axial';
+  const selectedSlice = Math.round(Number(sliceIndex) || 0);
+  const segmentAxis = MPR_AXES.includes(segment?.axis) ? segment.axis : 'axial';
+  return (Array.isArray(segment?.areas) ? segment.areas : []).some((area) => {
+    if (String(area?.mode || area?.areaMode || area?.dimensionality || '2d').toLowerCase() === '3d') {
+      return false;
+    }
+    const areaAxis = MPR_AXES.includes(area?.axis) ? area.axis : segmentAxis;
+    if (areaAxis !== safeAxis) return false;
+    const areaSlice = Number(area?.sliceIndex ?? area?.slice_index);
+    if (Number.isFinite(areaSlice)) return Math.round(areaSlice) === selectedSlice;
+    return (
+      selectedSlice >= Math.min(Number(segment?.minSlice) || 0, Number(segment?.maxSlice) || 0)
+      && selectedSlice <= Math.max(Number(segment?.minSlice) || 0, Number(segment?.maxSlice) || 0)
+    );
+  });
+}
+
+function segmentVisibleOnSlice(segment, axis, sliceIndex) {
+  return segment?.visible !== false && (
+    segmentHasVolumeAreas(segment)
+    || segmentHasPlanarAreaOnSlice(segment, axis, sliceIndex)
+  );
 }
 
 function getMprAxisImageDimensions(axis, dimensions = {}, volumeCache = null) {
@@ -2752,24 +2865,67 @@ function renderSegmentationShape(shape, options = {}) {
 
 function renderCompositedSegmentationSegment(segment, options = {}) {
   if (!segment || segment.visible === false) return null;
-  const mask = buildPt3SegmentMask(segment);
-  const path = pt3SegmentMaskToSvgPath(mask);
-  if (!path) return null;
   const color = options.color || segment.color || DEFAULT_SEGMENT_COLOR;
   const fillOpacity = Number.isFinite(Number(options.fillOpacity))
     ? Number(options.fillOpacity)
     : (Number.isFinite(Number(segment.opacity)) ? Number(segment.opacity) : 0.24);
+  const selectedSlice = Number(options.sliceIndex);
+  const targetWidth = Math.max(1, Number(options.imageWidth) || Number(segment.imageWidth) || 1);
+  const targetHeight = Math.max(1, Number(options.imageHeight) || Number(segment.imageHeight) || 1);
+  const hasVolume = segmentHasVolumeAreas(segment);
+  const planarVisible = !options.axis || segmentHasPlanarAreaOnSlice(
+    segment,
+    options.axis,
+    selectedSlice,
+  );
+  const mask = planarVisible && !hasVolume
+    ? buildPt3SegmentMask(segment, {
+      axis: options.axis,
+      sliceIndex: selectedSlice,
+      imageWidth: targetWidth,
+      imageHeight: targetHeight,
+    })
+    : null;
+  const path = mask ? pt3SegmentMaskToSvgPath(mask) : '';
+  const volumeMask = hasVolume && options.axis && options.volumeDimensions
+    ? buildPt3SegmentVolumeSliceMask(segment, {
+      axis: options.axis,
+      sliceIndex: options.sliceIndex,
+      dimensions: options.volumeDimensions,
+    })
+    : null;
+  const volumePath = volumeMask ? pt3SegmentMaskToSvgPath(volumeMask) : '';
+  if (!path && !volumePath) return null;
   return (
-    <path
-      d={path}
-      className="segmentation-helper-shape add composited-segment-mask"
-      fill={color}
-      fillOpacity={fillOpacity}
-      stroke="none"
-      data-mask-rectangles={mask.rectangles.length}
-      data-mask-truncated={mask.stats.truncated ? 'true' : 'false'}
-      data-mask-approximated={mask.stats.approximated ? 'true' : 'false'}
-    />
+    <>
+      {path && (
+        <g transform={`scale(${targetWidth / mask.imageWidth} ${targetHeight / mask.imageHeight})`}>
+          <path
+            d={path}
+            className="segmentation-helper-shape add composited-segment-mask"
+            fill={color}
+            fillOpacity={fillOpacity}
+            stroke="none"
+            data-mask-rectangles={mask.rectangles.length}
+            data-mask-truncated={mask.stats.truncated ? 'true' : 'false'}
+            data-mask-approximated={mask.stats.approximated ? 'true' : 'false'}
+          />
+        </g>
+      )}
+      {volumePath && (
+        <g transform={`scale(${targetWidth / volumeMask.imageWidth} ${targetHeight / volumeMask.imageHeight})`}>
+          <path
+            d={volumePath}
+            className="segmentation-helper-shape add composited-segment-mask volumetric-segment-mask"
+            fill={color}
+            fillOpacity={fillOpacity}
+            stroke="none"
+            data-volume-mask-rectangles={volumeMask.rectangles.length}
+            data-volume-voxel-count={volumeMask.stats.voxelCount}
+          />
+        </g>
+      )}
+    </>
   );
 }
 
@@ -3594,10 +3750,12 @@ function InspectionWorkbenchPanel({
   const [activeMetadataTab, setActiveMetadataTab] = useState('nsipro');
   const [segmentationHelperOpen, setSegmentationHelperOpen] = useState(false);
   const [segmentationHelperAxis, setSegmentationHelperAxis] = useState('axial');
+  const [segmentationHelperView, setSegmentationHelperView] = useState('z');
   const [segmentationSegments, setSegmentationSegments] = useState([]);
   const [selectedSegmentationSegmentId, setSelectedSegmentationSegmentId] = useState('');
   const [editingSegmentationSegmentId, setEditingSegmentationSegmentId] = useState('');
   const [segmentationTool, setSegmentationTool] = useState('brush');
+  const [segmentationToolModes, setSegmentationToolModes] = useState(DEFAULT_SEGMENTATION_TOOL_MODES);
   const [segmentationOperation, setSegmentationOperation] = useState('add');
   const [segmentationBrushSize, setSegmentationBrushSize] = useState(18);
   const [segmentationSensitivity, setSegmentationSensitivity] = useState(28);
@@ -3609,6 +3767,8 @@ function InspectionWorkbenchPanel({
   const [segmentationMlParameters, setSegmentationMlParameters] = useState(() => getDefaultSegmentationMlParameters('segmentation.opencv.placeholder'));
   const [segmentationMlStatus, setSegmentationMlStatus] = useState('');
   const [segmentationMlLoading, setSegmentationMlLoading] = useState(false);
+  const [segmentationVolumeStatus, setSegmentationVolumeStatus] = useState('');
+  const [segmentationVolumeLoading, setSegmentationVolumeLoading] = useState(false);
   const [displayWindow, setDisplayWindow] = useState({ min: 0, max: 255 });
   const displayWindowContextRef = useRef(null);
   const [activeOverlayIds, setActiveOverlayIds] = useState([]);
@@ -3728,6 +3888,9 @@ function InspectionWorkbenchPanel({
   const mprFullscreenCloseRef = useRef(null);
   const mprFullscreenSceneRef = useRef(null);
   const mprFullscreenOpenerRef = useRef(null);
+  const segmentationHelperDialogRef = useRef(null);
+  const segmentationHelperCloseRef = useRef(null);
+  const segmentationHelperOpenerRef = useRef(null);
   const tileAnnotationDraftRef = useRef(null);
   const tileAnnotationGeometryDragRef = useRef(null);
   const tileGeometryDragPreviewRef = useRef(null);
@@ -3736,6 +3899,7 @@ function InspectionWorkbenchPanel({
   const mprGeometryDragPreviewRef = useRef(null);
   const segmentationDraftRef = useRef(null);
   const segmentationPointerSessionRef = useRef(null);
+  const segmentationVolumeRequestRef = useRef({ generation: 0, controller: null });
   const segmentationMutationQueuesRef = useRef(new Map());
   const segmentationServerIdsRef = useRef(new Map());
   const segmentationLocalDraftsRef = useRef(new Map());
@@ -4578,6 +4742,88 @@ function InspectionWorkbenchPanel({
     return () => { cancelled = true; };
   }, [projectId, volumeRenderSummaryCandidates]);
   const volumeCacheState = useMprVolumeCache(volumeImageStack, mprDimensions);
+  const segmentationHelperVolumeDimensions = useMemo(() => ([
+    Math.max(1, Number(volumeCacheState.cache?.width) || Number(mprDimensions.sagittal) || 1),
+    Math.max(1, Number(volumeCacheState.cache?.height) || Number(mprDimensions.coronal) || 1),
+    Math.max(1, Number(volumeCacheState.cache?.depth) || Number(mprDimensions.axial) || 1),
+  ]), [
+    mprDimensions.axial,
+    mprDimensions.coronal,
+    mprDimensions.sagittal,
+    volumeCacheState.cache?.depth,
+    volumeCacheState.cache?.height,
+    volumeCacheState.cache?.width,
+  ]);
+  const segmentationHelper3dVolumeMetadata = useMemo(() => ({
+    ...getMechanicalVolumeMetadata(selectedPart),
+    dimensions: segmentationHelperVolumeDimensions,
+  }), [segmentationHelperVolumeDimensions, selectedPart]);
+  const segmentationHelperCanonicalSlicePosition = useMemo(
+    () => Object.fromEntries(MPR_AXES.map((axis) => [
+      axis,
+      getCanonicalSegmentationSliceIndex(
+        axis,
+        slicePosition[axis],
+        mprDimensions,
+        segmentationHelperVolumeDimensions,
+      ),
+    ])),
+    [mprDimensions, segmentationHelperVolumeDimensions, slicePosition],
+  );
+  const segmentationHelperPending3dPreviewSegment = useMemo(() => {
+    if (segmentationPendingSelection?.mode !== '3d') return null;
+    const axis = MPR_AXES.includes(segmentationHelperAxis) ? segmentationHelperAxis : 'axial';
+    const axisDimensions = getMprAxisImageDimensions(
+      axis,
+      mprDimensions,
+      volumeCacheState.cache,
+    );
+    return {
+      ...(selectedSegmentationSegment || {}),
+      id: 'pending-volume-selection',
+      visible: true,
+      color: '#fde047',
+      opacity: 0.34,
+      imageWidth: selectedSegmentationSegment?.imageWidth || axisDimensions.width,
+      imageHeight: selectedSegmentationSegment?.imageHeight || axisDimensions.height,
+      volumeDimensions: segmentationHelperVolumeDimensions,
+      areas: [{ ...segmentationPendingSelection, operation: 'add' }],
+    };
+  }, [
+    mprDimensions,
+    segmentationHelperAxis,
+    segmentationHelperVolumeDimensions,
+    segmentationPendingSelection,
+    selectedSegmentationSegment,
+    volumeCacheState.cache,
+  ]);
+  const segmentationHelper3dAnnotations = useMemo(() => {
+    const selectedId = String(selectedSegmentationSegment?.id || '');
+    const selectedFirst = selectedId
+      ? [
+        selectedSegmentationSegment,
+        ...segmentationSegments.filter((segment) => String(segment?.id || '') !== selectedId),
+      ]
+      : segmentationSegments;
+    return segmentationHelperPending3dPreviewSegment
+      ? [segmentationHelperPending3dPreviewSegment, ...selectedFirst]
+      : selectedFirst;
+  }, [
+    segmentationHelperPending3dPreviewSegment,
+    segmentationSegments,
+    selectedSegmentationSegment,
+  ]);
+  const segmentation3dSurfacePreviewTruncated = useMemo(() => {
+    if (!segmentationHelperOpen || segmentationHelperView !== '3d') return false;
+    return buildPt3VectorAnnotationFaces(segmentationHelper3dAnnotations, {
+      dimensions: segmentationHelperVolumeDimensions,
+    }).stats.volumeSurfaceTruncated === true;
+  }, [
+    segmentationHelper3dAnnotations,
+    segmentationHelperOpen,
+    segmentationHelperView,
+    segmentationHelperVolumeDimensions,
+  ]);
   const volumeOverlayCacheStates = useMprVolumeCaches(visibleVolumeOverlayStacks, mprDimensions);
   const activeVolumeOverlayCaches = useMemo(
     () => ((projectType === 'PT3' || renderCategories.includes('overlay'))
@@ -5225,17 +5471,24 @@ function InspectionWorkbenchPanel({
     event.preventDefault();
   };
 
-  const openSegmentationHelper = () => {
+  const openSegmentationHelper = (event) => {
+    segmentationHelperOpenerRef.current = event?.currentTarget || document.activeElement;
     const fallbackAxis = activeMprPane === 'volume' ? 'axial' : activeMprPane;
     const axis = MPR_AXES.includes(fallbackAxis) ? fallbackAxis : 'axial';
     setSegmentationHelperAxis(axis);
+    setSegmentationHelperView(SEGMENTATION_VIEW_BY_AXIS[axis] || 'z');
     if (segmentationSegments.length === 0) {
       const dimensions = getMprAxisImageDimensions(axis, mprDimensions, volumeCacheState.cache);
       const firstSegment = createDefaultSegment(0, {
         axis,
-        sliceIndex: slicePosition[axis],
+        sliceIndex: getSegmentationCanonicalSliceIndex(axis),
         imageWidth: dimensions.width,
         imageHeight: dimensions.height,
+        volumeDimensions: [
+          mprDimensions.sagittal,
+          mprDimensions.coronal,
+          mprDimensions.axial,
+        ],
       });
       if (selectedPart?.id) {
         segmentationLocalDraftsRef.current.set(
@@ -5254,22 +5507,58 @@ function InspectionWorkbenchPanel({
     }
     setSegmentationPendingSelection(null);
     setSegmentationDraftShape(null);
+    setSegmentationVolumeStatus('');
     segmentationDraftRef.current = null;
     setSegmentationHelperOpen(true);
   };
 
-  const closeSegmentationHelper = () => {
+  const closeSegmentationHelper = useCallback(() => {
     const pointerSession = segmentationPointerSessionRef.current;
     if (pointerSession) {
       safeReleasePointerCapture(pointerSession.captureTarget, pointerSession.pointerId);
       segmentationPointerSessionRef.current = null;
     }
+    segmentationVolumeRequestRef.current.controller?.abort();
+    segmentationVolumeRequestRef.current = {
+      generation: segmentationVolumeRequestRef.current.generation + 1,
+      controller: null,
+    };
     setSegmentationHelperOpen(false);
     setSegmentationPendingSelection(null);
     setSegmentationDraftShape(null);
     setSegmentationPointerPreview(null);
+    setSegmentationVolumeLoading(false);
+    setSegmentationVolumeStatus('');
     segmentationDraftRef.current = null;
-  };
+    window.requestAnimationFrame(() => segmentationHelperOpenerRef.current?.focus());
+  }, []);
+
+  useEffect(() => {
+    if (!segmentationHelperOpen) return undefined;
+    segmentationHelperCloseRef.current?.focus();
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeSegmentationHelper();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(
+        segmentationHelperDialogRef.current?.querySelectorAll(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ) || [],
+      ).filter((element) => element.getAttribute('aria-hidden') !== 'true' && element.tabIndex >= 0);
+      if (focusable.length === 0) return;
+      const activeIndex = focusable.indexOf(document.activeElement);
+      const nextIndex = event.shiftKey
+        ? (activeIndex <= 0 ? focusable.length - 1 : activeIndex - 1)
+        : (activeIndex < 0 || activeIndex === focusable.length - 1 ? 0 : activeIndex + 1);
+      event.preventDefault();
+      focusable[nextIndex].focus();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [closeSegmentationHelper, segmentationHelperOpen]);
 
   const drainSegmentationMutationQueue = async (queueKey) => {
     const queue = segmentationMutationQueuesRef.current.get(queueKey);
@@ -5457,6 +5746,11 @@ function InspectionWorkbenchPanel({
       version,
       segment: segmentSnapshot,
     });
+    const supersededSaves = queue.pending.filter((entry) => entry.type === 'save');
+    if (supersededSaves.length > 0) {
+      queue.pending = queue.pending.filter((entry) => entry.type !== 'save');
+      supersededSaves.forEach((entry) => entry.resolve(null));
+    }
     const result = new Promise((resolve) => {
       queue.pending.push({ type: 'save', version, segment: segmentSnapshot, resolve });
     });
@@ -5504,12 +5798,18 @@ function InspectionWorkbenchPanel({
   };
 
   const addSegmentationSegment = () => {
+    cancelSegmentationDraft();
     const dimensions = getMprAxisImageDimensions(segmentationHelperAxis, mprDimensions, volumeCacheState.cache);
     const nextSegment = createDefaultSegment(segmentationSegments.length, {
       axis: segmentationHelperAxis,
-      sliceIndex: slicePosition[segmentationHelperAxis],
+      sliceIndex: getSegmentationCanonicalSliceIndex(segmentationHelperAxis),
       imageWidth: dimensions.width,
       imageHeight: dimensions.height,
+      volumeDimensions: [
+        mprDimensions.sagittal,
+        mprDimensions.coronal,
+        mprDimensions.axial,
+      ],
     });
     setSegmentationSegments((prev) => [...prev, nextSegment]);
     setSelectedSegmentationSegmentId(nextSegment.id);
@@ -5526,7 +5826,12 @@ function InspectionWorkbenchPanel({
   const saveSegmentationSegmentPatch = async (segmentId, patch = {}) => {
     const segment = segmentationSegments.find((entry) => String(entry.id) === String(segmentId));
     if (!segment) return null;
-    const maxSliceIndex = Math.max(0, Number(mprDimensions?.[segment.axis]) - 1);
+    const volumeDimensions = getSegmentationVolumeDimensions();
+    const maxSliceIndex = Math.max(0, (
+      segment.axis === 'sagittal'
+        ? volumeDimensions[0]
+        : (segment.axis === 'coronal' ? volumeDimensions[1] : volumeDimensions[2])
+    ) - 1);
     const next = {
       ...segment,
       ...patch,
@@ -5566,17 +5871,68 @@ function InspectionWorkbenchPanel({
     };
   };
 
+  const getSegmentationVolumeDimensions = () => segmentationHelperVolumeDimensions;
+
+  const getSegmentationCanonicalSliceIndex = (
+    axis = segmentationHelperAxis,
+    uiSliceIndex = slicePosition[axis],
+  ) => {
+    const safeAxis = MPR_AXES.includes(axis) ? axis : 'axial';
+    const volumeDimensions = getSegmentationVolumeDimensions();
+    return getCanonicalSegmentationSliceIndex(
+      safeAxis,
+      uiSliceIndex,
+      mprDimensions,
+      volumeDimensions,
+    );
+  };
+
+  const getSegmentationVolumeSpacing = () => {
+    const spacing = getMechanicalVolumeMetadata(selectedPart)?.spacing;
+    return Array.isArray(spacing) && spacing.length >= 3
+      ? spacing.slice(0, 3).map((value) => Math.max(Number.EPSILON, Number(value) || 1))
+      : [1, 1, 1];
+  };
+
+  const getActiveSegmentationToolMode = (toolId = segmentationTool) => {
+    const tool = SEGMENTATION_HELPER_TOOLS.find((entry) => entry.id === toolId);
+    if (!tool?.modes?.includes('3d')) return '2d';
+    if (segmentationHelperView === '3d') return '3d';
+    return segmentationToolModes[toolId] === '3d' ? '3d' : '2d';
+  };
+
+  const getSegmentationVoxelPosition = (position, axis = segmentationHelperAxis) => {
+    if (!position || !MPR_AXES.includes(axis)) return null;
+    const volumeDimensions = getSegmentationVolumeDimensions();
+    const mapped = mapVectorPlanePointToVoxel({
+      axis,
+      point: position,
+      sliceIndex: getSegmentationCanonicalSliceIndex(axis),
+      imageWidth: position.imageWidth,
+      imageHeight: position.imageHeight,
+      dimensions: volumeDimensions,
+    });
+    if (!Array.isArray(mapped) || mapped.length < 3) return null;
+    return mapped.map((value, index) => Math.max(
+      0,
+      Math.min(volumeDimensions[index] - 1, Math.round(Number(value) || 0)),
+    ));
+  };
+
   const makeSegmentationShapeBase = (tool, position, overrides = {}) => {
-    const axis = selectedSegmentationSegment?.axis || segmentationHelperAxis;
+    const mode = overrides.mode || getActiveSegmentationToolMode(tool);
+    const axis = segmentationHelperAxis;
     const dimensions = getMprAxisImageDimensions(axis, mprDimensions, volumeCacheState.cache);
     return {
       id: `shape-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       tool,
+      mode,
       operation: segmentationOperation,
       axis,
-      sliceIndex: Number(slicePosition[axis] || 0),
+      sliceIndex: getSegmentationCanonicalSliceIndex(axis),
       imageWidth: position?.imageWidth || dimensions.width,
       imageHeight: position?.imageHeight || dimensions.height,
+      volumeDimensions: getSegmentationVolumeDimensions(),
       brushSize: Number(segmentationBrushSize) || 18,
       sensitivity: Number(segmentationSensitivity) || 28,
       ...overrides,
@@ -5718,6 +6074,141 @@ function InspectionWorkbenchPanel({
     });
   };
 
+  const makeConnectedVolumeSelection = (
+    position,
+    seedVoxel,
+    result,
+    segmentId,
+    sourceAxis,
+    sourceSliceIndex,
+  ) => (
+    makeSegmentationShapeBase('connected', position, {
+      segmentId,
+      axis: sourceAxis,
+      sliceIndex: sourceSliceIndex,
+      mode: '3d',
+      seed: position,
+      seedVoxel,
+      points: [],
+      volumeRuns: result?.volume_runs || result?.runs || [],
+      volumeDimensions: result?.dimensions || getSegmentationVolumeDimensions(),
+      voxelCount: Number(result?.voxel_count ?? result?.voxelCount ?? result?.stats?.voxelCount) || 0,
+      examined: Number(result?.examined ?? result?.stats?.examined) || 0,
+      connectivity: Number(result?.connectivity) || 6,
+      truncated: result?.truncated === true || result?.stats?.truncated === true,
+      truncationReason: String(
+        result?.truncation_reason || result?.truncationReason || result?.reason || result?.stats?.reason || '',
+      ),
+    })
+  );
+
+  const buildConnectedVolumeSegmentationSelection = async (position) => {
+    const sourceAxis = segmentationHelperAxis;
+    const sourceSliceIndex = getSegmentationCanonicalSliceIndex(sourceAxis);
+    const seedVoxel = getSegmentationVoxelPosition(position, sourceAxis);
+    const segmentId = selectedSegmentationSegment?.id || '';
+    if (!seedVoxel) {
+      setSegmentationVolumeStatus('Choose a valid voxel in an X, Y, or Z slice.');
+      return;
+    }
+    segmentationVolumeRequestRef.current.controller?.abort();
+    const generation = segmentationVolumeRequestRef.current.generation + 1;
+    const controller = new AbortController();
+    segmentationVolumeRequestRef.current = { generation, controller, segmentId };
+    setSegmentationPendingSelection(null);
+    setSegmentationVolumeLoading(true);
+    setSegmentationVolumeStatus('Growing a six-connected 3D preview…');
+    try {
+      let result;
+      const volumeCache = volumeCacheState.cache;
+      if (isServerVolumeDescriptor(volumeCache)) {
+        const response = await fetch(
+          `/api/images/${encodeURIComponent(String(volumeCache.imageId))}/volume-connected-selection`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body: JSON.stringify({
+              seed: seedVoxel,
+              sensitivity: Math.max(0, Number(segmentationSensitivity) || 0),
+              display_min: Number(displayWindow.min),
+              display_max: Number(displayWindow.max),
+              max_voxels: 50000,
+              max_examined: 150000,
+              max_runs: 10000,
+            }),
+          },
+        );
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(body?.detail || `3D connected selection failed (${response.status})`);
+        }
+        result = await response.json();
+      } else if (volumeCache?.slices?.length) {
+        if (volumeCache.complete !== true) {
+          throw new Error(
+            `3D connected selection needs a complete volume (${Number(volumeCache.validSliceCount) || 0}/${volumeCache.slices.length} slices available).`,
+          );
+        }
+        const dimensions = getSegmentationVolumeDimensions();
+        result = await floodFillVolume3dAsync({
+          dimensions,
+          seed: seedVoxel,
+          sensitivity: Math.max(0, Number(segmentationSensitivity) || 0),
+          getVoxel: (x, y, z) => {
+            const data = volumeCache.slices[z]?.imageData?.data;
+            if (!data) return null;
+            const offset = ((y * dimensions[0]) + x) * 4;
+            return [
+              data[offset],
+              data[offset + 1],
+              data[offset + 2],
+              data[offset + 3],
+            ];
+          },
+          maxVoxels: 50000,
+          maxExamined: 150000,
+          maxRuns: 10000,
+          isCancelled: () => (
+            controller.signal.aborted
+            || segmentationVolumeRequestRef.current.generation !== generation
+          ),
+        });
+      } else {
+        throw new Error('The volume is still loading; try again when all slices are ready.');
+      }
+      if (
+        controller.signal.aborted
+        || segmentationVolumeRequestRef.current.generation !== generation
+      ) return;
+      const selection = makeConnectedVolumeSelection(
+        position,
+        seedVoxel,
+        result,
+        segmentId,
+        sourceAxis,
+        sourceSliceIndex,
+      );
+      setSegmentationPendingSelection(selection);
+      const count = Number(selection.voxelCount) || 0;
+      const truncatedSuffix = selection.truncated
+        ? ` Limit reached (${selection.truncationReason || 'guard'}); preview is partial.`
+        : '';
+      setSegmentationVolumeStatus(
+        `3D preview: ${count.toLocaleString()} voxels, 6-neighbor connectivity.${truncatedSuffix}`,
+      );
+    } catch (error) {
+      if (error?.name !== 'AbortError') {
+        setSegmentationVolumeStatus(error?.message || 'Unable to build the 3D connected preview.');
+      }
+    } finally {
+      if (segmentationVolumeRequestRef.current.generation === generation) {
+        segmentationVolumeRequestRef.current.controller = null;
+        setSegmentationVolumeLoading(false);
+      }
+    }
+  };
+
   const updateSegmentationMlParameter = (name, value) => {
     setSegmentationMlParameters((prev) => ({ ...prev, [name]: value }));
     setSegmentationPendingSelection(null);
@@ -5742,7 +6233,11 @@ function InspectionWorkbenchPanel({
 
   const makeShapeFromMlRegion = (region, position, cachedResult) => {
     if (!region?.bbox) return null;
-    const dimensions = getMprAxisImageDimensions(segmentationHelperAxis, mprDimensions);
+    const dimensions = getMprAxisImageDimensions(
+      segmentationHelperAxis,
+      mprDimensions,
+      volumeCacheState.cache,
+    );
     return makeSegmentationShapeBase('ml-helper', position, {
       bbox: region.bbox,
       seed: position,
@@ -5756,8 +6251,8 @@ function InspectionWorkbenchPanel({
       confidence: region.confidence,
       methodId: segmentationMlMethod,
       methodLabel: cachedResult?.method_id || segmentationMlMethod,
-      imageWidth: dimensions.width,
-      imageHeight: dimensions.height,
+      imageWidth: position?.imageWidth || dimensions.width,
+      imageHeight: position?.imageHeight || dimensions.height,
     });
   };
 
@@ -5827,21 +6322,85 @@ function InspectionWorkbenchPanel({
 
   const commitSegmentationShape = (shape, explicitOperation = segmentationOperation) => {
     if (!shape || !selectedSegmentationSegment) return;
+    const makeCompactedVolumeArea = (compacted) => ({
+      id: `volume-snapshot-${Date.now()}`,
+      tool: 'volume-mask',
+      mode: '3d',
+      operation: 'add',
+      volumeDimensions: compacted.dimensions,
+      volumeRuns: compacted.runs,
+      voxelCount: compacted.stats.voxelCount,
+      spacing: getSegmentationVolumeSpacing(),
+      truncated: compacted.stats.truncated,
+      truncationReason: compacted.stats.truncated ? 'mask-compaction-limit' : '',
+    });
     const nextShape = {
       ...shape,
       operation: explicitOperation,
       color: selectedSegmentationSegment.color,
-      axis: selectedSegmentationSegment.axis,
+      axis: MPR_AXES.includes(shape.axis) ? shape.axis : segmentationHelperAxis,
       id: shape.id || `shape-${Date.now()}`,
     };
-    const nextSegment = {
+    const volumeDimensions = nextShape.volumeDimensions
+      || selectedSegmentationSegment.volumeDimensions
+      || getSegmentationVolumeDimensions();
+    let existingAreas = [...(selectedSegmentationSegment.areas || [])];
+    let compactionWasTruncated = false;
+    if (existingAreas.length >= 48) {
+      const existingCompacted = buildPt3SegmentVolumeRuns(
+        {
+          ...selectedSegmentationSegment,
+          volumeDimensions,
+          areas: existingAreas,
+        },
+        volumeDimensions,
+        { includePlanar: true },
+      );
+      compactionWasTruncated = existingCompacted.stats.truncated;
+      existingAreas = existingCompacted.runs.length > 0
+        ? [makeCompactedVolumeArea(existingCompacted)]
+        : [];
+    }
+    let nextSegment = {
       ...selectedSegmentationSegment,
-      areas: [...(selectedSegmentationSegment.areas || []), nextShape],
+      ...(nextShape.mode === '3d'
+        ? { version: 2, volumeDimensions }
+        : {}),
+      areas: [...existingAreas, nextShape],
     };
+    const shouldCompact = segmentHasVolumeAreas(nextSegment) || nextSegment.areas.length >= 48;
+    if (shouldCompact) {
+      const compacted = buildPt3SegmentVolumeRuns(
+        { ...nextSegment, volumeDimensions },
+        volumeDimensions,
+        { includePlanar: true },
+      );
+      nextSegment = {
+        ...nextSegment,
+        version: 2,
+        volumeDimensions: compacted.dimensions,
+        areas: compacted.runs.length > 0
+          ? [makeCompactedVolumeArea(compacted)]
+          : [],
+      };
+      compactionWasTruncated = compactionWasTruncated || compacted.stats.truncated;
+      if (compactionWasTruncated) {
+        setSegmentationVolumeStatus(
+          'The segment reached its geometry limit; the saved mask is a bounded partial result.',
+        );
+      }
+    }
     updateSegmentationSegment(selectedSegmentationSegment.id, nextSegment);
     persistSegmentationSegment(nextSegment);
     setSegmentationPendingSelection(null);
     setSegmentationDraftShape(null);
+    if (shape.mode === '3d' && !compactionWasTruncated) {
+      setSegmentationVolumeStatus(
+        `${Number(
+          nextSegment.areas?.[0]?.voxelCount ?? shape.voxelCount ?? 0,
+        ).toLocaleString()} volumetric voxels applied.`,
+      );
+    }
     segmentationDraftRef.current = null;
   };
 
@@ -5869,12 +6428,19 @@ function InspectionWorkbenchPanel({
     event.stopPropagation();
     const operation = segmentationTool === 'eraser' ? 'subtract' : segmentationOperation;
     const tool = segmentationTool === 'eraser' ? 'brush' : segmentationTool;
+    const toolMode = getActiveSegmentationToolMode(segmentationTool);
     if (tool === 'ml-helper') {
       runSegmentationMlHelper(event, position);
       return;
     }
     if (tool === 'brush' || tool === 'scissors') {
-      const shape = makeSegmentationShapeBase(tool, position, { operation, points: [position] });
+      const voxel = toolMode === '3d' ? getSegmentationVoxelPosition(position) : null;
+      const shape = makeSegmentationShapeBase(tool, position, {
+        mode: tool === 'brush' ? toolMode : '2d',
+        operation,
+        points: [position],
+        ...(voxel ? { voxelCenters: [voxel], seedVoxel: voxel } : {}),
+      });
       segmentationDraftRef.current = shape;
       setSegmentationDraftShape(shape);
       segmentationPointerSessionRef.current = {
@@ -5907,7 +6473,12 @@ function InspectionWorkbenchPanel({
       return;
     }
     if (tool === 'connected') {
-      setSegmentationPendingSelection(buildConnectedSegmentationSelection(event.currentTarget, position));
+      if (toolMode === '3d') {
+        buildConnectedVolumeSegmentationSelection(position);
+      } else {
+        setSegmentationVolumeStatus('');
+        setSegmentationPendingSelection(buildConnectedSegmentationSelection(event.currentTarget, position));
+      }
       return;
     }
     if (['threshold', 'level-trace'].includes(tool)) {
@@ -5948,7 +6519,17 @@ function InspectionWorkbenchPanel({
     if (!position) return;
     event.preventDefault();
     if (draft.tool === 'brush' || draft.tool === 'scissors') {
-      const next = { ...draft, points: [...(draft.points || []), position] };
+      const voxel = draft.mode === '3d' ? getSegmentationVoxelPosition(position, draft.axis) : null;
+      const previousVoxel = draft.voxelCenters?.[draft.voxelCenters.length - 1];
+      const voxelChanged = voxel && (
+        !previousVoxel
+        || voxel.some((value, index) => value !== previousVoxel[index])
+      );
+      const next = {
+        ...draft,
+        points: [...(draft.points || []), position],
+        ...(voxelChanged ? { voxelCenters: [...(draft.voxelCenters || []), voxel] } : {}),
+      };
       segmentationDraftRef.current = next;
       setSegmentationDraftShape(next);
       return;
@@ -5993,7 +6574,44 @@ function InspectionWorkbenchPanel({
     event.preventDefault();
     event.stopPropagation();
     if (draft.tool === 'brush' || draft.tool === 'scissors') {
-      if ((draft.points || []).length > 0) commitSegmentationShape(draft, draft.operation);
+      if (draft.mode === '3d' && draft.tool === 'brush') {
+        const spacing = getSegmentationVolumeSpacing();
+        const inPlaneSpacing = draft.axis === 'coronal'
+          ? [spacing[0], spacing[2]]
+          : (draft.axis === 'sagittal' ? [spacing[1], spacing[2]] : [spacing[0], spacing[1]]);
+        const physicalRadius = Math.max(
+          Math.min(...inPlaneSpacing),
+          (Number(draft.brushSize) / 2) * Math.min(...inPlaneSpacing),
+        );
+        const sphere = rasterizeSphereStroke({
+          centers: draft.voxelCenters,
+          radius: physicalRadius,
+          dimensions: draft.volumeDimensions || getSegmentationVolumeDimensions(),
+          spacing,
+          maxRuns: 50000,
+          maxVoxels: 250000,
+        });
+        const volumeShape = {
+          ...draft,
+          points: [],
+          voxelCenters: undefined,
+          volumeRuns: sphere.runs,
+          voxelCount: sphere.voxelCount,
+          spacing,
+          truncated: sphere.truncated,
+          truncationReason: sphere.reason,
+        };
+        if (sphere.runs.length > 0) {
+          commitSegmentationShape(volumeShape, draft.operation);
+          if (sphere.truncated) {
+            setSegmentationVolumeStatus(
+              `Sphere stroke was limited by ${sphere.reason || 'the volume guard'}; a partial stroke was applied.`,
+            );
+          }
+        }
+      } else if ((draft.points || []).length > 0) {
+        commitSegmentationShape(draft, draft.operation);
+      }
     } else {
       setSegmentationPendingSelection(draft);
       setSegmentationDraftShape(null);
@@ -6028,14 +6646,26 @@ function InspectionWorkbenchPanel({
     segmentationDraftRef.current = null;
   };
 
-  const cancelSegmentationDraft = () => {
+  const cancelSegmentationDraft = ({
+    preservePendingSelection = false,
+    preserveVolumeRequest = false,
+  } = {}) => {
     const pointerSession = segmentationPointerSessionRef.current;
     if (pointerSession) {
       safeReleasePointerCapture(pointerSession.captureTarget, pointerSession.pointerId);
       segmentationPointerSessionRef.current = null;
     }
+    if (!preserveVolumeRequest) {
+      segmentationVolumeRequestRef.current.controller?.abort();
+      segmentationVolumeRequestRef.current = {
+        generation: segmentationVolumeRequestRef.current.generation + 1,
+        controller: null,
+        segmentId: '',
+      };
+      setSegmentationVolumeLoading(false);
+    }
     setSegmentationDraftShape(null);
-    setSegmentationPendingSelection(null);
+    if (!preservePendingSelection) setSegmentationPendingSelection(null);
     segmentationDraftRef.current = null;
   };
 
@@ -7329,12 +7959,13 @@ function InspectionWorkbenchPanel({
                 ...mprEditableSliceBoxes,
                 ...getMprCubeBoxesForSlice(mprCubeAnnotations, axis, currentSliceIndex),
               ].filter(isFiniteAnnotationBox);
+              const mprCanonicalSliceIndex = getSegmentationCanonicalSliceIndex(
+                axis,
+                currentSliceIndex,
+              );
               const mprSliceSegments = annotationLayerVisible
                 ? vectorSegmentAnnotations.filter((segment) => (
-                  segment.visible !== false
-                  && segment.axis === axis
-                  && currentSliceIndex >= segment.minSlice
-                  && currentSliceIndex <= segment.maxSlice
+                  segmentVisibleOnSlice(segment, axis, mprCanonicalSliceIndex)
                 ))
                 : [];
               const mprImageDimensions = getMprAxisImageDimensions(axis, mprDimensions, volumeCacheState.cache);
@@ -7538,12 +8169,20 @@ function InspectionWorkbenchPanel({
                       {mprSliceSegments.map((segment) => (
                         <g
                           key={`mpr-segment-${segment.id}`}
-                          transform={`scale(${mprImageDimensions.width / segment.imageWidth} ${mprImageDimensions.height / segment.imageHeight})`}
                           opacity={annotationOpacityMultiplier}
                         >
                           {renderCompositedSegmentationSegment(segment, {
                             color: segment.color,
                             fillOpacity: segment.opacity,
+                            axis,
+                            sliceIndex: mprCanonicalSliceIndex,
+                            imageWidth: mprImageDimensions.width,
+                            imageHeight: mprImageDimensions.height,
+                            volumeDimensions: [
+                              mprDimensions.sagittal,
+                              mprDimensions.coronal,
+                              mprDimensions.axial,
+                            ],
                           })}
                         </g>
                       ))}
@@ -7672,7 +8311,8 @@ function InspectionWorkbenchPanel({
                 {!PT3_RENDERER_RECONSTRUCTION_MODES.includes(effectiveMprReconstructionMode) && (
                   <canvas className="mpr-volume-overlay" ref={mprOverlayCanvasRef} aria-hidden="true" />
                 )}
-                {PT3_RENDERER_RECONSTRUCTION_MODES.includes(effectiveMprReconstructionMode) && (
+                {PT3_RENDERER_RECONSTRUCTION_MODES.includes(effectiveMprReconstructionMode)
+                  && !(segmentationHelperOpen && segmentationHelperView === '3d') && (
                   <Pt3GaussianSplatViewer
                     part={selectedPart}
                     projectId={projectId}
@@ -7701,7 +8341,7 @@ function InspectionWorkbenchPanel({
                     showAnnotations={annotationLayerVisible}
                     annotationOpacityMultiplier={annotationOpacityMultiplier}
                   />
-                )}
+                  )}
                 {!PT3_RENDERER_RECONSTRUCTION_MODES.includes(effectiveMprReconstructionMode) && <div
                   className={`mpr-volume-model reconstruction-${effectiveMprReconstructionMode}`}
                   style={{
@@ -8322,11 +8962,15 @@ function InspectionWorkbenchPanel({
                           event.preventDefault();
                           event.stopPropagation();
                           if (item.kind === 'vista_segment') {
+                            segmentationHelperOpenerRef.current = event.currentTarget;
                             const segment = annotationToSegmentationHelperSegment(annotation);
                             setSelectedSegmentationSegmentId(segment.id);
                             setEditingSegmentationSegmentId(segment.id);
                             setSegmentationHelperAxis(segment.axis);
+                            setSegmentationHelperView(SEGMENTATION_VIEW_BY_AXIS[segment.axis] || 'z');
                             setActiveMprPane(segment.axis);
+                            setSegmentationPendingSelection(null);
+                            setSegmentationVolumeStatus('');
                             setSegmentationHelperOpen(true);
                           } else {
                             openAnnotationEditModal(annotation);
@@ -8607,17 +9251,22 @@ function InspectionWorkbenchPanel({
     if (!segmentationHelperOpen) return null;
     const axis = MPR_AXES.includes(segmentationHelperAxis) ? segmentationHelperAxis : 'axial';
     const dimensions = getMprAxisImageDimensions(axis, mprDimensions, volumeCacheState.cache);
+    const canonicalSliceIndex = getSegmentationCanonicalSliceIndex(
+      axis,
+      Number(slicePosition[axis] || 0),
+    );
     const upper = Math.max(0, (mprDimensions[axis] || 1) - 1);
     const config = MPR_AXIS_CONFIG[axis] || MPR_AXIS_CONFIG.axial;
     const fallbackImage = getFallbackProjectionImage(axis, shellImageLayers);
     const crosshairStyle = getMprCrosshairStyle(axis, slicePosition, mprDimensions, mprProjectionMirror);
     const activeTool = SEGMENTATION_HELPER_TOOLS.find((tool) => tool.id === segmentationTool) || SEGMENTATION_HELPER_TOOLS[0];
+    const activeToolMode = getActiveSegmentationToolMode(activeTool.id);
+    const volumeDimensions = getSegmentationVolumeDimensions();
     const visibleSegments = segmentationSegments.filter((segment) => (
-      segment.visible !== false
-      && segment.axis === axis
-      && Number(slicePosition[axis] || 0) >= Number(segment.minSlice)
-      && Number(slicePosition[axis] || 0) <= Number(segment.maxSlice)
+      segmentVisibleOnSlice(segment, axis, canonicalSliceIndex)
     ));
+    const pendingVolumePreviewSegment = segmentationHelperPending3dPreviewSegment;
+    const helper3dAnnotations = segmentationHelper3dAnnotations;
     const draftPoints = [
       ...getSegmentationShapePoints(segmentationDraftShape),
       ...getSegmentationShapePoints(segmentationPendingSelection),
@@ -8628,6 +9277,7 @@ function InspectionWorkbenchPanel({
     return (
       <div className="modal segmentation-helper-modal" style={{ display: 'flex' }} onClick={closeSegmentationHelper}>
         <div
+          ref={segmentationHelperDialogRef}
           className="modal-content segmentation-helper-modal-content"
           role="dialog"
           aria-modal="true"
@@ -8637,9 +9287,10 @@ function InspectionWorkbenchPanel({
           <div className="modal-header segmentation-helper-header">
             <div>
               <h3>Segmentation Helpers</h3>
-              <p className="muted">Slice tools for building local segment masks on PT3 volumes.</p>
+              <p className="muted">Linked slice and volumetric tools for PT3 segment masks.</p>
             </div>
             <button
+              ref={segmentationHelperCloseRef}
               type="button"
               className="modal-close-btn"
               aria-label="Close Segmentation Helpers"
@@ -8649,26 +9300,63 @@ function InspectionWorkbenchPanel({
             </button>
           </div>
 
+          <nav
+            className="segmentation-helper-view-tabs"
+            role="tablist"
+            aria-label="Segmentation workspace views"
+            onKeyDown={(event) => {
+              if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+              const tabs = Array.from(event.currentTarget.querySelectorAll('[role="tab"]'));
+              const currentIndex = Math.max(0, tabs.indexOf(document.activeElement));
+              const nextIndex = event.key === 'Home'
+                ? 0
+                : (event.key === 'End'
+                  ? tabs.length - 1
+                  : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length);
+              event.preventDefault();
+              tabs[nextIndex]?.focus();
+              tabs[nextIndex]?.click();
+            }}
+          >
+            {SEGMENTATION_HELPER_VIEWS.map((view) => (
+              <button
+                key={view.id}
+                id={`segmentation-view-tab-${view.id}`}
+                type="button"
+                role="tab"
+                aria-selected={segmentationHelperView === view.id}
+                tabIndex={segmentationHelperView === view.id ? 0 : -1}
+                aria-controls={`segmentation-view-panel-${view.id}`}
+                className={segmentationHelperView === view.id ? 'active' : ''}
+                title={view.detail}
+                onClick={() => {
+                  cancelSegmentationDraft({
+                    preservePendingSelection: true,
+                    preserveVolumeRequest: true,
+                  });
+                  setSegmentationHelperView(view.id);
+                  if (view.axis) {
+                    setSegmentationHelperAxis(view.axis);
+                    setActiveMprPane(view.axis);
+                  } else if (view.id === '3d' && !activeTool.modes?.includes('3d')) {
+                    setSegmentationTool('brush');
+                  }
+                }}
+              >
+                <strong>{view.label}</strong>
+                {view.plane && <small>{view.plane}</small>}
+              </button>
+            ))}
+          </nav>
+
           <div className="segmentation-helper-body">
             <aside className="segmentation-helper-sidebar" aria-label="Segmentation helper controls">
-              <div className="segmentation-orientation-switcher" aria-label="View orientation">
-                {MPR_AXES.map((option) => (
-                  <button
-                    key={option}
-                    type="button"
-                    className={axis === option ? 'active' : ''}
-                    style={{ '--segment-axis-color': MPR_AXIS_CONFIG[option]?.color }}
-                    onClick={() => {
-                      setSegmentationHelperAxis(option);
-                      setActiveMprPane(option);
-                      const matchingSegment = segmentationSegments.find((segment) => segment.axis === option);
-                      setSelectedSegmentationSegmentId(matchingSegment?.id || '');
-                      cancelSegmentationDraft();
-                    }}
-                  >
-                    {MPR_AXIS_CONFIG[option]?.label || option}
-                  </button>
-                ))}
+              <div className="segmentation-helper-view-summary">
+                <span className="segmentation-helper-axis-dot" style={{ background: config.color }} />
+                <div>
+                  <strong>{SEGMENTATION_HELPER_VIEWS.find((view) => view.id === segmentationHelperView)?.detail}</strong>
+                  <small>Crosshair: X {slicePosition.sagittal}, Y {slicePosition.coronal}, Z {slicePosition.axial}</small>
+                </div>
               </div>
 
               <div className="segmentation-slice-sliders" aria-label="Slice navigation">
@@ -8715,8 +9403,12 @@ function InspectionWorkbenchPanel({
                           type="button"
                           className="segmentation-segment-select"
                           onClick={() => {
+                            cancelSegmentationDraft();
                             setSelectedSegmentationSegmentId(segment.id);
                             setSegmentationHelperAxis(segment.axis);
+                            if (!['mpr', '3d'].includes(segmentationHelperView)) {
+                              setSegmentationHelperView(SEGMENTATION_VIEW_BY_AXIS[segment.axis] || 'z');
+                            }
                             setActiveMprPane(segment.axis);
                           }}
                         >
@@ -8729,8 +9421,12 @@ function InspectionWorkbenchPanel({
                           className="annotation-entry-edit"
                           aria-label={`Edit ${segment.name}`}
                           onClick={() => {
+                            cancelSegmentationDraft();
                             setSelectedSegmentationSegmentId(segment.id);
                             setSegmentationHelperAxis(segment.axis);
+                            if (!['mpr', '3d'].includes(segmentationHelperView)) {
+                              setSegmentationHelperView(SEGMENTATION_VIEW_BY_AXIS[segment.axis] || 'z');
+                            }
                             setActiveMprPane(segment.axis);
                             setEditingSegmentationSegmentId(editing ? '' : segment.id);
                           }}
@@ -8773,7 +9469,11 @@ function InspectionWorkbenchPanel({
                                 id={`segmentation-segment-min-slice-${segment.id}`}
                                 type="number"
                                 min="0"
-                                max={Math.max(0, Number(mprDimensions[segment.axis] || 1) - 1)}
+                                max={Math.max(0, (
+                                  segment.axis === 'sagittal'
+                                    ? volumeDimensions[0]
+                                    : (segment.axis === 'coronal' ? volumeDimensions[1] : volumeDimensions[2])
+                                ) - 1)}
                                 value={segment.minSlice}
                                 onChange={(event) => updateSegmentationSegment(segment.id, { minSlice: Number(event.target.value) })}
                                 onBlur={(event) => saveSegmentationSegmentPatch(segment.id, { minSlice: Number(event.target.value) })}
@@ -8785,7 +9485,11 @@ function InspectionWorkbenchPanel({
                                 id={`segmentation-segment-max-slice-${segment.id}`}
                                 type="number"
                                 min="0"
-                                max={Math.max(0, Number(mprDimensions[segment.axis] || 1) - 1)}
+                                max={Math.max(0, (
+                                  segment.axis === 'sagittal'
+                                    ? volumeDimensions[0]
+                                    : (segment.axis === 'coronal' ? volumeDimensions[1] : volumeDimensions[2])
+                                ) - 1)}
                                 value={segment.maxSlice}
                                 onChange={(event) => updateSegmentationSegment(segment.id, { maxSlice: Number(event.target.value) })}
                                 onBlur={(event) => saveSegmentationSegmentPatch(segment.id, { maxSlice: Number(event.target.value) })}
@@ -8800,7 +9504,13 @@ function InspectionWorkbenchPanel({
               </div>
             </aside>
 
-            <main className="segmentation-helper-main" aria-label="Segmentation helper slice workspace">
+            <main
+              id={`segmentation-view-panel-${segmentationHelperView}`}
+              className="segmentation-helper-main"
+              role="tabpanel"
+              aria-labelledby={`segmentation-view-tab-${segmentationHelperView}`}
+              aria-label="Segmentation helper workspace"
+            >
               <div className="segmentation-helper-toolbar">
                 <div className="segmentation-operation-buttons" aria-label="Selection operation">
                   <button
@@ -8840,23 +9550,61 @@ function InspectionWorkbenchPanel({
               </div>
 
               <div className="segmentation-tools-grid" aria-label="Segmentation tools">
-                {SEGMENTATION_HELPER_TOOLS.map((tool) => (
-                  <button
-                    key={tool.id}
-                    type="button"
-                    className={segmentationTool === tool.id ? 'active' : ''}
-                    title={tool.detail}
-                    aria-label={`${tool.label}: ${tool.detail}`}
-                    data-tooltip={`${tool.label}: ${tool.detail}`}
-                    onClick={() => {
-                      setSegmentationTool(tool.id);
-                      cancelSegmentationDraft();
-                    }}
-                  >
-                    <SegmentationToolIcon icon={tool.icon} />
-                    <span className="segmentation-tool-label">{tool.label}</span>
-                  </button>
-                ))}
+                {SEGMENTATION_HELPER_TOOLS.map((tool) => {
+                  const selected = segmentationTool === tool.id;
+                  const supports3d = tool.modes?.includes('3d');
+                  const disabledInView = segmentationHelperView === '3d';
+                  const selectedMode = getActiveSegmentationToolMode(tool.id);
+                  return (
+                    <div
+                      key={tool.id}
+                      className={`segmentation-tool-tile ${selected ? 'active' : ''} ${selected && supports3d ? 'has-mode-switch' : ''}`}
+                    >
+                      <button
+                        type="button"
+                        className={`segmentation-tool-select ${selected ? 'active' : ''}`}
+                        title={disabledInView ? 'Return to X, Y, or Z to edit the volume.' : tool.detail}
+                        aria-label={`${tool.label}: ${tool.detail}`}
+                        data-tooltip={`${tool.label}: ${tool.detail}`}
+                        disabled={disabledInView}
+                        onClick={() => {
+                          setSegmentationTool(tool.id);
+                          cancelSegmentationDraft();
+                          setSegmentationVolumeStatus('');
+                        }}
+                      >
+                        <SegmentationToolIcon icon={tool.icon} />
+                        <span className="segmentation-tool-label">{tool.label}</span>
+                      </button>
+                      {selected && supports3d && (
+                        <div
+                          className="segmentation-tool-mode-switch"
+                          role="group"
+                          aria-label={`${tool.label} dimensional mode`}
+                        >
+                          {tool.modes.map((mode) => (
+                            <button
+                              key={mode}
+                              type="button"
+                              className={selectedMode === mode ? 'active' : ''}
+                              aria-pressed={selectedMode === mode}
+                              aria-label={`${tool.label} ${mode.toUpperCase()} mode`}
+                              title={`${mode.toUpperCase()} · ${tool.modeLabels?.[mode] || mode}`}
+                              disabled={segmentationHelperView === '3d' && mode === '2d'}
+                              onClick={() => {
+                                cancelSegmentationDraft();
+                                setSegmentationToolModes((previous) => ({ ...previous, [tool.id]: mode }));
+                                setSegmentationVolumeStatus('');
+                              }}
+                            >
+                              {mode.toUpperCase()}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
               <div className="segmentation-tool-parameters">
@@ -8884,9 +9632,22 @@ function InspectionWorkbenchPanel({
                   />
                   <output>{segmentationSensitivity}</output>
                 </label>
-                <p className="muted">{activeTool.detail}</p>
+                <p className="muted">
+                  <strong>{activeToolMode.toUpperCase()} · {activeTool.modeLabels?.[activeToolMode] || 'Slice'}</strong>
+                  {' — '}
+                  {activeTool.detail}
+                </p>
                 {SEGMENTATION_POINT_MARKER_TOOLS.has(segmentationTool) && (
                   <p className="muted">Defined points are shown as dots on the slice. Double-click closes polygon selections.</p>
+                )}
+                {(segmentationVolumeLoading || segmentationVolumeStatus) && (
+                  <p
+                    className={`segmentation-volume-status ${segmentationPendingSelection?.truncated ? 'warning' : ''}`}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {segmentationVolumeLoading ? 'Building 3D preview…' : segmentationVolumeStatus}
+                  </p>
                 )}
               </div>
 
@@ -8951,90 +9712,266 @@ function InspectionWorkbenchPanel({
                 </div>
               )}
 
-              <div
-                className={`segmentation-slice-stage ${brushPointerVisible ? 'show-brush-pointer' : ''}`}
-                style={{
-                  '--segment-axis-color': config.color,
-                  '--brush-pointer-x': brushPointerVisible ? `${segmentationPointerPreview.displayX}px` : '50%',
-                  '--brush-pointer-y': brushPointerVisible ? `${segmentationPointerPreview.displayY}px` : '50%',
-                  '--brush-pointer-size': `${brushPointerDiameter}px`,
-                  ...crosshairStyle,
-                }}
-                onWheel={handleSegmentationHelperWheel}
-                onPointerDown={handleSegmentationStagePointerDown}
-                onPointerMove={handleSegmentationStagePointerMove}
-                onPointerUp={handleSegmentationStagePointerUp}
-                onPointerLeave={handleSegmentationStagePointerLeave}
-                onPointerCancel={handleSegmentationStagePointerCancel}
-                onDoubleClick={completeSegmentationPolygon}
-                data-testid="segmentation-helper-stage"
-              >
-                {hasVolumeImageSource ? (
-                  <MprSliceCanvas
-                    axis={axis}
-                    volumeCache={volumeCacheState.cache}
-                    overlayCaches={activeVolumeOverlayCaches}
-                    volumeCacheStatus={volumeCacheState.status}
-                    slicePosition={slicePosition}
-                    dimensions={mprDimensions}
-                    displayWindow={displayWindow}
-                    displayDomain={displayValueDomain}
-                    overlayOpacityMultiplier={annotationOpacityMultiplier}
+              {segmentationHelperView === 'mpr' && (
+                <section className="segmentation-helper-mpr-grid" data-testid="segmentation-helper-mpr">
+                  {MPR_AXES.map((previewAxis) => {
+                    const previewConfig = MPR_AXIS_CONFIG[previewAxis];
+                    const previewDimensions = getMprAxisImageDimensions(
+                      previewAxis,
+                      mprDimensions,
+                      volumeCacheState.cache,
+                    );
+                    const previewSliceIndex = Number(slicePosition[previewAxis] || 0);
+                    const previewCanonicalSliceIndex = getSegmentationCanonicalSliceIndex(
+                      previewAxis,
+                      previewSliceIndex,
+                    );
+                    const previewFallback = getFallbackProjectionImage(previewAxis, shellImageLayers);
+                    const previewSegments = segmentationSegments.filter((segment) => (
+                      segmentVisibleOnSlice(segment, previewAxis, previewCanonicalSliceIndex)
+                    ));
+                    return (
+                      <button
+                        key={previewAxis}
+                        type="button"
+                        className="segmentation-helper-mpr-pane"
+                        style={{
+                          '--segment-axis-color': previewConfig.color,
+                          ...getMprCrosshairStyle(
+                            previewAxis,
+                            slicePosition,
+                            mprDimensions,
+                            mprProjectionMirror,
+                          ),
+                        }}
+                        aria-label={`Edit ${previewConfig.sliceLabel} axis in ${previewConfig.label} plane`}
+                        onClick={() => {
+                          setSegmentationHelperAxis(previewAxis);
+                          setSegmentationHelperView(SEGMENTATION_VIEW_BY_AXIS[previewAxis]);
+                          setActiveMprPane(previewAxis);
+                        }}
+                        data-testid={`segmentation-helper-mpr-${previewAxis}`}
+                      >
+                        <header>
+                          <strong>{previewConfig.sliceLabel}</strong>
+                          <span>{previewConfig.label} · {previewSliceIndex}</span>
+                        </header>
+                        <div className="segmentation-helper-mpr-image">
+                          {hasVolumeImageSource ? (
+                            <MprSliceCanvas
+                              axis={previewAxis}
+                              volumeCache={volumeCacheState.cache}
+                              overlayCaches={activeVolumeOverlayCaches}
+                              volumeCacheStatus={volumeCacheState.status}
+                              slicePosition={slicePosition}
+                              dimensions={mprDimensions}
+                              displayWindow={displayWindow}
+                              displayDomain={displayValueDomain}
+                              overlayOpacityMultiplier={annotationOpacityMultiplier}
+                            />
+                          ) : previewFallback ? (
+                            <MprWindowedImage
+                              className="mpr-fallback-projection"
+                              src={previewFallback.url}
+                              alt={`${previewConfig.label} segmentation helper fallback`}
+                              displayWindow={displayWindow}
+                              displayDomain={displayValueDomain}
+                            />
+                          ) : (
+                            <span className="mpr-empty-volume">No volume stack images</span>
+                          )}
+                          <span className="mpr-crosshair-h" />
+                          <span className="mpr-crosshair-v" />
+                          <span className="mpr-crosshair-center" />
+                          <svg
+                            className="segmentation-helper-overlay mpr-projection-overlay"
+                            viewBox={`0 0 ${previewDimensions.width} ${previewDimensions.height}`}
+                            preserveAspectRatio="xMidYMid meet"
+                            aria-label={`${previewConfig.sliceLabel} segmentation projection`}
+                          >
+                            {previewSegments.map((segment) => (
+                              <g
+                                key={`segmentation-mpr-mask-${previewAxis}-${segment.id}`}
+                              >
+                                {renderCompositedSegmentationSegment(segment, {
+                                  color: segment.color,
+                                  fillOpacity: segment.opacity ?? 0.2,
+                                  axis: previewAxis,
+                                  sliceIndex: previewCanonicalSliceIndex,
+                                  imageWidth: previewDimensions.width,
+                                  imageHeight: previewDimensions.height,
+                                  volumeDimensions,
+                                })}
+                              </g>
+                            ))}
+                            {pendingVolumePreviewSegment && (
+                              <g>
+                                {renderCompositedSegmentationSegment(pendingVolumePreviewSegment, {
+                                  color: '#fde047',
+                                  fillOpacity: 0.3,
+                                  axis: previewAxis,
+                                  sliceIndex: previewCanonicalSliceIndex,
+                                  imageWidth: previewDimensions.width,
+                                  imageHeight: previewDimensions.height,
+                                  volumeDimensions,
+                                })}
+                              </g>
+                            )}
+                          </svg>
+                        </div>
+                      </button>
+                    );
+                  })}
+                  <p className="segmentation-helper-workspace-hint">
+                    These three panes share one crosshair. Select a pane to open its editable axis view.
+                  </p>
+                </section>
+              )}
+
+              {segmentationHelperView === '3d' && (
+                <section className="segmentation-helper-3d-stage" data-testid="segmentation-helper-3d-stage">
+                  <Pt3GaussianSplatViewer
+                    part={selectedPart}
+                    volumeMetadata={segmentationHelper3dVolumeMetadata}
+                    projectId={projectId}
+                    volumeImageStack={volumeRendererImageStack}
+                    volumeOverlayImageStacks={volumeRendererOverlayImageStacks}
+                    splatParameters={splatParameters}
+                    mode="volume"
+                    rotation={mprRotation}
+                    zoom={viewportTransform.zoom}
+                    mirrorScale={mprAxisMirrorScale}
+                    slicePosition={segmentationHelperCanonicalSlicePosition}
+                    activeSliceAxis={lastActiveMprAxis}
+                    rayMarchSettings={rayMarchSettings}
+                    splatViewSettings={splatViewSettings}
+                    onRayMarchSettingsChange={setRayMarchSettings}
+                    onSplatViewSettingsChange={setSplatViewSettings}
+                    onRotationChange={setMprRotation}
+                    onZoomChange={(nextZoom) => setViewportTransform((previous) => ({ ...previous, zoom: nextZoom }))}
+                    onResetView={resetViewport}
+                    showRayMarchControls={false}
+                    showSplatControls={false}
+                    showRealOptimizationControls={false}
+                    vectorAnnotations={helper3dAnnotations}
+                    showAnnotations
+                    annotationOpacityMultiplier={annotationOpacityMultiplier}
                   />
-                ) : fallbackImage ? (
-                  <MprWindowedImage
-                    className="mpr-fallback-projection"
-                    src={fallbackImage.url}
-                    alt={`${config.label} segmentation helper fallback`}
-                    displayWindow={displayWindow}
-                    displayDomain={displayValueDomain}
-                  />
-                ) : (
-                  <span className="mpr-empty-volume">No volume stack images</span>
-                )}
-                <svg
-                  className="segmentation-helper-overlay mpr-projection-overlay"
-                  viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
-                  preserveAspectRatio="xMidYMid meet"
-                  aria-label="Segmentation helper overlay"
+                  <div className="segmentation-helper-3d-hint">
+                    <strong>Volume context</strong>
+                    <span>Orbit to inspect the exact segment surface over sampled anatomy context. Paint or seed from X, Y, or Z.</span>
+                    {segmentation3dSurfacePreviewTruncated && (
+                      <span className="segmentation-volume-status warning" role="status">
+                        3D surface preview truncated for performance; the stored mask is intact.
+                      </span>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {!['mpr', '3d'].includes(segmentationHelperView) && (
+                <div
+                  className={`segmentation-slice-stage ${brushPointerVisible ? 'show-brush-pointer' : ''} ${activeToolMode === '3d' ? 'mode-3d' : ''}`}
+                  style={{
+                    '--segment-axis-color': config.color,
+                    '--brush-pointer-x': brushPointerVisible ? `${segmentationPointerPreview.displayX}px` : '50%',
+                    '--brush-pointer-y': brushPointerVisible ? `${segmentationPointerPreview.displayY}px` : '50%',
+                    '--brush-pointer-size': `${brushPointerDiameter}px`,
+                    ...crosshairStyle,
+                  }}
+                  onWheel={handleSegmentationHelperWheel}
+                  onPointerDown={handleSegmentationStagePointerDown}
+                  onPointerMove={handleSegmentationStagePointerMove}
+                  onPointerUp={handleSegmentationStagePointerUp}
+                  onPointerLeave={handleSegmentationStagePointerLeave}
+                  onPointerCancel={handleSegmentationStagePointerCancel}
+                  onDoubleClick={completeSegmentationPolygon}
+                  data-testid="segmentation-helper-stage"
                 >
-                  {visibleSegments.map((segment) => (
-                    <g
-                      key={`segmentation-segment-mask-${segment.id}`}
-                      className={segment.id === selectedSegmentationSegment?.id ? 'active-segment' : ''}
-                      transform={`scale(${dimensions.width / segment.imageWidth} ${dimensions.height / segment.imageHeight})`}
-                    >
-                      {renderCompositedSegmentationSegment(segment, {
-                        color: segment.color,
-                        fillOpacity: segment.opacity ?? 0.2,
-                      })}
-                    </g>
-                  ))}
-                  {segmentationPendingSelection && renderSegmentationShape(segmentationPendingSelection, {
-                    color: '#fde047',
-                    fillColor: '#fde047',
-                    fillOpacity: 0.18,
-                    preview: true,
-                    strokeWidth: 3,
-                  })}
-                  {segmentationDraftShape && renderSegmentationShape(segmentationDraftShape, {
-                    color: '#f8fafc',
-                    fillColor: selectedSegmentationSegment?.color || DEFAULT_SEGMENT_COLOR,
-                    fillOpacity: 0.15,
-                    preview: true,
-                    strokeWidth: 3,
-                  })}
-                  {draftPoints.map((point, index) => (
-                    <circle
-                      key={`segmentation-point-${index}-${point.x}-${point.y}`}
-                      className="segmentation-helper-point"
-                      cx={point.x}
-                      cy={point.y}
-                      r={Math.max(1.5, Math.min(dimensions.width, dimensions.height) * 0.006)}
+                  {hasVolumeImageSource ? (
+                    <MprSliceCanvas
+                      axis={axis}
+                      volumeCache={volumeCacheState.cache}
+                      overlayCaches={activeVolumeOverlayCaches}
+                      volumeCacheStatus={volumeCacheState.status}
+                      slicePosition={slicePosition}
+                      dimensions={mprDimensions}
+                      displayWindow={displayWindow}
+                      displayDomain={displayValueDomain}
+                      overlayOpacityMultiplier={annotationOpacityMultiplier}
                     />
-                  ))}
-                </svg>
-              </div>
+                  ) : fallbackImage ? (
+                    <MprWindowedImage
+                      className="mpr-fallback-projection"
+                      src={fallbackImage.url}
+                      alt={`${config.label} segmentation helper fallback`}
+                      displayWindow={displayWindow}
+                      displayDomain={displayValueDomain}
+                    />
+                  ) : (
+                    <span className="mpr-empty-volume">No volume stack images</span>
+                  )}
+                  <svg
+                    className="segmentation-helper-overlay mpr-projection-overlay"
+                    viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
+                    preserveAspectRatio="xMidYMid meet"
+                    aria-label="Segmentation helper overlay"
+                  >
+                    {visibleSegments.map((segment) => (
+                      <g
+                        key={`segmentation-segment-mask-${segment.id}`}
+                        className={segment.id === selectedSegmentationSegment?.id ? 'active-segment' : ''}
+                      >
+                        {renderCompositedSegmentationSegment(segment, {
+                          color: segment.color,
+                          fillOpacity: segment.opacity ?? 0.2,
+                          axis,
+                          sliceIndex: canonicalSliceIndex,
+                          imageWidth: dimensions.width,
+                          imageHeight: dimensions.height,
+                          volumeDimensions,
+                        })}
+                      </g>
+                    ))}
+                    {pendingVolumePreviewSegment && (
+                      <g>
+                        {renderCompositedSegmentationSegment(pendingVolumePreviewSegment, {
+                          color: '#fde047',
+                          fillOpacity: 0.3,
+                          axis,
+                          sliceIndex: canonicalSliceIndex,
+                          imageWidth: dimensions.width,
+                          imageHeight: dimensions.height,
+                          volumeDimensions,
+                        })}
+                      </g>
+                    )}
+                    {segmentationPendingSelection?.mode !== '3d' && renderSegmentationShape(segmentationPendingSelection, {
+                      color: '#fde047',
+                      fillColor: '#fde047',
+                      fillOpacity: 0.18,
+                      preview: true,
+                      strokeWidth: 3,
+                    })}
+                    {segmentationDraftShape && renderSegmentationShape(segmentationDraftShape, {
+                      color: '#f8fafc',
+                      fillColor: selectedSegmentationSegment?.color || DEFAULT_SEGMENT_COLOR,
+                      fillOpacity: 0.15,
+                      preview: true,
+                      strokeWidth: 3,
+                    })}
+                    {draftPoints.map((point, index) => (
+                      <circle
+                        key={`segmentation-point-${index}-${point.x}-${point.y}`}
+                        className="segmentation-helper-point"
+                        cx={point.x}
+                        cy={point.y}
+                        r={Math.max(1.5, Math.min(dimensions.width, dimensions.height) * 0.006)}
+                      />
+                    ))}
+                  </svg>
+                </div>
+              )}
             </main>
           </div>
         </div>
@@ -10657,12 +11594,19 @@ function InspectionWorkbenchPanel({
 	      || Math.max(1, Number(fullscreenOverlayGeometry?.imageHeight) || 1000);
 	    const fullscreenOverlayViewBox = `0 0 ${fullscreenOverlayWidth} ${fullscreenOverlayHeight}`;
 	    const fullscreenOverlayContentTransform = `scale(${fullscreenOverlayWidth / 1000} ${fullscreenOverlayHeight / 1000})`;
+	    const fullscreenCanonicalSliceIndex = isMprFullscreen
+	      ? getSegmentationCanonicalSliceIndex(
+	        fullscreenImageModal.axis,
+	        Number(fullscreenImageModal.sliceIndex),
+	      )
+	      : 0;
 	    const fullscreenSegmentAnnotations = isMprFullscreen && annotationLayerVisible
 	      ? vectorSegmentAnnotations.filter((segment) => (
-	        segment.visible !== false
-	        && segment.axis === fullscreenImageModal.axis
-	        && Number(fullscreenImageModal.sliceIndex) >= segment.minSlice
-	        && Number(fullscreenImageModal.sliceIndex) <= segment.maxSlice
+	        segmentVisibleOnSlice(
+	          segment,
+	          fullscreenImageModal.axis,
+	          fullscreenCanonicalSliceIndex,
+	        )
 	      ))
 	      : [];
 	    return (
@@ -10910,12 +11854,20 @@ function InspectionWorkbenchPanel({
 		            {fullscreenSegmentAnnotations.map((segment) => (
 		              <g
 		                key={`fullscreen-segment-${segment.id}`}
-		                transform={`scale(${fullscreenOverlayWidth / segment.imageWidth} ${fullscreenOverlayHeight / segment.imageHeight})`}
 		                opacity={annotationOpacityMultiplier}
 		              >
 		                {renderCompositedSegmentationSegment(segment, {
 		                  color: segment.color,
 		                  fillOpacity: segment.opacity,
+		                  axis: fullscreenImageModal.axis,
+		                  sliceIndex: fullscreenCanonicalSliceIndex,
+		                  imageWidth: fullscreenOverlayWidth,
+		                  imageHeight: fullscreenOverlayHeight,
+		                  volumeDimensions: [
+		                    mprDimensions.sagittal,
+		                    mprDimensions.coronal,
+		                    mprDimensions.axial,
+		                  ],
 		                })}
 		              </g>
 		            ))}
@@ -11130,6 +12082,7 @@ export {
   MprSliceCanvas,
   getMprFallbackModelZoom,
   getMprAxisImageDimensions,
+  getCanonicalSegmentationSliceIndex,
   getMprSliceCanvasCacheStats,
   getMprSliceCachingMessage,
   getMprOverlayCompositeAlpha,

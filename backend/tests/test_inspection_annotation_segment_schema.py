@@ -49,6 +49,80 @@ def test_vista_segment_accepts_documented_dimension_and_slice_boundaries():
     assert result.geometry["segment"]["max_slice"] == 1_000_000
 
 
+def test_vista_segment_accepts_bounded_version_2_volume_runs():
+    result = _validate(
+        _segment(
+            version=2,
+            volume_dimensions=[8, 6, 4],
+            areas=[
+                {
+                    "tool": "brush",
+                    "mode": "3d",
+                    "volumeRuns": [[0, 1, 2, 5], [3, 5, 0, 8]],
+                    "seedVoxel": [3, 1, 0],
+                    "voxelCount": 11,
+                    "truncated": False,
+                }
+            ],
+        )
+    )
+
+    assert result.geometry["segment"]["version"] == 2
+    assert result.geometry["segment"]["areas"][0]["volumeRuns"][1] == [3, 5, 0, 8]
+
+
+@pytest.mark.parametrize(
+    ("patch", "expected_message"),
+    [
+        ({"version": 2}, "volume_dimensions must contain exactly"),
+        (
+            {"version": 1, "volume_dimensions": [8, 6, 4]},
+            "volume_dimensions requires geometry.segment.version 2",
+        ),
+        (
+            {
+                "version": 2,
+                "volume_dimensions": [8, 6, 4],
+                "areas": [{"mode": "3d", "volumeRuns": [[4, 0, 0, 1]]}],
+            },
+            ".z must be within",
+        ),
+        (
+            {
+                "version": 2,
+                "volume_dimensions": [8, 6, 4],
+                "areas": [{"mode": "3d", "volumeRuns": [[0, 0, 5, 5]]}],
+            },
+            ".x_end must be greater",
+        ),
+        (
+            {
+                "version": 2,
+                "volume_dimensions": [8, 6, 4],
+                "areas": [{"mode": "volume", "volumeRuns": []}],
+            },
+            ".mode must be 2d or 3d",
+        ),
+        (
+            {
+                "version": 2,
+                "volume_dimensions": [8, 6, 4],
+                "areas": [{
+                    "mode": "3d",
+                    "volumeRuns": [],
+                    "volume_runs": [[0, 0, 0, 1]],
+                }],
+            },
+            "must not contain both volumeRuns and volume_runs",
+        ),
+    ],
+)
+def test_vista_segment_rejects_malformed_version_2_volume_geometry(patch, expected_message):
+    segment = _segment()
+    segment.update(patch)
+    assert expected_message in _validation_message(segment)
+
+
 @pytest.mark.parametrize(
     ("field", "value", "expected_message"),
     [

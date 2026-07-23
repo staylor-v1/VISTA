@@ -500,6 +500,72 @@ class InspectionSliceSegmentationResponse(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
+DEFAULT_VOLUME_CONNECTED_SELECTION_MAX_VOXELS = 50_000
+MAX_VOLUME_CONNECTED_SELECTION_MAX_VOXELS = 100_000
+DEFAULT_VOLUME_CONNECTED_SELECTION_MAX_EXAMINED = 150_000
+MAX_VOLUME_CONNECTED_SELECTION_MAX_EXAMINED = 300_000
+DEFAULT_VOLUME_CONNECTED_SELECTION_MAX_RUNS = 10_000
+MAX_VOLUME_CONNECTED_SELECTION_MAX_RUNS = 20_000
+
+
+class VolumeConnectedSelectionRequest(BaseModel):
+    seed: List[int] = Field(..., min_length=3, max_length=3)
+    sensitivity: float = Field(
+        default=28.0,
+        ge=0.0,
+        le=255.0,
+        allow_inf_nan=False,
+    )
+    display_min: Optional[float] = Field(default=None, allow_inf_nan=False)
+    display_max: Optional[float] = Field(default=None, allow_inf_nan=False)
+    max_voxels: int = Field(
+        default=DEFAULT_VOLUME_CONNECTED_SELECTION_MAX_VOXELS,
+        ge=1,
+        le=MAX_VOLUME_CONNECTED_SELECTION_MAX_VOXELS,
+    )
+    max_examined: int = Field(
+        default=DEFAULT_VOLUME_CONNECTED_SELECTION_MAX_EXAMINED,
+        ge=1,
+        le=MAX_VOLUME_CONNECTED_SELECTION_MAX_EXAMINED,
+    )
+    max_runs: int = Field(
+        default=DEFAULT_VOLUME_CONNECTED_SELECTION_MAX_RUNS,
+        ge=1,
+        le=MAX_VOLUME_CONNECTED_SELECTION_MAX_RUNS,
+    )
+
+    @field_validator("seed")
+    @classmethod
+    def validate_seed(cls, value: List[int]) -> List[int]:
+        if any(isinstance(entry, bool) or not isinstance(entry, int) for entry in value):
+            raise ValueError("seed coordinates must be integers")
+        return value
+
+    @model_validator(mode="after")
+    def validate_display_range(self):
+        if (self.display_min is None) != (self.display_max is None):
+            raise ValueError("display_min and display_max must be supplied together")
+        if (
+            self.display_min is not None
+            and self.display_max is not None
+            and self.display_max <= self.display_min
+        ):
+            raise ValueError("display_max must be greater than display_min")
+        return self
+
+
+class VolumeConnectedSelectionResponse(BaseModel):
+    dimensions: List[int]
+    seed: List[int]
+    volume_runs: List[List[int]] = Field(default_factory=list)
+    voxel_count: int = 0
+    examined: int = 0
+    bounds: Optional[Dict[str, List[int]]] = None
+    truncated: bool = False
+    truncation_reason: str = ""
+    connectivity: int = 6
+
+
 class InspectionMeasurementInvokeRequest(BaseModel):
     measurement_profile: str = Field(default="default", min_length=1, max_length=64)
     include_overlays: List[str] = Field(default_factory=list)
@@ -539,6 +605,8 @@ INSPECTION_SEGMENT_MAX_IMAGE_DIMENSION = 65_536
 INSPECTION_SEGMENT_MAX_SLICE_INDEX = 1_000_000
 INSPECTION_SEGMENT_MAX_MASK_RUNS_PER_AREA = 50_000
 INSPECTION_SEGMENT_MAX_MASK_RUNS_TOTAL = 50_000
+INSPECTION_SEGMENT_MAX_VOLUME_RUNS_PER_AREA = 50_000
+INSPECTION_SEGMENT_MAX_VOLUME_RUNS_TOTAL = 50_000
 INSPECTION_SEGMENT_MAX_MASK_PATH_CHARS = 4 * 1024 * 1024
 INSPECTION_SEGMENT_MAX_OTHER_TEXT_CHARS = 4_096
 INSPECTION_SEGMENT_MAX_TEXT_CHARS_TOTAL = 5 * 1024 * 1024
@@ -740,13 +808,64 @@ def _validate_segment_mask_run(
         raise ValueError(f"{field_name}.end must be greater than start")
 
 
+def _validate_segment_volume_run(
+    value: Any,
+    field_name: str,
+    *,
+    dimensions: tuple[int, int, int],
+) -> None:
+    if not isinstance(value, list) or len(value) != 4:
+        raise ValueError(
+            f"{field_name} must contain exactly [z, y, x_start, x_end]"
+        )
+    if any(isinstance(entry, bool) or not isinstance(entry, int) for entry in value):
+        raise ValueError(f"{field_name} coordinates must be integers")
+    z, y, x_start, x_end = value
+    width, height, depth = dimensions
+    if z < 0 or z >= depth:
+        raise ValueError(f"{field_name}.z must be within [0, volume depth)")
+    if y < 0 or y >= height:
+        raise ValueError(f"{field_name}.y must be within [0, volume height)")
+    if x_start < 0 or x_end > width:
+        raise ValueError(
+            f"{field_name} horizontal coordinates must be within [0, volume width]"
+        )
+    if x_end <= x_start:
+        raise ValueError(f"{field_name}.x_end must be greater than x_start")
+
+
+def _validate_segment_volume_dimensions(value: Any) -> tuple[int, int, int]:
+    if not isinstance(value, list) or len(value) != 3:
+        raise ValueError(
+            "geometry.segment.volume_dimensions must contain exactly [width, height, depth]"
+        )
+    limits = (
+        INSPECTION_SEGMENT_MAX_IMAGE_DIMENSION,
+        INSPECTION_SEGMENT_MAX_IMAGE_DIMENSION,
+        INSPECTION_SEGMENT_MAX_SLICE_INDEX + 1,
+    )
+    names = ("width", "height", "depth")
+    dimensions = []
+    for entry, name, maximum in zip(value, names, limits):
+        if isinstance(entry, bool) or not isinstance(entry, int):
+            raise ValueError(
+                f"geometry.segment.volume_dimensions.{name} must be an integer"
+            )
+        if entry < 1 or entry > maximum:
+            raise ValueError(
+                f"geometry.segment.volume_dimensions.{name} must be within [1, {maximum}]"
+            )
+        dimensions.append(entry)
+    return tuple(dimensions)
+
+
 def _validate_inspection_segment_geometry(segment: Any) -> None:
     if not isinstance(segment, dict):
         raise ValueError("geometry.segment must be an object")
     _validate_segment_json_complexity(segment, "geometry.segment")
     version = segment.get("version")
-    if isinstance(version, bool) or not isinstance(version, int) or version != 1:
-        raise ValueError("geometry.segment.version must be the integer 1")
+    if isinstance(version, bool) or not isinstance(version, int) or version not in {1, 2}:
+        raise ValueError("geometry.segment.version must be the integer 1 or 2")
     if segment.get("axis") not in {"axial", "coronal", "sagittal"}:
         raise ValueError("geometry.segment.axis must be axial, coronal, or sagittal")
 
@@ -776,6 +895,15 @@ def _validate_inspection_segment_geometry(segment: Any) -> None:
         minimum=1,
         maximum=INSPECTION_SEGMENT_MAX_IMAGE_DIMENSION,
     )
+    volume_dimensions = None
+    if version == 2:
+        volume_dimensions = _validate_segment_volume_dimensions(
+            segment.get("volume_dimensions")
+        )
+    elif "volume_dimensions" in segment:
+        raise ValueError(
+            "geometry.segment.volume_dimensions requires geometry.segment.version 2"
+        )
 
     areas = segment.get("areas")
     if not isinstance(areas, list):
@@ -787,10 +915,14 @@ def _validate_inspection_segment_geometry(segment: Any) -> None:
 
     total_points = 0
     total_mask_runs = 0
+    total_volume_runs = 0
     for area_index, area in enumerate(areas):
         area_name = f"geometry.segment.areas[{area_index}]"
         if not isinstance(area, dict):
             raise ValueError(f"{area_name} must be an object")
+        mode = area.get("mode")
+        if mode is not None and mode not in {"2d", "3d"}:
+            raise ValueError(f"{area_name}.mode must be 2d or 3d")
         points = area.get("points", [])
         if not isinstance(points, list):
             raise ValueError(f"{area_name}.points must be an array")
@@ -854,6 +986,58 @@ def _validate_inspection_segment_geometry(segment: Any) -> None:
                     image_width=image_width,
                     image_height=image_height,
                 )
+        volume_runs_fields = [
+            field_name
+            for field_name in ("volumeRuns", "volume_runs")
+            if field_name in area
+        ]
+        if len(volume_runs_fields) > 1:
+            raise ValueError(
+                f"{area_name} must not contain both volumeRuns and volume_runs"
+            )
+        for volume_runs_field in volume_runs_fields:
+            if volume_runs_field not in area:
+                continue
+            if version != 2 or volume_dimensions is None:
+                raise ValueError(
+                    f"{area_name}.{volume_runs_field} requires geometry.segment.version 2"
+                )
+            volume_runs = area[volume_runs_field]
+            if not isinstance(volume_runs, list):
+                raise ValueError(f"{area_name}.{volume_runs_field} must be an array")
+            if len(volume_runs) > INSPECTION_SEGMENT_MAX_VOLUME_RUNS_PER_AREA:
+                raise ValueError(
+                    f"{area_name}.{volume_runs_field} must contain at most "
+                    f"{INSPECTION_SEGMENT_MAX_VOLUME_RUNS_PER_AREA} runs"
+                )
+            total_volume_runs += len(volume_runs)
+            if total_volume_runs > INSPECTION_SEGMENT_MAX_VOLUME_RUNS_TOTAL:
+                raise ValueError(
+                    "geometry.segment areas must contain at most "
+                    f"{INSPECTION_SEGMENT_MAX_VOLUME_RUNS_TOTAL} volume runs in total"
+                )
+            for run_index, volume_run in enumerate(volume_runs):
+                _validate_segment_volume_run(
+                    volume_run,
+                    f"{area_name}.{volume_runs_field}[{run_index}]",
+                    dimensions=volume_dimensions,
+                )
+        if "seedVoxel" in area or "seed_voxel" in area:
+            if version != 2 or volume_dimensions is None:
+                raise ValueError(f"{area_name}.seedVoxel requires geometry.segment.version 2")
+            seed_voxel = area.get("seedVoxel", area.get("seed_voxel"))
+            if not isinstance(seed_voxel, list) or len(seed_voxel) != 3:
+                raise ValueError(f"{area_name}.seedVoxel must contain exactly [x, y, z]")
+            if any(
+                isinstance(entry, bool) or not isinstance(entry, int)
+                for entry in seed_voxel
+            ):
+                raise ValueError(f"{area_name}.seedVoxel coordinates must be integers")
+            if any(
+                entry < 0 or entry >= volume_dimensions[index]
+                for index, entry in enumerate(seed_voxel)
+            ):
+                raise ValueError(f"{area_name}.seedVoxel must be within volume bounds")
 
 
 def _annotation_segment_from_geometry(geometry: Optional[Dict[str, Any]]) -> Any:

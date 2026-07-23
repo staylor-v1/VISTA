@@ -950,6 +950,47 @@ describe('Pt3GaussianSplatViewer renderer degradation', () => {
     ))).toBe(true));
   });
 
+  test('uses explicit volume metadata for both the renderer and vector annotations when part dimensions disagree', async () => {
+    const explicitVolumeMetadata = {
+      dimensions: [9, 7, 5],
+      spacing: [0.2, 0.3, 0.4],
+      origin: [1, 2, 3],
+    };
+    const vectorAnnotations = [{
+      id: 'canonical-volume-segment',
+      label: 'Canonical volume segment',
+      visible: true,
+      areas: [],
+    }];
+    const renderer = makeRenderer();
+    createThreeMechanicalRenderer.mockResolvedValue(renderer);
+    renderPt3VectorAnnotations.mockClear();
+
+    render(<Pt3GaussianSplatViewer
+      part={part}
+      mode="volume"
+      volumeMetadata={explicitVolumeMetadata}
+      vectorAnnotations={vectorAnnotations}
+    />);
+
+    await waitFor(() => expect(createThreeMechanicalRenderer).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          dimensions: [9, 7, 5],
+          spacing: [0.2, 0.3, 0.4],
+          origin: [1, 2, 3],
+        }),
+      }),
+    ));
+    await waitFor(() => expect(renderPt3VectorAnnotations.mock.calls.some(([, options]) => (
+      options.vectorAnnotations === vectorAnnotations
+      && options.metadata?.dimensions?.join('×') === '9×7×5'
+    ))).toBe(true));
+    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('9×7×5 voxels');
+    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).not.toHaveTextContent('128×1×1 voxels');
+  });
+
   test('keeps authored dense segmentation state separate from global transparency', () => {
     const segments = [{ id: 1, label: 'Dense shell', visible: true, opacity: 0.8 }];
     expect(getRenderablePt3SegmentationSegments(segments, false)).toEqual([]);

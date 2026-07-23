@@ -1047,7 +1047,7 @@ def test_part_annotations_reject_invalid_vista_segment_geometry_on_create_and_up
         "areas": [{"tool": "polygon", "points": [{"x": 1, "y": 2}]}],
     }
     invalid_segments = [
-        {**base_segment, "version": 2},
+        {**base_segment, "version": 3},
         {**base_segment, "version": 1.0},
         {**base_segment, "axis": "oblique"},
         {**base_segment, "min_slice": -1},

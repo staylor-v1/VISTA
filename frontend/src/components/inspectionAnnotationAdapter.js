@@ -29,6 +29,14 @@ const sanitizeFiniteTuple = (value, length) => {
   return tuple.some((entry) => entry === null) ? null : tuple;
 };
 
+const sanitizeIntegerTuple = (value, length, { positive = false } = {}) => {
+  const tuple = sanitizeFiniteTuple(value, length);
+  if (!tuple) return null;
+  const integers = tuple.map((entry) => Math.floor(entry));
+  if (integers.some((entry) => (positive ? entry <= 0 : entry < 0))) return null;
+  return integers;
+};
+
 const sanitizeMaskRun = (value) => {
   if (Array.isArray(value)) return sanitizeFiniteTuple(value, 3);
   if (!value || typeof value !== 'object') return null;
@@ -36,6 +44,13 @@ const sanitizeMaskRun = (value) => {
   const start = optionalFiniteNumber(value.start ?? value.x1 ?? value.x);
   const end = optionalFiniteNumber(value.end ?? value.x2);
   return [y, start, end].some((entry) => entry === null) ? null : [y, start, end];
+};
+
+const sanitizeVolumeRun = (value) => {
+  const tuple = sanitizeIntegerTuple(value, 4);
+  if (!tuple) return null;
+  const [z, y, xStart, xEnd] = tuple;
+  return xEnd > xStart ? [z, y, xStart, xEnd] : null;
 };
 
 const copyStringField = (target, source, outputName, ...inputNames) => {
@@ -56,8 +71,12 @@ function sanitizeSegmentArea(area) {
   copyStringField(result, area, 'tool', 'tool', 'type', 'shape');
   copyStringField(result, area, 'operation', 'operation');
   copyStringField(result, area, 'axis', 'axis');
+  const mode = String(area.mode ?? area.areaMode ?? area.dimensionality ?? '').trim().toLowerCase();
+  if (['2d', '3d'].includes(mode)) result.mode = mode;
 
   copyFiniteField(result, area, 'sliceIndex', 'sliceIndex', 'slice_index');
+  copyFiniteField(result, area, 'imageWidth', 'imageWidth', 'image_width');
+  copyFiniteField(result, area, 'imageHeight', 'imageHeight', 'image_height');
   copyFiniteField(result, area, 'brushSize', 'brushSize', 'brush_size', 'width');
   copyFiniteField(result, area, 'sensitivity', 'sensitivity');
   copyFiniteField(result, area, 'radius', 'radius');
@@ -96,6 +115,25 @@ function sanitizeSegmentArea(area) {
   }
   const seedColor = sanitizeFiniteTuple(area.seedColor ?? area.seed_color, 4);
   if (seedColor) result.seedColor = seedColor;
+  const volumeDimensions = sanitizeIntegerTuple(
+    area.volumeDimensions ?? area.volume_dimensions,
+    3,
+    { positive: true },
+  );
+  if (volumeDimensions) result.volumeDimensions = volumeDimensions;
+  const seedVoxel = sanitizeIntegerTuple(area.seedVoxel ?? area.seed_voxel, 3);
+  if (seedVoxel) result.seedVoxel = seedVoxel;
+  const spacing = sanitizeFiniteTuple(area.spacing, 3);
+  if (spacing?.every((entry) => entry > 0)) result.spacing = spacing;
+  const volumeRunCandidates = [area.volumeRuns, area.volume_runs].filter(Array.isArray);
+  const volumeRuns = volumeRunCandidates.find((candidate) => candidate.length > 0)
+    ?? volumeRunCandidates[0]
+    ?? null;
+  if (volumeRuns) result.volumeRuns = volumeRuns.map(sanitizeVolumeRun).filter(Boolean);
+  copyFiniteField(result, area, 'voxelCount', 'voxelCount', 'voxel_count');
+  copyFiniteField(result, area, 'connectivity', 'connectivity');
+  if (typeof area.truncated === 'boolean') result.truncated = area.truncated;
+  copyStringField(result, area, 'truncationReason', 'truncationReason', 'truncation_reason');
 
   return result;
 }
@@ -133,6 +171,11 @@ export function annotationToVectorSegment(annotation) {
   )));
   const imageWidth = Math.max(1, finiteNumber(geometry.image_width ?? geometry.imageWidth, 1));
   const imageHeight = Math.max(1, finiteNumber(geometry.image_height ?? geometry.imageHeight, 1));
+  const volumeDimensions = sanitizeIntegerTuple(
+    geometry.volume_dimensions ?? geometry.volumeDimensions,
+    3,
+    { positive: true },
+  );
   return {
     id: String(annotation.id || ''),
     annotationId: String(annotation.id || ''),
@@ -145,6 +188,8 @@ export function annotationToVectorSegment(annotation) {
     maxSlice,
     imageWidth,
     imageHeight,
+    version: Number(geometry.version) === 2 ? 2 : 1,
+    volumeDimensions,
     areas: Array.isArray(geometry.areas) ? geometry.areas : [],
     annotation,
   };
@@ -198,6 +243,22 @@ export function makeVistaSegmentAnnotationPayload(segment, existingAnnotation = 
   const axis = ['axial', 'coronal', 'sagittal'].includes(segment?.axis) ? segment.axis : 'axial';
   const minSlice = Math.max(0, Math.floor(finiteNumber(segment?.minSlice, 0)));
   const maxSlice = Math.max(minSlice, Math.floor(finiteNumber(segment?.maxSlice, minSlice)));
+  const areas = sanitizeSegmentAreas(segment?.areas);
+  const volumeDimensions = sanitizeIntegerTuple(
+    segment?.volumeDimensions ?? segment?.volume_dimensions,
+    3,
+    { positive: true },
+  ) || areas.map((area) => area.volumeDimensions).find(Boolean) || null;
+  const hasVolumeAreas = areas.some((area) => (
+    Array.isArray(area.volumeRuns) && area.volumeRuns.length > 0
+  ));
+  const usesVolumeSchema = hasVolumeAreas
+    || Number(segment?.version) === 2
+    || areas.some((area) => (
+      Array.isArray(area.seedVoxel)
+      || Array.isArray(area.spacing)
+      || Array.isArray(area.volumeRuns)
+    ));
   return {
     annotation_kind: 'vista_segment',
     image_id: null,
@@ -209,13 +270,14 @@ export function makeVistaSegmentAnnotationPayload(segment, existingAnnotation = 
     geometry: {
       ...(existingAnnotation?.geometry || {}),
       segment: {
-        version: 1,
+        version: usesVolumeSchema ? 2 : 1,
         axis,
         min_slice: minSlice,
         max_slice: maxSlice,
         image_width: Math.max(1, finiteNumber(segment?.imageWidth, 1)),
         image_height: Math.max(1, finiteNumber(segment?.imageHeight, 1)),
-        areas: sanitizeSegmentAreas(segment?.areas),
+        ...(usesVolumeSchema && volumeDimensions ? { volume_dimensions: volumeDimensions } : {}),
+        areas,
       },
     },
     metadata: {

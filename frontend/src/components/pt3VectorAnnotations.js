@@ -3,6 +3,13 @@ import {
   normalizeVolumeMetadata,
   voxelToPhysical,
 } from './pt3VolumeGeometry';
+import {
+  compositeVolumeRuns,
+  countVolumeRunVoxels,
+  normalizeVolumeDimensions,
+  normalizeVolumeRuns,
+  projectVolumeRunsToSlice,
+} from './pt3SegmentationVolume';
 
 export const MAX_VECTOR_ANNOTATIONS = 64;
 export const MAX_VECTOR_AREAS = 64;
@@ -13,6 +20,7 @@ export const MAX_VECTOR_PRIMITIVES = 512;
 export const MAX_VECTOR_FACES = 8192;
 export const MAX_VECTOR_RASTER_ROWS = 512;
 export const MAX_SEGMENT_BOOLEAN_OPERATIONS = 4_000_000;
+const MAX_VOLUME_SURFACE_POLYGONS = 50_000;
 
 const DEFAULT_VECTOR_COLOR = '#22d3ee';
 const DEFAULT_VECTOR_OPACITY = 0.24;
@@ -20,6 +28,33 @@ const CIRCLE_POINT_COUNT = 32;
 const VALID_AXES = new Set(['axial', 'coronal', 'sagittal']);
 const segmentMaskCache = new WeakMap();
 const segmentMaskPathCache = new WeakMap();
+const segmentFilteredMaskCache = new WeakMap();
+const segmentVolumeCache = new WeakMap();
+const segmentVolumeSliceCache = new WeakMap();
+const vectorAnnotationFaceBuildCache = new WeakMap();
+const MAX_VOLUME_SLICE_CACHE_ENTRIES = 8;
+
+function setBoundedSegmentCache(cache, segment, key, value, maxEntries = 96) {
+  let entries = cache.get(segment);
+  if (!entries) {
+    entries = new Map();
+    cache.set(segment, entries);
+  }
+  if (entries.has(key)) entries.delete(key);
+  while (entries.size >= maxEntries) {
+    entries.delete(entries.keys().next().value);
+  }
+  entries.set(key, value);
+}
+
+function getSegmentCacheValue(cache, segment, key) {
+  const entries = cache.get(segment);
+  if (!entries?.has(key)) return null;
+  const value = entries.get(key);
+  entries.delete(key);
+  entries.set(key, value);
+  return value;
+}
 
 function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value));
@@ -627,8 +662,34 @@ function compositeMaskRectangles({
 export function buildPt3SegmentMask(segment, options = {}) {
   const cacheable = segment && typeof segment === 'object' && Object.keys(options).length === 0;
   if (cacheable && segmentMaskCache.has(segment)) return segmentMaskCache.get(segment);
-  const imageWidth = Math.max(1, finiteNumber(segment?.imageWidth ?? segment?.image_width, 1));
-  const imageHeight = Math.max(1, finiteNumber(segment?.imageHeight ?? segment?.image_height, 1));
+  const filteredCacheKey = !cacheable && segment && typeof segment === 'object'
+    ? JSON.stringify([
+      options.axis || '',
+      options.sliceIndex ?? options.slice_index ?? '',
+      options.imageWidth ?? options.image_width ?? '',
+      options.imageHeight ?? options.image_height ?? '',
+      options.maxAreas ?? '',
+      options.maxMaskRuns ?? '',
+      options.maxRectangles ?? '',
+      options.maxBooleanOperations ?? '',
+    ])
+    : '';
+  if (filteredCacheKey) {
+    const cached = segmentFilteredMaskCache.get(segment)?.get(filteredCacheKey);
+    if (cached) return cached;
+  }
+  const imageWidth = Math.max(1, finiteNumber(
+    options.imageWidth ?? options.image_width ?? segment?.imageWidth ?? segment?.image_width,
+    1,
+  ));
+  const imageHeight = Math.max(1, finiteNumber(
+    options.imageHeight ?? options.image_height ?? segment?.imageHeight ?? segment?.image_height,
+    1,
+  ));
+  const requestedAxis = VALID_AXES.has(String(options.axis || '').toLowerCase())
+    ? String(options.axis).toLowerCase()
+    : null;
+  const requestedSlice = finiteNumber(options.sliceIndex ?? options.slice_index);
   const maxAreas = Math.max(0, Math.min(MAX_VECTOR_AREAS, Math.floor(finiteNumber(options.maxAreas, MAX_VECTOR_AREAS))));
   const maxMaskRuns = Math.max(0, Math.min(MAX_VECTOR_MASK_RUNS, Math.floor(finiteNumber(options.maxMaskRuns, MAX_VECTOR_MASK_RUNS))));
   const maxRectangles = Math.max(0, Math.min(
@@ -652,9 +713,35 @@ export function buildPt3SegmentMask(segment, options = {}) {
   if (segment?.visible === false || segment?.hidden === true || maxRectangles === 0) {
     const emptyResult = { imageWidth, imageHeight, rectangles: [], stats };
     if (cacheable) segmentMaskCache.set(segment, emptyResult);
+    if (filteredCacheKey) {
+      setBoundedSegmentCache(segmentFilteredMaskCache, segment, filteredCacheKey, emptyResult);
+    }
     return emptyResult;
   }
-  const areas = Array.isArray(segment?.areas) ? segment.areas : [];
+  const segmentAxis = VALID_AXES.has(String(segment?.axis || '').toLowerCase())
+    ? String(segment.axis).toLowerCase()
+    : 'axial';
+  const segmentMinimumSlice = finiteNumber(segment?.minSlice ?? segment?.min_slice, 0);
+  const segmentMaximumSlice = finiteNumber(
+    segment?.maxSlice ?? segment?.max_slice,
+    segmentMinimumSlice,
+  );
+  const areas = (Array.isArray(segment?.areas) ? segment.areas : []).filter((area) => {
+    if (String(area?.mode || area?.areaMode || area?.dimensionality || '2d').toLowerCase() === '3d') {
+      return false;
+    }
+    const areaAxis = VALID_AXES.has(String(area?.axis || '').toLowerCase())
+      ? String(area.axis).toLowerCase()
+      : segmentAxis;
+    if (requestedAxis && areaAxis !== requestedAxis) return false;
+    if (requestedSlice === null) return true;
+    const areaSlice = finiteNumber(area?.sliceIndex ?? area?.slice_index);
+    if (areaSlice !== null) return Math.round(areaSlice) === Math.round(requestedSlice);
+    if (areaAxis !== segmentAxis) return false;
+    const lower = Math.min(segmentMinimumSlice, segmentMaximumSlice);
+    const upper = Math.max(segmentMinimumSlice, segmentMaximumSlice);
+    return requestedSlice >= lower && requestedSlice <= upper;
+  });
   let occupied = [];
   let booleanOperations = 0;
   for (const area of areas) {
@@ -664,13 +751,34 @@ export function buildPt3SegmentMask(segment, options = {}) {
     }
     stats.areasRead += 1;
     const remainingMaskRuns = Math.max(0, maxMaskRuns - stats.maskRunsRead);
-    const areaMask = getAreaMaskRectangles(
-      area,
+    const sourceImageWidth = Math.max(1, finiteNumber(
+      area?.imageWidth ?? area?.image_width,
       imageWidth,
+    ));
+    const sourceImageHeight = Math.max(1, finiteNumber(
+      area?.imageHeight ?? area?.image_height,
       imageHeight,
+    ));
+    const sourceAreaMask = getAreaMaskRectangles(
+      area,
+      sourceImageWidth,
+      sourceImageHeight,
       remainingMaskRuns,
       maxRectangles,
     );
+    const areaMask = sourceImageWidth === imageWidth && sourceImageHeight === imageHeight
+      ? sourceAreaMask
+      : {
+        ...sourceAreaMask,
+        rectangles: sourceAreaMask.rectangles.map((rectangle) => makeMaskRectangle(
+          (rectangle.x0 / sourceImageWidth) * imageWidth,
+          (rectangle.y0 / sourceImageHeight) * imageHeight,
+          (rectangle.x1 / sourceImageWidth) * imageWidth,
+          (rectangle.y1 / sourceImageHeight) * imageHeight,
+          imageWidth,
+          imageHeight,
+        )).filter(Boolean),
+      };
     stats.maskRunsRead += areaMask.maskRunsRead;
     if (areaMask.approximated) stats.approximated = true;
     if (areaMask.truncated) stats.truncated = true;
@@ -723,6 +831,256 @@ export function buildPt3SegmentMask(segment, options = {}) {
   stats.rectanglesBuilt = occupied.length;
   const result = { imageWidth, imageHeight, rectangles: occupied, stats };
   if (cacheable) segmentMaskCache.set(segment, result);
+  if (filteredCacheKey) {
+    setBoundedSegmentCache(segmentFilteredMaskCache, segment, filteredCacheKey, result);
+  }
+  return result;
+}
+
+function getAreaVolumeRuns(area) {
+  const candidates = [area?.volumeRuns, area?.volume_runs].filter(Array.isArray);
+  return candidates.find((candidate) => candidate.length > 0)
+    ?? candidates[0]
+    ?? [];
+}
+
+function segmentHasExplicitVolumeRuns(segment) {
+  return (Array.isArray(segment?.areas) ? segment.areas : []).some(
+    (area) => getAreaVolumeRuns(area).length > 0,
+  );
+}
+
+function scaleMaskBoundaryToVoxel(value, sourceLength, targetLength, upper = false) {
+  const scaled = (clamp(finiteNumber(value, 0), 0, sourceLength) / sourceLength) * targetLength;
+  return clamp(upper ? Math.ceil(scaled) : Math.floor(scaled), 0, targetLength);
+}
+
+function planarAreaToVolumeRuns(area, segment, dimensions, maxRuns) {
+  const [width, height, depth] = dimensions;
+  const segmentAxis = VALID_AXES.has(String(segment?.axis || '').toLowerCase())
+    ? String(segment.axis).toLowerCase()
+    : 'axial';
+  const axis = VALID_AXES.has(String(area?.axis || '').toLowerCase())
+    ? String(area.axis).toLowerCase()
+    : segmentAxis;
+  const imageWidth = Math.max(1, finiteNumber(
+    area?.imageWidth ?? area?.image_width ?? segment?.imageWidth ?? segment?.image_width,
+    axis === 'sagittal' ? height : width,
+  ));
+  const imageHeight = Math.max(1, finiteNumber(
+    area?.imageHeight ?? area?.image_height ?? segment?.imageHeight ?? segment?.image_height,
+    axis === 'axial' ? height : depth,
+  ));
+  const areaMask = getAreaMaskRectangles(
+    area,
+    imageWidth,
+    imageHeight,
+    MAX_VECTOR_MASK_RUNS,
+    MAX_SEGMENT_MASK_RECTANGLES,
+  );
+  const constantLength = getAxisDimension(axis, dimensions);
+  const explicitSlice = finiteNumber(area?.sliceIndex ?? area?.slice_index);
+  const fallbackMinimum = axis === segmentAxis
+    ? finiteNumber(segment?.minSlice ?? segment?.min_slice, 0)
+    : 0;
+  const fallbackMaximum = axis === segmentAxis
+    ? finiteNumber(segment?.maxSlice ?? segment?.max_slice, fallbackMinimum)
+    : fallbackMinimum;
+  const minimumSlice = clamp(Math.round(
+    explicitSlice === null ? Math.min(fallbackMinimum, fallbackMaximum) : explicitSlice,
+  ), 0, constantLength - 1);
+  const maximumSlice = clamp(Math.round(
+    explicitSlice === null ? Math.max(fallbackMinimum, fallbackMaximum) : explicitSlice,
+  ), minimumSlice, constantLength - 1);
+  const runs = [];
+  let truncated = areaMask.truncated;
+  const append = (run) => {
+    if (runs.length >= maxRuns) {
+      truncated = true;
+      return false;
+    }
+    runs.push(run);
+    return true;
+  };
+
+  for (const rectangle of areaMask.rectangles) {
+    const horizontalLength = axis === 'sagittal' ? height : width;
+    const verticalLength = axis === 'axial' ? height : depth;
+    const horizontalStart = scaleMaskBoundaryToVoxel(
+      rectangle.x0,
+      imageWidth,
+      horizontalLength,
+    );
+    const horizontalEnd = scaleMaskBoundaryToVoxel(
+      rectangle.x1,
+      imageWidth,
+      horizontalLength,
+      true,
+    );
+    const verticalStart = scaleMaskBoundaryToVoxel(
+      rectangle.y0,
+      imageHeight,
+      verticalLength,
+    );
+    const verticalEnd = scaleMaskBoundaryToVoxel(
+      rectangle.y1,
+      imageHeight,
+      verticalLength,
+      true,
+    );
+    if (horizontalEnd <= horizontalStart || verticalEnd <= verticalStart) continue;
+
+    if (axis === 'axial') {
+      for (let z = minimumSlice; z <= maximumSlice; z += 1) {
+        for (let y = verticalStart; y < verticalEnd; y += 1) {
+          if (!append([z, y, horizontalStart, horizontalEnd])) break;
+        }
+        if (truncated && runs.length >= maxRuns) break;
+      }
+    } else if (axis === 'coronal') {
+      for (let y = minimumSlice; y <= maximumSlice; y += 1) {
+        for (let displayedZ = verticalStart; displayedZ < verticalEnd; displayedZ += 1) {
+          const z = depth - 1 - displayedZ;
+          if (!append([z, y, horizontalStart, horizontalEnd])) break;
+        }
+        if (truncated && runs.length >= maxRuns) break;
+      }
+    } else {
+      for (let x = minimumSlice; x <= maximumSlice; x += 1) {
+        for (let displayedZ = verticalStart; displayedZ < verticalEnd; displayedZ += 1) {
+          const z = depth - 1 - displayedZ;
+          for (let y = horizontalStart; y < horizontalEnd; y += 1) {
+            if (!append([z, y, x, x + 1])) break;
+          }
+          if (truncated && runs.length >= maxRuns) break;
+        }
+        if (truncated && runs.length >= maxRuns) break;
+      }
+    }
+    if (truncated && runs.length >= maxRuns) break;
+  }
+  return {
+    runs: normalizeVolumeRuns(runs, dimensions),
+    truncated,
+    maskRunsRead: areaMask.maskRunsRead,
+  };
+}
+
+export function buildPt3SegmentVolumeRuns(segment, dimensions, options = {}) {
+  const normalizedDimensions = normalizeVolumeDimensions(
+    segment?.volumeDimensions
+    ?? segment?.volume_dimensions
+    ?? dimensions,
+  );
+  const cacheKey = segment && typeof segment === 'object'
+    ? `${normalizedDimensions.join('x')}|${options.includePlanar === true ? 'all' : 'auto'}`
+    : '';
+  if (cacheKey) {
+    const cached = segmentVolumeCache.get(segment)?.get(cacheKey);
+    if (cached) return cached;
+  }
+  const areas = Array.isArray(segment?.areas) ? segment.areas : [];
+  const includePlanar = options.includePlanar === true || segmentHasExplicitVolumeRuns(segment);
+  let runs = [];
+  let areasRead = 0;
+  let inputRunsRead = 0;
+  let planarAreasConverted = 0;
+  let truncated = false;
+  areas.slice(0, MAX_VECTOR_AREAS).forEach((area) => {
+    const sourceRuns = getAreaVolumeRuns(area);
+    let incoming = [];
+    if (sourceRuns.length > 0) {
+      inputRunsRead += sourceRuns.length;
+      incoming = normalizeVolumeRuns(sourceRuns, normalizedDimensions);
+      if (incoming.length < sourceRuns.length || area?.truncated === true) truncated = true;
+    } else if (
+      includePlanar
+      && String(area?.mode || area?.areaMode || area?.dimensionality || '2d').toLowerCase() !== '3d'
+    ) {
+      const converted = planarAreaToVolumeRuns(
+        area,
+        segment,
+        normalizedDimensions,
+        MAX_VECTOR_MASK_RUNS,
+      );
+      incoming = converted.runs;
+      planarAreasConverted += 1;
+      inputRunsRead += converted.maskRunsRead;
+      if (converted.truncated) truncated = true;
+    }
+    if (incoming.length === 0) return;
+    areasRead += 1;
+    const compositedRuns = compositeVolumeRuns(runs, incoming, {
+      subtract: area?.operation === 'subtract' || area?.tool === 'eraser',
+      dimensions: normalizedDimensions,
+      maxRuns: MAX_VECTOR_MASK_RUNS + 1,
+    });
+    if (compositedRuns.length > MAX_VECTOR_MASK_RUNS) {
+      runs = compositedRuns.slice(0, MAX_VECTOR_MASK_RUNS);
+      truncated = true;
+    } else {
+      runs = compositedRuns;
+    }
+  });
+  if (areas.length > MAX_VECTOR_AREAS) truncated = true;
+  const result = {
+    dimensions: normalizedDimensions,
+    runs,
+    stats: {
+      areasRead,
+      inputRunsRead,
+      planarAreasConverted,
+      runsBuilt: runs.length,
+      voxelCount: countVolumeRunVoxels(runs),
+      truncated,
+    },
+  };
+  if (cacheKey) {
+    setBoundedSegmentCache(segmentVolumeCache, segment, cacheKey, result, 4);
+  }
+  return result;
+}
+
+export function buildPt3SegmentVolumeSliceMask(segment, {
+  axis,
+  sliceIndex,
+  dimensions,
+} = {}) {
+  const normalizedDimensions = normalizeVolumeDimensions(
+    segment?.volumeDimensions
+    ?? segment?.volume_dimensions
+    ?? dimensions,
+  );
+  const cacheKey = segment && typeof segment === 'object'
+    ? `${String(axis || 'axial')}|${Math.round(finiteNumber(sliceIndex, 0))}|${normalizedDimensions.join('x')}`
+    : '';
+  if (cacheKey) {
+    const cached = getSegmentCacheValue(segmentVolumeSliceCache, segment, cacheKey);
+    if (cached) return cached;
+  }
+  const volume = buildPt3SegmentVolumeRuns(segment, dimensions);
+  const mask = projectVolumeRunsToSlice({
+    runs: volume.runs,
+    axis,
+    sliceIndex,
+    dimensions: volume.dimensions,
+  });
+  const result = {
+    ...mask,
+    stats: {
+      ...mask.stats,
+      ...volume.stats,
+    },
+  };
+  if (cacheKey) {
+    setBoundedSegmentCache(
+      segmentVolumeSliceCache,
+      segment,
+      cacheKey,
+      result,
+      MAX_VOLUME_SLICE_CACHE_ENTRIES,
+    );
+  }
   return result;
 }
 
@@ -760,6 +1118,10 @@ function makeEmptyBuildResult() {
       primitivesBuilt: 0,
       maskRunsRead: 0,
       maskRectanglesRead: 0,
+      volumeRunsRead: 0,
+      volumeVoxelsRead: 0,
+      volumeSurfacePolygonsBuilt: 0,
+      volumeSurfaceTruncated: false,
       maskApproximated: 0,
       facesBuilt: 0,
       // Retained for callers that consumed the earlier diagnostic. Correct
@@ -768,6 +1130,89 @@ function makeEmptyBuildResult() {
       truncated: false,
     },
   };
+}
+
+function getVolumeRunRowMap(runs) {
+  const rows = new Map();
+  (Array.isArray(runs) ? runs : []).forEach(([z, y, xStart, xEnd]) => {
+    const key = `${z}:${y}`;
+    if (!rows.has(key)) rows.set(key, []);
+    rows.get(key).push([xStart, xEnd]);
+  });
+  rows.forEach((intervals, key) => rows.set(key, mergeIntervals(intervals)));
+  return rows;
+}
+
+function exposedVolumeRunIntervals(intervals, neighboringIntervals) {
+  return subtractMergedIntervals(
+    mergeIntervals(intervals || []),
+    mergeIntervals(neighboringIntervals || []),
+  );
+}
+
+function buildVolumeRunSurfacePolygons(runs, maxPolygons = MAX_VOLUME_SURFACE_POLYGONS) {
+  const rowMap = getVolumeRunRowMap(runs);
+  const polygons = [];
+  let truncated = false;
+  const append = (polygon) => {
+    if (polygons.length >= maxPolygons) {
+      truncated = true;
+      return false;
+    }
+    polygons.push(polygon);
+    return true;
+  };
+  for (const [key, intervals] of rowMap) {
+    const [z, y] = key.split(':').map(Number);
+    for (const [xStart, xEnd] of intervals) {
+      if (!append([
+        [xStart - 0.5, y - 0.5, z - 0.5],
+        [xStart - 0.5, y + 0.5, z - 0.5],
+        [xStart - 0.5, y + 0.5, z + 0.5],
+        [xStart - 0.5, y - 0.5, z + 0.5],
+      ])) break;
+      if (!append([
+        [xEnd - 0.5, y - 0.5, z - 0.5],
+        [xEnd - 0.5, y - 0.5, z + 0.5],
+        [xEnd - 0.5, y + 0.5, z + 0.5],
+        [xEnd - 0.5, y + 0.5, z - 0.5],
+      ])) break;
+    }
+    for (const [xStart, xEnd] of exposedVolumeRunIntervals(intervals, rowMap.get(`${z}:${y - 1}`))) {
+      if (!append([
+        [xStart - 0.5, y - 0.5, z - 0.5],
+        [xEnd - 0.5, y - 0.5, z - 0.5],
+        [xEnd - 0.5, y - 0.5, z + 0.5],
+        [xStart - 0.5, y - 0.5, z + 0.5],
+      ])) break;
+    }
+    for (const [xStart, xEnd] of exposedVolumeRunIntervals(intervals, rowMap.get(`${z}:${y + 1}`))) {
+      if (!append([
+        [xStart - 0.5, y + 0.5, z - 0.5],
+        [xStart - 0.5, y + 0.5, z + 0.5],
+        [xEnd - 0.5, y + 0.5, z + 0.5],
+        [xEnd - 0.5, y + 0.5, z - 0.5],
+      ])) break;
+    }
+    for (const [xStart, xEnd] of exposedVolumeRunIntervals(intervals, rowMap.get(`${z - 1}:${y}`))) {
+      if (!append([
+        [xStart - 0.5, y - 0.5, z - 0.5],
+        [xStart - 0.5, y + 0.5, z - 0.5],
+        [xEnd - 0.5, y + 0.5, z - 0.5],
+        [xEnd - 0.5, y - 0.5, z - 0.5],
+      ])) break;
+    }
+    for (const [xStart, xEnd] of exposedVolumeRunIntervals(intervals, rowMap.get(`${z + 1}:${y}`))) {
+      if (!append([
+        [xStart - 0.5, y - 0.5, z + 0.5],
+        [xEnd - 0.5, y - 0.5, z + 0.5],
+        [xEnd - 0.5, y + 0.5, z + 0.5],
+        [xStart - 0.5, y + 0.5, z + 0.5],
+      ])) break;
+    }
+    if (truncated) break;
+  }
+  return { polygons, truncated };
 }
 
 function collectSignedBoundarySegments(groups, coordinate, start, end, sign) {
@@ -900,9 +1345,22 @@ export function buildPt3VectorAnnotationFaces(vectorAnnotations, metadata, optio
     return makeEmptyBuildResult();
   }
   const normalizedMetadata = normalizeVolumeMetadata(metadata);
+  const buildCacheKey = normalizedMetadata.dimensions.join('x');
+  const cachedBuild = getSegmentCacheValue(
+    vectorAnnotationFaceBuildCache,
+    vectorAnnotations,
+    buildCacheKey,
+  );
+  if (cachedBuild) return cachedBuild;
   const result = makeEmptyBuildResult();
-  const annotations = vectorAnnotations.slice(0, MAX_VECTOR_ANNOTATIONS);
-  if (vectorAnnotations.length > annotations.length) result.stats.truncated = true;
+  const renderableAnnotations = vectorAnnotations.filter((annotation) => (
+    annotation
+    && annotation.visible !== false
+    && annotation.hidden !== true
+  ));
+  const annotations = renderableAnnotations.slice(0, MAX_VECTOR_ANNOTATIONS);
+  if (renderableAnnotations.length > annotations.length) result.stats.truncated = true;
+  let remainingVolumeSurfacePolygons = MAX_VOLUME_SURFACE_POLYGONS;
 
   const addFace = (face) => {
     if (result.faces.length >= Math.min(MAX_VECTOR_FACES, MAX_VECTOR_PRIMITIVES)) {
@@ -915,7 +1373,6 @@ export function buildPt3VectorAnnotationFaces(vectorAnnotations, metadata, optio
 
   for (const annotation of annotations) {
     result.stats.annotationsRead += 1;
-    if (!annotation || annotation.visible === false || annotation.hidden === true) continue;
     const axis = String(annotation.axis || '').trim().toLowerCase();
     const imageWidth = finiteNumber(annotation.imageWidth ?? annotation.image_width);
     const imageHeight = finiteNumber(annotation.imageHeight ?? annotation.image_height);
@@ -931,15 +1388,31 @@ export function buildPt3VectorAnnotationFaces(vectorAnnotations, metadata, optio
     // Area and mask-run caps are schema limits for one VISTA segment, not a
     // shared allowance across the annotation list. Aggregate totals below are
     // diagnostics only; every visible segment receives its own bounded mask.
+    const annotationAreas = Array.isArray(annotation?.areas) ? annotation.areas : [];
+    const hasPlacedPlanarAreas = annotationAreas.some((area) => (
+      String(area?.mode || area?.areaMode || area?.dimensionality || '2d').toLowerCase() !== '3d'
+      && (
+        VALID_AXES.has(String(area?.axis || '').toLowerCase())
+        || finiteNumber(area?.sliceIndex ?? area?.slice_index) !== null
+      )
+    ));
+    const useCanonicalVolume = segmentHasExplicitVolumeRuns(annotation) || hasPlacedPlanarAreas;
     const mask = buildPt3SegmentMask(annotation);
+    const volume = buildPt3SegmentVolumeRuns(
+      annotation,
+      normalizedMetadata.dimensions,
+      { includePlanar: useCanonicalVolume },
+    );
     result.stats.areasRead += mask.stats.areasRead;
     result.stats.addAreasApplied += mask.stats.addAreasApplied;
     result.stats.subtractAreasApplied += mask.stats.subtractAreasApplied;
     result.stats.maskRunsRead += mask.stats.maskRunsRead;
     result.stats.maskRectanglesRead += mask.rectangles.length;
+    result.stats.volumeRunsRead += volume.runs.length;
+    result.stats.volumeVoxelsRead += volume.stats.voxelCount;
     if (mask.stats.approximated) result.stats.maskApproximated += 1;
     if (mask.stats.truncated) result.stats.truncated = true;
-    if (mask.rectangles.length === 0) continue;
+    if (mask.rectangles.length === 0 && volume.runs.length === 0) continue;
 
     const base = {
       annotationId: String(annotation.id || ''),
@@ -957,48 +1430,83 @@ export function buildPt3VectorAnnotationFaces(vectorAnnotations, metadata, optio
       imageHeight,
       dimensions: normalizedMetadata.dimensions,
     };
-    if (!addFace({
-      ...base,
-      surface: 'lower',
-      sourceMapping,
-      sourceGeometry: {
-        kind: 'mask-surface',
-        rectangles: mask.rectangles,
-        sliceCoordinate: range.lowerFace,
-        reverse: false,
-      },
-    })) break;
-    result.stats.primitivesBuilt += 1;
-    if (!addFace({
-      ...base,
-      surface: 'upper',
-      sourceMapping,
-      sourceGeometry: {
-        kind: 'mask-surface',
-        rectangles: mask.rectangles,
-        sliceCoordinate: range.upperFace,
-        reverse: true,
-      },
-    })) break;
-    result.stats.primitivesBuilt += 1;
-
-    const boundaries = getMaskBoundarySegments(mask.rectangles);
-    if (boundaries.length > 0) {
+    if (mask.rectangles.length > 0 && !useCanonicalVolume) {
       if (!addFace({
         ...base,
-        surface: 'side',
+        surface: 'lower',
         sourceMapping,
         sourceGeometry: {
-          kind: 'mask-sides',
-          boundaries,
-          lowerFace: range.lowerFace,
-          upperFace: range.upperFace,
+          kind: 'mask-surface',
+          rectangles: mask.rectangles,
+          sliceCoordinate: range.lowerFace,
+          reverse: false,
         },
       })) break;
       result.stats.primitivesBuilt += 1;
+      if (!addFace({
+        ...base,
+        surface: 'upper',
+        sourceMapping,
+        sourceGeometry: {
+          kind: 'mask-surface',
+          rectangles: mask.rectangles,
+          sliceCoordinate: range.upperFace,
+          reverse: true,
+        },
+      })) break;
+      result.stats.primitivesBuilt += 1;
+
+      const boundaries = getMaskBoundarySegments(mask.rectangles);
+      if (boundaries.length > 0) {
+        if (!addFace({
+          ...base,
+          surface: 'side',
+          sourceMapping,
+          sourceGeometry: {
+            kind: 'mask-sides',
+            boundaries,
+            lowerFace: range.lowerFace,
+            upperFace: range.upperFace,
+          },
+        })) break;
+        result.stats.primitivesBuilt += 1;
+      }
+    }
+
+    if (volume.runs.length > 0) {
+      const surface = buildVolumeRunSurfacePolygons(
+        volume.runs,
+        remainingVolumeSurfacePolygons,
+      );
+      remainingVolumeSurfacePolygons = Math.max(
+        0,
+        remainingVolumeSurfacePolygons - surface.polygons.length,
+      );
+      result.stats.volumeSurfacePolygonsBuilt += surface.polygons.length;
+      if (surface.truncated) {
+        result.stats.volumeSurfaceTruncated = true;
+        result.stats.truncated = true;
+      }
+      if (volume.stats.truncated) result.stats.truncated = true;
+      if (surface.polygons.length > 0) {
+        if (!addFace({
+          ...base,
+          surface: 'volume',
+          voxelPolygons: surface.polygons,
+          volumeDimensions: volume.dimensions,
+        })) break;
+        result.stats.primitivesBuilt += 1;
+      }
     }
   }
   result.stats.facesBuilt = result.faces.length;
+  setBoundedSegmentCache(
+    vectorAnnotationFaceBuildCache,
+    vectorAnnotations,
+    buildCacheKey,
+    result,
+    2,
+  );
   return result;
 }
 

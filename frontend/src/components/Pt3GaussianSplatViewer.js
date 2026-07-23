@@ -695,6 +695,7 @@ function renderPreview(ctx, {
 
 export default function Pt3GaussianSplatViewer({
   part,
+  volumeMetadata = null,
   projectId,
   volumeImageStack = EMPTY_VOLUME_IMAGE_STACK,
   volumeOverlayImageStacks = EMPTY_VOLUME_OVERLAY_IMAGE_STACKS,
@@ -781,7 +782,10 @@ export default function Pt3GaussianSplatViewer({
   const splatPointSize = isPureSplatMode ? configuredSplatPointSize : 1;
   const splatContrast = isPureSplatMode ? configuredSplatContrast : 1;
   const splatGuidesVisible = isPureSplatMode ? configuredSplatGuides : showSliceGuides;
-  const metadata = useMemo(() => buildMetadata(part), [part]);
+  const metadata = useMemo(
+    () => normalizeVolumeMetadata(volumeMetadata || buildMetadata(part)),
+    [part, volumeMetadata],
+  );
   const sliceLocatorGeometry = useMemo(() => buildPt3SliceLocatorGeometry({
     metadata,
     width: 1,

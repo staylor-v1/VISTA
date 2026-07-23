@@ -1,5 +1,7 @@
 import {
   buildPt3SegmentMask,
+  buildPt3SegmentVolumeRuns,
+  buildPt3SegmentVolumeSliceMask,
   buildPt3VectorAnnotationFaces,
   forEachPt3VectorFaceVoxelPolygon,
   getInclusiveVectorSliceRange,
@@ -12,6 +14,7 @@ import {
   pt3SegmentMaskToSvgPath,
   renderPt3VectorAnnotations,
 } from '../pt3VectorAnnotations';
+import { rasterizeSphereStroke } from '../pt3SegmentationVolume';
 
 const metadata = {
   dimensions: [11, 9, 7],
@@ -292,6 +295,18 @@ describe('PT3 vector annotation registration', () => {
     });
     expect(result.renderedFaces).toBe(0);
     expect(context.beginPath).not.toHaveBeenCalled();
+  });
+
+  test('does not let hidden segments consume the visible annotation budget', () => {
+    const hidden = Array.from({ length: 64 }, (_, index) => (
+      rectangleAnnotation({ id: `hidden-${index}`, visible: false })
+    ));
+    const visible = rectangleAnnotation({ id: 'selected-visible' });
+    const built = buildPt3VectorAnnotationFaces([...hidden, visible], metadata);
+
+    expect(built.stats.annotationsRead).toBe(1);
+    expect(built.faces.some((face) => face.annotationId === 'selected-visible')).toBe(true);
+    expect(built.stats.truncated).toBe(false);
   });
 
   test('multiplies authored vector face alpha without changing annotation geometry', () => {
@@ -584,5 +599,409 @@ describe('PT3 vector annotation registration', () => {
     expect(pt3SegmentMaskContainsPoint(mask, outside[0], outside[1])).toBe(false);
     expect(mask.rectangles.length).toBeGreaterThan(0);
     expect(mask.rectangles.length).toBeLessThanOrEqual(MAX_VECTOR_PRIMITIVES);
+  });
+
+  test('composites volumetric add/erase runs and projects them across all MPR axes', () => {
+    const segment = rectangleAnnotation({
+      version: 2,
+      volumeDimensions: [6, 5, 4],
+      areas: [
+        {
+          tool: 'brush',
+          mode: '3d',
+          operation: 'add',
+          volumeRuns: [[0, 1, 1, 5], [1, 1, 1, 5], [2, 2, 2, 4]],
+        },
+        {
+          tool: 'brush',
+          mode: '3d',
+          operation: 'subtract',
+          volumeRuns: [[1, 1, 2, 4]],
+        },
+      ],
+    });
+    const volume = buildPt3SegmentVolumeRuns(segment, [6, 5, 4]);
+    expect(volume.runs).toEqual([
+      [0, 1, 1, 5],
+      [1, 1, 1, 2],
+      [1, 1, 4, 5],
+      [2, 2, 2, 4],
+    ]);
+    expect(volume.stats.voxelCount).toBe(8);
+    expect(buildPt3SegmentVolumeRuns(segment, [6, 5, 4])).toBe(volume);
+
+    const axial = buildPt3SegmentVolumeSliceMask(segment, {
+      axis: 'axial',
+      sliceIndex: 1,
+      dimensions: [6, 5, 4],
+    });
+    expect(axial.rectangles).toEqual([
+      { x0: 1, y0: 1, x1: 2, y1: 2 },
+      { x0: 4, y0: 1, x1: 5, y1: 2 },
+    ]);
+    expect(buildPt3SegmentVolumeSliceMask(segment, {
+      axis: 'axial',
+      sliceIndex: 1,
+      dimensions: [6, 5, 4],
+    })).toBe(axial);
+    const coronal = buildPt3SegmentVolumeSliceMask(segment, {
+      axis: 'coronal',
+      sliceIndex: 1,
+      dimensions: [6, 5, 4],
+    });
+    expect(coronal.rectangles).toEqual(expect.arrayContaining([
+      { x0: 1, y0: 3, x1: 5, y1: 4 },
+      { x0: 1, y0: 2, x1: 2, y1: 3 },
+      { x0: 4, y0: 2, x1: 5, y1: 3 },
+    ]));
+    const sagittal = buildPt3SegmentVolumeSliceMask(segment, {
+      axis: 'sagittal',
+      sliceIndex: 3,
+      dimensions: [6, 5, 4],
+    });
+    expect(sagittal.rectangles).toEqual([
+      { x0: 2, y0: 1, x1: 3, y1: 2 },
+      { x0: 1, y0: 3, x1: 2, y1: 4 },
+    ]);
+  });
+
+  test('marks volume runs partial only after the canonical 50k limit is exceeded', () => {
+    const depth = 25_000;
+    const firstColumn = Array.from({ length: depth }, (_, z) => [z, 0, 0, 1]);
+    const secondColumn = Array.from({ length: depth }, (_, z) => [z, 0, 2, 3]);
+    const base = {
+      version: 2,
+      volumeDimensions: [5, 1, depth],
+      areas: [
+        { tool: 'volume-mask', mode: '3d', operation: 'add', volumeRuns: firstColumn },
+        { tool: 'volume-mask', mode: '3d', operation: 'add', volumeRuns: secondColumn },
+      ],
+    };
+    const exact = buildPt3SegmentVolumeRuns(base, [5, 1, depth]);
+    const overflow = buildPt3SegmentVolumeRuns({
+      ...base,
+      areas: [
+        ...base.areas,
+        { tool: 'volume-mask', mode: '3d', operation: 'add', volumeRuns: [[0, 0, 4, 5]] },
+      ],
+    }, [5, 1, depth]);
+
+    expect(exact.runs).toHaveLength(50_000);
+    expect(exact.stats.truncated).toBe(false);
+    expect(overflow.runs).toHaveLength(50_000);
+    expect(overflow.stats.truncated).toBe(true);
+  });
+
+  test('keeps planar edits on their own axis and slice', () => {
+    const segment = rectangleAnnotation({
+      imageWidth: 6,
+      imageHeight: 6,
+      minSlice: 0,
+      maxSlice: 5,
+      areas: [
+        {
+          tool: 'rectangle',
+          axis: 'axial',
+          sliceIndex: 1,
+          imageWidth: 6,
+          imageHeight: 6,
+          operation: 'add',
+          start: { x: 1, y: 1 },
+          end: { x: 5, y: 5 },
+        },
+        {
+          tool: 'rectangle',
+          axis: 'coronal',
+          sliceIndex: 2,
+          imageWidth: 6,
+          imageHeight: 6,
+          operation: 'add',
+          start: { x: 2, y: 2 },
+          end: { x: 4, y: 4 },
+        },
+      ],
+    });
+
+    const axial = buildPt3SegmentMask(segment, {
+      axis: 'axial',
+      sliceIndex: 1,
+      imageWidth: 6,
+      imageHeight: 6,
+    });
+    const wrongAxialSlice = buildPt3SegmentMask(segment, {
+      axis: 'axial',
+      sliceIndex: 2,
+      imageWidth: 6,
+      imageHeight: 6,
+    });
+    const coronal = buildPt3SegmentMask(segment, {
+      axis: 'coronal',
+      sliceIndex: 2,
+      imageWidth: 6,
+      imageHeight: 6,
+    });
+
+    expect(pt3SegmentMaskContainsPoint(axial, 1.5, 1.5)).toBe(true);
+    expect(wrongAxialSlice.rectangles).toHaveLength(0);
+    expect(pt3SegmentMaskContainsPoint(coronal, 2.5, 2.5)).toBe(true);
+    expect(pt3SegmentMaskContainsPoint(coronal, 1.5, 1.5)).toBe(false);
+  });
+
+  test('composites 2D and 3D add/erase operations into the same voxel mask', () => {
+    const erasePlanarWithVolume = buildPt3SegmentVolumeRuns({
+      axis: 'axial',
+      minSlice: 0,
+      maxSlice: 5,
+      imageWidth: 6,
+      imageHeight: 6,
+      volumeDimensions: [6, 6, 6],
+      areas: [
+        {
+          tool: 'rectangle',
+          mode: '2d',
+          axis: 'axial',
+          sliceIndex: 2,
+          imageWidth: 6,
+          imageHeight: 6,
+          operation: 'add',
+          start: { x: 1, y: 2 },
+          end: { x: 5, y: 3 },
+        },
+        {
+          tool: 'brush',
+          mode: '3d',
+          operation: 'subtract',
+          volumeRuns: [[2, 2, 2, 4]],
+        },
+      ],
+    }, [6, 6, 6]);
+    expect(erasePlanarWithVolume.runs).toEqual([
+      [2, 2, 1, 2],
+      [2, 2, 4, 5],
+    ]);
+
+    const eraseVolumeWithPlanar = buildPt3SegmentVolumeRuns({
+      axis: 'axial',
+      minSlice: 0,
+      maxSlice: 5,
+      imageWidth: 6,
+      imageHeight: 6,
+      volumeDimensions: [6, 6, 6],
+      areas: [
+        {
+          tool: 'brush',
+          mode: '3d',
+          operation: 'add',
+          volumeRuns: [[2, 2, 1, 5]],
+        },
+        {
+          tool: 'rectangle',
+          mode: '2d',
+          axis: 'axial',
+          sliceIndex: 2,
+          imageWidth: 6,
+          imageHeight: 6,
+          operation: 'subtract',
+          start: { x: 2, y: 2 },
+          end: { x: 4, y: 3 },
+        },
+      ],
+    }, [6, 6, 6]);
+    expect(eraseVolumeWithPlanar.runs).toEqual([
+      [2, 2, 1, 2],
+      [2, 2, 4, 5],
+    ]);
+  });
+
+  test('builds only exposed faces and promotes mixed planar/volume masks into one canonical surface', () => {
+    const volumeOnly = rectangleAnnotation({
+      version: 2,
+      volumeDimensions: [4, 3, 2],
+      areas: [{
+        tool: 'brush',
+        mode: '3d',
+        operation: 'add',
+        volumeRuns: [[0, 0, 0, 2]],
+      }],
+    });
+    const built = buildPt3VectorAnnotationFaces([volumeOnly], {
+      dimensions: [4, 3, 2],
+      spacing: [1, 1, 1],
+    });
+    expect(built.faces).toHaveLength(1);
+    expect(built.faces[0].surface).toBe('volume');
+    const polygons = [];
+    forEachPt3VectorFaceVoxelPolygon(built.faces[0], (polygon) => polygons.push(polygon));
+    expect(polygons).toHaveLength(6);
+    expect(built.stats.volumeRunsRead).toBe(1);
+    expect(built.stats.volumeVoxelsRead).toBe(2);
+
+    const mixed = buildPt3VectorAnnotationFaces([
+      rectangleAnnotation({
+        volumeDimensions: [11, 9, 7],
+        areas: [
+          { tool: 'rectangle', operation: 'add', start: { x: 2, y: 1 }, end: { x: 7, y: 6 } },
+          { tool: 'brush', mode: '3d', operation: 'add', volumeRuns: [[0, 0, 0, 1]] },
+        ],
+      }),
+    ], metadata);
+    expect(mixed.faces.some((face) => face.surface === 'lower')).toBe(false);
+    expect(mixed.faces.some((face) => face.surface === 'volume')).toBe(true);
+  });
+
+  test('keeps a near-maximum isotropic brush surface complete in the 3D renderer', () => {
+    const sphere = rasterizeSphereStroke({
+      centers: [[50, 50, 50]],
+      radius: 39,
+      dimensions: [101, 101, 101],
+      spacing: [1, 1, 1],
+      maxRuns: 50_000,
+      maxVoxels: 250_000,
+    });
+    expect(sphere.truncated).toBe(false);
+    const built = buildPt3VectorAnnotationFaces([{
+      id: 'large-sphere',
+      label: 'Large sphere',
+      color: '#22d3ee',
+      visible: true,
+      axis: 'axial',
+      minSlice: 50,
+      maxSlice: 50,
+      imageWidth: 101,
+      imageHeight: 101,
+      version: 2,
+      volumeDimensions: [101, 101, 101],
+      areas: [{
+        tool: 'volume-mask',
+        mode: '3d',
+        operation: 'add',
+        volumeRuns: sphere.runs,
+      }],
+    }], {
+      dimensions: [101, 101, 101],
+      spacing: [1, 1, 1],
+    });
+    expect(built.stats.truncated).toBe(false);
+    expect(built.faces).toHaveLength(1);
+    expect(built.faces[0].voxelPolygons.length).toBeGreaterThan(MAX_VECTOR_FACES);
+  });
+
+  test('reports a truncated 3D surface preview without truncating a thin stored mask', () => {
+    const depth = 13_000;
+    const runs = Array.from({ length: depth }, (_, z) => [z, 0, 0, 1]);
+    const annotation = {
+      id: 'thin-component',
+      label: 'Thin component',
+      color: '#22d3ee',
+      visible: true,
+      axis: 'axial',
+      minSlice: 0,
+      maxSlice: depth - 1,
+      imageWidth: 1,
+      imageHeight: 1,
+      version: 2,
+      volumeDimensions: [1, 1, depth],
+      areas: [{
+        tool: 'volume-mask',
+        mode: '3d',
+        operation: 'add',
+        volumeRuns: runs,
+      }],
+    };
+    expect(buildPt3SegmentVolumeRuns(annotation, [1, 1, depth]).stats.voxelCount).toBe(depth);
+    const built = buildPt3VectorAnnotationFaces([annotation], {
+      dimensions: [1, 1, depth],
+      spacing: [1, 1, 1],
+    });
+
+    expect(built.stats.volumeVoxelsRead).toBe(depth);
+    expect(built.stats.volumeSurfaceTruncated).toBe(true);
+    expect(built.stats.truncated).toBe(true);
+    expect(built.faces[0].voxelPolygons).toHaveLength(50_000);
+  });
+
+  test('shares one 50k surface budget across segments and reuses the complete build', () => {
+    const depth = 7_000;
+    const makeThinSegment = (id, x) => ({
+      id,
+      label: id,
+      color: '#22d3ee',
+      visible: true,
+      axis: 'axial',
+      minSlice: 0,
+      maxSlice: depth - 1,
+      imageWidth: 2,
+      imageHeight: 1,
+      version: 2,
+      volumeDimensions: [2, 1, depth],
+      areas: [{
+        tool: 'volume-mask',
+        mode: '3d',
+        operation: 'add',
+        volumeRuns: Array.from({ length: depth }, (_, z) => [z, 0, x, x + 1]),
+      }],
+    });
+    const annotations = [
+      makeThinSegment('thin-a', 0),
+      makeThinSegment('thin-b', 1),
+    ];
+    const first = buildPt3VectorAnnotationFaces(annotations, {
+      dimensions: [2, 1, depth],
+      spacing: [1, 1, 1],
+    });
+    const second = buildPt3VectorAnnotationFaces(annotations, {
+      dimensions: [2, 1, depth],
+      spacing: [2, 2, 2],
+    });
+
+    expect(first.stats.volumeVoxelsRead).toBe(depth * 2);
+    expect(first.stats.volumeSurfacePolygonsBuilt).toBe(50_000);
+    expect(first.stats.volumeSurfaceTruncated).toBe(true);
+    expect(first.faces.reduce(
+      (total, face) => total + (face.voxelPolygons?.length || 0),
+      0,
+    )).toBe(50_000);
+    expect(second).toBe(first);
+  });
+
+  test('keeps only a small LRU of projected volume slices per segment', () => {
+    const segment = rectangleAnnotation({
+      version: 2,
+      volumeDimensions: [2, 2, 12],
+      areas: [{
+        tool: 'volume-mask',
+        mode: '3d',
+        operation: 'add',
+        volumeRuns: Array.from({ length: 12 }, (_, z) => [z, 0, 0, 1]),
+      }],
+    });
+    const first = buildPt3SegmentVolumeSliceMask(segment, {
+      axis: 'axial',
+      sliceIndex: 0,
+      dimensions: [2, 2, 12],
+    });
+    const retained = buildPt3SegmentVolumeSliceMask(segment, {
+      axis: 'axial',
+      sliceIndex: 4,
+      dimensions: [2, 2, 12],
+    });
+    for (let sliceIndex = 1; sliceIndex < 12; sliceIndex += 1) {
+      buildPt3SegmentVolumeSliceMask(segment, {
+        axis: 'axial',
+        sliceIndex,
+        dimensions: [2, 2, 12],
+      });
+    }
+
+    expect(buildPt3SegmentVolumeSliceMask(segment, {
+      axis: 'axial',
+      sliceIndex: 4,
+      dimensions: [2, 2, 12],
+    })).toBe(retained);
+    expect(buildPt3SegmentVolumeSliceMask(segment, {
+      axis: 'axial',
+      sliceIndex: 0,
+      dimensions: [2, 2, 12],
+    })).not.toBe(first);
   });
 });

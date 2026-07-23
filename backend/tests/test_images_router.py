@@ -11,6 +11,7 @@ import numpy as np
 from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core import schemas
 from routers import images as images_router
 import utils.boto3_client as boto3_client_module
 
@@ -1972,6 +1973,488 @@ def test_numpy_volume_metadata_and_axis_slice_endpoints(client, monkeypatch, tmp
 
     out_of_range = client.get(f"/api/images/{image_id}/volume-slice?axis=sagittal&index=99")
     assert out_of_range.status_code == 400
+
+
+def test_numpy_volume_connected_selection_is_true_3d_and_guarded(client, monkeypatch, tmp_path):
+    pid = _create_project(client, name="volume-connected-selection")
+    volume = np.full((3, 4, 5), 220, dtype=np.uint8)
+    for z, y, x in ((0, 1, 1), (0, 1, 2), (1, 1, 2), (1, 2, 2), (2, 2, 2)):
+        volume[z, y, x] = 10
+    volume[2, 3, 3] = 10  # diagonal-only contact must not join 6-connectivity.
+    payload = io.BytesIO()
+    np.save(payload, volume)
+    raw_payload = payload.getvalue()
+    payload.seek(0)
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("connected.npy", payload, "application/octet-stream")},
+    )
+    assert upload.status_code == 201
+    image_id = upload.json()["id"]
+
+    async def stream_source(_db_image):
+        yield raw_payload
+
+    monkeypatch.setenv("VOLUME_CACHE_DIR", str(tmp_path / "connected-volume-cache"))
+    monkeypatch.setattr("routers.images._iter_authorized_npy_bytes", stream_source)
+    selected = client.post(
+        f"/api/images/{image_id}/volume-connected-selection",
+        json={"seed": [1, 1, 0], "sensitivity": 0},
+    )
+    assert selected.status_code == 200, selected.text
+    result = selected.json()
+    assert result["dimensions"] == [5, 4, 3]
+    assert result["voxel_count"] == 5
+    assert result["volume_runs"] == [
+        [0, 1, 1, 3],
+        [1, 1, 2, 3],
+        [1, 2, 2, 3],
+        [2, 2, 2, 3],
+    ]
+    assert result["connectivity"] == 6
+    assert result["truncated"] is False
+
+    limited = client.post(
+        f"/api/images/{image_id}/volume-connected-selection",
+        json={"seed": [1, 1, 0], "sensitivity": 0, "max_voxels": 3},
+    )
+    assert limited.status_code == 200
+    assert limited.json()["voxel_count"] == 3
+    assert limited.json()["truncated"] is True
+    assert limited.json()["truncation_reason"] == "max-voxels"
+
+    out_of_bounds = client.post(
+        f"/api/images/{image_id}/volume-connected-selection",
+        json={"seed": [99, 1, 0], "sensitivity": 0},
+    )
+    assert out_of_bounds.status_code == 400
+
+    source_loads = 0
+
+    async def should_not_load_source(*_args, **_kwargs):
+        nonlocal source_loads
+        source_loads += 1
+        raise AssertionError("a saturated request must not start source loading")
+
+    saturated = threading.BoundedSemaphore(1)
+    assert saturated.acquire(blocking=False)
+    monkeypatch.setattr(
+        images_router,
+        "_PROCESS_VOLUME_CONNECTED_SELECTION_SEMAPHORE",
+        saturated,
+    )
+    monkeypatch.setattr(
+        images_router,
+        "get_npy_volume_handle",
+        should_not_load_source,
+    )
+    try:
+        busy = client.post(
+            f"/api/images/{image_id}/volume-connected-selection",
+            json={"seed": [1, 1, 0], "sensitivity": 0},
+        )
+    finally:
+        saturated.release()
+    assert busy.status_code == 429
+    assert busy.headers["retry-after"] == "1"
+    assert source_loads == 0
+
+
+def test_volume_connected_selection_request_has_safe_budgets_and_finite_ranges():
+    request = schemas.VolumeConnectedSelectionRequest(seed=[0, 0, 0])
+    assert request.max_voxels == 50_000
+    assert request.max_examined == 150_000
+    assert request.max_runs == 10_000
+
+    invalid_payloads = (
+        {"max_voxels": 100_001},
+        {"max_examined": 300_001},
+        {"max_runs": 20_001},
+        {"sensitivity": float("nan")},
+        {"display_min": float("-inf"), "display_max": 1.0},
+        {"display_min": 0.0, "display_max": float("inf")},
+    )
+    for invalid in invalid_payloads:
+        with pytest.raises(ValueError):
+            schemas.VolumeConnectedSelectionRequest(seed=[0, 0, 0], **invalid)
+
+
+def test_volume_connected_selection_marks_runs_partial_only_after_limit_is_exceeded():
+    volume = np.asarray([
+        [
+            [0, 255, 0],
+            [0, 0, 0],
+        ],
+    ], dtype=np.uint8)
+    options = {
+        "seed": [0, 1, 0],
+        "sensitivity": 0.0,
+        "display_min": None,
+        "display_max": None,
+        "max_voxels": 10,
+        "max_examined": 10,
+    }
+
+    exact = images_router._connected_volume_selection(
+        volume,
+        max_runs=3,
+        **{**options, "max_voxels": 5},
+    )
+    limited = images_router._connected_volume_selection(volume, max_runs=2, **options)
+
+    assert len(exact["volume_runs"]) == 3
+    assert exact["truncated"] is False
+    assert len(limited["volume_runs"]) == 2
+    assert limited["truncated"] is True
+    assert limited["truncation_reason"] == "max-runs"
+
+
+def test_volume_connected_selection_rejects_known_oversized_materialized_source_before_read(
+    client,
+    monkeypatch,
+):
+    pid = _create_project(client, name="volume-connected-source-budget")
+    payload = _make_tiff_bytes(frame_count=2, size=(2, 2))
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("volume.tiff", payload, "image/tiff")},
+    )
+    assert upload.status_code == 201
+    image_id = upload.json()["id"]
+    source_reads = 0
+
+    async def forbidden_source_read(*_args, **_kwargs):
+        nonlocal source_reads
+        source_reads += 1
+        raise AssertionError("known oversized sources must not be materialized")
+
+    monkeypatch.setattr(
+        images_router,
+        "_VOLUME_CONNECTED_SELECTION_MAX_SOURCE_BYTES",
+        1,
+    )
+    monkeypatch.setattr(
+        images_router,
+        "_read_authorized_image_bytes",
+        forbidden_source_read,
+    )
+
+    response = client.post(
+        f"/api/images/{image_id}/volume-connected-selection",
+        json={"seed": [0, 0, 0]},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Volume source exceeds the connected-selection 1-byte source limit"
+    )
+    assert source_reads == 0
+
+
+def test_connected_selection_source_reader_stops_when_stream_crosses_budget(
+    monkeypatch,
+):
+    class StoredVolume:
+        metadata_json = {}
+        object_storage_key = "opaque-volume-key"
+
+    class Response:
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self, chunk_size):
+            assert chunk_size == 8 * 1024 * 1024
+            yield b"123"
+            yield b"456"
+            raise AssertionError("reader must stop immediately after the budget is crossed")
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, method, url):
+            assert method == "GET"
+            assert url == "https://storage.test/volume"
+            return Response()
+
+    monkeypatch.setattr(
+        images_router,
+        "get_presigned_download_url",
+        lambda **_kwargs: "https://storage.test/volume",
+    )
+    monkeypatch.setattr(images_router.httpx, "AsyncClient", Client)
+
+    with pytest.raises(
+        ValueError,
+        match="connected-selection 5-byte source limit",
+    ):
+        asyncio.run(
+            images_router._read_authorized_image_bytes(
+                StoredVolume(),
+                max_bytes=5,
+            )
+        )
+
+
+def test_volume_connected_selection_npz_budget_rejects_declared_voxels_before_decode(
+    monkeypatch,
+):
+    npy_payload = io.BytesIO()
+    np.save(npy_payload, np.zeros((2, 3, 4), dtype=np.uint8))
+    archive_payload = io.BytesIO()
+    with zipfile.ZipFile(
+        archive_payload,
+        mode="w",
+        compression=zipfile.ZIP_DEFLATED,
+    ) as archive:
+        archive.writestr("voxels.npy", npy_payload.getvalue())
+
+    monkeypatch.setattr(
+        images_router,
+        "_VOLUME_CONNECTED_SELECTION_MAX_SOURCE_BYTES",
+        4096,
+    )
+    monkeypatch.setattr(
+        images_router,
+        "_VOLUME_CONNECTED_SELECTION_MAX_VOXELS",
+        10,
+    )
+    monkeypatch.setattr(
+        images_router,
+        "_VOLUME_CONNECTED_SELECTION_MAX_DECODED_BYTES",
+        4096,
+    )
+    decode_calls = 0
+
+    def forbidden_array_decode(*_args, **_kwargs):
+        nonlocal decode_calls
+        decode_calls += 1
+        raise AssertionError("oversized NPZ arrays must not be decoded")
+
+    monkeypatch.setattr(
+        images_router.np.lib.format,
+        "read_array",
+        forbidden_array_decode,
+    )
+
+    with pytest.raises(ValueError, match="24 voxels.*10-voxel limit"):
+        images_router._decode_and_select_connected_volume(
+            kind="npz",
+            source=archive_payload.getvalue(),
+            filename="volume.npz",
+            volume=None,
+            seed=[0, 0, 0],
+            sensitivity=0.0,
+            display_min=None,
+            display_max=None,
+            max_voxels=10,
+            max_examined=10,
+            max_runs=10,
+        )
+
+    assert decode_calls == 0
+
+
+def test_volume_connected_selection_rechecks_actual_decoded_bytes(monkeypatch):
+    monkeypatch.setattr(
+        images_router,
+        "_VOLUME_CONNECTED_SELECTION_MAX_SOURCE_BYTES",
+        4096,
+    )
+    monkeypatch.setattr(
+        images_router,
+        "_VOLUME_CONNECTED_SELECTION_MAX_VOXELS",
+        100,
+    )
+    monkeypatch.setattr(
+        images_router,
+        "_VOLUME_CONNECTED_SELECTION_MAX_DECODED_BYTES",
+        20,
+    )
+    monkeypatch.setattr(
+        images_router,
+        "_load_tiff_volume",
+        lambda _source, *, limits: np.zeros((1, 2, 3), dtype=np.uint32),
+    )
+
+    with pytest.raises(ValueError, match="24 decoded bytes.*20-byte limit"):
+        images_router._decode_and_select_connected_volume(
+            kind="tiff",
+            source=b"safe-sized-source",
+            filename="volume.tiff",
+            volume=None,
+            seed=[0, 0, 0],
+            sensitivity=0.0,
+            display_min=None,
+            display_max=None,
+            max_voxels=10,
+            max_examined=10,
+            max_runs=10,
+        )
+
+
+def test_volume_connected_selection_materialized_decode_has_single_process_slot(
+    monkeypatch,
+):
+    assert images_router._VOLUME_CONNECTED_SELECTION_DECODE_CONCURRENCY == 1
+    semaphore = threading.BoundedSemaphore(1)
+    worker_future = images_router.Future()
+
+    async def exercise():
+        async with images_router._volume_connected_selection_decode_slot() as lease:
+            lease.release_when_done(worker_future)
+        with pytest.raises(images_router.HTTPException) as exc_info:
+            async with images_router._volume_connected_selection_decode_slot():
+                pass
+        assert exc_info.value.status_code == 429
+        assert exc_info.value.headers == {"Retry-After": "1"}
+        worker_future.set_result(None)
+        async with images_router._volume_connected_selection_decode_slot():
+            pass
+
+    monkeypatch.setattr(
+        images_router,
+        "_PROCESS_VOLUME_CONNECTED_SELECTION_DECODE_SEMAPHORE",
+        semaphore,
+    )
+    asyncio.run(exercise())
+
+
+def test_volume_connected_selection_unexpected_failure_is_logged_and_sanitized(
+    client,
+    monkeypatch,
+    caplog,
+):
+    pid = _create_project(client, name="volume-connected-unexpected-error")
+    tiff_payload = _make_tiff_bytes(frame_count=2, size=(2, 2)).getvalue()
+    upload = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("volume.tiff", io.BytesIO(tiff_payload), "image/tiff")},
+    )
+    assert upload.status_code == 201
+    image_id = upload.json()["id"]
+
+    async def source_read(*_args, **_kwargs):
+        return tiff_payload
+
+    def unexpected_failure(**_kwargs):
+        raise RuntimeError("storage-secret-must-not-leak")
+
+    monkeypatch.setattr(
+        images_router,
+        "_read_authorized_image_bytes",
+        source_read,
+    )
+    monkeypatch.setattr(
+        images_router,
+        "_decode_and_select_connected_volume",
+        unexpected_failure,
+    )
+    caplog.set_level("ERROR", logger="routers.images")
+
+    response = client.post(
+        f"/api/images/{image_id}/volume-connected-selection",
+        json={"seed": [0, 0, 0]},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Unable to select volume"
+    assert "storage-secret-must-not-leak" not in response.text
+    assert "Unexpected volume connected-selection failure" in caplog.text
+
+
+def test_volume_connected_selection_jobs_keep_permits_after_request_cancellation(monkeypatch):
+    assert images_router._VOLUME_CONNECTED_SELECTION_CONCURRENCY == 2
+    semaphore = threading.BoundedSemaphore(2)
+    executor = images_router.ThreadPoolExecutor(
+        max_workers=2,
+        thread_name_prefix="test-volume-connected",
+    )
+    active_jobs = 0
+    maximum_active_jobs = 0
+    job_lock = threading.Lock()
+    two_jobs_started = threading.Event()
+    release_jobs = threading.Event()
+    all_jobs_finished = threading.Event()
+
+    def blocked_selection(volume, **_kwargs):
+        nonlocal active_jobs, maximum_active_jobs
+        with job_lock:
+            active_jobs += 1
+            maximum_active_jobs = max(maximum_active_jobs, active_jobs)
+            if active_jobs == 2:
+                two_jobs_started.set()
+        try:
+            assert release_jobs.wait(2), "connected-selection jobs were not released"
+            return {"marker": int(volume[0, 0, 0])}
+        finally:
+            with job_lock:
+                active_jobs -= 1
+                if active_jobs == 0:
+                    all_jobs_finished.set()
+
+    async def guarded_job(index):
+        async with images_router._volume_connected_selection_slot() as lease:
+            worker_future = executor.submit(
+                blocked_selection,
+                np.asarray([[[index]]], dtype=np.uint8),
+                seed=[0, 0, 0],
+                sensitivity=0.0,
+                display_min=None,
+                display_max=None,
+                max_voxels=1,
+                max_examined=1,
+                max_runs=1,
+            )
+            lease.release_when_done(worker_future)
+            return await asyncio.wrap_future(worker_future)
+
+    async def exercise():
+        tasks = [
+            asyncio.create_task(guarded_job(index))
+            for index in range(2)
+        ]
+        assert await asyncio.to_thread(two_jobs_started.wait, 2)
+        with pytest.raises(images_router.HTTPException) as exc_info:
+            await guarded_job(2)
+        assert exc_info.value.status_code == 429
+        assert exc_info.value.headers == {"Retry-After": "1"}
+        for task in tasks:
+            task.cancel()
+        cancelled = await asyncio.gather(*tasks, return_exceptions=True)
+        assert all(isinstance(result, asyncio.CancelledError) for result in cancelled)
+        with pytest.raises(images_router.HTTPException) as cancelled_exc_info:
+            await guarded_job(3)
+        assert cancelled_exc_info.value.status_code == 429
+        with job_lock:
+            assert active_jobs == 2
+            assert maximum_active_jobs == 2
+        release_jobs.set()
+        assert await asyncio.to_thread(all_jobs_finished.wait, 2)
+        async with images_router._volume_connected_selection_slot():
+            pass
+
+    monkeypatch.setattr(
+        images_router,
+        "_PROCESS_VOLUME_CONNECTED_SELECTION_SEMAPHORE",
+        semaphore,
+    )
+    try:
+        asyncio.run(exercise())
+    finally:
+        release_jobs.set()
+        executor.shutdown(wait=True, cancel_futures=True)
 
 
 @pytest.mark.parametrize(

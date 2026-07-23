@@ -5803,6 +5803,8 @@ ul li:hover {
   width: 98vw;
   max-width: none;
   height: 94vh;
+  max-height: 94vh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   background: #f8fafc;
@@ -5817,15 +5819,88 @@ ul li:hover {
   margin: 0;
 }
 
+.segmentation-helper-view-tabs {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(92px, 1fr)) minmax(132px, 1.35fr) minmax(132px, 1.35fr);
+  gap: 1px;
+  border-bottom: 1px solid #1e293b;
+  background: #020617;
+  padding: 0 18px;
+}
+
+.segmentation-helper-view-tabs button {
+  position: relative;
+  min-height: 54px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-top: 3px solid transparent;
+  background: #0f172a;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.segmentation-helper-view-tabs button:nth-child(1) {
+  --view-accent: #10b981;
+}
+
+.segmentation-helper-view-tabs button:nth-child(2) {
+  --view-accent: #f59e0b;
+}
+
+.segmentation-helper-view-tabs button:nth-child(3) {
+  --view-accent: #3b82f6;
+}
+
+.segmentation-helper-view-tabs button:nth-child(4),
+.segmentation-helper-view-tabs button:nth-child(5) {
+  --view-accent: #a78bfa;
+}
+
+.segmentation-helper-view-tabs button:hover,
+.segmentation-helper-view-tabs button:focus-visible {
+  background: #172033;
+  color: #e2e8f0;
+  outline: none;
+}
+
+.segmentation-helper-view-tabs button.active {
+  border-top-color: var(--view-accent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--view-accent) 18%, #0f172a), #0f172a);
+  color: #f8fafc;
+}
+
+.segmentation-helper-view-tabs strong {
+  font-size: 0.92rem;
+  letter-spacing: 0.04em;
+}
+
+.segmentation-helper-view-tabs small {
+  color: #64748b;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.segmentation-helper-view-tabs button.active small {
+  color: color-mix(in srgb, var(--view-accent) 72%, #f8fafc);
+}
+
 .segmentation-helper-body {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
   display: grid;
   grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
   background: #07111f;
 }
 
 .segmentation-helper-sidebar {
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   border-right: 1px solid #1f2937;
@@ -5835,6 +5910,40 @@ ul li:hover {
   display: grid;
   align-content: start;
   gap: 14px;
+}
+
+.segmentation-helper-view-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 7px;
+  background: rgba(2, 6, 23, 0.52);
+  padding: 9px 10px;
+}
+
+.segmentation-helper-axis-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  box-shadow: 0 0 12px currentColor;
+}
+
+.segmentation-helper-view-summary div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.segmentation-helper-view-summary strong {
+  color: #f8fafc;
+  font-size: 0.78rem;
+}
+
+.segmentation-helper-view-summary small {
+  color: #94a3b8;
+  font-size: 0.67rem;
 }
 
 .segmentation-orientation-switcher {
@@ -5991,8 +6100,9 @@ ul li:hover {
 .segmentation-helper-main {
   min-width: 0;
   min-height: 0;
-  display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
   padding: 12px;
   color: #e5e7eb;
@@ -6017,7 +6127,7 @@ ul li:hover {
 }
 
 .segmentation-operation-buttons button.active,
-.segmentation-tools-grid button.active {
+.segmentation-tool-select.active {
   border-color: #38bdf8;
   background: #0c4a6e;
   color: #f8fafc;
@@ -6040,19 +6150,37 @@ ul li:hover {
   display: grid;
   grid-template-columns: repeat(10, minmax(40px, 1fr));
   gap: 8px;
+  align-items: start;
 }
 
-.segmentation-tools-grid button {
+.segmentation-tool-tile {
   position: relative;
   min-width: 0;
-  min-height: 42px;
+  min-height: 48px;
+  display: grid;
+}
+
+.segmentation-tool-tile.has-mode-switch {
+  padding-bottom: 30px;
+}
+
+.segmentation-tool-select {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
   aspect-ratio: 1;
   padding: 8px;
   display: inline-grid;
   place-items: center;
 }
 
-.segmentation-tools-grid button::after {
+.segmentation-tool-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.segmentation-tool-select::after {
   content: attr(data-tooltip);
   position: absolute;
   z-index: 30;
@@ -6074,10 +6202,73 @@ ul li:hover {
   transition: opacity 120ms ease, transform 120ms ease;
 }
 
-.segmentation-tools-grid button:hover::after,
-.segmentation-tools-grid button:focus-visible::after {
+.segmentation-tool-select:hover::after,
+.segmentation-tool-select:focus-visible::after {
   opacity: 1;
   transform: translate(-50%, 0);
+}
+
+.segmentation-tool-tile:first-child .segmentation-tool-select::after {
+  left: 0;
+  transform: translate(0, 4px);
+}
+
+.segmentation-tool-tile:first-child .segmentation-tool-select:hover::after,
+.segmentation-tool-tile:first-child .segmentation-tool-select:focus-visible::after {
+  transform: translate(0, 0);
+}
+
+.segmentation-tool-tile:last-child .segmentation-tool-select::after {
+  right: 0;
+  left: auto;
+  transform: translate(0, 4px);
+}
+
+.segmentation-tool-tile:last-child .segmentation-tool-select:hover::after,
+.segmentation-tool-tile:last-child .segmentation-tool-select:focus-visible::after {
+  transform: translate(0, 0);
+}
+
+.segmentation-tool-mode-switch {
+  position: absolute;
+  z-index: 8;
+  bottom: 0;
+  left: 50%;
+  display: inline-grid;
+  grid-template-columns: repeat(2, auto);
+  overflow: hidden;
+  border: 1px solid #38bdf8;
+  border-radius: 999px;
+  background: #020617;
+  box-shadow: 0 4px 12px rgba(2, 6, 23, 0.7);
+  transform: translateX(-50%);
+}
+
+.segmentation-tool-mode-switch button {
+  min-width: 38px;
+  min-height: 28px;
+  border: 0;
+  border-radius: 0;
+  padding: 2px 6px;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 0.58rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.segmentation-tool-mode-switch button + button {
+  border-left: 1px solid rgba(56, 189, 248, 0.52);
+}
+
+.segmentation-tool-mode-switch button.active {
+  background: #0284c7;
+  color: #f8fafc;
+}
+
+.segmentation-tool-mode-switch button:disabled {
+  cursor: not-allowed;
+  opacity: 0.32;
 }
 
 .segmentation-tool-icon {
@@ -6121,6 +6312,20 @@ ul li:hover {
   font-size: 0.75rem;
 }
 
+.segmentation-volume-status {
+  grid-column: 1 / -1;
+  border-left: 3px solid #38bdf8;
+  background: rgba(14, 116, 144, 0.15);
+  color: #bae6fd;
+  padding: 6px 9px;
+}
+
+.segmentation-volume-status.warning {
+  border-left-color: #f59e0b;
+  background: rgba(180, 83, 9, 0.17);
+  color: #fde68a;
+}
+
 .segmentation-ml-panel {
   display: grid;
   grid-template-columns: repeat(4, minmax(150px, 1fr));
@@ -6161,7 +6366,8 @@ ul li:hover {
 
 .segmentation-slice-stage {
   position: relative;
-  min-height: 360px;
+  flex: 1 1 auto;
+  min-height: 240px;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--segment-axis-color, #38bdf8) 42%, #1f2937);
   border-radius: 6px;
@@ -6187,6 +6393,122 @@ ul li:hover {
   box-shadow: 0 0 0 1px rgba(2, 6, 23, 0.8), 0 0 10px rgba(56, 189, 248, 0.45);
   pointer-events: none;
   transform: translate(-50%, -50%);
+}
+
+.segmentation-slice-stage.mode-3d.show-brush-pointer::after {
+  border-style: dashed;
+  box-shadow:
+    0 0 0 1px rgba(2, 6, 23, 0.85),
+    0 0 0 calc(var(--brush-pointer-size, 18px) * 0.22) rgba(56, 189, 248, 0.12),
+    0 0 14px rgba(56, 189, 248, 0.72);
+}
+
+.segmentation-helper-mpr-grid {
+  flex: 1 1 auto;
+  min-height: 240px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.segmentation-helper-mpr-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border: 1px solid color-mix(in srgb, var(--segment-axis-color) 55%, #334155);
+  border-radius: 8px;
+  background: #020617;
+  color: #e2e8f0;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.segmentation-helper-mpr-pane:hover,
+.segmentation-helper-mpr-pane:focus-visible {
+  outline: 2px solid var(--segment-axis-color);
+  outline-offset: -2px;
+}
+
+.segmentation-helper-mpr-pane header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.92);
+  padding: 8px 10px;
+}
+
+.segmentation-helper-mpr-pane header strong {
+  color: var(--segment-axis-color);
+}
+
+.segmentation-helper-mpr-pane header span {
+  color: #94a3b8;
+  font-size: 0.7rem;
+}
+
+.segmentation-helper-mpr-image {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.segmentation-helper-workspace-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #94a3b8;
+  font-size: 0.74rem;
+  text-align: center;
+}
+
+.segmentation-helper-3d-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 240px;
+  overflow: hidden;
+  border: 1px solid rgba(167, 139, 250, 0.58);
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 50% 46%, rgba(76, 29, 149, 0.18), transparent 42%),
+    #020617;
+}
+
+.segmentation-helper-3d-stage > :first-child {
+  width: 100%;
+  height: 100%;
+}
+
+.segmentation-helper-3d-hint {
+  position: absolute;
+  z-index: 12;
+  left: 50%;
+  bottom: 14px;
+  display: grid;
+  gap: 2px;
+  width: min(560px, calc(100% - 32px));
+  border: 1px solid rgba(167, 139, 250, 0.4);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.82);
+  color: #cbd5e1;
+  padding: 8px 12px;
+  text-align: center;
+  pointer-events: none;
+  transform: translateX(-50%);
+  backdrop-filter: blur(8px);
+}
+
+.segmentation-helper-3d-hint strong {
+  color: #ddd6fe;
+  font-size: 0.78rem;
+}
+
+.segmentation-helper-3d-hint span {
+  font-size: 0.68rem;
 }
 
 .segmentation-helper-overlay {
@@ -6249,6 +6571,25 @@ ul li:hover {
 
   .segmentation-tools-grid {
     grid-template-columns: repeat(5, minmax(38px, 1fr));
+  }
+
+  .segmentation-helper-view-tabs {
+    grid-template-columns: repeat(5, minmax(54px, 1fr));
+    padding: 0 8px;
+  }
+
+  .segmentation-helper-view-tabs button {
+    min-height: 46px;
+  }
+
+  .segmentation-helper-view-tabs small {
+    display: none;
+  }
+
+  .segmentation-helper-mpr-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: repeat(3, minmax(220px, 1fr)) auto;
+    overflow: auto;
   }
 
   .segmentation-tool-parameters {
@@ -6876,6 +7217,7 @@ ul li:hover {
 }
 
 .mpr-crosshair-preview .mpr-projection-overlay,
+.segmentation-helper-mpr-pane .mpr-projection-overlay,
 .segmentation-slice-stage .mpr-projection-overlay {
   transform: scale(var(--projection-scale-x, 1), var(--projection-scale-y, 1));
   transform-origin: center;
