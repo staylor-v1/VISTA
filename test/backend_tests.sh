@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Backend Test Runner
 # Usage: ./test/backend_tests.sh [--verbose]
+# Set BACKEND_TEST_MAXFAIL=0 to disable the default failure cap.
 set -euo pipefail
 
 # Parse arguments
@@ -13,6 +14,7 @@ for arg in "$@"; do
     *)
       echo "Unknown argument: $arg"
       echo "Usage: $0 [--verbose|-v]"
+      echo "  BACKEND_TEST_MAXFAIL=0 disables the default failure cap"
       exit 1
       ;;
   esac
@@ -86,11 +88,32 @@ if [ -n "${JUNIT_XML_PATH:-}" ]; then
   JUNIT_FLAG="--junitxml=$JUNIT_XML_PATH"
 fi
 
+# Keep default console output compact so CI logs stay below platform limits.
+# Full per-test progress and longer tracebacks are still available with --verbose.
+PYTEST_COMMON_ARGS=(
+  -n auto
+  --no-header
+  --disable-warnings
+  --show-capture=no
+)
+
+# Stop after a bounded number of failures by default; JUnit still records the
+# collected failures that occurred before the stop. Override with
+# BACKEND_TEST_MAXFAIL=0 to run the full suite after diagnosing the first batch.
+BACKEND_TEST_MAXFAIL="${BACKEND_TEST_MAXFAIL:-10}"
+if [ "$BACKEND_TEST_MAXFAIL" != "0" ]; then
+  PYTEST_COMMON_ARGS+=("--maxfail=$BACKEND_TEST_MAXFAIL")
+fi
+
+if [ -n "$JUNIT_FLAG" ]; then
+  PYTEST_COMMON_ARGS+=("$JUNIT_FLAG")
+fi
+
 set +e
 if [ "$VERBOSE_MODE" = true ]; then
-  "${PY_BIN}" -m pytest -v -n auto --tb=short --no-header $JUNIT_FLAG tests/
+  "${PY_BIN}" -m pytest -v --tb=short "${PYTEST_COMMON_ARGS[@]}" tests/
 else
-  "${PY_BIN}" -m pytest -v -n auto --tb=line --no-header $JUNIT_FLAG tests/
+  "${PY_BIN}" -m pytest -q --tb=short "${PYTEST_COMMON_ARGS[@]}" tests/
 fi
 EXIT_CODE=$?
 set -e
