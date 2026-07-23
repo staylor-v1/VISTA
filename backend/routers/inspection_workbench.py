@@ -402,7 +402,7 @@ async def _get_locked_inspection_part(
 def _validate_annotation_collection_limits(annotations: list[dict]) -> None:
     if len(annotations) > INSPECTION_MAX_ANNOTATIONS_PER_PART:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 "A part may contain at most "
                 f"{INSPECTION_MAX_ANNOTATIONS_PER_PART} annotations"
@@ -410,7 +410,7 @@ def _validate_annotation_collection_limits(annotations: list[dict]) -> None:
         )
     if any(not isinstance(annotation, dict) for annotation in annotations):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Part annotations must contain only JSON objects",
         )
     vista_segment_count = sum(
@@ -426,7 +426,7 @@ def _validate_annotation_collection_limits(annotations: list[dict]) -> None:
     )
     if vista_segment_count > INSPECTION_MAX_VISTA_SEGMENTS_PER_PART:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 "A part may contain at most "
                 f"{INSPECTION_MAX_VISTA_SEGMENTS_PER_PART} VISTA segment annotations"
@@ -438,12 +438,12 @@ def _validate_annotation_collection_limits(annotations: list[dict]) -> None:
         )
     except (TypeError, ValueError, OverflowError, RecursionError) as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Annotations must contain JSON-compatible finite values",
         ) from exc
     if serialized_size > INSPECTION_MAX_ANNOTATIONS_JSON_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 "Part annotations must contain at most "
                 f"{INSPECTION_MAX_ANNOTATIONS_JSON_BYTES} serialized bytes"
@@ -1659,7 +1659,7 @@ def _validate_nsipro_parser_contract(
         mismatches.append("parser_hash mismatch")
     if mismatches:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=".nsipro parser contract mismatch: " + "; ".join(mismatches),
         )
 
@@ -1691,7 +1691,7 @@ def _normalize_nsipro_bundle_payload(
         metadata = bundle.get("metadata")
         if not isinstance(metadata, dict):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Associated .nsipro metadata does not contain parsed metadata or raw text.",
             )
         parsed = {
@@ -2412,7 +2412,7 @@ async def _bulk_ingest_project_parts(
     except NsiproFieldError as exc:
         await db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(exc),
         ) from exc
     except Exception:
@@ -2439,10 +2439,10 @@ async def _bulk_ingest_project_parts(
 
 def _normalize_layout_model(candidate: object) -> dict:
     if not isinstance(candidate, dict):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="layout_model must be an object")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="layout_model must be an object")
     layout_node = candidate.get("layout")
     if not isinstance(layout_node, dict) or layout_node.get("type") not in {"row", "tabset"}:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="layout_model must include a valid layout root")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="layout_model must include a valid layout root")
     return candidate
 
 
@@ -2738,7 +2738,7 @@ async def update_inspection_part_metadata_sources(
     except NsiproFieldError as exc:
         await db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(exc),
         ) from exc
     except Exception:
@@ -2780,7 +2780,7 @@ async def _write_image_record_to_stack_dir(
     )
     if byte_limit < 1:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="PT3 source stack exceeds the materialization limit",
         )
     partial = destination.with_name(f".{destination.name}.part")
@@ -2789,7 +2789,7 @@ async def _write_image_record_to_stack_dir(
     def publish_bytes(payload: bytes) -> int:
         if len(payload) > byte_limit:
             raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail=(
                     f"PT3 source {image.filename} exceeds the "
                     f"{byte_limit}-byte materialization limit"
@@ -2805,7 +2805,7 @@ async def _write_image_record_to_stack_dir(
         max_encoded_length = 4 * ((byte_limit + 2) // 3)
         if len(encoded) > max_encoded_length:
             raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail=(
                     f"PT3 source {image.filename} exceeds the "
                     f"{byte_limit}-byte materialization limit"
@@ -2834,7 +2834,7 @@ async def _write_image_record_to_stack_dir(
         if fixture_path is not None:
             if fixture_path.stat().st_size > byte_limit:
                 raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                     detail=(
                         f"PT3 source {image.filename} exceeds the "
                         f"{byte_limit}-byte materialization limit"
@@ -2847,7 +2847,7 @@ async def _write_image_record_to_stack_dir(
                         written += len(chunk)
                         if written > byte_limit:
                             raise HTTPException(
-                                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                                 detail="PT3 fixture exceeds the materialization limit",
                             )
                         target.write(chunk)
@@ -2888,7 +2888,7 @@ async def _write_image_record_to_stack_dir(
                         )
                     if content_length > byte_limit:
                         raise HTTPException(
-                            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                             detail=(
                                 f"PT3 source {image.filename} exceeds the "
                                 f"{byte_limit}-byte materialization limit"
@@ -2902,7 +2902,7 @@ async def _write_image_record_to_stack_dir(
                         written += len(chunk)
                         if written > byte_limit:
                             raise HTTPException(
-                                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                                 detail=(
                                     f"PT3 source {image.filename} exceeds the "
                                     f"{byte_limit}-byte materialization limit"
@@ -2936,7 +2936,7 @@ async def _materialize_part_volume_stack(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No image stack slices are attached to this part for Gaussian splat generation")
     if len(stack_records) > REFERENCE_VOLUME_READ_LIMITS.max_container_members:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="PT3 source stack contains too many files",
         )
 
@@ -3708,7 +3708,7 @@ async def create_pt3_volume_splat_asset(
 
     if payload.source_path is not None:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 "source_path is not accepted for project-part conversion; "
                 "attach source images to the part and let the server materialize them"
@@ -3733,7 +3733,7 @@ async def create_pt3_volume_splat_asset(
         source_image_ids = list(inferred_source_image_ids)
         if payload.source_image_ids and payload.source_image_ids != source_image_ids:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="source_image_ids must exactly match the server-inferred image stack",
             )
 
@@ -4312,7 +4312,7 @@ async def create_pt3_real_gaussian_splat_asset(
         source_image_ids = list(inferred_source_image_ids)
         if payload.source_image_ids and payload.source_image_ids != source_image_ids:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="source_image_ids must exactly match the server-inferred image stack",
             )
         camera_view_binding = "none"
@@ -5248,7 +5248,7 @@ async def update_part_annotation(
                 validated_annotation = schemas.InspectionAnnotation.model_validate(annotation)
             except ValidationError as exc:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=[
                         {
                             "loc": list(error.get("loc", ())),

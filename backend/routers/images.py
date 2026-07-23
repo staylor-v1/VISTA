@@ -1009,7 +1009,7 @@ def _validate_s3_import_request_metadata(request: S3ImportRequest) -> None:
     metadata_limit = _batch_upload_manifest_byte_limit()
     if len(serialized_request) > metadata_limit:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=(
                 f"S3 import request metadata is too large: {len(serialized_request)} bytes "
                 f"exceeds the configured limit of {metadata_limit} bytes. "
@@ -1246,6 +1246,7 @@ async def import_project_s3_files(
                     if item["group_identifier"]
                 ],
             )
+            imported_at = datetime.now(timezone.utc)
             for item in copied_items:
                 group = (
                     groups_by_identifier.get(item["group_identifier"])
@@ -1262,20 +1263,29 @@ async def import_project_s3_files(
                     size_bytes=item["size_bytes"],
                     metadata_json=item["metadata"],
                     uploaded_by_user_id=current_user.email,
+                    created_at=imported_at,
                 )
                 db.add(db_image)
-                imported_by_position.append((item["position"], db_image))
+                imported_by_position.append(
+                    (
+                        item["position"],
+                        schemas.DataInstance(
+                            id=item["image_id"],
+                            project_id=db_project_id,
+                            group_id=group.id if group else None,
+                            filename=item["filename"],
+                            object_storage_key=item["object_storage_key"],
+                            content_type=item["content_type"],
+                            size_bytes=item["size_bytes"],
+                            metadata_=item["metadata"],
+                            uploaded_by_user_id=current_user.email,
+                            created_at=imported_at,
+                            updated_at=None,
+                        ),
+                    )
+                )
 
             await db.flush()
-            # Materialize the response while flushed ORM attributes are known
-            # and before the transaction commit can expire or detach state in
-            # test/alternate session configurations. This prevents async ORM
-            # implicit IO during response serialization, which would otherwise
-            # raise MissingGreenlet outside SQLAlchemy's greenlet context.
-            imported_by_position = [
-                (position, to_data_instance_schema(db_image))
-                for position, db_image in imported_by_position
-            ]
             await _commit_database_transaction(db)
         except asyncio.CancelledError as exc:
             if getattr(exc, "vista_commit_succeeded", False):
@@ -1368,7 +1378,7 @@ def _batch_manifest_size_bytes(manifest_json: str) -> int:
     manifest_limit = _batch_upload_manifest_byte_limit()
     if manifest_size > manifest_limit:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=(
                 f"Batch upload manifest is too large: {manifest_size} bytes exceeds the "
                 f"configured manifest limit of {manifest_limit} bytes. "
@@ -1391,7 +1401,7 @@ async def _read_batch_upload_manifest(manifest_file: UploadFile) -> tuple[str, i
         ) from exc
     if len(raw_manifest) > manifest_limit:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=(
                 f"Batch upload manifest is too large: more than {manifest_limit} bytes "
                 f"exceeds the configured manifest limit of {manifest_limit} bytes. "
@@ -1416,7 +1426,7 @@ def _raise_batch_metadata_limit(
     environment_name: str,
 ) -> None:
     raise HTTPException(
-        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
         detail=(
             f"Batch upload manifest entry {position} metadata {resource} is {observed}; "
             f"the configured limit is {limit}. Set {environment_name} to adjust this limit."
@@ -1558,7 +1568,7 @@ def _parse_batch_upload_manifest(
         raw_manifest = _json.loads(manifest_json)
     except RecursionError as exc:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=(
                 "Batch upload manifest nesting exceeds the JSON parser's built-in limit; "
                 "reduce its depth. MAX_BATCH_METADATA_DEPTH controls the application limit."
@@ -1881,7 +1891,7 @@ async def upload_images_to_project_batch(
     file_limit = _batch_upload_file_limit()
     if len(files) > file_limit:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"Batch contains {len(files)} files; the configured limit is {file_limit}",
         )
 
@@ -1906,7 +1916,7 @@ async def upload_images_to_project_batch(
     for entry, file_size in zip(manifest, file_sizes):
         if file_size > per_file_limit:
             raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail=_file_too_large_detail(entry.filename, file_size, per_file_limit),
             )
 
@@ -1914,7 +1924,7 @@ async def upload_images_to_project_batch(
     aggregate_limit = _batch_upload_byte_limit()
     if aggregate_size > aggregate_limit:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=(
                 f"Batch request is too large: {aggregate_size} file-and-manifest bytes "
                 f"exceeds the configured batch upload limit of {_format_byte_limit(aggregate_limit)}. "
@@ -2186,7 +2196,7 @@ async def upload_image_to_project(
     max_size = _upload_size_limit()
     if file_size and file_size > max_size:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=_file_too_large_detail(file.filename, file_size, max_size),
         )
     success = await _upload_target_with_cleanup(
