@@ -239,12 +239,12 @@ def create_app() -> FastAPI:
             'request_method': request.method
         })
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content={
                 "detail": "Validation failed for one or more fields.",
                 "error_context": _build_error_detail(
                     request=request,
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 ),
                 "validation_errors": exc.errors(),
             },
