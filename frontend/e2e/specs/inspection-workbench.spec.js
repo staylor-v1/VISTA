@@ -15,6 +15,7 @@ const rgbaVolumePreviewScreenshotPath = path.resolve(__dirname, '../../artifacts
 const rgbaFullscreen2dScreenshotPath = path.resolve(__dirname, '../../artifacts/rgba-segment-fullscreen-2d.png');
 const rgbaFullscreen3dScreenshotPath = path.resolve(__dirname, '../../artifacts/rgba-segment-fullscreen-3d.png');
 const rgbaFullscreen3dNarrowScreenshotPath = path.resolve(__dirname, '../../artifacts/rgba-segment-fullscreen-3d-narrow.png');
+const rgbaFullscreen3dCompactScreenshotPath = path.resolve(__dirname, '../../artifacts/rgba-segment-fullscreen-3d-compact.png');
 const annotationTransparencyScreenshotPath = path.resolve(__dirname, '../../artifacts/annotation-transparency-50.png');
 const simulatedUsers = ['basic', 'intermediate', 'advanced'];
 
@@ -773,6 +774,7 @@ test.describe('PT3 large NPY lazy MPR loading', () => {
     const reconstructionSettingsToggle = displayOptions.getByLabel('Show reconstruction settings');
     const annotationList3d = fullscreen3d.getByRole('complementary', { name: '3D annotations' });
     const rayMarchControls = fullscreen3d.getByRole('group', { name: 'Ray-march controls' });
+    const closeFullscreen3d = fullscreen3d.getByRole('button', { name: 'Close fullscreen 3D view' });
 
     await expect(fullscreen3d).toBeVisible();
     await expect(renderAnnotationsToggle).toBeChecked();
@@ -782,15 +784,44 @@ test.describe('PT3 large NPY lazy MPR loading', () => {
     await expect(rayMarchControls).toBeVisible();
 
     const assertFullscreenRailsDoNotOverlap = async () => {
+      const dialogBox = await fullscreen3d.boundingBox();
+      const closeBox = await closeFullscreen3d.boundingBox();
+      const displayOptionsBox = await displayOptions.boundingBox();
+      const titleBox = await fullscreen3d.locator('#mpr-3d-fullscreen-title').boundingBox();
+      const modeBox = await fullscreen3d.locator('#mpr-3d-fullscreen-mode').boundingBox();
       const settingsBox = await rayMarchControls.boundingBox();
       const annotationsBox = await annotationList3d.boundingBox();
-      expect(settingsBox && annotationsBox).toBeTruthy();
+      const boxesOverlap = (left, right) => (
+        left.x < right.x + right.width
+        && left.x + left.width > right.x
+        && left.y < right.y + right.height
+        && left.y + left.height > right.y
+      );
       expect(
-        settingsBox.x < annotationsBox.x + annotationsBox.width
-        && settingsBox.x + settingsBox.width > annotationsBox.x
-        && settingsBox.y < annotationsBox.y + annotationsBox.height
-        && settingsBox.y + settingsBox.height > annotationsBox.y,
-      ).toBe(false);
+        dialogBox
+        && closeBox
+        && displayOptionsBox
+        && titleBox
+        && modeBox
+        && settingsBox
+        && annotationsBox
+      ).toBeTruthy();
+      const closeRightInset = (dialogBox.x + dialogBox.width) - (closeBox.x + closeBox.width);
+      const closeTopInset = closeBox.y - dialogBox.y;
+      expect(closeRightInset).toBeGreaterThanOrEqual(0);
+      expect(closeRightInset).toBeLessThanOrEqual(12);
+      expect(closeTopInset).toBeGreaterThanOrEqual(0);
+      expect(closeTopInset).toBeLessThanOrEqual(12);
+      [
+        displayOptionsBox,
+        titleBox,
+        modeBox,
+        settingsBox,
+        annotationsBox,
+      ].forEach((box) => expect(boxesOverlap(closeBox, box)).toBe(false));
+      expect(boxesOverlap(displayOptionsBox, settingsBox)).toBe(false);
+      expect(boxesOverlap(displayOptionsBox, annotationsBox)).toBe(false);
+      expect(boxesOverlap(settingsBox, annotationsBox)).toBe(false);
       const sceneBox = await fullscreen3d.locator('.mpr-volume-scene').boundingBox();
       expect(sceneBox && settingsBox && settingsBox.x < sceneBox.x + (sceneBox.width / 2)).toBeTruthy();
       expect(sceneBox && annotationsBox && annotationsBox.x > sceneBox.x + (sceneBox.width / 2)).toBeTruthy();
@@ -820,11 +851,16 @@ test.describe('PT3 large NPY lazy MPR loading', () => {
     await reconstructionSettingsToggle.check();
     await expect(rayMarchControls).toBeVisible();
 
+    await page.setViewportSize({ width: 800, height: 720 });
+    await assertFullscreenRailsDoNotOverlap();
     await page.setViewportSize({ width: 600, height: 720 });
     await assertFullscreenRailsDoNotOverlap();
     await fullscreen3d.screenshot({ path: rgbaFullscreen3dNarrowScreenshotPath });
+    await page.setViewportSize({ width: 375, height: 720 });
+    await assertFullscreenRailsDoNotOverlap();
+    await fullscreen3d.screenshot({ path: rgbaFullscreen3dCompactScreenshotPath });
     await page.setViewportSize({ width: 1280, height: 860 });
-    await fullscreen3d.getByRole('button', { name: 'Close fullscreen 3D view' }).click();
+    await closeFullscreen3d.click();
     await expect(fullscreen3d).not.toBeVisible();
     // A zero in-flight count can occur briefly between the fullscreen renderer's
     // current-slice and prefetch generations. Require a quiet window so those

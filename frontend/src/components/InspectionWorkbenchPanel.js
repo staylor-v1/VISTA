@@ -23,8 +23,11 @@ import {
 } from './pt3SegmentationVolume';
 import { getMechanicalVolumeMetadata } from './pt3MechanicalVisualization';
 import {
+  annotationToPt3VectorAnnotation,
   annotationToVectorSegment,
   buildInspectionAnnotationItems,
+  getInspectionAnnotationDisplayName,
+  getInspectionAnnotationTypeLabel,
   isVistaSegmentAnnotation,
   makeVistaSegmentAnnotationPayload,
 } from './inspectionAnnotationAdapter';
@@ -824,55 +827,11 @@ function getAnnotationBoxHeightLabel(box) {
 }
 
 function getAnnotationListType(annotation) {
-  const defectClass = String(annotation?.defect_class || '').trim();
-  if (defectClass) return defectClass;
-  if (annotation?.geometry?.line) return 'Measurement';
-  if (annotation?.geometry?.box || annotation?.bbox) return 'Bounding Box';
-  return 'Annotation';
+  return getInspectionAnnotationTypeLabel(annotation);
 }
 
 function getAnnotationListValue(annotation) {
-  const measurements = annotation?.measurements && typeof annotation.measurements === 'object'
-    ? annotation.measurements
-    : {};
-  const lengthMm = Number(measurements.length_mm);
-  if (Number.isFinite(lengthMm)) return `${lengthMm.toFixed(2)} mm`;
-  const lengthPx = Number(measurements.length_px);
-  if (Number.isFinite(lengthPx)) return `${lengthPx.toFixed(1)} px`;
-
-  const widthMm = Number(measurements.width_mm);
-  const heightMm = Number(measurements.height_mm);
-  if (Number.isFinite(widthMm) && Number.isFinite(heightMm) && widthMm > 0 && heightMm > 0) {
-    return `${widthMm.toFixed(2)} x ${heightMm.toFixed(2)} mm`;
-  }
-  const measurementWidthPx = Number(measurements.width_px);
-  const measurementHeightPx = Number(measurements.height_px);
-  if (
-    Number.isFinite(measurementWidthPx)
-    && Number.isFinite(measurementHeightPx)
-    && measurementWidthPx > 0
-    && measurementHeightPx > 0
-  ) {
-    return `${measurementWidthPx.toFixed(1)} x ${measurementHeightPx.toFixed(1)} px`;
-  }
-
-  const comment = String(annotation?.comment || '').trim();
-  if (comment) return comment;
-
-  const widthPx = Number(annotation?.bbox?.width);
-  const heightPx = Number(annotation?.bbox?.height);
-  if (Number.isFinite(widthPx) && Number.isFinite(heightPx) && widthPx > 0 && heightPx > 0) {
-    return `${widthPx.toFixed(1)} x ${heightPx.toFixed(1)} px`;
-  }
-
-  const firstMeasurement = Object.entries(measurements).find(([, value]) => (
-    typeof value === 'string' || Number.isFinite(Number(value))
-  ));
-  if (firstMeasurement) {
-    const [label, value] = firstMeasurement;
-    return `${label}: ${value}`;
-  }
-  return '-';
+  return getInspectionAnnotationDisplayName(annotation);
 }
 
 
@@ -3866,6 +3825,10 @@ function InspectionWorkbenchPanel({
     () => annotations.map(annotationToVectorSegment).filter(Boolean),
     [annotations],
   );
+  const pt3RenderableAnnotations = useMemo(
+    () => annotations.map(annotationToPt3VectorAnnotation).filter(Boolean),
+    [annotations],
+  );
   const storedMeasurementLinesByImageId = useMemo(() => getMeasurementLinesByImageId(visibleAnnotations), [visibleAnnotations]);
   const storedBoxAnnotationsByImageId = useMemo(() => getBoxAnnotationsByImageId(visibleAnnotations), [visibleAnnotations]);
   const storedMprMeasurementLinesBySlice = useMemo(() => getMprMeasurementLinesBySlice(visibleAnnotations), [visibleAnnotations]);
@@ -4532,8 +4495,8 @@ function InspectionWorkbenchPanel({
         ctx.stroke();
       }
     });
-    if (annotationLayerVisible && vectorSegmentAnnotations.length > 0) {
-      const vectorFaces = buildPt3VectorAnnotationFaces(vectorSegmentAnnotations, {
+    if (annotationLayerVisible && pt3RenderableAnnotations.length > 0) {
+      const vectorFaces = buildPt3VectorAnnotationFaces(pt3RenderableAnnotations, {
         dimensions: [dims.sagittal, dims.coronal, dims.axial],
       }).faces.map((face) => {
         let depthTotal = 0;
@@ -4577,7 +4540,7 @@ function InspectionWorkbenchPanel({
       });
       ctx.globalAlpha = 1;
     }
-  }, [activeMprPane, annotationLayerVisible, annotationOpacityMultiplier, fallbackMprModelZoom, lastActiveMprAxis, mprAxisMirrorScale, mprDimensions, mprFallbackOverlaySize, mprFullscreenOpen, mprReconstructionMode, mprRotation, pt3GuideAppearance.planeOutlineLineWidthPx, pt3GuideAppearance.planeOutlineOpacity, slicePosition, vectorSegmentAnnotations]);
+  }, [activeMprPane, annotationLayerVisible, annotationOpacityMultiplier, fallbackMprModelZoom, lastActiveMprAxis, mprAxisMirrorScale, mprDimensions, mprFallbackOverlaySize, mprFullscreenOpen, mprReconstructionMode, mprRotation, pt3GuideAppearance.planeOutlineLineWidthPx, pt3GuideAppearance.planeOutlineOpacity, pt3RenderableAnnotations, slicePosition]);
 
   const modalityOptions = useMemo(() => getModalities(selectedPart), [selectedPart]);
   const activeViewName = useMemo(() => {
@@ -8351,7 +8314,7 @@ function InspectionWorkbenchPanel({
                     showRayMarchControls={mprFullscreenOpen && mprFullscreenReconstructionSettingsVisible}
                     showSplatControls={mprFullscreenOpen && mprFullscreenReconstructionSettingsVisible}
                     showRealOptimizationControls={!mprFullscreenOpen || mprFullscreenReconstructionSettingsVisible}
-                    vectorAnnotations={vectorSegmentAnnotations}
+                    vectorAnnotations={pt3RenderableAnnotations}
                     showAnnotations={annotationLayerVisible}
                     annotationOpacityMultiplier={annotationOpacityMultiplier}
                     pt3GuideSettings={pt3GuideSettings}
@@ -8445,22 +8408,32 @@ function InspectionWorkbenchPanel({
                     <p className="muted">No annotations.</p>
                   ) : (
                     <ul>
-                      {inspectionAnnotationItems.map((item) => (
-                        <li key={`mpr-3d-${item.key}`} className={item.visible ? '' : 'annotation-entry-hidden'}>
-                          <span className="overlay-swatch" style={{ backgroundColor: item.color }} />
-                          <span title={item.label}>
-                            {item.kind === 'external_overlay' ? `External: ${item.label}` : item.label}
-                          </span>
-                          <button
-                            type="button"
-                            aria-label={`${item.visible ? 'Hide' : 'Show'} 3D annotation ${item.label}`}
-                            aria-pressed={item.visible}
-                            onClick={() => setInspectionItemVisibility(item, !item.visible)}
-                          >
-                            {item.visible ? 'Hide' : 'Show'}
-                          </button>
-                        </li>
-                      ))}
+                      {inspectionAnnotationItems.map((item) => {
+                        const typeLabel = item.typeLabel || (item.annotation
+                          ? getAnnotationListType(item.annotation)
+                          : 'External overlay');
+                        const displayName = item.displayName || (item.annotation
+                          ? getAnnotationListValue(item.annotation)
+                          : `External: ${item.label}`);
+                        return (
+                          <li key={`mpr-3d-${item.key}`} className={item.visible ? '' : 'annotation-entry-hidden'}>
+                            <span className="overlay-swatch" style={{ backgroundColor: item.color }} />
+                            <span title={`${typeLabel}: ${displayName}`}>
+                              <span>{typeLabel}</span>
+                              {' — '}
+                              <span>{displayName}</span>
+                            </span>
+                            <button
+                              type="button"
+                              aria-label={`${item.visible ? 'Hide' : 'Show'} 3D annotation ${displayName}`}
+                              aria-pressed={item.visible}
+                              onClick={() => setInspectionItemVisibility(item, !item.visible)}
+                            >
+                              {item.visible ? 'Hide' : 'Show'}
+                            </button>
+                          </li>
+                        );
+                      })}
                     </ul>
                   )}
                 </aside>
@@ -8898,11 +8871,12 @@ function InspectionWorkbenchPanel({
               const creator = isAnnotation ? getAnnotationCreator(annotation) : '';
               const createdAt = isAnnotation ? formatAnnotationTimestamp(getAnnotationCreatedAt(annotation)) : '';
               const selected = isAnnotation && String(selectedAnnotationId) === String(annotation.id);
-              const typeLabel = item.kind === 'external_overlay'
-                ? 'External overlay'
-                : item.kind === 'vista_segment'
-                  ? 'VISTA segment'
-                  : getAnnotationListType(annotation);
+              const typeLabel = item.typeLabel || (isAnnotation
+                ? getAnnotationListType(annotation)
+                : 'External overlay');
+              const displayName = item.displayName || (isAnnotation
+                ? getAnnotationListValue(annotation)
+                : `External: ${item.label}`);
               return (
                 <li
                   key={item.key}
@@ -8924,13 +8898,7 @@ function InspectionWorkbenchPanel({
                 >
                   <div className="annotation-entry-content">
                     <span className="annotation-entry-type">{typeLabel}</span>
-                    <span className="annotation-entry-value">
-                      {item.kind === 'external_overlay'
-                        ? `External: ${item.label}`
-                        : item.kind === 'vista_segment'
-                          ? item.label
-                          : getAnnotationListValue(annotation)}
-                    </span>
+                    <span className="annotation-entry-value">{displayName}</span>
                     {item.kind === 'vista_segment' && (
                       <span className="annotation-entry-meta">
                         {annotation?.geometry?.segment?.axis || 'axial'} slices {annotation?.geometry?.segment?.min_slice ?? 0}-{annotation?.geometry?.segment?.max_slice ?? 0}
@@ -8949,7 +8917,9 @@ function InspectionWorkbenchPanel({
                     <button
                       type="button"
                       className="annotation-entry-visibility"
-                      aria-label={`${item.visible ? 'Hide' : 'Show'} ${typeLabel.toLowerCase()} ${item.label}`}
+                      aria-label={`${item.visible ? 'Hide' : 'Show'} ${typeLabel.toLowerCase()} ${
+                        item.kind === 'external_overlay' ? item.label : displayName
+                      }`}
                       aria-pressed={item.visible}
                       onClick={(event) => {
                         event.preventDefault();

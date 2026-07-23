@@ -188,6 +188,7 @@ async function mockInspectionWorkbenchRoutes(page, {
   mockParts = null,
   mockBatches = null,
   realSplatSegmentIds = null,
+  seededAnnotations = null,
 } = {}) {
   const { batches, parts, workspaceState } = createMockData(scenario);
   const metadataNormalizationByScenario = {
@@ -239,7 +240,14 @@ async function mockInspectionWorkbenchRoutes(page, {
   };
   let mutableParts = Array.isArray(mockParts) ? [...mockParts] : [...parts];
   const responseBatches = Array.isArray(mockBatches) ? mockBatches : batches;
-  let mutableAnnotations = {};
+  const seededAnnotationsByPart = Array.isArray(seededAnnotations)
+    ? { [mutableParts[0]?.id]: seededAnnotations }
+    : (seededAnnotations && typeof seededAnnotations === 'object' ? seededAnnotations : {});
+  let mutableAnnotations = Object.fromEntries(
+    Object.entries(seededAnnotationsByPart)
+      .filter(([, annotations]) => Array.isArray(annotations))
+      .map(([partId, annotations]) => [partId, annotations.map((annotation) => ({ ...annotation }))]),
+  );
   const savedWorkspaceStates = [];
   const exportBundleArchiveRequests = [];
   const ingestValidationRequests = [];

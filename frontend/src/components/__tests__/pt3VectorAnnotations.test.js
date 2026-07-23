@@ -14,7 +14,9 @@ import {
   pt3SegmentMaskToSvgPath,
   renderPt3VectorAnnotations,
 } from '../pt3VectorAnnotations';
+import { annotationToPt3VectorAnnotation } from '../inspectionAnnotationAdapter';
 import { rasterizeSphereStroke } from '../pt3SegmentationVolume';
+import { voxelToPhysical } from '../pt3VolumeGeometry';
 
 const metadata = {
   dimensions: [11, 9, 7],
@@ -66,6 +68,123 @@ function collectSurfaceVoxelPolygons(faces, surface) {
 }
 
 describe('PT3 vector annotation registration', () => {
+  test.each([
+    ['line', 'axial', 0, 2, 2],
+    ['box', 'axial', 6, 2, 2],
+    ['line', 'coronal', 0, 1, 0.75],
+    ['box', 'coronal', 8, 1, 0.75],
+    ['line', 'sagittal', 0, 0, 0.5],
+    ['box', 'sagittal', 10, 0, 0.5],
+  ])('renders converted %s geometry on the %s boundary slice with exact physical thickness', (
+    kind,
+    axis,
+    sliceIndex,
+    constantCoordinate,
+    expectedPhysicalThickness,
+  ) => {
+    const planeDimensions = {
+      axial: [11, 9],
+      coronal: [11, 7],
+      sagittal: [9, 7],
+    };
+    const [imageWidth, imageHeight] = planeDimensions[axis];
+    const sharedGeometry = {
+      axis,
+      slice_index: sliceIndex,
+      imageWidth,
+      imageHeight,
+    };
+    const annotation = kind === 'line'
+      ? {
+        id: `${axis}-line-${sliceIndex}`,
+        annotation_kind: 'measurement',
+        geometry: {
+          ...sharedGeometry,
+          line: {
+            ...sharedGeometry,
+            x1: 1,
+            y1: 1,
+            x2: imageWidth - 2,
+            y2: imageHeight - 2,
+          },
+        },
+      }
+      : {
+        id: `${axis}-box-${sliceIndex}`,
+        bbox: { x: 1, y: 1, width: imageWidth - 3, height: imageHeight - 3 },
+        geometry: {
+          ...sharedGeometry,
+          box: {
+            ...sharedGeometry,
+            x: 1,
+            y: 1,
+            width: imageWidth - 3,
+            height: imageHeight - 3,
+          },
+        },
+      };
+    const converted = annotationToPt3VectorAnnotation(annotation);
+    const { faces } = buildPt3VectorAnnotationFaces([converted], metadata);
+    const lowerPoints = collectSurfaceVoxelPolygons(faces, 'lower').flat();
+    const upperPoints = collectSurfaceVoxelPolygons(faces, 'upper').flat();
+    const expectedLower = sliceIndex - 0.5;
+    const expectedUpper = sliceIndex + 0.5;
+
+    expect(converted).toMatchObject({ axis, minSlice: sliceIndex, maxSlice: sliceIndex });
+    expect(lowerPoints.length).toBeGreaterThan(0);
+    expect(upperPoints.length).toBeGreaterThan(0);
+    expect(lowerPoints.every((point) => point[constantCoordinate] === expectedLower)).toBe(true);
+    expect(upperPoints.every((point) => point[constantCoordinate] === expectedUpper)).toBe(true);
+
+    const lowerPhysical = voxelToPhysical(lowerPoints[0], metadata);
+    const matchingUpperPoint = [...lowerPoints[0]];
+    matchingUpperPoint[constantCoordinate] = expectedUpper;
+    const upperPhysical = voxelToPhysical(matchingUpperPoint, metadata);
+    expect(Math.hypot(
+      upperPhysical[0] - lowerPhysical[0],
+      upperPhysical[1] - lowerPhysical[1],
+      upperPhysical[2] - lowerPhysical[2],
+    )).toBeCloseTo(expectedPhysicalThickness, 10);
+  });
+
+  test('renders a converted cube through its inclusive slice range and respects visibility gates', () => {
+    const cubeAnnotation = {
+      id: 'inclusive-coronal-cube',
+      defect_class: '3D Box',
+      geometry: {
+        cube: {
+          axis: 'coronal',
+          startSlice: 6,
+          endSlice: 2,
+          x: 1,
+          y: 1,
+          width: 7,
+          height: 4,
+          imageWidth: 11,
+          imageHeight: 7,
+        },
+      },
+    };
+    const converted = annotationToPt3VectorAnnotation(cubeAnnotation);
+    const built = buildPt3VectorAnnotationFaces([converted], metadata);
+    const lowerPoints = collectSurfaceVoxelPolygons(built.faces, 'lower').flat();
+    const upperPoints = collectSurfaceVoxelPolygons(built.faces, 'upper').flat();
+
+    expect(converted).toMatchObject({ axis: 'coronal', minSlice: 2, maxSlice: 6 });
+    expect(lowerPoints.every((point) => point[1] === 1.5)).toBe(true);
+    expect(upperPoints.every((point) => point[1] === 6.5)).toBe(true);
+    expect(6.5 - 1.5).toBe(5);
+    expect((6.5 - 1.5) * metadata.spacing[1]).toBeCloseTo(3.75, 10);
+
+    const hidden = annotationToPt3VectorAnnotation({ ...cubeAnnotation, hidden: true });
+    expect(buildPt3VectorAnnotationFaces([hidden], metadata).faces).toEqual([]);
+    expect(buildPt3VectorAnnotationFaces(
+      [converted],
+      metadata,
+      { showAnnotations: false },
+    ).faces).toEqual([]);
+  });
+
   test('maps continuous source-image boundaries onto canonical voxel faces for every MPR plane', () => {
     expect(mapVectorPlanePointToVoxel({
       axis: 'axial',
@@ -149,10 +268,45 @@ describe('PT3 vector annotation registration', () => {
       maxSlice: 3,
       dimensions: metadata.dimensions,
     })).toEqual({ minSlice: 3, maxSlice: 3, lowerFace: 2.5, upperFace: 3.5 });
+    expect(getInclusiveVectorSliceRange({
+      axis: 'axial',
+      minSlice: -8,
+      maxSlice: -2,
+      dimensions: metadata.dimensions,
+    })).toBeNull();
+    expect(getInclusiveVectorSliceRange({
+      axis: 'axial',
+      minSlice: 7,
+      maxSlice: 12,
+      dimensions: metadata.dimensions,
+    })).toBeNull();
+    expect(getInclusiveVectorSliceRange({
+      axis: 'axial',
+      minSlice: -4,
+      maxSlice: 2,
+      dimensions: metadata.dimensions,
+    })).toEqual({ minSlice: 0, maxSlice: 2, lowerFace: -0.5, upperFace: 2.5 });
+    expect(getInclusiveVectorSliceRange({
+      axis: 'axial',
+      minSlice: 5,
+      maxSlice: 10,
+      dimensions: metadata.dimensions,
+    })).toEqual({ minSlice: 5, maxSlice: 6, lowerFace: 4.5, upperFace: 6.5 });
 
     const { faces } = buildPt3VectorAnnotationFaces([rectangleAnnotation()], metadata);
     expect(collectSurfaceVoxelPolygons(faces, 'lower').flat().every((point) => point[2] === 1.5)).toBe(true);
     expect(collectSurfaceVoxelPolygons(faces, 'upper').flat().every((point) => point[2] === 4.5)).toBe(true);
+
+    expect(buildPt3VectorAnnotationFaces([
+      rectangleAnnotation({ minSlice: 8, maxSlice: 12 }),
+    ], metadata).faces).toEqual([]);
+    const clipped = buildPt3VectorAnnotationFaces([
+      rectangleAnnotation({ minSlice: 5, maxSlice: 12 }),
+    ], metadata);
+    expect(collectSurfaceVoxelPolygons(clipped.faces, 'lower').flat()
+      .every((point) => point[2] === 4.5)).toBe(true);
+    expect(collectSurfaceVoxelPolygons(clipped.faces, 'upper').flat()
+      .every((point) => point[2] === 6.5)).toBe(true);
   });
 
   test.each([

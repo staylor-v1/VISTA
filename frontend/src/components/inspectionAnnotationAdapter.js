@@ -1,4 +1,8 @@
 const VALID_ANNOTATION_KINDS = new Set(['annotation', 'measurement', 'vista_segment']);
+const VALID_PT3_AXES = new Set(['axial', 'coronal', 'sagittal']);
+const DEFAULT_ANNOTATION_COLOR = '#ef4444';
+const DEFAULT_ANNOTATION_OPACITY = 0.24;
+const DEFAULT_MEASUREMENT_BRUSH_SIZE = 2;
 
 const finiteNumber = (value, fallback = 0) => {
   const numeric = Number(value);
@@ -142,6 +146,14 @@ const sanitizeSegmentAreas = (areas) => (
   Array.isArray(areas) ? areas.map(sanitizeSegmentArea).filter(Boolean) : []
 );
 
+const firstNonBlankString = (...values) => (
+  values
+    .filter((value) => typeof value === 'string')
+    .map((value) => value.trim())
+    .find(Boolean)
+  || ''
+);
+
 export function getInspectionAnnotationKind(annotation) {
   const explicit = String(annotation?.annotation_kind || '').trim().toLowerCase();
   if (VALID_ANNOTATION_KINDS.has(explicit)) return explicit;
@@ -156,11 +168,67 @@ export function isVistaSegmentAnnotation(annotation) {
   return getInspectionAnnotationKind(annotation) === 'vista_segment';
 }
 
+export function getInspectionAnnotationTypeLabel(annotation) {
+  const kind = getInspectionAnnotationKind(annotation);
+  if (kind === 'vista_segment') return 'VISTA segment';
+  const defectClass = String(annotation?.defect_class || '').trim();
+  if (defectClass) return defectClass;
+  if (annotation?.geometry?.line) return 'Measurement';
+  if (annotation?.geometry?.box || annotation?.bbox) return 'Bounding Box';
+  return 'Annotation';
+}
+
+export function getInspectionAnnotationDisplayName(annotation) {
+  const kind = getInspectionAnnotationKind(annotation);
+  if (kind === 'vista_segment') {
+    return firstNonBlankString(annotation?.defect_class, annotation?.comment, 'Segment');
+  }
+
+  const measurements = annotation?.measurements && typeof annotation.measurements === 'object'
+    ? annotation.measurements
+    : {};
+  const lengthMm = optionalFiniteNumber(measurements.length_mm);
+  if (lengthMm !== null) return `${lengthMm.toFixed(2)} mm`;
+  const lengthPx = optionalFiniteNumber(measurements.length_px);
+  if (lengthPx !== null) return `${lengthPx.toFixed(1)} px`;
+
+  const widthMm = optionalFiniteNumber(measurements.width_mm);
+  const heightMm = optionalFiniteNumber(measurements.height_mm);
+  if (widthMm > 0 && heightMm > 0) {
+    return `${widthMm.toFixed(2)} x ${heightMm.toFixed(2)} mm`;
+  }
+  const widthMeasurementPx = optionalFiniteNumber(measurements.width_px);
+  const heightMeasurementPx = optionalFiniteNumber(measurements.height_px);
+  if (widthMeasurementPx > 0 && heightMeasurementPx > 0) {
+    return `${widthMeasurementPx.toFixed(1)} x ${heightMeasurementPx.toFixed(1)} px`;
+  }
+
+  const comment = String(annotation?.comment || '').trim();
+  if (comment) return comment;
+
+  const bboxWidth = optionalFiniteNumber(annotation?.bbox?.width);
+  const bboxHeight = optionalFiniteNumber(annotation?.bbox?.height);
+  if (bboxWidth > 0 && bboxHeight > 0) {
+    return `${bboxWidth.toFixed(1)} x ${bboxHeight.toFixed(1)} px`;
+  }
+
+  const firstMeasurement = Object.entries(measurements).find(([, value]) => (
+    (typeof value === 'string' && value.trim())
+    || optionalFiniteNumber(value) !== null
+  ));
+  if (firstMeasurement) {
+    const [label, value] = firstMeasurement;
+    return `${label}: ${value}`;
+  }
+
+  return firstNonBlankString(annotation?.defect_class, 'Annotation');
+}
+
 export function annotationToVectorSegment(annotation) {
   if (!isVistaSegmentAnnotation(annotation)) return null;
   const geometry = annotation?.geometry?.segment || {};
   const axis = String(geometry.axis || '').trim().toLowerCase();
-  if (!['axial', 'coronal', 'sagittal'].includes(axis)) return null;
+  if (!VALID_PT3_AXES.has(axis)) return null;
   const minSlice = Math.max(0, Math.floor(finiteNumber(
     geometry.min_slice ?? geometry.minSlice ?? geometry.slice_index ?? geometry.sliceIndex,
     0,
@@ -179,7 +247,7 @@ export function annotationToVectorSegment(annotation) {
   return {
     id: String(annotation.id || ''),
     annotationId: String(annotation.id || ''),
-    label: String(annotation.defect_class || annotation.comment || 'Segment'),
+    label: firstNonBlankString(annotation.defect_class, annotation.comment, 'Segment'),
     color: String(annotation?.metadata?.annotation_color || annotation.color || '#22d3ee'),
     opacity: Math.min(1, Math.max(0, finiteNumber(annotation?.metadata?.annotation_fill_opacity, 0.24))),
     visible: annotation.hidden !== true,
@@ -195,18 +263,202 @@ export function annotationToVectorSegment(annotation) {
   };
 }
 
+function getPt3SpatialContext(annotation, geometry) {
+  const annotationGeometry = annotation?.geometry || {};
+  const axis = String(geometry?.axis || annotationGeometry.axis || '').trim().toLowerCase();
+  const sliceIndex = optionalFiniteNumber(
+    geometry?.slice_index
+    ?? geometry?.sliceIndex
+    ?? annotationGeometry.slice_index
+    ?? annotationGeometry.sliceIndex,
+  );
+  const imageWidth = optionalFiniteNumber(
+    geometry?.imageWidth
+    ?? geometry?.image_width
+    ?? annotationGeometry.imageWidth
+    ?? annotationGeometry.image_width,
+  );
+  const imageHeight = optionalFiniteNumber(
+    geometry?.imageHeight
+    ?? geometry?.image_height
+    ?? annotationGeometry.imageHeight
+    ?? annotationGeometry.image_height,
+  );
+  if (
+    !VALID_PT3_AXES.has(axis)
+    || sliceIndex === null
+    || !(imageWidth > 0)
+    || !(imageHeight > 0)
+  ) {
+    return null;
+  }
+  return {
+    axis,
+    sliceIndex: Math.round(sliceIndex),
+    imageWidth,
+    imageHeight,
+  };
+}
+
+function makePt3VectorAnnotation(annotation, {
+  axis,
+  minSlice,
+  maxSlice,
+  imageWidth,
+  imageHeight,
+  areas,
+}) {
+  const displayName = getInspectionAnnotationDisplayName(annotation);
+  return {
+    id: String(annotation?.id || ''),
+    annotationId: String(annotation?.id || ''),
+    label: displayName,
+    color: String(
+      annotation?.metadata?.annotation_color
+      || annotation?.metadata?.measurement_color
+      || annotation?.color
+      || DEFAULT_ANNOTATION_COLOR,
+    ),
+    opacity: Math.min(1, Math.max(0, finiteNumber(
+      annotation?.metadata?.annotation_fill_opacity
+      ?? annotation?.fillOpacity
+      ?? annotation?.fill_opacity,
+      DEFAULT_ANNOTATION_OPACITY,
+    ))),
+    visible: annotation?.hidden !== true,
+    axis,
+    minSlice,
+    maxSlice,
+    imageWidth,
+    imageHeight,
+    areas,
+    annotation,
+  };
+}
+
+/**
+ * Converts spatial PT3 annotations into the same bounded vector contract used
+ * by persisted VISTA segments. Planar MPR annotations intentionally set the
+ * same inclusive minimum and maximum slice, which gives them one voxel of
+ * thickness in the registered 3D renderer.
+ */
+export function annotationToPt3VectorAnnotation(annotation) {
+  const segment = annotationToVectorSegment(annotation);
+  if (segment) return segment;
+
+  const geometry = annotation?.geometry;
+  if (!geometry || typeof geometry !== 'object') return null;
+
+  const cube = geometry.cube;
+  if (cube && typeof cube === 'object') {
+    const axis = String(cube.axis || geometry.axis || '').trim().toLowerCase();
+    const startSlice = optionalFiniteNumber(cube.startSlice ?? cube.start_slice);
+    const endSlice = optionalFiniteNumber(cube.endSlice ?? cube.end_slice);
+    const x = optionalFiniteNumber(cube.x);
+    const y = optionalFiniteNumber(cube.y);
+    const width = optionalFiniteNumber(cube.width);
+    const height = optionalFiniteNumber(cube.height);
+    const imageWidth = optionalFiniteNumber(cube.imageWidth ?? cube.image_width);
+    const imageHeight = optionalFiniteNumber(cube.imageHeight ?? cube.image_height);
+    if (
+      !VALID_PT3_AXES.has(axis)
+      || startSlice === null
+      || endSlice === null
+      || x === null
+      || y === null
+      || !(width > 0)
+      || !(height > 0)
+      || !(imageWidth > 0)
+      || !(imageHeight > 0)
+    ) {
+      return null;
+    }
+    return makePt3VectorAnnotation(annotation, {
+      axis,
+      minSlice: Math.round(Math.min(startSlice, endSlice)),
+      maxSlice: Math.round(Math.max(startSlice, endSlice)),
+      imageWidth,
+      imageHeight,
+      areas: [{
+        tool: 'rectangle',
+        operation: 'add',
+        start: { x, y },
+        end: { x: x + width, y: y + height },
+      }],
+    });
+  }
+
+  const line = geometry.line;
+  if (line && typeof line === 'object') {
+    const context = getPt3SpatialContext(annotation, line);
+    const x1 = optionalFiniteNumber(line.x1);
+    const y1 = optionalFiniteNumber(line.y1);
+    const x2 = optionalFiniteNumber(line.x2);
+    const y2 = optionalFiniteNumber(line.y2);
+    if (!context || [x1, y1, x2, y2].some((value) => value === null)) return null;
+    return makePt3VectorAnnotation(annotation, {
+      ...context,
+      minSlice: context.sliceIndex,
+      maxSlice: context.sliceIndex,
+      areas: [{
+        tool: 'brush',
+        operation: 'add',
+        brushSize: DEFAULT_MEASUREMENT_BRUSH_SIZE,
+        points: [{ x: x1, y: y1 }, { x: x2, y: y2 }],
+      }],
+    });
+  }
+
+  const box = geometry.box || annotation?.bbox;
+  if (box && typeof box === 'object') {
+    const context = getPt3SpatialContext(annotation, geometry.box || geometry);
+    const bbox = annotation?.bbox && typeof annotation.bbox === 'object'
+      ? annotation.bbox
+      : box;
+    const x = optionalFiniteNumber(bbox.x);
+    const y = optionalFiniteNumber(bbox.y);
+    const width = optionalFiniteNumber(bbox.width);
+    const height = optionalFiniteNumber(bbox.height);
+    if (
+      !context
+      || x === null
+      || y === null
+      || !(width > 0)
+      || !(height > 0)
+    ) {
+      return null;
+    }
+    return makePt3VectorAnnotation(annotation, {
+      ...context,
+      minSlice: context.sliceIndex,
+      maxSlice: context.sliceIndex,
+      areas: [{
+        tool: 'rectangle',
+        operation: 'add',
+        start: { x, y },
+        end: { x: x + width, y: y + height },
+      }],
+    });
+  }
+
+  return null;
+}
+
 export function annotationToInspectionItem(annotation) {
   const kind = getInspectionAnnotationKind(annotation);
   const id = String(annotation?.id || '');
+  const label = kind === 'vista_segment'
+    ? firstNonBlankString(annotation?.defect_class, annotation?.comment, 'Segment')
+    : firstNonBlankString(annotation?.comment, annotation?.defect_class, 'Annotation');
   return {
     key: `annotation:${id}`,
     id,
     kind,
-    label: kind === 'vista_segment'
-      ? String(annotation?.defect_class || annotation?.comment || 'Segment')
-      : String(annotation?.comment || annotation?.defect_class || 'Annotation'),
+    label,
+    typeLabel: getInspectionAnnotationTypeLabel(annotation),
+    displayName: getInspectionAnnotationDisplayName(annotation),
     visible: annotation?.hidden !== true,
-    color: String(annotation?.metadata?.annotation_color || annotation?.metadata?.measurement_color || '#ef4444'),
+    color: String(annotation?.metadata?.annotation_color || annotation?.metadata?.measurement_color || DEFAULT_ANNOTATION_COLOR),
     source: { resource: 'annotation', resourceId: id },
     annotation,
   };
@@ -215,11 +467,14 @@ export function annotationToInspectionItem(annotation) {
 export function overlayRefToInspectionItem(entry) {
   const resourceId = String(entry?.imageId || entry?.imageRef || entry?.filename || '').trim();
   if (!entry?.overlay || !resourceId) return null;
+  const label = firstNonBlankString(entry.label, entry.filename, entry.imageRef, 'Assigned overlay');
   return {
     key: `overlay:${resourceId}`,
     id: `overlay:${resourceId}`,
     kind: 'external_overlay',
-    label: String(entry.label || entry.filename || entry.imageRef || 'Assigned overlay'),
+    label,
+    typeLabel: 'External overlay',
+    displayName: `External: ${label}`,
     visible: entry.hidden !== true,
     color: String(entry.color || '#a78bfa'),
     source: { resource: 'source_image', resourceId },
@@ -228,7 +483,22 @@ export function overlayRefToInspectionItem(entry) {
 }
 
 export function buildInspectionAnnotationItems(annotations = [], imageRefs = []) {
-  const items = (Array.isArray(annotations) ? annotations : []).map(annotationToInspectionItem);
+  const annotationKeyOccurrences = new Map();
+  const usedAnnotationKeys = new Set();
+  const items = (Array.isArray(annotations) ? annotations : []).map((annotation) => {
+    const item = annotationToInspectionItem(annotation);
+    const baseKey = item.id ? item.key : 'annotation:<missing>';
+    let occurrence = (annotationKeyOccurrences.get(baseKey) || 0) + 1;
+    annotationKeyOccurrences.set(baseKey, occurrence);
+    let key = item.id && occurrence === 1 ? baseKey : `${baseKey}::${occurrence}`;
+    while (usedAnnotationKeys.has(key)) {
+      occurrence += 1;
+      annotationKeyOccurrences.set(baseKey, occurrence);
+      key = `${baseKey}::${occurrence}`;
+    }
+    usedAnnotationKeys.add(key);
+    return key === item.key ? item : { ...item, key };
+  });
   const seenOverlayKeys = new Set();
   (Array.isArray(imageRefs) ? imageRefs : []).forEach((entry) => {
     const item = overlayRefToInspectionItem(entry);

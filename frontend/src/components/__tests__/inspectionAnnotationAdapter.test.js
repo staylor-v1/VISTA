@@ -1,7 +1,10 @@
 import {
+  annotationToPt3VectorAnnotation,
   annotationToVectorSegment,
   buildInspectionAnnotationItems,
+  getInspectionAnnotationDisplayName,
   getInspectionAnnotationKind,
+  getInspectionAnnotationTypeLabel,
   makeVistaSegmentAnnotationPayload,
 } from '../inspectionAnnotationAdapter';
 
@@ -14,7 +17,14 @@ describe('inspectionAnnotationAdapter', () => {
 
   test('combines annotations and deduplicated assigned overlays', () => {
     const items = buildInspectionAnnotationItems(
-      [{ id: 'a-1', annotation_kind: 'measurement', defect_class: 'Measurement', hidden: true }],
+      [{
+        id: 'a-1',
+        annotation_kind: 'measurement',
+        defect_class: 'Measurement',
+        comment: 'Bearing width',
+        measurements: { length_mm: 4.2 },
+        hidden: true,
+      }],
       [
         { overlay: true, imageId: 'overlay-1', label: 'Pore mask' },
         { overlay: true, imageId: 'overlay-1', label: 'Pore mask duplicate' },
@@ -22,8 +32,120 @@ describe('inspectionAnnotationAdapter', () => {
       ],
     );
     expect(items).toHaveLength(2);
-    expect(items[0]).toMatchObject({ key: 'annotation:a-1', kind: 'measurement', visible: false });
-    expect(items[1]).toMatchObject({ key: 'overlay:overlay-1', kind: 'external_overlay', visible: true });
+    expect(items[0]).toMatchObject({
+      key: 'annotation:a-1',
+      kind: 'measurement',
+      typeLabel: 'Measurement',
+      displayName: '4.20 mm',
+      visible: false,
+    });
+    expect(items[1]).toMatchObject({
+      key: 'overlay:overlay-1',
+      kind: 'external_overlay',
+      typeLabel: 'External overlay',
+      displayName: 'External: Pore mask',
+      visible: true,
+    });
+  });
+
+  test('uses one canonical MPR presentation for measurements, boxes, comments, and fallback labels', () => {
+    expect(getInspectionAnnotationTypeLabel({
+      defect_class: 'Porosity',
+      bbox: { width: 8, height: 4 },
+    })).toBe('Porosity');
+    expect(getInspectionAnnotationDisplayName({
+      measurements: { width_mm: 7.5, height_mm: 3.25 },
+    })).toBe('7.50 x 3.25 mm');
+    expect(getInspectionAnnotationDisplayName({
+      comment: 'Surface indication',
+    })).toBe('Surface indication');
+    expect(getInspectionAnnotationDisplayName({
+      defect_class: 'Crack',
+    })).toBe('Crack');
+  });
+
+  test('trims semantic names and falls back when defect and comment labels are blank', () => {
+    const named = buildInspectionAnnotationItems([{
+      id: 'named',
+      defect_class: '  Porosity  ',
+      comment: '  Surface indication  ',
+    }])[0];
+    expect(named).toMatchObject({
+      label: 'Surface indication',
+      typeLabel: 'Porosity',
+      displayName: 'Surface indication',
+    });
+
+    const unnamed = buildInspectionAnnotationItems([{
+      id: 'unnamed',
+      defect_class: '   ',
+      comment: '\t',
+    }])[0];
+    expect(unnamed).toMatchObject({
+      label: 'Annotation',
+      typeLabel: 'Annotation',
+      displayName: 'Annotation',
+    });
+
+    const segment = {
+      id: 'blank-segment',
+      annotation_kind: 'vista_segment',
+      defect_class: ' ',
+      comment: '\n',
+      geometry: {
+        segment: {
+          axis: 'axial',
+          min_slice: 1,
+          max_slice: 1,
+          image_width: 8,
+          image_height: 6,
+          areas: [{ tool: 'rectangle', start: { x: 1, y: 1 }, end: { x: 3, y: 3 } }],
+        },
+      },
+    };
+    expect(buildInspectionAnnotationItems([segment])[0]).toMatchObject({
+      label: 'Segment',
+      displayName: 'Segment',
+    });
+    expect(annotationToVectorSegment(segment).label).toBe('Segment');
+
+    const overlay = buildInspectionAnnotationItems([], [{
+      overlay: true,
+      imageId: 'overlay-blank-label',
+      label: '  ',
+      filename: '  pore-mask.npy  ',
+    }])[0];
+    expect(overlay).toMatchObject({
+      label: 'pore-mask.npy',
+      displayName: 'External: pore-mask.npy',
+    });
+  });
+
+  test('assigns deterministic unique React keys without changing duplicate or empty resource IDs', () => {
+    const annotations = [
+      { id: 'duplicate', comment: 'First' },
+      { id: 'duplicate', comment: 'Second' },
+      { id: '', comment: 'Missing one' },
+      { comment: 'Missing two' },
+      { id: 'duplicate', comment: 'Third' },
+    ];
+    const first = buildInspectionAnnotationItems(annotations);
+    const second = buildInspectionAnnotationItems(
+      annotations.map((annotation) => ({ ...annotation })),
+    );
+
+    expect(first.map((item) => item.key)).toEqual([
+      'annotation:duplicate',
+      'annotation:duplicate::2',
+      'annotation:<missing>::1',
+      'annotation:<missing>::2',
+      'annotation:duplicate::3',
+    ]);
+    expect(new Set(first.map((item) => item.key)).size).toBe(first.length);
+    expect(second.map((item) => item.key)).toEqual(first.map((item) => item.key));
+    expect(first.map((item) => item.id)).toEqual(['duplicate', 'duplicate', '', '', 'duplicate']);
+    expect(first.map((item) => item.source.resourceId))
+      .toEqual(['duplicate', 'duplicate', '', '', 'duplicate']);
   });
 
   test('round-trips a persisted vector segment contract', () => {
@@ -55,6 +177,160 @@ describe('inspectionAnnotationAdapter', () => {
       imageWidth: 80,
       imageHeight: 40,
     });
+    expect(annotationToPt3VectorAnnotation({ id: 'segment-1', ...payload }))
+      .toEqual(annotationToVectorSegment({ id: 'segment-1', ...payload }));
+  });
+
+  test.each([
+    ['axial', 3],
+    ['coronal', 4],
+    ['sagittal', 5],
+  ])('converts an MPR measurement on %s to a one-slice vector brush', (axis, sliceIndex) => {
+    const annotation = {
+      id: `line-${axis}`,
+      annotation_kind: 'measurement',
+      defect_class: 'Measurement',
+      comment: `${axis} line`,
+      measurements: { length_px: 9.25 },
+      geometry: {
+        axis,
+        slice_index: sliceIndex,
+        line: {
+          x1: 1,
+          y1: 2,
+          x2: 8,
+          y2: 6,
+          imageWidth: 20,
+          imageHeight: 12,
+          axis,
+          slice_index: sliceIndex,
+        },
+      },
+      metadata: { measurement_color: '#00ffaa' },
+      hidden: true,
+    };
+
+    expect(annotationToPt3VectorAnnotation(annotation)).toMatchObject({
+      id: `line-${axis}`,
+      label: '9.3 px',
+      color: '#00ffaa',
+      visible: false,
+      axis,
+      minSlice: sliceIndex,
+      maxSlice: sliceIndex,
+      imageWidth: 20,
+      imageHeight: 12,
+      areas: [{
+        tool: 'brush',
+        operation: 'add',
+        brushSize: 2,
+        points: [{ x: 1, y: 2 }, { x: 8, y: 6 }],
+      }],
+    });
+  });
+
+  test('converts an MPR box to one slice and a cube to an inclusive slice range', () => {
+    const box = {
+      id: 'box-1',
+      defect_class: 'Porosity',
+      measurements: { width_px: 6, height_px: 5 },
+      bbox: { x: 2, y: 3, width: 6, height: 5 },
+      geometry: {
+        axis: 'coronal',
+        slice_index: 7,
+        imageWidth: 18,
+        imageHeight: 14,
+        box: {
+          x: 2,
+          y: 3,
+          width: 6,
+          height: 5,
+          axis: 'coronal',
+          slice_index: 7,
+          imageWidth: 18,
+          imageHeight: 14,
+        },
+      },
+    };
+    expect(annotationToPt3VectorAnnotation(box)).toMatchObject({
+      axis: 'coronal',
+      minSlice: 7,
+      maxSlice: 7,
+      imageWidth: 18,
+      imageHeight: 14,
+      areas: [{
+        tool: 'rectangle',
+        start: { x: 2, y: 3 },
+        end: { x: 8, y: 8 },
+      }],
+    });
+
+    const cube = {
+      id: 'cube-1',
+      defect_class: '3D Box',
+      geometry: {
+        cube: {
+          axis: 'sagittal',
+          startSlice: 9,
+          endSlice: 3,
+          x: 4,
+          y: 5,
+          width: 8,
+          height: 6,
+          imageWidth: 24,
+          imageHeight: 16,
+        },
+      },
+    };
+    expect(annotationToPt3VectorAnnotation(cube)).toMatchObject({
+      axis: 'sagittal',
+      minSlice: 3,
+      maxSlice: 9,
+      imageWidth: 24,
+      imageHeight: 16,
+      areas: [{
+        tool: 'rectangle',
+        start: { x: 4, y: 5 },
+        end: { x: 12, y: 11 },
+      }],
+    });
+  });
+
+  test.each([
+    ['nonspatial annotation', { id: 'plain', comment: 'No geometry' }],
+    ['tile line without an MPR axis', {
+      geometry: { line: { x1: 1, y1: 2, x2: 3, y2: 4, imageWidth: 10, imageHeight: 10 } },
+    }],
+    ['line without a slice', {
+      geometry: { axis: 'axial', line: { x1: 1, y1: 2, x2: 3, y2: 4, imageWidth: 10, imageHeight: 10 } },
+    }],
+    ['box with invalid dimensions', {
+      bbox: { x: 1, y: 2, width: 0, height: 4 },
+      geometry: {
+        axis: 'axial',
+        slice_index: 2,
+        imageWidth: 10,
+        imageHeight: 10,
+        box: { axis: 'axial', slice_index: 2, imageWidth: 10, imageHeight: 10 },
+      },
+    }],
+    ['cube with an invalid axis', {
+      geometry: {
+        cube: {
+          axis: 'diagonal',
+          startSlice: 1,
+          endSlice: 3,
+          x: 1,
+          y: 2,
+          width: 3,
+          height: 4,
+          imageWidth: 10,
+          imageHeight: 10,
+        },
+      },
+    }],
+  ])('does not fabricate 3D placement for %s', (_label, annotation) => {
+    expect(annotationToPt3VectorAnnotation(annotation)).toBeNull();
   });
 
   test('clamps invalid segment ranges and opacity', () => {

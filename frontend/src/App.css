@@ -7358,7 +7358,7 @@ ul li:hover {
 .mpr-pane-volume-fullscreen .mpr-pane-header {
   min-height: 36px;
   margin-bottom: 10px;
-  padding: 0 2px 0 4px;
+  padding: 0 50px 0 4px;
   flex-wrap: wrap;
   justify-content: flex-start;
   gap: 8px 12px;
@@ -7404,7 +7404,14 @@ ul li:hover {
 }
 
 .mpr-3d-fullscreen-close {
+  position: absolute;
+  z-index: 12;
+  top: 8px;
+  right: 8px;
   flex: 0 0 auto;
+  border: 1px solid rgba(125, 211, 252, 0.3);
+  background: rgba(15, 23, 42, 0.86);
+  box-shadow: 0 6px 18px rgba(2, 6, 23, 0.36);
   color: #cbd5e1;
 }
 
@@ -7527,6 +7534,13 @@ ul li:hover {
     right: 12px;
     width: min(240px, 64vw);
     max-height: 36%;
+  }
+}
+
+@media (max-width: 420px) {
+  .mpr-pane-volume-fullscreen .mpr-3d-annotation-list {
+    top: 144px;
+    max-height: 32%;
   }
 }
 
@@ -10006,6 +10020,19 @@ ul li:hover {
 
   .mpr-pane-volume-fullscreen .mpr-3d-annotation-list {
     width: min(240px, calc(50% - 18px));
+  }
+}
+
+@media (max-width: 420px) {
+  .mpr-pane-volume-fullscreen .pt3-gaussian-splat-viewer .pt3-ray-march-controls,
+  .mpr-pane-volume-fullscreen .pt3-gaussian-splat-viewer .pt3-real-optimization-controls,
+  .mpr-pane-volume-fullscreen .pt3-real-splat-mode .pt3-splat-controls {
+    min-width: 0;
+    width: min(180px, calc(55% - 8px));
+  }
+
+  .mpr-pane-volume-fullscreen .mpr-3d-annotation-list {
+    width: min(150px, calc(45% - 20px));
   }
 }
 

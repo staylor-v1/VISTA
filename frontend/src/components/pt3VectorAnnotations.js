@@ -170,8 +170,12 @@ export function getInclusiveVectorSliceRange({ axis, minSlice, maxSlice, dimensi
   const axisLength = getAxisDimension(axis, normalizedDimensions);
   const lowerCandidate = Math.round(finiteNumber(minSlice, 0));
   const upperCandidate = Math.round(finiteNumber(maxSlice, lowerCandidate));
-  const minCenter = clamp(Math.min(lowerCandidate, upperCandidate), 0, axisLength - 1);
-  const maxCenter = clamp(Math.max(lowerCandidate, upperCandidate), 0, axisLength - 1);
+  const requestedMinimum = Math.min(lowerCandidate, upperCandidate);
+  const requestedMaximum = Math.max(lowerCandidate, upperCandidate);
+  const finalSliceIndex = axisLength - 1;
+  if (requestedMaximum < 0 || requestedMinimum > finalSliceIndex) return null;
+  const minCenter = clamp(requestedMinimum, 0, finalSliceIndex);
+  const maxCenter = clamp(requestedMaximum, 0, finalSliceIndex);
   return {
     minSlice: minCenter,
     maxSlice: maxCenter,
@@ -1382,9 +1386,6 @@ export function buildPt3VectorAnnotationFaces(vectorAnnotations, metadata, optio
       maxSlice: annotation.maxSlice ?? annotation.max_slice,
       dimensions: normalizedMetadata.dimensions,
     });
-    if (!range || !(imageWidth > 0) || !(imageHeight > 0)) continue;
-    const color = normalizeColor(annotation.color);
-    const opacity = clamp(finiteNumber(annotation.opacity, DEFAULT_VECTOR_OPACITY), 0, 1);
     // Area and mask-run caps are schema limits for one VISTA segment, not a
     // shared allowance across the annotation list. Aggregate totals below are
     // diagnostics only; every visible segment receives its own bounded mask.
@@ -1403,6 +1404,15 @@ export function buildPt3VectorAnnotationFaces(vectorAnnotations, metadata, optio
       normalizedMetadata.dimensions,
       { includePlanar: useCanonicalVolume },
     );
+    if (
+      !(imageWidth > 0)
+      || !(imageHeight > 0)
+      || (!range && volume.runs.length === 0)
+    ) {
+      continue;
+    }
+    const color = normalizeColor(annotation.color);
+    const opacity = clamp(finiteNumber(annotation.opacity, DEFAULT_VECTOR_OPACITY), 0, 1);
     result.stats.areasRead += mask.stats.areasRead;
     result.stats.addAreasApplied += mask.stats.addAreasApplied;
     result.stats.subtractAreasApplied += mask.stats.subtractAreasApplied;
@@ -1421,8 +1431,7 @@ export function buildPt3VectorAnnotationFaces(vectorAnnotations, metadata, optio
       operation: 'add',
       color,
       opacity,
-      minSlice: range.minSlice,
-      maxSlice: range.maxSlice,
+      ...(range ? { minSlice: range.minSlice, maxSlice: range.maxSlice } : {}),
     };
     const sourceMapping = {
       axis,
@@ -1430,7 +1439,7 @@ export function buildPt3VectorAnnotationFaces(vectorAnnotations, metadata, optio
       imageHeight,
       dimensions: normalizedMetadata.dimensions,
     };
-    if (mask.rectangles.length > 0 && !useCanonicalVolume) {
+    if (range && mask.rectangles.length > 0 && !useCanonicalVolume) {
       if (!addFace({
         ...base,
         surface: 'lower',

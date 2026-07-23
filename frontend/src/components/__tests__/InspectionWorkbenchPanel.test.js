@@ -5271,7 +5271,109 @@ describe('InspectionWorkbenchPanel', () => {
     expect(within(fullscreen3dAnnotationList).getByText('Internal pore')).toBeInTheDocument();
     expect(within(fullscreen3dAnnotationList).getByText('External: Assigned pore volume')).toBeInTheDocument();
     expect(within(fullscreen3dAnnotationList).getByRole('button', { name: 'Hide 3D annotation Internal pore' })).toBeInTheDocument();
-    expect(within(fullscreen3dAnnotationList).getByRole('button', { name: 'Hide 3D annotation Assigned pore volume' })).toBeInTheDocument();
+    expect(within(fullscreen3dAnnotationList).getByRole('button', { name: 'Hide 3D annotation External: Assigned pore volume' })).toBeInTheDocument();
+  });
+
+  test('PT3 annotation consolidation: shares MPR names with fullscreen 3D and renders every supported spatial annotation', async () => {
+    const [lineAnnotation, boxAnnotation] = makePersistedMprGeometryAnnotations();
+    const cubeAnnotation = {
+      id: 'persisted-mpr-cube',
+      annotation_kind: 'annotation',
+      defect_class: '3D Box',
+      modality: 'volume',
+      comment: 'Persisted cube',
+      disposition: 'open',
+      hidden: false,
+      geometry: {
+        cube: {
+          axis: 'coronal',
+          startSlice: 3,
+          endSlice: 7,
+          x: 4,
+          y: 5,
+          width: 8,
+          height: 6,
+          imageWidth: 80,
+          imageHeight: 128,
+        },
+      },
+      measurements: { width_px: 8, height_px: 6, depth_slices: 4 },
+      metadata: { annotation_color: '#f97316', annotation_fill_opacity: 0.2 },
+    };
+    const segmentAnnotation = makeVistaSegmentAnnotation();
+    const nonspatialAnnotation = {
+      id: 'nonspatial-note',
+      annotation_kind: 'annotation',
+      defect_class: 'Review note',
+      modality: 'volume',
+      comment: 'No spatial geometry',
+      disposition: 'open',
+      hidden: false,
+    };
+    const renderSpy = jest.spyOn(pt3VectorAnnotations, 'renderPt3VectorAnnotations');
+
+    try {
+      mockWorkbenchFetch(makePt3ScenarioWithMetadata({
+        annotations: [
+          lineAnnotation,
+          boxAnnotation,
+          cubeAnnotation,
+          segmentAnnotation,
+          nonspatialAnnotation,
+        ],
+      }));
+      render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+      const expectedRows = [
+        ['Measurement', '1.41 mm'],
+        ['Bounding Box', '20.0 x 25.0 px'],
+        ['3D Box', '8.0 x 6.0 px'],
+        ['VISTA segment', 'Internal pore'],
+        ['Review note', 'No spatial geometry'],
+      ];
+      const annotationList = await screen.findByTestId('annotation-list');
+      await within(annotationList).findByText('1.41 mm');
+      expectedRows.forEach(([typeLabel, displayName]) => {
+        expect(within(annotationList).getByText(typeLabel)).toBeInTheDocument();
+        expect(within(annotationList).getByText(displayName)).toBeInTheDocument();
+      });
+
+      fireEvent.change(screen.getByLabelText('3D view'), {
+        target: { value: 'ray-march:composite' },
+      });
+      await waitFor(() => {
+        const spatialCall = renderSpy.mock.calls.find(([, options]) => {
+          const ids = (options?.vectorAnnotations || []).map((annotation) => annotation.id);
+          return [
+            'persisted-mpr-line',
+            'persisted-mpr-box',
+            'persisted-mpr-cube',
+            'vista-segment-1',
+          ].every((id) => ids.includes(id));
+        });
+        expect(spatialCall).toBeDefined();
+        const renderedAnnotations = spatialCall[1].vectorAnnotations;
+        expect(renderedAnnotations.map((annotation) => annotation.id)).not.toContain('nonspatial-note');
+        expect(renderedAnnotations.find((annotation) => annotation.id === 'persisted-mpr-line'))
+          .toEqual(expect.objectContaining({ minSlice: 11, maxSlice: 11 }));
+        expect(renderedAnnotations.find((annotation) => annotation.id === 'persisted-mpr-box'))
+          .toEqual(expect.objectContaining({ minSlice: 11, maxSlice: 11 }));
+      });
+
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Open 3D part view fullscreen' }), {
+        key: 'Enter',
+      });
+      const fullscreenList = screen.getByLabelText('3D annotations');
+      expectedRows.forEach(([typeLabel, displayName]) => {
+        expect(within(fullscreenList).getByText(typeLabel)).toBeInTheDocument();
+        expect(within(fullscreenList).getByText(displayName)).toBeInTheDocument();
+      });
+      expect(within(fullscreenList).getByRole('button', {
+        name: 'Hide 3D annotation No spatial geometry',
+      })).toBeInTheDocument();
+    } finally {
+      renderSpy.mockRestore();
+    }
   });
 
   test('PT3 annotation consolidation: brush drawing survives throwing pointer-capture methods and persists geometry', async () => {
