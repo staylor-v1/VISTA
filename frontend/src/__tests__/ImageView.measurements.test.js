@@ -112,12 +112,14 @@ describe('ImageView - Measurement Handlers', () => {
   let fetchMock;
 
   beforeEach(() => {
+    jest.useRealTimers();
     fetchMock = jest.fn();
     global.fetch = fetchMock;
     jest.clearAllMocks();
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     jest.restoreAllMocks();
   });
 
@@ -202,6 +204,54 @@ describe('ImageView - Measurement Handlers', () => {
       await waitFor(() => {
         expect(screen.getByText(/1 measurements/)).toBeInTheDocument();
       });
+    });
+
+    test('falls back to metadata_ measurements when metadata does not contain an array', async () => {
+      const mockImage = {
+        id: 'test-image-id',
+        filename: 'test.jpg',
+        metadata: {},
+        metadata_: {
+          measurements: [
+            { id: 'measurement-1', name: 'Legacy Measurement' }
+          ]
+        }
+      };
+
+      setupFetchMock(mockImage);
+
+      render(
+        <BrowserRouter>
+          <ImageView />
+        </BrowserRouter>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText(/1 measurements/)).toBeInTheDocument();
+      });
+    });
+
+    test('ignores non-array measurements values', async () => {
+      const mockImage = {
+        id: 'test-image-id',
+        filename: 'test.jpg',
+        metadata: {
+          measurements: { id: 'not-an-array' }
+        }
+      };
+
+      setupFetchMock(mockImage);
+
+      render(
+        <BrowserRouter>
+          <ImageView />
+        </BrowserRouter>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId('image-display')).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('measurement-list')).not.toBeInTheDocument();
     });
 
     test('loads measurements from metadata_ field for backward compatibility', async () => {
