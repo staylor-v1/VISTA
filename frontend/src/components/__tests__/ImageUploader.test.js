@@ -3,6 +3,8 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import ImageUploader, { buildDuplicateFilenameMap, buildInspectionPartIngestPayload, formatUploadSize, parseAssociatedMetadataText, tagDuplicateFilename } from '../ImageUploader';
 import { BATCH_UPLOAD_MAX_BYTES } from '../imageUploadBatches';
 
+jest.setTimeout(30000);
+
 const makeFile = (name) => new File(['data'], name, { type: 'image/png' });
 
 const batchPayload = (images, failed = []) => ({

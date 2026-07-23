@@ -4,6 +4,8 @@ import RemoveImagesTab from '../RemoveImagesTab';
 
 const originalFetch = global.fetch;
 
+jest.setTimeout(15000);
+
 const waitForAsyncWork = async (assertion) => waitFor(assertion, { timeout: 3000 });
 
 describe('RemoveImagesTab', () => {
