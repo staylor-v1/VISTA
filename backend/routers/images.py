@@ -2083,6 +2083,8 @@ async def upload_images_to_project_batch(
 
         await db.flush()
         await _commit_database_transaction(db)
+        for _client_index, db_image in db_images:
+            await db.refresh(db_image)
     except asyncio.CancelledError as exc:
         if getattr(exc, "vista_commit_succeeded", False):
             _clear_project_images_cache_best_effort(project_id)
@@ -2220,6 +2222,7 @@ async def upload_image_to_project(
         )
         await db.flush()
         await _commit_database_transaction(db)
+        await db.refresh(db_data_instance)
     except asyncio.CancelledError as exc:
         if getattr(exc, "vista_commit_succeeded", False):
             _clear_project_images_cache_best_effort(project_id)

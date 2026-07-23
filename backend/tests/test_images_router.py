@@ -829,6 +829,28 @@ def test_upload_variable_bit_depth_scalar_images_records_actual_display_window_m
     assert metadata.get("value_range") == expected_range
     assert metadata.get("intensity_range") == expected_range
 
+
+def test_upload_image_serializes_after_expired_commit_state(client, monkeypatch):
+    pid = _create_project(client, name="expired-upload-serialization")
+    original_commit = images_router._commit_database_transaction
+
+    async def commit_and_expire(session):
+        await original_commit(session)
+        session.expire_all()
+
+    monkeypatch.setattr(images_router, "_commit_database_transaction", commit_and_expire)
+
+    response = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("expired-state.png", _make_png_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["filename"] == "expired-state.png"
+    assert body["created_at"]
+
+
 def test_upload_inspiro_voxel_data_accepts_3d_arrays(client):
     pr = client.post("/api/projects/", json={"name": "P7", "description": None, "meta_group_id": "g"})
     pid = pr.json()["id"]
