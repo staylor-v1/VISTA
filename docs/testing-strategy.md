@@ -15,8 +15,15 @@ Vista's tests are organized as a layered, efficient pyramid: deterministic unit 
 
 `test/run_tests.sh` runs the backend suite before the frontend suite. The
 standalone backend wrapper retains its pre-existing pytest-xdist `-n auto`
-behavior; the GitLab verification lane bypasses that wrapper and invokes
-pytest serially.
+behavior. GitHub Actions retains the PostgreSQL migration/integration and
+serial critical-Playwright gates before its image build. The restored GitLab
+configuration is the historical build-only Podman pipeline: it builds and
+pushes `latest` and commit-SHA tags for main and merge-request pipelines, but
+does not run tests. `scripts/ci/publish_latest_image.sh` remains available only
+for externally built images carrying the required
+`io.vista.ci.pipeline-iid` label. It deliberately fails closed for the
+unlabeled images produced by the restored Dockerfile and is not invoked by
+that GitLab pipeline.
 
 ## User-story coverage matrix
 

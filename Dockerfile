@@ -1,5 +1,5 @@
-# RHEL 9 / UBI 9 Minimal based production image.
-# The frontend is built as part of the ordinary production image build.
+# RHEL 9 / UBI 9 Minimal based production image
+# Multi-stage build for optimized production image
 FROM registry.access.redhat.com/ubi9/ubi-minimal AS base
 
 # Install Python 3.11, Node.js, and system dependencies
@@ -75,7 +75,7 @@ COPY ./frontend/config-overrides.js ./frontend/
 
 # Install frontend dependencies and build
 WORKDIR /app/frontend
-RUN npm ci --legacy-peer-deps
+RUN npm install
 RUN npm run build
 RUN ls -la build || echo "Build directory not found"
 
@@ -84,12 +84,6 @@ WORKDIR /app
 
 # Final stage
 FROM base AS final
-
-# Record the source and CI pipeline identities used for this image.
-ARG VISTA_BUILD_COMMIT=local
-ARG VISTA_CI_PIPELINE_IID=0
-LABEL org.opencontainers.image.revision="${VISTA_BUILD_COMMIT}" \
-      io.vista.ci.pipeline-iid="${VISTA_CI_PIPELINE_IID}"
 
 # Copy Python dependencies from builder
 COPY --from=builder /opt/venv /opt/venv

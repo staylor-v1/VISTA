@@ -73,17 +73,23 @@ def test_github_critical_e2e_gate_uses_direct_specs_and_one_worker() -> None:
     )
 
 
-def test_simple_production_build_keeps_identity_and_safe_context() -> None:
+def test_historical_production_build_keeps_runtime_and_safe_context() -> None:
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     dockerignore = (REPO_ROOT / ".dockerignore").read_text(
         encoding="utf-8"
     ).splitlines()
 
-    assert "npm ci --legacy-peer-deps" in dockerfile
-    assert "npm install" not in dockerfile
-    assert 'org.opencontainers.image.revision="${VISTA_BUILD_COMMIT}"' in dockerfile
-    assert 'io.vista.ci.pipeline-iid="${VISTA_CI_PIPELINE_IID}"' in dockerfile
-    assert "final-prebuilt" not in dockerfile
+    assert "FROM registry.access.redhat.com/ubi9/ubi-minimal AS base" in dockerfile
+    assert "uv sync --frozen --no-dev --no-install-project" in dockerfile
+    assert "COPY ./backend /app/backend" in dockerfile
+    assert "RUN npm install" in dockerfile
+    assert "RUN npm run build" in dockerfile
+    assert "COPY --from=builder /app/frontend/build /app/ui2" in dockerfile
+    assert "ENV FRONTEND_BUILD_PATH=/app/ui2" in dockerfile
+    assert (
+        'CMD ["uvicorn", "main:app", "--host", "0.0.0.0", '
+        '"--port", "8000"]'
+    ) in dockerfile
 
     for excluded in (
         ".venv/",

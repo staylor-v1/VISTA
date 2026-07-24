@@ -1,167 +1,27 @@
-# GitLab CI/CD pipeline for serial verification and safe Quay publication.
+# GitLab CI/CD configuration for building and pushing Docker images to Quay.io
 
+# Define variables at the top
 variables:
+  QUAY_USERNAME: ${QUAY_USERNAME}
   QUAY_IMAGE_NAME: vista
   QUAY_REGISTRY: quay.io
 
-workflow:
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - when: never
-
+# Define stages
 stages:
-  - backend
-  - frontend
-  - postgres
-  - e2e
   - build
-  - publish
 
-.verified-pipeline:
-  rules: &verified-pipeline-rules
-    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - when: never
-
-backend:verify:
-  extends: .verified-pipeline
-  stage: backend
-  image: ghcr.io/astral-sh/uv:0.10.9-python3.11-bookworm-slim
-  before_script:
-    - uv sync --frozen --group dev --no-install-project
-  script:
-    - mkdir -p artifacts/backend
-    - cd backend
-    - ../.venv/bin/python -m pytest -q -m "not postgres" tests --junitxml=../artifacts/backend/backend.xml
-  artifacts:
-    when: always
-    expire_in: 14 days
-    reports:
-      junit: artifacts/backend/backend.xml
-    paths:
-      - artifacts/backend/backend.xml
-
-frontend:verify:
-  extends: .verified-pipeline
-  stage: frontend
-  image: node:20-bookworm-slim
-  before_script:
-    - cd frontend
-    - npm ci --legacy-peer-deps
-  script:
-    - npm run test:unit:ci
-    - node src/__tests__/test-runner.cjs
-
-postgres:verify:
-  extends: .verified-pipeline
-  stage: postgres
-  image: ghcr.io/astral-sh/uv:0.10.9-python3.11-bookworm-slim
-  services:
-    - name: postgres:15
-      alias: postgres
-  variables:
-    POSTGRES_USER: postgres
-    POSTGRES_PASSWORD: postgres
-    POSTGRES_DB: vista_test
-    POSTGRES_SERVER: postgres
-    POSTGRES_PORT: "5432"
-    DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/vista_test
-    VISTA_POSTGRES_TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/vista_test
-    DEBUG: "false"
-    SKIP_HEADER_CHECK: "false"
-    PROXY_SHARED_SECRET: postgres-ci-proxy-secret
-    MOCK_USER_EMAIL: test@example.com
-  before_script:
-    - uv sync --frozen --group dev --no-install-project
-  script:
-    - mkdir -p artifacts/backend
-    - cd backend
-    - ../.venv/bin/alembic upgrade 20260428_0008
-    - ../.venv/bin/alembic upgrade head
-    - ../.venv/bin/python -m pytest -q -m postgres tests/postgres --junitxml=../artifacts/backend/postgres.xml
-  artifacts:
-    when: always
-    expire_in: 14 days
-    reports:
-      junit: artifacts/backend/postgres.xml
-    paths:
-      - artifacts/backend/postgres.xml
-
-e2e:critical:
-  extends: .verified-pipeline
-  stage: e2e
-  image: mcr.microsoft.com/playwright:v1.59.1-noble
-  before_script:
-    - cd frontend
-    - npm ci --legacy-peer-deps
-  script:
-    - >-
-      npm run test:e2e --
-      e2e/specs/full-inspection-workflow.spec.js
-      e2e/specs/inspection-workbench.spec.js
-      e2e/specs/pt3-fullscreen-annotation-parity.spec.js
-      --project=chromium-local
-      --workers=1
-      --retries=0
-  artifacts:
-    when: always
-    expire_in: 14 days
-    paths:
-      - frontend/artifacts/
-
-image:build:
-  extends: .verified-pipeline
+# Build and push Docker image
+build:
   stage: build
   image: podman:latest
   services:
     - podman:dind
-  variables:
-    LOCAL_IMAGE: vista-ci:${CI_COMMIT_SHA}
-    SHA_IMAGE: ${QUAY_REGISTRY}/${QUAY_USERNAME}/${QUAY_IMAGE_NAME}:${CI_COMMIT_SHA}
-  script:
-    - >-
-      podman build
-      --build-arg "VISTA_BUILD_COMMIT=${CI_COMMIT_SHA}"
-      --build-arg "VISTA_CI_PIPELINE_IID=${CI_PIPELINE_IID}"
-      --tag "$LOCAL_IMAGE"
-      .
-    - podman run --rm --entrypoint sh "$LOCAL_IMAGE" -c 'test -s /app/ui2/index.html'
-    - podman run --rm --entrypoint python "$LOCAL_IMAGE" -c 'import fastapi, sqlalchemy; print("Runtime imports OK")'
-    - |
-      if [ "${CI_COMMIT_BRANCH:-}" = "main" ]; then
-        test -n "${QUAY_USERNAME:-}" || {
-          echo "QUAY_USERNAME is required for main image publication." >&2
-          exit 1
-        }
-        test -n "${QUAY_PASSWORD:-}" || {
-          echo "QUAY_PASSWORD is required for main image publication." >&2
-          exit 1
-        }
-        echo "$QUAY_PASSWORD" |
-          podman login "$QUAY_REGISTRY" -u "$QUAY_USERNAME" --password-stdin
-        podman tag "$LOCAL_IMAGE" "$SHA_IMAGE"
-        podman push "$SHA_IMAGE"
-      fi
-
-image:publish:
-  stage: publish
-  image: podman:latest
-  services:
-    - podman:dind
-  interruptible: false
-  resource_group: vista-latest-image
-  environment:
-    name: production
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
-    - when: never
-  variables:
-    SHA_IMAGE: ${QUAY_REGISTRY}/${QUAY_USERNAME}/${QUAY_IMAGE_NAME}:${CI_COMMIT_SHA}
-    LATEST_IMAGE: ${QUAY_REGISTRY}/${QUAY_USERNAME}/${QUAY_IMAGE_NAME}:latest
   before_script:
-    - test -n "${QUAY_USERNAME:-}"
-    - test -n "${QUAY_PASSWORD:-}"
-    - echo "$QUAY_PASSWORD" | podman login "$QUAY_REGISTRY" -u "$QUAY_USERNAME" --password-stdin
+    - echo "$QUAY_PASSWORD" | podman login quay.io -u "$QUAY_USERNAME" --password-stdin
   script:
-    - sh scripts/ci/publish_latest_image.sh
+    - podman build -t $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:latest -t $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:$CI_COMMIT_SHA .
+    - podman push $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:latest
+    - podman push $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:$CI_COMMIT_SHA
+  only:
+    - main
+    - merge_requests
