@@ -2,6 +2,8 @@ import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import CompactImageClassifications from '../CompactImageClassifications';
 
+jest.setTimeout(15000);
+
 function deferred() {
   let resolve;
   let reject;

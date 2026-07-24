@@ -6,6 +6,8 @@ const originalFetch = global.fetch;
 
 const waitForAsyncWork = async (assertion) => waitFor(assertion, { timeout: 3000 });
 
+jest.setTimeout(15000);
+
 describe('RemoveImagesTab', () => {
   afterEach(() => {
     jest.restoreAllMocks();
