@@ -1,144 +1,62 @@
-# GitLab CI/CD pipeline for parallel verification and Quay image publication.
+# GitLab CI/CD pipeline for serial verification and safe Quay publication.
 
 variables:
   QUAY_IMAGE_NAME: vista
   QUAY_REGISTRY: quay.io
-  UV_CACHE_DIR: ${CI_PROJECT_DIR}/.cache/uv
-  UV_LINK_MODE: copy
-  NPM_CONFIG_CACHE: ${CI_PROJECT_DIR}/.cache/npm
 
 workflow:
-  auto_cancel:
-    # Every pre-publication job is interruptible. If a newer main commit
-    # arrives before publication begins, cancel the stale pipeline; if
-    # publication is already running, its resource-group lock makes the newer
-    # publisher run afterward.
-    on_new_commit: conservative
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - when: never
 
 stages:
-  - prepare
-  - test
+  - backend
+  - frontend
+  - postgres
+  - e2e
   - build
   - publish
 
-.rules-required:
-  rules: &rules-required
-    - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE != "schedule"'
+.verified-pipeline:
+  rules: &verified-pipeline-rules
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - when: never
 
-.rules-required-or-scheduled:
-  rules: &rules-required-or-scheduled
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-    - if: '$CI_COMMIT_BRANCH == "main"'
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-
-.backend-job:
+backend:verify:
+  extends: .verified-pipeline
+  stage: backend
   image: ghcr.io/astral-sh/uv:0.10.9-python3.11-bookworm-slim
-  interruptible: true
-  cache:
-    key:
-      prefix: backend-${CI_COMMIT_REF_SLUG}
-      files:
-        - uv.lock
-        - pyproject.toml
-    paths:
-      - .cache/uv/
-    policy: pull
   before_script:
     - uv sync --frozen --group dev --no-install-project
-
-.frontend-job:
-  image: node:20-bookworm-slim
-  interruptible: true
-  cache:
-    key:
-      prefix: frontend-${CI_COMMIT_REF_SLUG}
-      files:
-        - frontend/package-lock.json
-        - frontend/package.json
+  script:
+    - mkdir -p artifacts/backend
+    - cd backend
+    - ../.venv/bin/python -m pytest -q -m "not postgres" tests --junitxml=../artifacts/backend/backend.xml
+  artifacts:
+    when: always
+    expire_in: 14 days
+    reports:
+      junit: artifacts/backend/backend.xml
     paths:
-      - .cache/npm/
-    policy: pull
+      - artifacts/backend/backend.xml
+
+frontend:verify:
+  extends: .verified-pipeline
+  stage: frontend
+  image: node:20-bookworm-slim
   before_script:
     - cd frontend
-    - npm ci --legacy-peer-deps --prefer-offline
-    - cd ..
-
-frontend:build:
-  extends: .frontend-job
-  stage: prepare
-  needs: []
-  rules: *rules-required-or-scheduled
-  # One writer warms the branch-scoped npm cache. Parallel Jest and Playwright
-  # consumers remain pull-only, avoiding last-writer-wins cache uploads.
-  cache:
-    policy: pull-push
+    - npm ci --legacy-peer-deps
   script:
-    - cd frontend
-    - npm run build
-    - cd ..
-    - sh scripts/ci/frontend_build_manifest.sh create
-  artifacts:
-    expire_in: 1 day
-    paths:
-      - frontend/build/
-      - .ci-artifacts/frontend-build.sha256
+    - npm run test:unit:ci
+    - node src/__tests__/test-runner.cjs
 
-backend:fast:
-  extends: .backend-job
-  stage: test
-  needs: []
-  parallel: 4
-  rules: *rules-required-or-scheduled
-  variables:
-    PYTEST_XDIST_WORKERS: "1"
-    BACKEND_TEST_MAXFAIL: "0"
-    JUNIT_XML_PATH: ${CI_PROJECT_DIR}/artifacts/backend/junit-${CI_NODE_INDEX}.xml
-    TEST_SHARD_MANIFEST_PATH: ${CI_PROJECT_DIR}/artifacts/backend/shard-${CI_NODE_INDEX}.txt
-  script:
-    - ./test/backend_tests.sh --shard-index "$CI_NODE_INDEX" --shard-total "$CI_NODE_TOTAL"
-  artifacts:
-    when: always
-    expire_in: 14 days
-    paths:
-      - artifacts/backend/
-    reports:
-      junit: artifacts/backend/junit-*.xml
-
-frontend:unit:
-  extends: .frontend-job
-  stage: test
-  needs: []
-  parallel: 4
-  rules: *rules-required-or-scheduled
-  variables:
-    FRONTEND_JEST_WORKERS: "1"
-    TEST_SHARD_MANIFEST_PATH: ${CI_PROJECT_DIR}/artifacts/frontend/shard-${CI_NODE_INDEX}.txt
-  script:
-    - ./test/frontend_tests.sh --jest-only --shard-index "$CI_NODE_INDEX" --shard-total "$CI_NODE_TOTAL"
-  artifacts:
-    when: always
-    expire_in: 14 days
-    paths:
-      - artifacts/frontend/
-
-frontend:custom:
-  image: node:20-bookworm-slim
-  stage: test
-  needs: []
-  interruptible: true
-  rules: *rules-required-or-scheduled
-  script:
-    - ./test/frontend_tests.sh --custom-only
-
-backend:postgres:
-  extends: .backend-job
-  stage: test
-  needs: []
-  rules: *rules-required-or-scheduled
-  # The serial PostgreSQL lane is the only backend dependency-cache writer.
-  cache:
-    policy: pull-push
+postgres:verify:
+  extends: .verified-pipeline
+  stage: postgres
+  image: ghcr.io/astral-sh/uv:0.10.9-python3.11-bookworm-slim
   services:
     - name: postgres:15
       alias: postgres
@@ -154,12 +72,14 @@ backend:postgres:
     SKIP_HEADER_CHECK: "false"
     PROXY_SHARED_SECRET: postgres-ci-proxy-secret
     MOCK_USER_EMAIL: test@example.com
+  before_script:
+    - uv sync --frozen --group dev --no-install-project
   script:
     - mkdir -p artifacts/backend
     - cd backend
     - ../.venv/bin/alembic upgrade 20260428_0008
     - ../.venv/bin/alembic upgrade head
-    - ../.venv/bin/python -m pytest -q -m postgres -n 0 tests/postgres --junitxml=../artifacts/backend/postgres.xml
+    - ../.venv/bin/python -m pytest -q -m postgres tests/postgres --junitxml=../artifacts/backend/postgres.xml
   artifacts:
     when: always
     expire_in: 14 days
@@ -168,129 +88,59 @@ backend:postgres:
     paths:
       - artifacts/backend/postgres.xml
 
-backend:load:
-  extends: .backend-job
-  stage: test
-  needs: []
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-  script:
-    - mkdir -p artifacts/backend
-    - cd backend
-    - ../.venv/bin/python -m pytest -q -m load -n 0 tests/load --junitxml=../artifacts/backend/load.xml
-  artifacts:
-    when: always
-    expire_in: 14 days
-    reports:
-      junit: artifacts/backend/load.xml
-    paths:
-      - artifacts/backend/load.xml
-
-.playwright-job:
+e2e:critical:
+  extends: .verified-pipeline
+  stage: e2e
   image: mcr.microsoft.com/playwright:v1.59.1-noble
-  stage: test
-  needs:
-    - job: frontend:build
-      artifacts: true
-  interruptible: true
-  cache:
-    key:
-      prefix: frontend-${CI_COMMIT_REF_SLUG}
-      files:
-        - frontend/package-lock.json
-        - frontend/package.json
-    paths:
-      - .cache/npm/
-    policy: pull
-  variables:
-    PLAYWRIGHT_CI_PARALLEL: "true"
-    PLAYWRIGHT_STATIC_BUILD: "true"
-    PLAYWRIGHT_REUSE_SERVER: "false"
   before_script:
     - cd frontend
-    - npm ci --legacy-peer-deps --prefer-offline
-    - cd ..
+    - npm ci --legacy-peer-deps
+  script:
+    - >-
+      npm run test:e2e --
+      e2e/specs/full-inspection-workflow.spec.js
+      e2e/specs/inspection-workbench.spec.js
+      e2e/specs/pt3-fullscreen-annotation-parity.spec.js
+      --project=chromium-local
+      --workers=1
+      --retries=0
   artifacts:
     when: always
     expire_in: 14 days
     paths:
-      - frontend/artifacts/playwright/
-      - frontend/artifacts/*.png
-    reports:
-      junit: frontend/artifacts/playwright/junit-*.xml
-
-e2e:critical:
-  extends: .playwright-job
-  parallel: 2
-  rules: *rules-required
-  script:
-    - export PLAYWRIGHT_PORT="$((20000 + CI_JOB_ID % 20000))"
-    - export PLAYWRIGHT_BASE_URL="http://127.0.0.1:${PLAYWRIGHT_PORT}"
-    - export PLAYWRIGHT_OUTPUT_DIR="${CI_PROJECT_DIR}/frontend/artifacts/playwright/results-${CI_NODE_INDEX}"
-    - export PLAYWRIGHT_HTML_REPORT_DIR="${CI_PROJECT_DIR}/frontend/artifacts/playwright/html-${CI_NODE_INDEX}"
-    - export PLAYWRIGHT_BLOB_REPORT_DIR="${CI_PROJECT_DIR}/frontend/artifacts/playwright/blob-${CI_NODE_INDEX}"
-    - export PLAYWRIGHT_JUNIT_OUTPUT_FILE="${CI_PROJECT_DIR}/frontend/artifacts/playwright/junit-${CI_NODE_INDEX}.xml"
-    - cd frontend
-    - npm run test:e2e -- e2e/specs/full-inspection-workflow.spec.js e2e/specs/inspection-workbench.spec.js e2e/specs/pt3-fullscreen-annotation-parity.spec.js --grep @critical --project=chromium-local --fully-parallel --workers=1 --retries=0 --shard="$CI_NODE_INDEX/$CI_NODE_TOTAL"
-
-e2e:full:
-  extends: .playwright-job
-  parallel: 2
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-  script:
-    - export PLAYWRIGHT_PORT="$((20000 + CI_JOB_ID % 20000))"
-    - export PLAYWRIGHT_BASE_URL="http://127.0.0.1:${PLAYWRIGHT_PORT}"
-    - export PLAYWRIGHT_OUTPUT_DIR="${CI_PROJECT_DIR}/frontend/artifacts/playwright/results-${CI_NODE_INDEX}"
-    - export PLAYWRIGHT_HTML_REPORT_DIR="${CI_PROJECT_DIR}/frontend/artifacts/playwright/html-${CI_NODE_INDEX}"
-    - export PLAYWRIGHT_BLOB_REPORT_DIR="${CI_PROJECT_DIR}/frontend/artifacts/playwright/blob-${CI_NODE_INDEX}"
-    - export PLAYWRIGHT_JUNIT_OUTPUT_FILE="${CI_PROJECT_DIR}/frontend/artifacts/playwright/junit-${CI_NODE_INDEX}.xml"
-    - cd frontend
-    - npm run test:e2e -- --project=chromium-local --fully-parallel --workers=1 --retries=0 --shard="$CI_NODE_INDEX/$CI_NODE_TOTAL"
+      - frontend/artifacts/
 
 image:build:
+  extends: .verified-pipeline
   stage: build
   image: podman:latest
   services:
     - podman:dind
-  needs:
-    - job: frontend:build
-      artifacts: true
-  interruptible: true
-  rules: *rules-required
   variables:
-    CACHE_IMAGE: ${QUAY_REGISTRY}/${QUAY_USERNAME}/${QUAY_IMAGE_NAME}:build-cache
+    LOCAL_IMAGE: vista-ci:${CI_COMMIT_SHA}
     SHA_IMAGE: ${QUAY_REGISTRY}/${QUAY_USERNAME}/${QUAY_IMAGE_NAME}:${CI_COMMIT_SHA}
   script:
-    - |
-      if [ -z "${QUAY_USERNAME:-}" ]; then
-        echo "QUAY_USERNAME must be configured as a non-secret CI/CD variable visible to merge-request pipelines." >&2
-        exit 1
-      fi
-    - sh scripts/ci/frontend_build_manifest.sh verify
-    - |
-      CACHE_FLAGS="--cache-from ${CACHE_IMAGE}"
-      if [ "${CI_COMMIT_BRANCH:-}" = "main" ]; then
-        echo "$QUAY_PASSWORD" | podman login "$QUAY_REGISTRY" -u "$QUAY_USERNAME" --password-stdin
-        CACHE_FLAGS="${CACHE_FLAGS} --cache-to ${CACHE_IMAGE}"
-      fi
-      # CACHE_FLAGS intentionally expands to separate Podman arguments.
-      # shellcheck disable=SC2086
-      podman build --jobs=2 --layers ${CACHE_FLAGS} \
-        --build-arg "VISTA_BUILD_COMMIT=${CI_COMMIT_SHA}" \
-        --build-arg "VISTA_CI_PIPELINE_IID=${CI_PIPELINE_IID}" \
-        --target final-prebuilt \
-        --tag "$SHA_IMAGE" \
-        .
     - >-
-      podman run --rm --entrypoint sh "$SHA_IMAGE"
-      -c 'test -s /app/ui2/index.html &&
-      test -s /app/.ci-artifacts/frontend-build.sha256'
-    - >-
-      podman run --rm --entrypoint python "$SHA_IMAGE"
-      -c 'import fastapi, sqlalchemy; print("Runtime imports OK")'
+      podman build
+      --build-arg "VISTA_BUILD_COMMIT=${CI_COMMIT_SHA}"
+      --build-arg "VISTA_CI_PIPELINE_IID=${CI_PIPELINE_IID}"
+      --tag "$LOCAL_IMAGE"
+      .
+    - podman run --rm --entrypoint sh "$LOCAL_IMAGE" -c 'test -s /app/ui2/index.html'
+    - podman run --rm --entrypoint python "$LOCAL_IMAGE" -c 'import fastapi, sqlalchemy; print("Runtime imports OK")'
     - |
       if [ "${CI_COMMIT_BRANCH:-}" = "main" ]; then
+        test -n "${QUAY_USERNAME:-}" || {
+          echo "QUAY_USERNAME is required for main image publication." >&2
+          exit 1
+        }
+        test -n "${QUAY_PASSWORD:-}" || {
+          echo "QUAY_PASSWORD is required for main image publication." >&2
+          exit 1
+        }
+        echo "$QUAY_PASSWORD" |
+          podman login "$QUAY_REGISTRY" -u "$QUAY_USERNAME" --password-stdin
+        podman tag "$LOCAL_IMAGE" "$SHA_IMAGE"
         podman push "$SHA_IMAGE"
       fi
 
@@ -304,24 +154,14 @@ image:publish:
   environment:
     name: production
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main" && $CI_PIPELINE_SOURCE != "schedule"'
-  needs:
-    - job: backend:fast
-      artifacts: false
-    - job: frontend:unit
-      artifacts: false
-    - job: frontend:custom
-      artifacts: false
-    - job: backend:postgres
-      artifacts: false
-    - job: e2e:critical
-      artifacts: false
-    - job: image:build
-      artifacts: false
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
+    - when: never
   variables:
     SHA_IMAGE: ${QUAY_REGISTRY}/${QUAY_USERNAME}/${QUAY_IMAGE_NAME}:${CI_COMMIT_SHA}
     LATEST_IMAGE: ${QUAY_REGISTRY}/${QUAY_USERNAME}/${QUAY_IMAGE_NAME}:latest
   before_script:
+    - test -n "${QUAY_USERNAME:-}"
+    - test -n "${QUAY_PASSWORD:-}"
     - echo "$QUAY_PASSWORD" | podman login "$QUAY_REGISTRY" -u "$QUAY_USERNAME" --password-stdin
   script:
     - sh scripts/ci/publish_latest_image.sh

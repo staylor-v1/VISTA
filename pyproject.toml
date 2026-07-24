@@ -35,7 +35,6 @@ dev = [
     "aiosqlite",
     "podman-compose",
     "numpy>=2.4.4",
-    "pytest-xdist",
 ]
 
 [project.optional-dependencies]
@@ -45,7 +44,6 @@ dev = [
     "aiosqlite",
     "podman-compose",
     "numpy>=2.4.4",
-    "pytest-xdist",
 ]
 
 [tool.pytest.ini_options]
@@ -53,7 +51,6 @@ testpaths = ["backend/tests"]
 markers = [
     "smoke: representative backend user workflows for fast local validation",
     "postgres: opt-in Alembic-backed PostgreSQL integration contracts (serial only)",
-    "load: scheduled high-volume backend contracts excluded from the fast suite",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",

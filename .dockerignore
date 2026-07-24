@@ -135,10 +135,3 @@ frontend/playwright-report/
 frontend/coverage/
 frontend/.cache/
 frontend/node_modules/.cache/
-
-# Prebuilt CI image target inputs. The build output remains ignored by the
-# broad Python/Node patterns above, then is deliberately restored here.
-!frontend/build/
-!frontend/build/**
-!.ci-artifacts/
-!.ci-artifacts/frontend-build.sha256

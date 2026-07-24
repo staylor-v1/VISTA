@@ -11,7 +11,7 @@ async function expectRawImageCount(page, expectedCount) {
 }
 
 test.describe('Full inspection workflow end-to-end', () => {
-  test('creates project, uploads files, inspects parts, and validates report readiness', { tag: '@critical' }, async ({ page }) => {
+  test('creates project, uploads files, inspects parts, and validates report readiness', async ({ page }) => {
     const {
       projectId,
       getUploadedImages,

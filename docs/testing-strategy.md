@@ -7,98 +7,16 @@ Vista's tests are organized as a layered, efficient pyramid: deterministic unit 
 | Layer | Command | Purpose |
 | --- | --- | --- |
 | Backend smoke | `pytest -q -m smoke` | Runs representative authentication, project, upload, grouping, inspection, analysis, export, and deletion workflows in seconds. |
-| Backend unit and API integration | `./test/backend_tests.sh` | Runs FastAPI router, CRUD, model/schema, cache, security, export, metadata, and analysis toolbox tests with a bounded worker count. |
-| PostgreSQL integration | `cd backend && VISTA_POSTGRES_TEST_DATABASE_URL=postgresql+asyncpg://user:pass@localhost/vista_test python -m pytest -q -m postgres -n 0 tests/postgres` | Runs Alembic, native server-default/timezone, transactional, proxy-auth, and deletion-audit contracts serially against a disposable PostgreSQL database. |
-| Backend scheduled load | `cd backend && python -m pytest -q -m load -n 0 tests/load` | Runs high-volume ingest/list contracts serially outside the pull-request feedback loop. |
-| Frontend unit/component | `./test/frontend_tests.sh` | Runs React Testing Library/Jest with two bounded workers plus the custom source-contract runner. |
+| Backend unit and API integration | `pytest -q -m "not postgres"` | Runs FastAPI router, CRUD, model/schema, cache, security, export, metadata, and analysis toolbox tests. |
+| PostgreSQL integration | `cd backend && VISTA_POSTGRES_TEST_DATABASE_URL=postgresql+asyncpg://user:pass@localhost/vista_test python -m pytest -q -m postgres tests/postgres` | Runs Alembic, native server-default/timezone, transactional, proxy-auth, and deletion-audit contracts serially against a disposable PostgreSQL database. |
+| Frontend unit/component | `cd frontend && CI=true npm run test:unit:ci` | Runs React Testing Library/Jest tests once in-band for deterministic CI behavior. |
 | Frontend end-to-end | `cd frontend && npm run test:e2e` | Runs Playwright workflows against the React app with network mocks. |
 | Frontend all | `cd frontend && npm run test:ci` | Runs the frontend unit suite followed by Playwright E2E tests. |
-| Backend and frontend | `./test/run_tests.sh` | Runs the independent backend and frontend suites concurrently; add `--sequential` on memory-constrained hosts. |
 
-## Parallel execution and resource controls
-
-Local runs overlap the independent backend and frontend suites. Backend pytest
-defaults to four xdist workers and Jest defaults to two workers, so the normal
-aggregate budget is six test processes. Override the bounded worker counts for
-smaller machines:
-
-```bash
-PYTEST_XDIST_WORKERS=2 FRONTEND_JEST_WORKERS=1 ./test/run_tests.sh
-./test/run_tests.sh --sequential
-```
-
-GitLab parallelism is external rather than multiplicative. The fast backend
-and Jest lanes each use four GitLab jobs, with one pytest/Jest worker inside
-each job:
-
-```bash
-./test/backend_tests.sh --shard-index 1 --shard-total 4
-./test/frontend_tests.sh --jest-only --shard-index 1 --shard-total 4
-./test/frontend_tests.sh --custom-only
-```
-
-Shard indices are one-based. Both shard arguments are required, an empty shard
-is an error, shard totals are capped at 64, and
-`TEST_SHARD_MANIFEST_PATH` records the exact whole-file selection. An explicit
-worker override other than one is rejected in sharded mode so higher-precedence
-GitLab variables cannot accidentally multiply concurrency. The deterministic
-selector assigns larger files first and proves that the four manifests are
-nonempty, disjoint, and complete.
-
-Backend shards recursively include both pytest-default file forms
-(`test_*.py` and `*_test.py`) while excluding the dedicated `tests/postgres`
-and `tests/load` lanes. Jest shards include `.test` and `.spec` files for
-JavaScript/JSX/TypeScript/TSX plus matching source files under any `__tests__`
-directory. Overlapping discovery forms are de-duplicated.
-
-## GitLab pipeline topology
-
-Merge requests and main builds start the following lanes as a dependency DAG:
-
-| Lane | GitLab fan-out | In-job workers |
-| --- | ---: | ---: |
-| Fast backend | 4 | 1 |
-| Frontend Jest | 4 | 1 |
-| Frontend source contracts | 1 | 1 |
-| PostgreSQL integration | 1 | pytest `-n 0` |
-| Critical Playwright | 2 | 1 |
-| Frontend production build | 1 | bounded build process |
-| Container build | 1 | Podman `--jobs=2` |
-
-The frontend production bundle is built once. Its deterministic SHA-256
-manifest and `frontend/build/` artifact feed both Playwright shards and the
-container's `final-prebuilt` target. The container build can therefore overlap
-the test lanes without compiling the frontend again. Playwright uses test-level
-sharding in GitLab, which evenly partitions the current 38 tests 19/19 despite
-most cases living in one spec file. Each shard uses a unique port, JUnit file,
-blob report, HTML report, and trace directory.
-
-Scheduled pipelines add the serial load lane and two full Playwright shards.
-Dependency caches are branch-scoped. The single frontend build and serial
-PostgreSQL jobs are their only writers; parallel consumers are pull-only, which
-avoids redundant uploads and last-writer races. Merge requests never log in to
-the registry or push an image/build cache. Main pipelines push the immutable
-commit tag; `latest` is retagged without rebuilding only after every required
-test and image gate succeeds. Stale main pipelines are auto-cancelled before
-publication, while a resource-group lock serializes a publisher that has
-already started. The publisher also compares the project-scoped pipeline IID
-embedded in each image and refuses to move `latest` backward if an older
-pipeline reaches the gate late.
-
-uv and npm caches are keyed by their lockfiles and store downloaded packages,
-not `.venv` or `node_modules`. Podman uses bounded jobs, layer caching, and the
-remote Quay build cache. The default Docker target remains self-contained for
-clean local builds:
-
-```bash
-podman build --target final .
-sh scripts/ci/frontend_build_manifest.sh create
-podman build --target final-prebuilt .
-```
-
-`QUAY_USERNAME` is non-secret registry routing configuration and must be
-visible to merge-request jobs so they can name the read-only cache source.
-Keep `QUAY_PASSWORD` protected; only main image jobs log in or push.
+`test/run_tests.sh` runs the backend suite before the frontend suite. The
+standalone backend wrapper retains its pre-existing pytest-xdist `-n auto`
+behavior; the GitLab verification lane bypasses that wrapper and invokes
+pytest serially.
 
 ## User-story coverage matrix
 
@@ -123,46 +41,23 @@ Keep `QUAY_PASSWORD` protected; only main image jobs log in or push.
 
 ## PostgreSQL integration lane
 
-The normal backend runner always selects `not postgres and not load`, so its
-fast SQLite fixtures remain isolated from opt-in database and high-volume
-lanes. PostgreSQL tests live under `backend/tests/postgres/`, carry the
-registered `postgres` marker, use a separate async engine and FastAPI `get_db`
-override, and are always run serially.
+PostgreSQL tests live under `backend/tests/postgres/`, carry the registered
+`postgres` marker, and always run serially. The normal backend runner excludes
+that marker so its SQLite suite cannot overlap the dedicated database lane.
 
 Set `VISTA_POSTGRES_TEST_DATABASE_URL` to an explicitly disposable database to
-opt in. As a destructive-operation guard, its database name must start with
-`test_` or end with `_test`; generic databases such as `postgres` and the
-PostgreSQL templates are rejected. Without the variable, direct collection of
-the lane skips cleanly. The fixture upgrades that database with Alembic and
-truncates application tables between tests; it must never use
-`Base.metadata.create_all`. CI additionally proves the incremental
-`20260428_0008` to `head` upgrade before running the contracts with
-`DEBUG=false`, `SKIP_HEADER_CHECK=false`, and a proxy shared secret.
-
-## Project-type and scheduled-load contracts
-
-PT1/PT2/PT3 API coverage is matrixed only where the project type changes the
-contract: generated defect names, configuration-clone compatibility, and the
-PT3-only volume-reconstruction boundary. Progressive workflow tests use one
-representative project type so user-complexity scenarios do not multiply
-identical API behavior.
-
-High-volume tests live under `backend/tests/load/` and carry the registered
-`load` marker. The normal backend runner selects
-`not postgres and not load`; run the load lane explicitly and serially on a
-schedule. The initial contract ingests and lists 1,000 uniquely encoded images
-so dropped, duplicated, or misnamed records are detectable.
+opt in. Its database name must start with `test_` or end with `_test`; generic
+databases such as `postgres` and the PostgreSQL templates are rejected. The
+fixture upgrades the database with Alembic and truncates application tables
+between tests. CI also verifies an incremental migration from `20260428_0008`
+to `head` before running these contracts.
 
 ## Security scan gates
 
-The security workflow always publishes scanner output before enforcing its
-result. Trivy gates all fixed and unfixed HIGH/CRITICAL container findings.
-Safety gates known vulnerabilities in the locked runtime dependency export.
-Bandit scans production backend code at MEDIUM-or-higher severity and
-confidence, while Semgrep gates WARNING/ERROR findings from its security-audit
-ruleset. Scanner releases are pinned exactly so CI policy cannot drift between
-runs. A missing scanner status is itself a failure, and JSON, logs, status files,
-and SARIF remain available as workflow artifacts when a gate fails.
+The security workflow publishes scanner output before enforcing its result.
+Trivy gates HIGH/CRITICAL container findings. Safety, Bandit, and Semgrep
+likewise retain their reports and fail closed when a scan fails or does not
+produce a status.
 
 ## Red-team robustness checklist
 
@@ -179,9 +74,8 @@ Use this checklist when adding or refactoring tests:
 
 A test refactor is complete only when:
 
-- Locked dependencies are installed before testing with `uv sync --frozen --group dev` and `cd frontend && npm ci`; test commands never install dependencies.
-- Backend tests pass with `./test/backend_tests.sh`.
-- Frontend unit tests pass with `./test/frontend_tests.sh`, and all four CI
-  shard manifests have complete, non-overlapping coverage.
+- Backend tests pass with `pytest -q -m "not postgres"` after installing project dependencies.
+- PostgreSQL integration tests pass serially when database-sensitive behavior changes.
+- Frontend unit tests pass with `CI=true npm run test:unit:ci`.
 - Playwright tests either pass with `npm run test:e2e` or have a documented environment blocker such as missing system browser dependencies.
 - Any new test helpers are shared rather than duplicated and do not hide unexpected console errors.

@@ -143,7 +143,6 @@ venv.bak/
 # Frontend build cache
 frontend/.webpack-cache/
 frontend/.webpack-cache-prod/
-.ci-artifacts/
 
 # Spyder project settings
 .spyderproject

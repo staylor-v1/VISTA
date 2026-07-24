@@ -260,7 +260,7 @@ async function countMagentaAnnotationPixels(canvas) {
 }
 
 test.describe('PT3 fullscreen annotation parity', () => {
-  test('shares MPR names, renders spatial annotations, and keeps compact controls separate', { tag: '@critical' }, async ({ page }) => {
+  test('shares MPR names, renders spatial annotations, and keeps compact controls separate', async ({ page }) => {
     test.setTimeout(90_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.addInitScript(() => {

@@ -85,9 +85,6 @@ jobs:
         DEBUG: true
         SKIP_HEADER_CHECK: true
         MOCK_USER_EMAIL: test@example.com
-        BACKEND_TEST_MAXFAIL: "0"
-        PYTEST_XDIST_WORKERS: "1"
-        FRONTEND_JEST_WORKERS: "1"
         JUNIT_XML_PATH: ${{ github.workspace }}/test-results/backend.xml
 
     - name: Verify PostgreSQL migration upgrade path
@@ -105,13 +102,28 @@ jobs:
 
     - name: Run PostgreSQL integration contracts serially
       working-directory: backend
-      run: ../.venv/bin/python -m pytest -q -m postgres -n 0 tests/postgres
+      run: ../.venv/bin/python -m pytest -q -m postgres tests/postgres
       env:
         VISTA_POSTGRES_TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/vista_test
         DEBUG: false
         SKIP_HEADER_CHECK: false
         PROXY_SHARED_SECRET: postgres-ci-proxy-secret
         MOCK_USER_EMAIL: test@example.com
+
+    - name: Install Chromium for critical end-to-end tests
+      working-directory: frontend
+      run: npx playwright install --with-deps chromium
+
+    - name: Run critical end-to-end workflows serially
+      working-directory: frontend
+      run: >-
+        npm run test:e2e --
+        e2e/specs/full-inspection-workflow.spec.js
+        e2e/specs/inspection-workbench.spec.js
+        e2e/specs/pt3-fullscreen-annotation-parity.spec.js
+        --project=chromium-local
+        --workers=1
+        --retries=0
 
     - name: Publish test results
       uses: dorny/test-reporter@v1
@@ -184,7 +196,7 @@ jobs:
         
         # Test health endpoint one more time to be sure
         curl -f http://localhost:8000/api/health || exit 1
-        
+
         # Stop container
         docker stop test-container
         docker rm test-container

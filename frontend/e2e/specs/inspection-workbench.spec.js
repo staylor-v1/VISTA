@@ -441,7 +441,7 @@ test.describe('PT3 Real 3DGS mode', () => {
 });
 
 test.describe('PT3 large NPY lazy MPR loading', () => {
-  test('bounds slice requests and keeps a segmented overlay aligned with the base volume', { tag: '@critical' }, async ({ page }) => {
+  test('bounds slice requests and keeps a segmented overlay aligned with the base volume', async ({ page }) => {
     test.setTimeout(180_000);
     await page.setViewportSize({ width: 1280, height: 860 });
     const dimensions = { axial: 749, coronal: 1010, sagittal: 984 };

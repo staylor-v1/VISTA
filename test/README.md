@@ -6,7 +6,7 @@ This directory contains test scripts and utilities for VISTA.
 
 ### Running Tests
 
-To run backend and frontend tests concurrently:
+To run the comprehensive backend test suite:
 
 ```bash
 ./test/run_tests.sh
@@ -14,34 +14,9 @@ To run backend and frontend tests concurrently:
 
 This script will:
 - Validate the environment
-- Run the independent backend and frontend suites at the same time
+- Run all backend tests in the `backend/tests/` directory
 - Provide a summary of test results
 - Exit with appropriate codes for CI/CD integration
-
-Use `./test/run_tests.sh --sequential` on a constrained host. Run one lane with
-`--backend` or `--frontend`. Worker budgets can be adjusted without changing
-coverage:
-
-```bash
-PYTEST_XDIST_WORKERS=2 FRONTEND_JEST_WORKERS=1 ./test/run_tests.sh
-```
-
-GitLab uses four deterministic whole-file shards for each fast suite and keeps
-one worker inside each job:
-
-```bash
-./test/backend_tests.sh --shard-index 1 --shard-total 4
-./test/frontend_tests.sh --jest-only --shard-index 1 --shard-total 4
-./test/frontend_tests.sh --custom-only
-```
-
-Shard arguments must be supplied together. Empty shards fail instead of
-silently passing, and `TEST_SHARD_MANIFEST_PATH` writes the exact selected
-files for CI auditing. Totals above 64 and a sharded worker override other
-than one are rejected. Backend discovery is recursive for `test_*.py` and
-`*_test.py`; Jest discovery follows its `.test`/`.spec` and `__tests__`
-defaults, with overlapping matches de-duplicated. PostgreSQL and scheduled
-load tests remain serial.
 
 ### Test Coverage
 
@@ -105,7 +80,7 @@ The backend test suite includes:
 
 When adding new tests:
 1. Place test files in `backend/tests/`
-2. Follow a pytest naming convention: `test_*.py` or `*_test.py`
+2. Follow the naming convention `test_*.py`
 3. Use pytest fixtures and async test patterns as shown in existing tests
 4. Update this README if adding new test categories
 
@@ -114,10 +89,12 @@ When adding new tests:
 This script is designed to be easily integrated into CI/CD pipelines:
 
 ```bash
-# A bounded same-host run
-PYTEST_XDIST_WORKERS=2 FRONTEND_JEST_WORKERS=1 ./test/run_tests.sh
+# In your CI script
+./test/run_tests.sh
+if [ $? -eq 0 ]; then
+    echo "Tests passed, proceeding with deployment"
+else
+    echo "Tests failed, stopping deployment"
+    exit 1
+fi
 ```
-
-The committed `.gitlab-ci.yml` fans backend and Jest into four jobs, critical
-Playwright into two test-level shards, builds the frontend once for browser and
-container reuse, and publishes `latest` only after all required jobs pass.
