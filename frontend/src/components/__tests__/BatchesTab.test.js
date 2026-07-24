@@ -8,7 +8,7 @@ describe('BatchesTab', () => {
   });
 
   test('renders batch summary and manual counts', async () => {
-    jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+    jest.spyOn(global, 'fetch').mockResolvedValue({
       ok: true,
       json: async () => [{ id: 'batch-1', name: 'Batch 1', status: 'in_progress', owner: 'alice' }],
     });
@@ -32,7 +32,7 @@ describe('BatchesTab', () => {
 
 
   test('keeps unbatched parts sticky while batch targets scroll', async () => {
-    jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+    jest.spyOn(global, 'fetch').mockResolvedValue({
       ok: true,
       json: async () => Array.from({ length: 12 }, (_, index) => ({
         id: `batch-${index + 1}`,

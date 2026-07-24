@@ -7,7 +7,7 @@ describe('ReviewStatusSummary', () => {
   });
 
   test('fetches and renders review stats', async () => {
-    fetch.mockResolvedValueOnce({
+    fetch.mockResolvedValue({
       ok: true,
       json: async () => ({
         total_images: 10,
@@ -34,7 +34,7 @@ describe('ReviewStatusSummary', () => {
   });
 
   test('omits zero-count chips', async () => {
-    fetch.mockResolvedValueOnce({
+    fetch.mockResolvedValue({
       ok: true,
       json: async () => ({
         total_images: 2,

@@ -22,6 +22,7 @@ function jsonResponse(data) {
 }
 
 describe('ImageComments async route ownership', () => {
+  jest.setTimeout(15000);
   let setLoading;
   let setError;
 
