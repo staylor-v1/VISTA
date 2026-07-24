@@ -59,7 +59,6 @@ RUN uv sync --frozen --no-install-project
 
 # Copy backend code (will be overridden by volume mount in development)
 COPY ./backend /app/backend
-COPY ./test /app/test
 
 # Backend tests validate frontend npm scripts, so keep package metadata
 # available in the backend-dev image even when only /app/backend is mounted.
