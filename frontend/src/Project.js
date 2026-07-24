@@ -17,6 +17,7 @@ import BatchesTab from './components/BatchesTab';
 import RemoveImagesTab from './components/RemoveImagesTab';
 import OverlaysTab from './components/OverlaysTab';
 import ProjectDataMetadataTab from './components/ProjectDataMetadataTab';
+import { useInspectionWorkbenchSessionController } from './components/inspectionWorkbenchSession';
 import { resolveCurrentProjectPhase } from './utils/projectPhases';
 import { DEFAULT_INTERFACE_HIERARCHY, loadInterfaceHierarchy } from './utils/interfaceHierarchy';
 import { copyCurrentShareUrl } from './utils/shareLink';
@@ -166,7 +167,10 @@ function Project({ currentUserGroups = [] }) {
     payload: null,
   });
   const [inspectionLaunchFilters, setInspectionLaunchFilters] = useState(null);
-  const [inspectionMprSlicePositions, setInspectionMprSlicePositions] = useState({});
+  const {
+    session: inspectionMprSession,
+    updateSession: handleInspectionMprSessionChange,
+  } = useInspectionWorkbenchSessionController(id);
   const projectConfigurationPanelRef = useRef(null);
   const projectPartsRequestRef = useRef(null);
   const projectImagesRequestRef = useRef(null);
@@ -749,14 +753,6 @@ function Project({ currentUserGroups = [] }) {
     );
   }, [id, isActiveProject, location.pathname, location.search, navigate]);
 
-  const handleInspectionMprSlicePositionChange = useCallback((slicePosition) => {
-    if (!isActiveProject(id) || !slicePosition) return;
-    setInspectionMprSlicePositions((previous) => ({
-      ...previous,
-      [id]: slicePosition,
-    }));
-  }, [id, isActiveProject]);
-
   const handleMainTabChange = useCallback(async (nextTabKey) => {
     const requestProjectId = id;
     if (!isActiveProject(requestProjectId)) return;
@@ -905,6 +901,10 @@ function Project({ currentUserGroups = [] }) {
     && !projectImagesState.loading
     && !projectImagesState.stale;
   const completeProjectCollectionsReady = projectPartsReady && projectImagesReady;
+  const completeProjectCollectionsAvailable = projectPartsState.loaded
+    && !projectPartsState.error
+    && projectImagesState.loaded
+    && !projectImagesState.error;
   const completeProjectCollectionsError = projectPartsState.error || projectImagesState.error;
 
   const projectDataContent = useMemo(() => (
@@ -1034,7 +1034,7 @@ function Project({ currentUserGroups = [] }) {
         />
       )}
 
-      {activeProjectDataTab === 'overlays' && !completeProjectCollectionsReady && (
+      {activeProjectDataTab === 'overlays' && !completeProjectCollectionsAvailable && (
         <LazyProjectDataState
           label="Overlays"
           error={completeProjectCollectionsError}
@@ -1045,7 +1045,7 @@ function Project({ currentUserGroups = [] }) {
         />
       )}
 
-      {activeProjectDataTab === 'overlays' && completeProjectCollectionsReady && (
+      {activeProjectDataTab === 'overlays' && completeProjectCollectionsAvailable && (
         <OverlaysTab
           projectId={id}
           parts={projectParts}
@@ -1156,6 +1156,7 @@ function Project({ currentUserGroups = [] }) {
     activeProjectDataTab,
     handleProjectDataTabChange,
     countsLoading,
+    completeProjectCollectionsAvailable,
     completeProjectCollectionsError,
     completeProjectCollectionsReady,
     dataCounts,
@@ -1195,8 +1196,8 @@ function Project({ currentUserGroups = [] }) {
           projectType={project?.project_type}
           hierarchy={interfaceHierarchy.inspection}
           launchFilters={inspectionLaunchFilters}
-          sessionMprSlicePosition={inspectionMprSlicePositions[id]}
-          onMprSlicePositionChange={handleInspectionMprSlicePositionChange}
+          mprSession={inspectionMprSession}
+          onMprSessionChange={handleInspectionMprSessionChange}
           onInspectionShareStateChange={handleInspectionShareStateChange}
         />
       );

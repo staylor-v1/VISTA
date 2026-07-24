@@ -688,6 +688,34 @@ test('opens a multi-image volume viewer with metadata, editable slice, and axis 
   expect(screen.getByLabelText('Current slice')).toHaveValue(3);
 });
 
+test('uses canonical descriptor fields when volume metadata omits legacy display fields', async () => {
+  jest.spyOn(global, 'fetch').mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      dimensions: { axial: 749, coronal: 1010, sagittal: 984 },
+      source_kind: 'npy',
+      channel_count: 4,
+      color_mode: 'rgba',
+    }),
+  });
+
+  render(
+    <ImagesToPartsTab
+      projectId="proj-1"
+      parts={[{ id: 'part-1', serial_number: 'SN-001', display_name: 'Part 1', metadata: { source_images: [{ filename: 'segments.npy', image_id: 'img-volume' }] } }]}
+      images={[{ id: 'img-volume', filename: 'segments.npy', metadata: { load_mode: 'volume' } }]}
+    />
+  );
+
+  fireEvent.click(screen.getByRole('button', { name: 'segments.npy' }));
+
+  const dialog = await screen.findByRole('dialog', { name: 'segments.npy' });
+  expect(await within(dialog).findByText('749')).toBeInTheDocument();
+  expect(within(dialog).getByText('1010 × 984')).toBeInTheDocument();
+  expect(within(dialog).getByText('Voxel array')).toBeInTheDocument();
+  expect(within(dialog).getByText('8-bit uint8')).toBeInTheDocument();
+});
+
 test.each([
   ['npy', 'segments.npy', 'voxel_array'],
   ['npz', 'segments.npz', 'voxel_array'],

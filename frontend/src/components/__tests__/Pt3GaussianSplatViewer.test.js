@@ -19,6 +19,7 @@ import {
 } from '../pt3ThreeRenderer';
 import { renderPt3VectorAnnotations } from '../pt3VectorAnnotations';
 import { drawPt3SliceLocator } from '../pt3SliceLocator';
+import { createPt3VolumeDescriptor } from '../pt3VolumeDescriptor';
 
 jest.mock('../pt3ThreeRenderer', () => ({
   ...jest.requireActual('../pt3ThreeRenderer'),
@@ -1016,6 +1017,38 @@ describe('Pt3GaussianSplatViewer renderer degradation', () => {
     ))).toBe(true));
     expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('9×7×5 voxels');
     expect(screen.getByTestId('pt3-gaussian-splat-viewer')).not.toHaveTextContent('128×1×1 voxels');
+  });
+
+  test('derives renderer metadata from an explicit descriptor and passes the descriptor through', async () => {
+    const volumeDescriptor = createPt3VolumeDescriptor({
+      sourceKind: 'synthetic',
+      partMetadata: {
+        volume_shape: { axial: 4, coronal: 6, sagittal: 8 },
+        spacing: [0.5, 0.75, 1.25],
+        origin: [3, 2, 1],
+      },
+      allowSynthetic: true,
+    });
+    createThreeMechanicalRenderer.mockResolvedValue(makeRenderer());
+
+    render(<Pt3GaussianSplatViewer
+      part={part}
+      mode="volume"
+      volumeDescriptor={volumeDescriptor}
+    />);
+
+    await waitFor(() => expect(createThreeMechanicalRenderer).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        volumeDescriptor,
+        metadata: expect.objectContaining({
+          dimensions: [8, 6, 4],
+          spacing: [0.5, 0.75, 1.25],
+          origin: [3, 2, 1],
+        }),
+      }),
+    ));
+    expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('8×6×4 voxels');
   });
 
   test('keeps authored dense segmentation state separate from global transparency', () => {

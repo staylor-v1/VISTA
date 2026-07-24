@@ -1288,6 +1288,53 @@ async def test_pending_recompute_keeps_previous_asset_downloadable(monkeypatch, 
     assert Path(response.path) == asset_path
 
 
+@pytest.mark.parametrize("project_type", ["PT1", "PT2"])
+def test_pt3_reconstruction_routes_reject_non_pt3_projects(client, project_type):
+    group = f"{project_type.lower()}-pt3-reconstruction-boundary"
+    headers = {
+        "X-User-Id": f"{project_type.lower()}-pt3-reconstruction-boundary@example.com",
+        "X-User-Groups": f"[\"{group}\"]",
+    }
+    project_response = client.post(
+        "/api/projects",
+        headers=headers,
+        json={
+            "name": f"{project_type} reconstruction boundary",
+            "description": "non-volume project",
+            "meta_group_id": group,
+            "project_type": project_type,
+        },
+    )
+    assert project_response.status_code == 201, project_response.text
+    project = project_response.json()
+    part_response = client.post(
+        f"/api/projects/{project['id']}/parts",
+        headers=headers,
+        json={"serial_number": f"{project_type}-NON-VOLUME-001"},
+    )
+    assert part_response.status_code == 201, part_response.text
+    part = part_response.json()
+
+    route_contracts = [
+        (
+            "volume-splat-assets",
+            "Volume splat assets are only supported for PT3 projects",
+        ),
+        (
+            "real-gaussian-splat-assets",
+            "Real Gaussian splat assets are only supported for PT3 projects",
+        ),
+    ]
+    for route, expected_detail in route_contracts:
+        response = client.post(
+            f"/api/projects/{project['id']}/parts/{part['id']}/{route}",
+            headers=headers,
+            json={},
+        )
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"] == expected_detail
+
+
 def test_pt3_part_volume_splat_asset_route_rejects_readable_client_source_path(
     client,
     tmp_path,

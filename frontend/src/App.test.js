@@ -81,6 +81,7 @@ test('renders project dashboard cards with loaded image and part counts from the
 });
 
 test('stops loading and shows an error when projects request fails', async () => {
+  const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
   global.fetch = jest.fn((input) => {
     const url = typeof input === 'string' ? input : input.url;
     if (url.endsWith('/api/users/me')) {
@@ -106,12 +107,16 @@ test('stops loading and shows an error when projects request fails', async () =>
 
   expect(await screen.findByText(/Failed to fetch projects: Request timed out/i)).toBeInTheDocument();
   expect(screen.queryByText('Loading your projects...')).not.toBeInTheDocument();
-
+  expect(consoleError).toHaveBeenCalledWith(
+    'Failed to fetch projects:',
+    expect.objectContaining({ message: 'Request timed out after 1ms' }),
+  );
 });
 
 
 test('dashboard debug mode surfaces detailed persistent project load errors', async () => {
   jest.useFakeTimers();
+  const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
   window.localStorage.setItem('vista.dashboard.debugMode', 'true');
   global.fetch = jest.fn((input) => {
     const url = typeof input === 'string' ? input : input.url;
@@ -150,6 +155,10 @@ test('dashboard debug mode surfaces detailed persistent project load errors', as
 
   await userEvent.setup({ advanceTimers: jest.advanceTimersByTime }).click(screen.getByRole('button', { name: 'Close notification' }));
   expect(screen.queryByText(/database relation "projects" does not exist/i)).not.toBeInTheDocument();
+  expect(consoleError).toHaveBeenCalledWith(
+    'Failed to fetch projects:',
+    expect.objectContaining({ message: expect.stringContaining('database relation "projects" does not exist') }),
+  );
   jest.useRealTimers();
   window.localStorage.removeItem('vista.dashboard.debugMode');
 });

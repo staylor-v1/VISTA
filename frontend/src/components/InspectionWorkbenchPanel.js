@@ -51,9 +51,19 @@ import {
   getPt3GuideAppearance,
   normalizePt3GuideSettings,
 } from '../utils/pt3GuideSettings';
+import {
+  PT3_VOLUME_AXES,
+  createPt3VolumeDescriptor,
+  getPt3AxisDimensions,
+  getPt3VolumeSliceUrl,
+} from './pt3VolumeDescriptor';
+import {
+  inspectionMprSessionsEqual,
+  normalizeInspectionMprSession,
+} from './inspectionWorkbenchSession';
 
 const VIEW_ORDER = ['front', 'back', 'left', 'right', 'top', 'bottom'];
-const MPR_AXES = ['axial', 'coronal', 'sagittal'];
+const MPR_AXES = [...PT3_VOLUME_AXES];
 const MPR_AXIS_LABELS = { axial: 'XY', coronal: 'XZ', sagittal: 'YZ' };
 const MPR_AXIS_CONFIG = {
   axial: {
@@ -1076,25 +1086,54 @@ function getVolumeEntryImageId(entry, projectImageLookup = {}) {
   return getProjectImageRecord(projectImageLookup, entry)?.id || '';
 }
 
+function getCanonicalServerVolumeDescriptor(entry, projectImageLookup = {}, probeMetadata = null) {
+  const record = getProjectImageRecord(projectImageLookup, entry);
+  const imageId = getVolumeEntryImageId(entry, projectImageLookup);
+  return createPt3VolumeDescriptor({
+    sourceKind: 'server-volume',
+    sourceEntry: {
+      ...entry,
+      image_id: imageId,
+      filename: String(entry?.filename || record?.filename || ''),
+    },
+    imageRecord: record,
+    probeMetadata,
+  });
+}
+
 function normalizeServerVolumeDimensions(candidate = {}) {
-  return MPR_AXES.reduce((acc, axis) => {
+  const compatibilityDimensions = Object.fromEntries(MPR_AXES.map((axis) => {
     const value = Number(candidate?.[axis]);
-    acc[axis] = Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
-    return acc;
-  }, {});
+    return [axis, Number.isFinite(value) && value > 0 ? Math.floor(value) : 1];
+  }));
+  const descriptor = createPt3VolumeDescriptor({
+    sourceKind: 'synthetic',
+    partMetadata: { volume_shape: compatibilityDimensions },
+    allowSynthetic: true,
+  });
+  const resolved = getPt3AxisDimensions(descriptor);
+  return resolved
+    ? { ...resolved }
+    : { axial: 1, coronal: 1, sagittal: 1 };
 }
 
 function getServerVolumeColorLayout(entry, projectImageLookup = {}) {
-  const record = getProjectImageRecord(projectImageLookup, entry) || {};
-  const candidates = [entry, entry?.metadata, record, record?.metadata];
-  for (const candidate of candidates) {
-    const channelCount = Number(candidate?.channel_count);
-    const colorMode = String(candidate?.color_mode || '').toLowerCase();
-    if (channelCount === 1 && colorMode === 'scalar') return { channelCount: 1, colorMode: 'scalar' };
-    if (channelCount === 3 && colorMode === 'rgb') return { channelCount: 3, colorMode: 'rgb' };
-    if (channelCount === 4 && colorMode === 'rgba') return { channelCount: 4, colorMode: 'rgba' };
-  }
-  return null;
+  const record = getProjectImageRecord(projectImageLookup, entry);
+  const descriptor = getCanonicalServerVolumeDescriptor(entry, projectImageLookup)
+    || createPt3VolumeDescriptor({
+      sourceKind: 'server-volume',
+      sourceEntry: {
+        ...entry,
+        image_id: getVolumeEntryImageId(entry, projectImageLookup) || 'layout-validation',
+        volume_shape: getVolumeShapeFromEntry(entry, projectImageLookup)
+          || { axial: 1, coronal: 1, sagittal: 1 },
+      },
+      imageRecord: record,
+    });
+  return descriptor ? {
+    channelCount: descriptor.samples.channelCount,
+    colorMode: descriptor.samples.colorMode,
+  } : null;
 }
 
 function getVolumeColorLayout(entry, projectImageLookup = {}) {
@@ -1107,10 +1146,7 @@ function getVolumeMetadataProbeCandidates(part, projectImageLookup = {}) {
   const sourceImages = Array.isArray(part?.metadata?.source_images) ? part.metadata.source_images : [];
   return sourceImages
     .filter((entry) => entry && isVolumeFileEntry(entry, projectImageLookup))
-    .filter((entry) => (
-      !getVolumeShapeFromEntry(entry, projectImageLookup)
-      || !getServerVolumeColorLayout(entry, projectImageLookup)
-    ))
+    .filter((entry) => !getCanonicalServerVolumeDescriptor(entry, projectImageLookup))
     .map((entry) => ({
       entry,
       imageId: String(getVolumeEntryImageId(entry, projectImageLookup) || ''),
@@ -1119,18 +1155,21 @@ function getVolumeMetadataProbeCandidates(part, projectImageLookup = {}) {
 }
 
 function normalizeProbedVolumeMetadata(payload) {
-  const dimensions = getVolumeShapeFromEntry({ volume_shape: payload?.dimensions });
-  const layout = getServerVolumeColorLayout({
-    channel_count: payload?.channel_count,
-    color_mode: payload?.color_mode,
+  const descriptor = createPt3VolumeDescriptor({
+    sourceKind: 'server-volume',
+    sourceEntry: {
+      image_id: 'metadata-probe',
+      filename: 'metadata-probe.npy',
+    },
+    probeMetadata: payload,
   });
-  if (!dimensions || !layout) {
+  if (!descriptor) {
     throw new Error('Volume metadata response did not include valid dimensions and color layout');
   }
   const metadata = {
-    volume_shape: dimensions,
-    channel_count: layout.channelCount,
-    color_mode: layout.colorMode,
+    volume_shape: getPt3AxisDimensions(descriptor),
+    channel_count: descriptor.samples.channelCount,
+    color_mode: descriptor.samples.colorMode,
   };
   [
     'pixel_dtype',
@@ -1168,6 +1207,11 @@ function drawMprOverlaySlice(context, overlaySliceCanvas, overlayCache, width, h
 
 function getServerVolumeSliceUrl(volume, axis, index) {
   if (!volume?.imageId) return '';
+  if (volume.volumeDescriptor) {
+    return getPt3VolumeSliceUrl(volume.volumeDescriptor, axis, index, {
+      rendererVersion: MPR_VOLUME_SLICE_RENDER_VERSION,
+    });
+  }
   const safeAxis = MPR_AXES.includes(axis) ? axis : 'axial';
   const dimensions = normalizeServerVolumeDimensions(volume.dimensions);
   const upper = Math.max(0, dimensions[safeAxis] - 1);
@@ -1181,24 +1225,26 @@ function getVolumeRenderSummaryUrl(volume) {
 }
 
 function createServerVolumeDescriptor(entry, projectImageLookup = {}, extra = {}) {
-  const imageId = getVolumeEntryImageId(entry, projectImageLookup);
-  const volumeShape = getVolumeShapeFromEntry(entry, projectImageLookup);
-  const colorLayout = getServerVolumeColorLayout(entry, projectImageLookup);
-  if (!imageId || !volumeShape || !colorLayout || !isVolumeFileEntry(entry, projectImageLookup)) return null;
-  const dimensions = normalizeServerVolumeDimensions(volumeShape);
+  const volumeDescriptor = getCanonicalServerVolumeDescriptor(entry, projectImageLookup);
+  if (!volumeDescriptor || !isVolumeFileEntry(entry, projectImageLookup)) return null;
+  const dimensions = getPt3AxisDimensions(volumeDescriptor);
   const descriptor = {
     kind: MPR_SERVER_VOLUME_KIND,
-    id: String(imageId),
-    imageId: String(imageId),
-    filename: String(entry?.filename || getProjectImageRecord(projectImageLookup, entry)?.filename || ''),
+    id: volumeDescriptor.source.imageId,
+    imageId: volumeDescriptor.source.imageId,
+    filename: volumeDescriptor.source.filename,
     dimensions,
-    ...colorLayout,
+    channelCount: volumeDescriptor.samples.channelCount,
+    colorMode: volumeDescriptor.samples.colorMode,
+    volumeDescriptor,
     sliceIndex: Math.floor((dimensions.axial - 1) / 2),
     ...extra,
   };
   return {
     ...descriptor,
-    url: getServerVolumeSliceUrl(descriptor, 'axial', descriptor.sliceIndex),
+    url: getPt3VolumeSliceUrl(volumeDescriptor, 'axial', descriptor.sliceIndex, {
+      rendererVersion: MPR_VOLUME_SLICE_RENDER_VERSION,
+    }),
   };
 }
 
@@ -3676,8 +3722,8 @@ function InspectionWorkbenchPanel({
   projectType,
   hierarchy,
   launchFilters,
-  sessionMprSlicePosition,
-  onMprSlicePositionChange,
+  mprSession,
+  onMprSessionChange,
   onInspectionShareStateChange,
 }) {
   const [batches, setBatches] = useState([]);
@@ -3690,16 +3736,72 @@ function InspectionWorkbenchPanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [savingPartId, setSavingPartId] = useState(null);
-  const [slicePosition, setSlicePosition] = useState({ axial: 0, coronal: 0, sagittal: 0 });
-  const sessionMprSlicePositionRef = useRef({ projectId, slicePosition: sessionMprSlicePosition });
-  if (sessionMprSlicePositionRef.current.projectId !== projectId) {
-    sessionMprSlicePositionRef.current = { projectId, slicePosition: sessionMprSlicePosition };
+  const mprSessionProjectKey = String(projectId ?? '');
+  const [localMprNavigationState, setLocalMprNavigationState] = useState(() => ({
+    projectKey: mprSessionProjectKey,
+    session: normalizeInspectionMprSession({}),
+  }));
+  const mprNavigationSessionRef = useRef({
+    projectKey: mprSessionProjectKey,
+    session: localMprNavigationState.session,
+  });
+  const mprNavigationHydratedProjectRef = useRef('');
+  const lastControlledMprSessionRef = useRef(null);
+  const pendingPublishedMprSessionRef = useRef(null);
+  const mprDimensionsRef = useRef({ axial: 1, coronal: 1, sagittal: 1 });
+  if (mprNavigationSessionRef.current.projectKey !== mprSessionProjectKey) {
+    mprNavigationSessionRef.current = {
+      projectKey: mprSessionProjectKey,
+      session: normalizeInspectionMprSession({}),
+    };
+    mprNavigationHydratedProjectRef.current = '';
+    lastControlledMprSessionRef.current = null;
+    pendingPublishedMprSessionRef.current = null;
+    mprDimensionsRef.current = { axial: 1, coronal: 1, sagittal: 1 };
   }
-  const slicePositionRef = useRef(slicePosition);
-  const [viewportTransform, setViewportTransform] = useState({ zoom: 1, panX: 0, panY: 0 });
-  const [activeMprPane, setActiveMprPane] = useState('axial');
-  const [lastActiveMprAxis, setLastActiveMprAxis] = useState('axial');
-  const [mprRotation, setMprRotation] = useState({ x: -22, y: 32 });
+  const mprNavigationSession = (
+    localMprNavigationState.projectKey === mprSessionProjectKey
+      ? localMprNavigationState.session
+      : mprNavigationSessionRef.current.session
+  );
+  const {
+    slicePosition,
+    viewportTransform,
+    activePane: activeMprPane,
+    lastActiveAxis: lastActiveMprAxis,
+    rotation: mprRotation,
+  } = mprNavigationSession;
+  const applyMprNavigationSession = useCallback((patchOrUpdater, { publish = true } = {}) => {
+    const previousSession = mprNavigationSessionRef.current.projectKey === mprSessionProjectKey
+      ? mprNavigationSessionRef.current.session
+      : normalizeInspectionMprSession({});
+    const candidate = typeof patchOrUpdater === 'function'
+      ? patchOrUpdater(previousSession)
+      : patchOrUpdater;
+    const nextSession = normalizeInspectionMprSession(candidate, {
+      dimensions: mprDimensionsRef.current,
+      fallback: previousSession,
+    });
+    if (
+      nextSession === previousSession
+      || inspectionMprSessionsEqual(nextSession, previousSession)
+    ) {
+      return previousSession;
+    }
+    mprNavigationSessionRef.current = {
+      projectKey: mprSessionProjectKey,
+      session: nextSession,
+    };
+    setLocalMprNavigationState({
+      projectKey: mprSessionProjectKey,
+      session: nextSession,
+    });
+    if (publish && typeof onMprSessionChange === 'function') {
+      pendingPublishedMprSessionRef.current = nextSession;
+      onMprSessionChange(nextSession);
+    }
+    return nextSession;
+  }, [mprSessionProjectKey, onMprSessionChange]);
   const [mprReconstructionMode, setMprReconstructionMode] = useState(MPR_RECONSTRUCTION_MODES.orientation);
   const [mprFullscreenOpen, setMprFullscreenOpen] = useState(false);
   const [mprFullscreenAnnotationListVisible, setMprFullscreenAnnotationListVisible] = useState(true);
@@ -3893,10 +3995,6 @@ function InspectionWorkbenchPanel({
   const mprOverlayCanvasRef = useRef(null);
   const [mprFallbackOverlaySize, setMprFallbackOverlaySize] = useState({ width: 0, height: 0 });
   const appliedLaunchFiltersSignatureRef = useRef('');
-
-  useEffect(() => {
-    if (MPR_AXES.includes(activeMprPane)) setLastActiveMprAxis(activeMprPane);
-  }, [activeMprPane]);
 
   const inspectionHierarchy = useMemo(() => {
     const normalized = normalizeInspectionHierarchy(hierarchy || {});
@@ -4129,7 +4227,14 @@ function InspectionWorkbenchPanel({
     if (requestedMetadataTab) setActiveMetadataTab(requestedMetadataTab);
     const requestedMprPane = String(launchFilters.active_mpr_pane || '').trim();
     if (projectType === 'PT3' && ['axial', 'coronal', 'sagittal', 'volume'].includes(requestedMprPane)) {
-      setActiveMprPane(requestedMprPane);
+      if (mprNavigationHydratedProjectRef.current === mprSessionProjectKey) {
+        applyMprNavigationSession({
+          activePane: requestedMprPane,
+          ...(MPR_AXES.includes(requestedMprPane)
+            ? { lastActiveAxis: requestedMprPane }
+            : {}),
+        });
+      }
     }
     if (projectType === 'PT3' && Array.isArray(launchFilters.active_overlay_ids)) {
       const targetPart = parts.find((part) => String(part.id) === targetPartId);
@@ -4146,7 +4251,15 @@ function InspectionWorkbenchPanel({
       );
     }
     appliedLaunchFiltersSignatureRef.current = launchFiltersSignature;
-  }, [batches, launchFilters, parts, projectType, selectedPartId]);
+  }, [
+    applyMprNavigationSession,
+    batches,
+    launchFilters,
+    mprSessionProjectKey,
+    parts,
+    projectType,
+    selectedPartId,
+  ]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -4381,6 +4494,7 @@ function InspectionWorkbenchPanel({
   }, [projectId, selectedPart?.id]);
 
   const mprDimensions = useMemo(() => getMprDimensions(selectedPart, projectImageLookup), [projectImageLookup, selectedPart]);
+  mprDimensionsRef.current = mprDimensions;
   const displayValueDomain = useMemo(
     () => getPartDisplayValueDomain(selectedPart, projectImageLookup),
     [projectImageLookup, selectedPart],
@@ -4661,13 +4775,16 @@ function InspectionWorkbenchPanel({
     () => getVolumeOverlayStacks(selectedPart, projectImageLookup),
     [projectImageLookup, selectedPart],
   );
-  const visibleVolumeOverlayStacks = useMemo(
-    () => (annotationsVisible ? volumeOverlayStacks.filter((entry) => entry?.hidden !== true) : []),
-    [annotationsVisible, volumeOverlayStacks],
+  // Global annotation visibility is a render-time concern. Keeping confirmed
+  // stacks loaded avoids tearing down and decoding the 3D overlay texture on
+  // every hide/show cycle; individually hidden resources remain unloaded.
+  const loadedVolumeOverlayStacks = useMemo(
+    () => volumeOverlayStacks.filter((entry) => entry?.hidden !== true),
+    [volumeOverlayStacks],
   );
   const visibleSemantic3dVolumeOverlayStacks = useMemo(
-    () => getSemantic3dVolumeOverlayStacks(visibleVolumeOverlayStacks),
-    [visibleVolumeOverlayStacks],
+    () => getSemantic3dVolumeOverlayStacks(loadedVolumeOverlayStacks),
+    [loadedVolumeOverlayStacks],
   );
   const volumeRenderSummaryCandidates = useMemo(() => {
     if (mprReconstructionMode === MPR_RECONSTRUCTION_MODES.orientation) return [];
@@ -4801,12 +4918,12 @@ function InspectionWorkbenchPanel({
     segmentationHelperView,
     segmentationHelperVolumeDimensions,
   ]);
-  const volumeOverlayCacheStates = useMprVolumeCaches(visibleVolumeOverlayStacks, mprDimensions);
+  const volumeOverlayCacheStates = useMprVolumeCaches(loadedVolumeOverlayStacks, mprDimensions);
   const activeVolumeOverlayCaches = useMemo(
-    () => ((projectType === 'PT3' || renderCategories.includes('overlay'))
+    () => ((annotationsVisible && (projectType === 'PT3' || renderCategories.includes('overlay')))
       ? volumeOverlayCacheStates.map((state) => state.cache).filter(Boolean)
       : []),
-    [projectType, renderCategories, volumeOverlayCacheStates],
+    [annotationsVisible, projectType, renderCategories, volumeOverlayCacheStates],
   );
   const hasVolumeImageSource = hasMprVolumeSource(volumeImageStack);
   const shellImageLayers = useMemo(
@@ -4844,6 +4961,9 @@ function InspectionWorkbenchPanel({
       }));
   }, [mprDimensions.axial, volumeImageStack]);
   const volumeRendererImageStack = volumePreviewLayers;
+  const volumeRendererDescriptor = isServerVolumeDescriptor(volumeImageStack)
+    ? volumeImageStack.volumeDescriptor
+    : null;
   const volumeRendererOverlayImageStacks = useMemo(
     () => getAlignedVolumeOverlayRendererStacks(
       visibleSemantic3dVolumeOverlayStacks,
@@ -5025,24 +5145,103 @@ function InspectionWorkbenchPanel({
   }, [selectedPartImageRefs, selectedImageRef]);
 
   useEffect(() => {
+    if (!selectedPart || projectType !== 'PT3' || !workspaceStateLoaded) return;
+    const savedMpr = workspaceHydration?.mpr || {};
+    const centeredSession = normalizeInspectionMprSession({
+      slicePosition: {
+        axial: Math.floor((mprDimensions.axial - 1) / 2),
+        coronal: Math.floor((mprDimensions.coronal - 1) / 2),
+        sagittal: Math.floor((mprDimensions.sagittal - 1) / 2),
+      },
+    }, { dimensions: mprDimensions });
+    const workspaceSession = normalizeInspectionMprSession({
+      slicePosition: savedMpr.slice_position,
+      viewportTransform: savedMpr.viewport_transform,
+    }, {
+      dimensions: mprDimensions,
+      fallback: centeredSession,
+    });
+    const hasControlledSession = Boolean(mprSession && typeof mprSession === 'object');
+
+    if (mprNavigationHydratedProjectRef.current !== mprSessionProjectKey) {
+      const parentPreferredSession = hasControlledSession
+        ? normalizeInspectionMprSession(mprSession, {
+          dimensions: mprDimensions,
+          fallback: workspaceSession,
+        })
+        : workspaceSession;
+      const requestedPane = String(launchFilters?.active_mpr_pane || '').trim();
+      const initialSession = normalizeInspectionMprSession(
+        ['axial', 'coronal', 'sagittal', 'volume'].includes(requestedPane)
+          ? {
+            ...parentPreferredSession,
+            activePane: requestedPane,
+            ...(MPR_AXES.includes(requestedPane)
+              ? { lastActiveAxis: requestedPane }
+              : {}),
+          }
+          : parentPreferredSession,
+        {
+          dimensions: mprDimensions,
+          fallback: workspaceSession,
+        },
+      );
+      applyMprNavigationSession(initialSession, { publish: false });
+      mprNavigationHydratedProjectRef.current = mprSessionProjectKey;
+      lastControlledMprSessionRef.current = mprSession;
+      if (
+        typeof onMprSessionChange === 'function'
+        && (!hasControlledSession || !inspectionMprSessionsEqual(mprSession, initialSession))
+      ) {
+        pendingPublishedMprSessionRef.current = initialSession;
+        onMprSessionChange(initialSession);
+      }
+      return;
+    }
+
+    const controlledSessionChanged = hasControlledSession
+      && lastControlledMprSessionRef.current !== mprSession;
+    if (controlledSessionChanged) {
+      lastControlledMprSessionRef.current = mprSession;
+      pendingPublishedMprSessionRef.current = null;
+    }
+    const sourceSession = controlledSessionChanged
+      ? mprSession
+      : mprNavigationSessionRef.current.session;
+    const normalizedSession = normalizeInspectionMprSession(sourceSession, {
+      dimensions: mprDimensions,
+      fallback: mprNavigationSessionRef.current.session,
+    });
+    applyMprNavigationSession(normalizedSession, { publish: false });
+    if (
+      hasControlledSession
+      && typeof onMprSessionChange === 'function'
+      && !inspectionMprSessionsEqual(mprSession, normalizedSession)
+      && !inspectionMprSessionsEqual(
+        pendingPublishedMprSessionRef.current,
+        normalizedSession,
+      )
+    ) {
+      pendingPublishedMprSessionRef.current = normalizedSession;
+      onMprSessionChange(normalizedSession);
+    }
+  }, [
+    applyMprNavigationSession,
+    launchFilters?.active_mpr_pane,
+    mprDimensions,
+    mprSession,
+    mprSessionProjectKey,
+    onMprSessionChange,
+    projectType,
+    selectedPart,
+    workspaceHydration,
+    workspaceStateLoaded,
+  ]);
+
+  useEffect(() => {
     if (!selectedPart || projectType !== 'PT3') return;
     const savedMpr = workspaceHydration?.mpr || {};
-    const savedSlice = sessionMprSlicePositionRef.current.slicePosition || savedMpr?.slice_position || {};
-    const savedViewport = savedMpr?.viewport_transform || {};
     const savedProbe = savedMpr?.cursor_probe || {};
-    const hydratedSlicePosition = {
-      axial: clampRange(savedSlice.axial, 0, Math.max(0, mprDimensions.axial - 1), Math.floor((mprDimensions.axial - 1) / 2)),
-      coronal: clampRange(savedSlice.coronal, 0, Math.max(0, mprDimensions.coronal - 1), Math.floor((mprDimensions.coronal - 1) / 2)),
-      sagittal: clampRange(savedSlice.sagittal, 0, Math.max(0, mprDimensions.sagittal - 1), Math.floor((mprDimensions.sagittal - 1) / 2)),
-    };
-    sessionMprSlicePositionRef.current.slicePosition = hydratedSlicePosition;
-    slicePositionRef.current = hydratedSlicePosition;
-    setSlicePosition(hydratedSlicePosition);
-    setViewportTransform({
-      zoom: clampRange(savedViewport.zoom, 0.5, 4, 1),
-      panX: clampRange(savedViewport.panX, -200, 200, 0),
-      panY: clampRange(savedViewport.panY, -200, 200, 0),
-    });
     setMprProjectionMirror(normalizeMprProjectionMirror(savedMpr.projection_mirror));
     const displayDomain = getNormalizedDisplayDomain(displayValueDomain);
     const displayDomainKey = `${displayDomain.min}:${displayDomain.max}:${displayDomain.step}`;
@@ -5355,41 +5554,52 @@ function InspectionWorkbenchPanel({
   const updateSlicePosition = (axis, value, dimensions) => {
     const upper = Math.max(0, (dimensions?.[axis] || 1) - 1);
     const nextValue = Math.min(upper, Math.max(0, Number(value) || 0));
-    const nextSlicePosition = { ...slicePositionRef.current, [axis]: nextValue };
-    sessionMprSlicePositionRef.current.slicePosition = nextSlicePosition;
-    slicePositionRef.current = nextSlicePosition;
-    setSlicePosition(nextSlicePosition);
-    onMprSlicePositionChange?.(nextSlicePosition);
+    applyMprNavigationSession((previous) => ({
+      slicePosition: { ...previous.slicePosition, [axis]: nextValue },
+    }));
   };
 
-  const stepSlicePosition = (axis, delta) => {
+  const stepSlicePosition = (axis, delta, { activatePane = false } = {}) => {
     const upper = Math.max(0, (mprDimensions?.[axis] || 1) - 1);
-    const nextSlicePosition = {
-      ...slicePositionRef.current,
-      [axis]: Math.min(upper, Math.max(0, Number(slicePositionRef.current[axis] || 0) + delta)),
-    };
-    sessionMprSlicePositionRef.current.slicePosition = nextSlicePosition;
-    slicePositionRef.current = nextSlicePosition;
-    setSlicePosition(nextSlicePosition);
-    onMprSlicePositionChange?.(nextSlicePosition);
+    applyMprNavigationSession((previous) => ({
+      slicePosition: {
+        ...previous.slicePosition,
+        [axis]: Math.min(
+          upper,
+          Math.max(0, Number(previous.slicePosition?.[axis] || 0) + delta),
+        ),
+      },
+      ...(activatePane ? {
+        activePane: axis,
+        lastActiveAxis: axis,
+      } : {}),
+    }));
   };
 
   const handleMprPaneWheel = (axis, event) => {
     event.preventDefault();
-    setActiveMprPane(axis);
-    stepSlicePosition(axis, event.deltaY > 0 ? 1 : -1);
+    stepSlicePosition(axis, event.deltaY > 0 ? 1 : -1, { activatePane: true });
   };
 
   const handleMprVolumeWheel = (event) => {
     event.preventDefault();
-    setActiveMprPane('volume');
-    adjustZoom(event.deltaY < 0 ? 0.12 : -0.12);
+    const delta = event.deltaY < 0 ? 0.12 : -0.12;
+    applyMprNavigationSession((previous) => ({
+      activePane: 'volume',
+      viewportTransform: {
+        ...previous.viewportTransform,
+        zoom: Math.min(
+          4,
+          Math.max(0.5, Number((previous.viewportTransform.zoom + delta).toFixed(2))),
+        ),
+      },
+    }));
   };
 
   const handleMprVolumePointerDown = (event) => {
     event.preventDefault();
     if ((event.button !== undefined && event.button !== 0) || mprDragRef.current) return;
-    setActiveMprPane('volume');
+    applyMprNavigationSession({ activePane: 'volume' });
     mprDragRef.current = {
       pointerId: event.pointerId,
       startX: event.clientX,
@@ -5408,9 +5618,11 @@ function InspectionWorkbenchPanel({
     const dx = event.clientX - drag.startX;
     const dy = event.clientY - drag.startY;
     if (Math.abs(dx) > 4 || Math.abs(dy) > 4) drag.moved = true;
-    setMprRotation({
-      x: Math.min(72, Math.max(-72, drag.rotation.x + dy * 0.35)),
-      y: drag.rotation.y + dx * 0.35,
+    applyMprNavigationSession({
+      rotation: {
+        x: Math.min(72, Math.max(-72, drag.rotation.x + dy * 0.35)),
+        y: drag.rotation.y + dx * 0.35,
+      },
     });
   };
 
@@ -5434,7 +5646,7 @@ function InspectionWorkbenchPanel({
       return;
     }
     mprFullscreenOpenerRef.current = event.currentTarget.querySelector?.('[role="button"]') || event.currentTarget;
-    setActiveMprPane('volume');
+    applyMprNavigationSession({ activePane: 'volume' });
     setMprFullscreenOpen(true);
   };
 
@@ -6647,15 +6859,22 @@ function InspectionWorkbenchPanel({
   };
 
   const adjustZoom = (delta) => {
-    setViewportTransform((prev) => {
-      const nextZoom = Math.min(4, Math.max(0.5, Number((prev.zoom + delta).toFixed(2))));
-      return { ...prev, zoom: nextZoom };
-    });
+    applyMprNavigationSession((previous) => ({
+      viewportTransform: {
+        ...previous.viewportTransform,
+        zoom: Math.min(
+          4,
+          Math.max(0.5, Number((previous.viewportTransform.zoom + delta).toFixed(2))),
+        ),
+      },
+    }));
   };
 
   const resetViewport = () => {
-    setViewportTransform({ zoom: 1, panX: 0, panY: 0 });
-    setMprRotation({ x: -22, y: 32 });
+    applyMprNavigationSession({
+      viewportTransform: { zoom: 1, panX: 0, panY: 0 },
+      rotation: { x: -22, y: 32 },
+    });
   };
 
   const toggleRenderCategory = (categoryId) => {
@@ -7789,7 +8008,18 @@ function InspectionWorkbenchPanel({
   };
 
   const renderMprPane = () => (
-    <section className="mpr-shell" data-testid="mpr-panel" aria-label="Multi-Planar Reconstruction">
+    <section
+      className="mpr-shell"
+      data-testid="mpr-panel"
+      data-active-pane={activeMprPane}
+      data-last-active-axis={lastActiveMprAxis}
+      data-zoom={viewportTransform.zoom}
+      data-pan-x={viewportTransform.panX}
+      data-pan-y={viewportTransform.panY}
+      data-rotation-x={mprRotation.x}
+      data-rotation-y={mprRotation.y}
+      aria-label="Multi-Planar Reconstruction"
+    >
       {!selectedPart ? (
         <p className="muted">No part selected. Select a part to inspect the volume.</p>
       ) : (
@@ -7953,7 +8183,10 @@ function InspectionWorkbenchPanel({
                   style={{ '--mpr-axis-color': config?.color, ...crosshairStyle }}
                   data-testid={`mpr-pane-${axis}`}
                   onClick={() => {
-                    setActiveMprPane(axis);
+                    applyMprNavigationSession({
+                      activePane: axis,
+                      lastActiveAxis: axis,
+                    });
                     openMprAnnotationTool(axis, '');
                     setFullscreenMeasureActive(false);
                     setFullscreenImageZoom({ scale: 1, panX: 0, panY: 0, originX: 50, originY: 50 });
@@ -8188,7 +8421,7 @@ function InspectionWorkbenchPanel({
               aria-labelledby={mprFullscreenOpen ? 'mpr-3d-fullscreen-title' : undefined}
               aria-describedby={mprFullscreenOpen ? 'mpr-3d-fullscreen-mode' : undefined}
               onClick={() => {
-                setActiveMprPane('volume');
+                applyMprNavigationSession({ activePane: 'volume' });
               }}
               onWheel={handleMprVolumeWheel}
             >
@@ -8276,11 +8509,29 @@ function InspectionWorkbenchPanel({
                     event.preventDefault();
                     event.stopPropagation();
                   }
-                  if (event.key === 'ArrowLeft') setMprRotation((prev) => ({ ...prev, y: prev.y - 5 }));
-                  else if (event.key === 'ArrowRight') setMprRotation((prev) => ({ ...prev, y: prev.y + 5 }));
-                  else if (event.key === 'ArrowUp') setMprRotation((prev) => ({ ...prev, x: Math.max(-72, prev.x - 5) }));
-                  else if (event.key === 'ArrowDown') setMprRotation((prev) => ({ ...prev, x: Math.min(72, prev.x + 5) }));
-                  else if (['+', '='].includes(event.key)) adjustZoom(0.12);
+                  if (event.key === 'ArrowLeft') {
+                    applyMprNavigationSession((previous) => ({
+                      rotation: { ...previous.rotation, y: previous.rotation.y - 5 },
+                    }));
+                  } else if (event.key === 'ArrowRight') {
+                    applyMprNavigationSession((previous) => ({
+                      rotation: { ...previous.rotation, y: previous.rotation.y + 5 },
+                    }));
+                  } else if (event.key === 'ArrowUp') {
+                    applyMprNavigationSession((previous) => ({
+                      rotation: {
+                        ...previous.rotation,
+                        x: Math.max(-72, previous.rotation.x - 5),
+                      },
+                    }));
+                  } else if (event.key === 'ArrowDown') {
+                    applyMprNavigationSession((previous) => ({
+                      rotation: {
+                        ...previous.rotation,
+                        x: Math.min(72, previous.rotation.x + 5),
+                      },
+                    }));
+                  } else if (['+', '='].includes(event.key)) adjustZoom(0.12);
                   else if (['-', '_'].includes(event.key)) adjustZoom(-0.12);
                   else if (event.key === '0') resetViewport();
                 }}
@@ -8293,6 +8544,7 @@ function InspectionWorkbenchPanel({
                   <Pt3GaussianSplatViewer
                     part={selectedPart}
                     projectId={projectId}
+                    volumeDescriptor={volumeRendererDescriptor}
                     volumeImageStack={volumeRendererImageStack}
                     volumeOverlayImageStacks={volumeRendererOverlayImageStacks}
                     splatParameters={splatParameters}
@@ -8308,8 +8560,15 @@ function InspectionWorkbenchPanel({
                     splatViewSettings={splatViewSettings}
                     onRayMarchSettingsChange={setRayMarchSettings}
                     onSplatViewSettingsChange={setSplatViewSettings}
-                    onRotationChange={setMprRotation}
-                    onZoomChange={(nextZoom) => setViewportTransform((prev) => ({ ...prev, zoom: nextZoom }))}
+                    onRotationChange={(nextRotation) => applyMprNavigationSession({
+                      rotation: nextRotation,
+                    })}
+                    onZoomChange={(nextZoom) => applyMprNavigationSession((previous) => ({
+                      viewportTransform: {
+                        ...previous.viewportTransform,
+                        zoom: nextZoom,
+                      },
+                    }))}
                     onResetView={resetViewport}
                     showRayMarchControls={mprFullscreenOpen && mprFullscreenReconstructionSettingsVisible}
                     showSplatControls={mprFullscreenOpen && mprFullscreenReconstructionSettingsVisible}
@@ -8959,7 +9218,10 @@ function InspectionWorkbenchPanel({
                             setEditingSegmentationSegmentId(segment.id);
                             setSegmentationHelperAxis(segment.axis);
                             setSegmentationHelperView(SEGMENTATION_VIEW_BY_AXIS[segment.axis] || 'z');
-                            setActiveMprPane(segment.axis);
+                            applyMprNavigationSession({
+                              activePane: segment.axis,
+                              lastActiveAxis: segment.axis,
+                            });
                             setSegmentationPendingSelection(null);
                             setSegmentationVolumeStatus('');
                             setSegmentationHelperOpen(true);
@@ -9328,7 +9590,10 @@ function InspectionWorkbenchPanel({
                   setSegmentationHelperView(view.id);
                   if (view.axis) {
                     setSegmentationHelperAxis(view.axis);
-                    setActiveMprPane(view.axis);
+                    applyMprNavigationSession({
+                      activePane: view.axis,
+                      lastActiveAxis: view.axis,
+                    });
                   } else if (view.id === '3d' && !activeTool.modes?.includes('3d')) {
                     setSegmentationTool('brush');
                   }
@@ -9400,7 +9665,10 @@ function InspectionWorkbenchPanel({
                             if (!['mpr', '3d'].includes(segmentationHelperView)) {
                               setSegmentationHelperView(SEGMENTATION_VIEW_BY_AXIS[segment.axis] || 'z');
                             }
-                            setActiveMprPane(segment.axis);
+                            applyMprNavigationSession({
+                              activePane: segment.axis,
+                              lastActiveAxis: segment.axis,
+                            });
                           }}
                         >
                           <span className="segmentation-segment-color" style={{ backgroundColor: segment.color }} />
@@ -9418,7 +9686,10 @@ function InspectionWorkbenchPanel({
                             if (!['mpr', '3d'].includes(segmentationHelperView)) {
                               setSegmentationHelperView(SEGMENTATION_VIEW_BY_AXIS[segment.axis] || 'z');
                             }
-                            setActiveMprPane(segment.axis);
+                            applyMprNavigationSession({
+                              activePane: segment.axis,
+                              lastActiveAxis: segment.axis,
+                            });
                             setEditingSegmentationSegmentId(editing ? '' : segment.id);
                           }}
                         >
@@ -9739,7 +10010,10 @@ function InspectionWorkbenchPanel({
                         onClick={() => {
                           setSegmentationHelperAxis(previewAxis);
                           setSegmentationHelperView(SEGMENTATION_VIEW_BY_AXIS[previewAxis]);
-                          setActiveMprPane(previewAxis);
+                          applyMprNavigationSession({
+                            activePane: previewAxis,
+                            lastActiveAxis: previewAxis,
+                          });
                         }}
                         data-testid={`segmentation-helper-mpr-${previewAxis}`}
                       >
@@ -9823,6 +10097,7 @@ function InspectionWorkbenchPanel({
                 <section className="segmentation-helper-3d-stage" data-testid="segmentation-helper-3d-stage">
                   <Pt3GaussianSplatViewer
                     part={selectedPart}
+                    volumeDescriptor={volumeRendererDescriptor}
                     volumeMetadata={segmentationHelper3dVolumeMetadata}
                     projectId={projectId}
                     volumeImageStack={volumeRendererImageStack}
@@ -9838,8 +10113,15 @@ function InspectionWorkbenchPanel({
                     splatViewSettings={splatViewSettings}
                     onRayMarchSettingsChange={setRayMarchSettings}
                     onSplatViewSettingsChange={setSplatViewSettings}
-                    onRotationChange={setMprRotation}
-                    onZoomChange={(nextZoom) => setViewportTransform((previous) => ({ ...previous, zoom: nextZoom }))}
+                    onRotationChange={(nextRotation) => applyMprNavigationSession({
+                      rotation: nextRotation,
+                    })}
+                    onZoomChange={(nextZoom) => applyMprNavigationSession((previous) => ({
+                      viewportTransform: {
+                        ...previous.viewportTransform,
+                        zoom: nextZoom,
+                      },
+                    }))}
                     onResetView={resetViewport}
                     showRayMarchControls={false}
                     showSplatControls={false}
@@ -10529,7 +10811,10 @@ function InspectionWorkbenchPanel({
     if (event.button !== undefined && event.button !== 0) return false;
     event.preventDefault();
     event.stopPropagation();
-    setActiveMprPane(axis);
+    applyMprNavigationSession({
+      activePane: axis,
+      lastActiveAxis: axis,
+    });
     const sliceIndex = Number(slicePosition[axis] || 0);
     const position = getMprAnnotationPointerPosition(event, axis, sliceIndex);
     if (!position) return true;
@@ -10713,7 +10998,10 @@ function InspectionWorkbenchPanel({
     if (!startPoint) return;
     event.preventDefault();
     event.stopPropagation();
-    setActiveMprPane(axis);
+    applyMprNavigationSession({
+      activePane: axis,
+      lastActiveAxis: axis,
+    });
     setSelectedAnnotationId(geometry.id);
     const source = { ...geometry };
     mprAnnotationGeometryDragRef.current = {

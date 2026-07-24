@@ -380,7 +380,9 @@ describe('CalibrationManager', () => {
     it('clears override when confirmed', async () => {
       jest.spyOn(window, 'confirm').mockReturnValue(true);
 
-      global.fetch.mockResolvedValue({ ok: true });
+      global.fetch
+        .mockResolvedValueOnce({ ok: true })
+        .mockResolvedValueOnce({ ok: false });
 
       const imageWithOverride = {
         metadata: {
@@ -401,6 +403,7 @@ describe('CalibrationManager', () => {
           '/api/images/image-456/metadata/calibration_override',
           expect.objectContaining({ method: 'DELETE' })
         );
+        expect(defaultProps.onCalibrationChange).toHaveBeenLastCalledWith(null);
       });
     });
 

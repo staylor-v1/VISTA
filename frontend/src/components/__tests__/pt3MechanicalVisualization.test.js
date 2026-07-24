@@ -1,8 +1,17 @@
-import { getMechanicalCropBox, getMechanicalVolumeMetadata, makeMechanicalFallbackSplats, countVisibleSplats } from '../pt3MechanicalVisualization';
+import {
+  countVisibleSplats,
+  getMechanicalCropBox,
+  getMechanicalVolumeDescriptor,
+  getMechanicalVolumeMetadata,
+  makeMechanicalFallbackSplats,
+} from '../pt3MechanicalVisualization';
 
 describe('mechanical 3D visualization helpers', () => {
   test('derives industrial part metadata without medical defaults', () => {
-    const metadata = getMechanicalVolumeMetadata({ id: 'gear-1', metadata: { volume_shape: { sagittal: 20, coronal: 10, axial: 5 } } });
+    const part = { id: 'gear-1', metadata: { volume_shape: { sagittal: 20, coronal: 10, axial: 5 } } };
+    const descriptor = getMechanicalVolumeDescriptor(part);
+    const metadata = getMechanicalVolumeMetadata(part);
+    expect(descriptor.dimensions).toEqual({ sagittal: 20, coronal: 10, axial: 5 });
     expect(metadata.dimensions).toEqual([20, 10, 5]);
     expect(metadata.spacing).toEqual([0.08, 0.08, 0.12]);
     expect(metadata.modality).toBe('industrial_ct');

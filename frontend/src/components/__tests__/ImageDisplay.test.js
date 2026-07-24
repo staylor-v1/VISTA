@@ -329,6 +329,7 @@ describe('ImageDisplay', () => {
 
   describe('Error Handling', () => {
     test('falls back to thumbnail on image load error', async () => {
+      const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
       renderImageDisplay();
       
       const image = screen.getByAltText('test-image.jpg');
@@ -339,6 +340,11 @@ describe('ImageDisplay', () => {
       await waitFor(() => {
         expect(image.src).toContain('/api/images/img-1/thumbnail?width=800&height=600');
       });
+      expect(consoleError).toHaveBeenCalledWith(
+        'Failed to load image with ID: %s',
+        'img-1',
+        expect.anything(),
+      );
     });
   });
 

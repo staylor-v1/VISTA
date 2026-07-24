@@ -10,9 +10,10 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Any, Callable
+
+from defusedxml import ElementTree as ET
 
 DEFAULT_NSIPRO_PARSER_ID = "default"
 GENERIC_NSIPRO_PARSER_VERSION = "1.0.0"

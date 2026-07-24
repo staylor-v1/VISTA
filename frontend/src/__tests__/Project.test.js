@@ -91,19 +91,25 @@ jest.mock('../components/InspectionWorkbenchPanel', () => {
   const React = require('react');
   const MockInspectionWorkbenchPanel = ({
     launchFilters,
-    sessionMprSlicePosition,
-    onMprSlicePositionChange,
+    mprSession,
+    onMprSessionChange,
     onInspectionShareStateChange,
   }) => (
     <div>
       <div>Inspection workbench</div>
       <output data-testid="inspection-launch-filters">{JSON.stringify(launchFilters || null)}</output>
-      <output data-testid="inspection-session-mpr-slice-position">{JSON.stringify(sessionMprSlicePosition || null)}</output>
+      <output data-testid="inspection-mpr-session">{JSON.stringify(mprSession || null)}</output>
       <button
         type="button"
-        onClick={() => onMprSlicePositionChange?.({ axial: 17, coronal: 23, sagittal: 31 })}
+        onClick={() => onMprSessionChange?.({
+          slicePosition: { axial: 17, coronal: 23, sagittal: 31 },
+          activePane: 'coronal',
+          lastActiveAxis: 'coronal',
+          viewportTransform: { zoom: 1.5, panX: 12, panY: -8 },
+          rotation: { x: -12, y: 42 },
+        })}
       >
-        Move MPR slice
+        Update MPR session
       </button>
       <button
         type="button"
@@ -160,9 +166,27 @@ jest.mock('../components/ProjectPhaseFlow', () => () => <div>Project phase flow<
 jest.mock('../components/ImagesToPartsTab', () => ({ images = [], parts = [] }) => (
   <div>Images to parts ({images.length} images, {parts.length} parts)</div>
 ));
-jest.mock('../components/OverlaysTab', () => ({ images = [], parts = [] }) => (
-  <div>Overlays tab ({images.length} images, {parts.length} parts)</div>
-));
+jest.mock('../components/OverlaysTab', () => {
+  const React = require('react');
+  return function MockOverlaysTab({ images = [], parts = [], onAssignmentsChanged }) {
+    const [feedback, setFeedback] = React.useState('');
+    return (
+      <div>
+        <div>Overlays tab ({images.length} images, {parts.length} parts)</div>
+        <button
+          type="button"
+          onClick={async () => {
+            await onAssignmentsChanged?.();
+            setFeedback('Mock overlay refresh complete');
+          }}
+        >
+          Complete mocked overlay assignment
+        </button>
+        {feedback && <div>{feedback}</div>}
+      </div>
+    );
+  };
+});
 jest.mock('../components/BatchesTab', () => () => <div>Batches</div>);
 jest.mock('../components/RemoveImagesTab', () => () => <div>Remove images</div>);
 jest.mock('../components/ProjectDataMetadataTab', () => () => <div>Project data metadata</div>);
@@ -382,6 +406,23 @@ describe('Project image summary loading', () => {
 
     expect(global.fetch.mock.calls.filter(([url]) => String(url).includes('/images-page?'))).toHaveLength(6);
     expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/parts')).toHaveLength(1);
+  });
+
+  test('keeps an already-loaded Overlays tab mounted while assigned collections refresh', async () => {
+    render(<Project />);
+    await screen.findByTestId('project-data-counts');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Overlays' }));
+    expect(await screen.findByText('Overlays tab (0 images, 2 parts)')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Complete mocked overlay assignment' }));
+
+    expect(await screen.findByText('Mock overlay refresh complete')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/parts')).toHaveLength(2);
+      expect(global.fetch.mock.calls.filter(([url]) => String(url).includes('/images-page?'))).toHaveLength(2);
+    });
+    expect(screen.queryByText('Loading complete project data...')).not.toBeInTheDocument();
   });
 
   test('does not let an in-flight pre-upload image snapshot clear the stale marker', async () => {
@@ -1091,15 +1132,22 @@ describe('Project query parameter tab selection', () => {
     }));
   });
 
-  test('retains the MPR slice position when Inspection unmounts during tab navigation', async () => {
+  test('retains the full MPR session when Inspection unmounts during tab navigation', async () => {
     render(<Project />);
 
     await waitFor(() => expect(screen.getByText('Inspection workbench')).toBeInTheDocument());
-    expect(screen.getByTestId('inspection-session-mpr-slice-position')).toHaveTextContent('null');
+    expect(screen.getByTestId('inspection-mpr-session')).toHaveTextContent('null');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Move MPR slice' }));
-    expect(screen.getByTestId('inspection-session-mpr-slice-position')).toHaveTextContent(
-      JSON.stringify({ axial: 17, coronal: 23, sagittal: 31 }),
+    fireEvent.click(screen.getByRole('button', { name: 'Update MPR session' }));
+    const expectedSession = {
+      slicePosition: { axial: 17, coronal: 23, sagittal: 31 },
+      activePane: 'coronal',
+      lastActiveAxis: 'coronal',
+      viewportTransform: { zoom: 1.5, panX: 12, panY: -8 },
+      rotation: { x: -12, y: 42 },
+    };
+    expect(screen.getByTestId('inspection-mpr-session')).toHaveTextContent(
+      JSON.stringify(expectedSession),
     );
 
     fireEvent.click(screen.getByRole('tab', { name: 'Analyze' }));
@@ -1107,8 +1155,8 @@ describe('Project query parameter tab selection', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Inspection' }));
 
     await waitFor(() => expect(screen.getByText('Inspection workbench')).toBeInTheDocument());
-    expect(screen.getByTestId('inspection-session-mpr-slice-position')).toHaveTextContent(
-      JSON.stringify({ axial: 17, coronal: 23, sagittal: 31 }),
+    expect(screen.getByTestId('inspection-mpr-session')).toHaveTextContent(
+      JSON.stringify(expectedSession),
     );
   });
 
@@ -1249,5 +1297,6 @@ describe('Project configurable UI sections', () => {
     expect(screen.queryByRole('tab', { name: 'Batches' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Data Validation' })).not.toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Images to Parts' })).toBeInTheDocument();
+    expect(await screen.findByTestId('project-data-counts')).toBeInTheDocument();
   });
 });

@@ -1,6 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { MPR_AXES, MPR_AXIS_CONFIG, MPR_SERVER_VOLUME_KIND, MprSliceCanvas, getMprAxisImageDimensions, getServerVolumeSliceUrl, useMprVolumeCache } from './InspectionWorkbenchPanel';
 import { buildConfiguredFilenameFields, isFilenameConventionEnabled } from './FilenameMetadataExtractor';
+import {
+  createPt3VolumeDescriptor,
+  getPt3AxisDimensions,
+  getPt3VolumeSliceUrl,
+} from './pt3VolumeDescriptor';
 
 function tagDuplicateFilename(filename = '', occurrence = 0) {
   const safeFilename = String(filename || 'image').trim() || 'image';
@@ -342,27 +347,70 @@ function VolumeSliceViewer({ viewer, onChange, onClose }) {
       .then((response) => { if (!response.ok) throw new Error(`Failed to load volume metadata (${response.status})`); return response.json(); })
       .then((data) => {
         if (cancelled) return;
-        const dims = data.dimensions || { axial: data.image_count || 1, coronal: data.height || 1, sagittal: data.width || 1 };
-        onChange((previous) => ({ ...previous, metadata: { ...data, dimensions: dims }, status: 'ready', slicePosition: { axial: Math.floor((dims.axial - 1) / 2), coronal: Math.floor((dims.coronal - 1) / 2), sagittal: Math.floor((dims.sagittal - 1) / 2) } }));
+        const hasDeclaredColorLayout = (
+          data?.channel_count !== undefined
+          || data?.channelCount !== undefined
+          || data?.color_mode !== undefined
+          || data?.colorMode !== undefined
+        );
+        const volumeDescriptor = createPt3VolumeDescriptor({
+          sourceKind: 'server-volume',
+          sourceEntry: {
+            image_id: imageRef.id,
+            filename: imageRef.filename,
+            ...(imageRef.metadata || {}),
+          },
+          // Older metadata endpoints predate explicit channel fields and only
+          // served scalar slices. Keep that compatibility at this boundary;
+          // any explicitly declared RGB/RGBA layout is still validated.
+          probeMetadata: hasDeclaredColorLayout
+            ? data
+            : { ...data, channel_count: 1, color_mode: 'scalar' },
+        });
+        if (!volumeDescriptor) throw new Error('Volume metadata response did not include valid dimensions and color layout');
+        const dims = getPt3AxisDimensions(volumeDescriptor);
+        onChange((previous) => ({
+          ...previous,
+          metadata: { ...data, dimensions: dims, volumeDescriptor },
+          status: 'ready',
+          slicePosition: {
+            axial: Math.floor((dims.axial - 1) / 2),
+            coronal: Math.floor((dims.coronal - 1) / 2),
+            sagittal: Math.floor((dims.sagittal - 1) / 2),
+          },
+        }));
       })
       .catch((err) => { if (!cancelled) onChange((previous) => ({ ...previous, status: 'error', error: err.message || 'Failed to load volume metadata' })); });
     return () => { cancelled = true; };
-  }, [imageRef.id, onChange]);
+  }, [imageRef.filename, imageRef.id, imageRef.metadata, onChange]);
 
-  const dimensions = useMemo(() => metadata?.dimensions || { axial: 1, coronal: 1, sagittal: 1 }, [metadata]);
+  const volumeDescriptor = metadata?.volumeDescriptor || null;
+  const dimensions = useMemo(
+    () => getPt3AxisDimensions(volumeDescriptor) || { axial: 1, coronal: 1, sagittal: 1 },
+    [volumeDescriptor],
+  );
+  const metadataImageCount = metadata?.image_count ?? dimensions.axial;
+  const metadataHeight = metadata?.height ?? dimensions.coronal;
+  const metadataWidth = metadata?.width ?? dimensions.sagittal;
+  const metadataInterpretation = metadata?.interpretation
+    ?? volumeDescriptor?.source?.interpretation;
+  const metadataBitDepth = metadata?.bit_depth
+    ?? metadata?.metadata_bit_depth
+    ?? volumeDescriptor?.samples?.bitDepth;
+  const metadataDtype = metadata?.pixel_dtype
+    ?? metadata?.voxel_dtype
+    ?? volumeDescriptor?.samples?.dtype
+    ?? '';
   const slicePosition = viewer.slicePosition || { axial: 0, coronal: 0, sagittal: 0 };
   const axisMax = Math.max(0, Number(dimensions[axis] || 1) - 1);
   const filename = String(imageRef.filename || '').toLowerCase();
   const sourceKind = String(metadata?.source_kind || '').toLowerCase();
   const isServerBackedVolume = /\.(npy|npz|inspiro)$/.test(filename)
     || sourceKind === 'tiff';
-  const volumeColorLayout = useMemo(() => {
-    const channelCount = Number(metadata?.channel_count ?? imageRef?.metadata?.channel_count);
-    const colorMode = String(metadata?.color_mode ?? imageRef?.metadata?.color_mode ?? '').toLowerCase();
-    if (channelCount === 3 && colorMode === 'rgb') return { channelCount: 3, colorMode: 'rgb' };
-    if (channelCount === 4 && colorMode === 'rgba') return { channelCount: 4, colorMode: 'rgba' };
-    return { channelCount: 1, colorMode: 'scalar' };
-  }, [imageRef?.metadata?.channel_count, imageRef?.metadata?.color_mode, metadata?.channel_count, metadata?.color_mode]);
+  const volumeColorLayout = useMemo(() => ({
+    channelCount: volumeDescriptor?.samples?.channelCount || 1,
+    colorMode: volumeDescriptor?.samples?.colorMode || 'scalar',
+  }), [volumeDescriptor]);
   const serverVolumeSource = useMemo(() => {
     if (!isServerBackedVolume) return null;
     const descriptor = {
@@ -371,11 +419,17 @@ function VolumeSliceViewer({ viewer, onChange, onClose }) {
       imageId: String(imageRef.id),
       filename: imageRef.filename,
       dimensions,
+      volumeDescriptor,
       ...volumeColorLayout,
       sliceIndex: Math.floor((Math.max(1, Number(dimensions.axial) || 1) - 1) / 2),
     };
-    return { ...descriptor, url: getServerVolumeSliceUrl(descriptor, 'axial', descriptor.sliceIndex) };
-  }, [dimensions, imageRef.filename, imageRef.id, isServerBackedVolume, volumeColorLayout]);
+    return {
+      ...descriptor,
+      url: getPt3VolumeSliceUrl(volumeDescriptor, 'axial', descriptor.sliceIndex, {
+        rendererVersion: 'rgba-segments-v2',
+      }) || getServerVolumeSliceUrl(descriptor, 'axial', descriptor.sliceIndex),
+    };
+  }, [dimensions, imageRef.filename, imageRef.id, isServerBackedVolume, volumeColorLayout, volumeDescriptor]);
   const axialStack = useMemo(() => (
     isServerBackedVolume
       ? []
@@ -395,7 +449,7 @@ function VolumeSliceViewer({ viewer, onChange, onClose }) {
     onChange((previous) => ({ ...previous, slicePosition: { ...(previous.slicePosition || slicePosition), [axis]: next } }));
   };
   const handleWheel = (event) => { event.preventDefault(); setSlice((slicePosition[axis] || 0) + (event.deltaY > 0 ? 1 : -1)); };
-  return <div className="modal image-part-viewer-modal" role="dialog" aria-modal="true" aria-labelledby="volume-slice-viewer-title" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="modal-content image-part-viewer-content volume-slice-viewer"><div className="modal-header"><div><h3 id="volume-slice-viewer-title">{imageRef.displayName || imageRef.filename}</h3><p className="muted">Multi-image volume preview</p></div><button type="button" className="modal-close-btn" onClick={onClose} aria-label="Close volume viewer">&times;</button></div><div className="modal-body">{status === 'error' ? <p className="error-message">{error}</p> : null}{metadata ? <><dl className="volume-slice-metadata"><div><dt>Total images</dt><dd>{metadata.image_count}</dd></div><div><dt>Height × Width</dt><dd>{metadata.height} × {metadata.width}</dd></div><div><dt>Type</dt><dd>{metadata.interpretation === 'voxel_array' ? 'Voxel array' : 'Stack of 2D images'}</dd></div><div><dt>Bit depth</dt><dd>{metadata.bit_depth || metadata.metadata_bit_depth || 'Unknown'}-bit {metadata.pixel_dtype || metadata.voxel_dtype || ''}</dd></div></dl><div className="volume-slice-controls"><label>Slice axis<select value={axis} onChange={(event) => setAxis(event.target.value)}>{MPR_AXES.map((option) => <option key={option} value={option}>{MPR_AXIS_CONFIG[option].label} ({MPR_AXIS_CONFIG[option].sliceLabel} slices)</option>)}</select></label><label>Slice<input type="range" min="0" max={axisMax} value={slicePosition[axis] || 0} onChange={(event) => setSlice(event.target.value)} onWheel={handleWheel} /></label><label>Current slice<input type="number" min="0" max={axisMax} value={slicePosition[axis] || 0} onChange={(event) => setSlice(event.target.value)} /></label><span>{(slicePosition[axis] || 0) + 1} / {axisMax + 1}</span></div><div className="volume-slice-stage" data-testid="volume-slice-stage" onWheel={handleWheel}>{previewIsLoading ? <div className="volume-slice-loading" role="status" aria-live="polite">{getSliceCachingMessage(previewSliceCache.progress)}</div> : null}{previewSliceCache.status === 'error' ? <div className="volume-slice-loading error-message" role="alert">{previewSliceCache.error}</div> : null}<MprSliceCanvas axis={axis} volumeCache={volumeCacheState.cache} volumeCacheStatus={volumeCacheState.status} slicePosition={slicePosition} dimensions={dimensions} displayWindow={{ min: 0, max: 255 }} displayDomain={{ min: 0, max: 255, step: 1, label: '8-bit preview' }} aria-label={`${MPR_AXIS_CONFIG[axis].label} slice ${slicePosition[axis] || 0}`} style={{ aspectRatio: `${imageDimensions.width} / ${imageDimensions.height}` }} /></div></> : <p className="muted">Loading volume metadata…</p>}</div></div></div>;
+  return <div className="modal image-part-viewer-modal" role="dialog" aria-modal="true" aria-labelledby="volume-slice-viewer-title" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="modal-content image-part-viewer-content volume-slice-viewer"><div className="modal-header"><div><h3 id="volume-slice-viewer-title">{imageRef.displayName || imageRef.filename}</h3><p className="muted">Multi-image volume preview</p></div><button type="button" className="modal-close-btn" onClick={onClose} aria-label="Close volume viewer">&times;</button></div><div className="modal-body">{status === 'error' ? <p className="error-message">{error}</p> : null}{metadata ? <><dl className="volume-slice-metadata"><div><dt>Total images</dt><dd>{metadataImageCount}</dd></div><div><dt>Height × Width</dt><dd>{metadataHeight} × {metadataWidth}</dd></div><div><dt>Type</dt><dd>{metadataInterpretation === 'voxel_array' ? 'Voxel array' : 'Stack of 2D images'}</dd></div><div><dt>Bit depth</dt><dd>{metadataBitDepth ?? 'Unknown'}-bit {metadataDtype}</dd></div></dl><div className="volume-slice-controls"><label>Slice axis<select value={axis} onChange={(event) => setAxis(event.target.value)}>{MPR_AXES.map((option) => <option key={option} value={option}>{MPR_AXIS_CONFIG[option].label} ({MPR_AXIS_CONFIG[option].sliceLabel} slices)</option>)}</select></label><label>Slice<input type="range" min="0" max={axisMax} value={slicePosition[axis] || 0} onChange={(event) => setSlice(event.target.value)} onWheel={handleWheel} /></label><label>Current slice<input type="number" min="0" max={axisMax} value={slicePosition[axis] || 0} onChange={(event) => setSlice(event.target.value)} /></label><span>{(slicePosition[axis] || 0) + 1} / {axisMax + 1}</span></div><div className="volume-slice-stage" data-testid="volume-slice-stage" onWheel={handleWheel}>{previewIsLoading ? <div className="volume-slice-loading" role="status" aria-live="polite">{getSliceCachingMessage(previewSliceCache.progress)}</div> : null}{previewSliceCache.status === 'error' ? <div className="volume-slice-loading error-message" role="alert">{previewSliceCache.error}</div> : null}<MprSliceCanvas axis={axis} volumeCache={volumeCacheState.cache} volumeCacheStatus={volumeCacheState.status} slicePosition={slicePosition} dimensions={dimensions} displayWindow={{ min: 0, max: 255 }} displayDomain={{ min: 0, max: 255, step: 1, label: '8-bit preview' }} aria-label={`${MPR_AXIS_CONFIG[axis].label} slice ${slicePosition[axis] || 0}`} style={{ aspectRatio: `${imageDimensions.width} / ${imageDimensions.height}` }} /></div></> : <p className="muted">Loading volume metadata…</p>}</div></div></div>;
 }
 
 function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfiguration = null, onAssignmentsChanged, setError }) {

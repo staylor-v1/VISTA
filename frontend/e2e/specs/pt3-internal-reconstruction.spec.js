@@ -26,12 +26,23 @@ function createInternalFeatureDataset(depth = 28) {
     image_id: 'internal-feature-volume',
     load_mode: 'volume',
     volume_shape: volumeShape,
+    channel_count: 1,
+    color_mode: 'scalar',
+    pixel_dtype: 'uint8',
+    bit_depth: 8,
   }];
   const images = [{
     id: 'internal-feature-volume',
     filename: 'internal-feature-phantom.npy',
     size: 72 * 72 * depth,
-    metadata: { load_mode: 'volume', volume_shape: volumeShape },
+    metadata: {
+      load_mode: 'volume',
+      volume_shape: volumeShape,
+      channel_count: 1,
+      color_mode: 'scalar',
+      pixel_dtype: 'uint8',
+      bit_depth: 8,
+    },
   }];
   const part = {
     id: 'part-adv-001',

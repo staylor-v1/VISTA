@@ -2,12 +2,16 @@ import asyncio
 import io
 import json
 import uuid
+from datetime import datetime, timezone
+from unittest.mock import patch
+
 import pytest
 from PIL import Image
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from core import models
 from routers import images as images_router
+from services import image_deletion as image_deletion_service
 from tests.conftest import TestingSessionLocal
 
 # Helper to make png bytes
@@ -98,23 +102,50 @@ def test_delete_requires_reason_min_length_and_leaves_image_active(client):
     assert image_id in {item["id"] for item in active.json()}
 
 
-def test_restore_soft_deleted_image_clears_deletion_state(client, monkeypatch):
+def test_delete_rejects_reason_containing_only_whitespace(client):
+    pid = _create_project(client)
+    img = _upload_image(client, pid, filename="whitespace-reason.png")
+    image_id = img["id"]
+
+    rejected = client.request(
+        "DELETE",
+        f"/api/projects/{pid}/images/{image_id}",
+        json={"reason": " \t \n       "},
+    )
+
+    assert rejected.status_code == 400, rejected.text
+    assert "Reason must be at least" in rejected.json()["detail"]
+    active = client.get(f"/api/projects/{pid}/images")
+    assert image_id in {item["id"] for item in active.json()}
+
+
+def test_delete_normalizes_reason_before_persisting_image_and_audit(client):
+    pid = _create_project(client)
+    img = _upload_image(client, pid, filename="normalized-reason.png")
+    image_id = img["id"]
+
+    deleted = client.request(
+        "DELETE",
+        f"/api/projects/{pid}/images/{image_id}",
+        json={"reason": "  remove duplicate scan  \n"},
+    )
+
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["deletion_reason"] == "remove duplicate scan"
+    events = client.get(
+        f"/api/projects/{pid}/images/deletion-events",
+        params={"image_id": image_id},
+    )
+    assert events.status_code == 200, events.text
+    assert [event["reason"] for event in events.json()["events"]] == [
+        "remove duplicate scan"
+    ]
+
+
+def test_restore_soft_deleted_image_clears_deletion_state(client):
     pid = _create_project(client)
     img = _upload_image(client, pid, filename="rest.png")
     image_id = img["id"]
-    original_soft_delete = images_router.crud.soft_delete_image
-
-    async def soft_delete_without_sqlite_timezone(*args, **kwargs):
-        image = await original_soft_delete(*args, **kwargs)
-        image.pending_hard_delete_at = None
-        await args[0].flush()
-        return image
-
-    monkeypatch.setattr(
-        images_router.crud,
-        "soft_delete_image",
-        soft_delete_without_sqlite_timezone,
-    )
 
     deleted = client.request(
         "DELETE",
@@ -143,6 +174,117 @@ def test_restore_soft_deleted_image_clears_deletion_state(client, monkeypatch):
         "soft_delete",
         "restore",
     }
+
+
+def test_repeated_delete_restore_and_force_requests_are_idempotent(
+    client,
+    monkeypatch,
+):
+    pid = _create_project(client)
+    img = _upload_image(client, pid, filename="idempotent-delete.png")
+    image_id = img["id"]
+
+    for reason in ("first soft deletion", "duplicate soft deletion"):
+        response = client.request(
+            "DELETE",
+            f"/api/projects/{pid}/images/{image_id}",
+            json={"reason": reason},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["deletion_reason"] == "first soft deletion"
+
+    for _ in range(2):
+        response = client.post(
+            f"/api/projects/{pid}/images/{image_id}/restore"
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["deleted_at"] is None
+
+    storage_deletes = []
+
+    def delete_storage_file(bucket_name, object_name):
+        storage_deletes.append((bucket_name, object_name))
+        return True
+
+    monkeypatch.setattr(
+        "routers.images.delete_file_from_s3",
+        delete_storage_file,
+    )
+    for _ in range(2):
+        response = client.request(
+            "DELETE",
+            f"/api/projects/{pid}/images/{image_id}",
+            json={"reason": "permanent duplicate cleanup", "force": True},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["storage_deleted"] is True
+
+    assert storage_deletes == [
+        ("test-bucket", img["object_storage_key"])
+    ]
+    events = client.get(
+        f"/api/projects/{pid}/images/deletion-events",
+        params={"image_id": image_id},
+    )
+    assert events.status_code == 200, events.text
+    assert sorted(event["action"] for event in events.json()["events"]) == [
+        "force_delete",
+        "restore",
+        "soft_delete",
+        "soft_delete",
+    ]
+
+
+def test_deletion_events_use_id_as_deterministic_timestamp_tiebreaker(client):
+    pid = _create_project(client)
+    img = _upload_image(client, pid, filename="audit-order.png")
+    image_id = uuid.UUID(img["id"])
+    project_id = uuid.UUID(pid)
+    tied_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    # Include hexadecimal letters so SQLite's affinity cannot coerce the
+    # UUID's compact representation into an integer.
+    older_id = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
+    newer_id = uuid.UUID("bbbbbbbb-0000-0000-0000-000000000002")
+
+    async def add_tied_events():
+        async with TestingSessionLocal() as session:
+            session.add_all(
+                [
+                    models.ImageDeletionEvent(
+                        id=older_id,
+                        image_id=image_id,
+                        project_id=project_id,
+                        action="soft_delete",
+                        reason="first tied event",
+                        storage_deleted=False,
+                        previous_state={},
+                        at=tied_at,
+                    ),
+                    models.ImageDeletionEvent(
+                        id=newer_id,
+                        image_id=image_id,
+                        project_id=project_id,
+                        action="restore",
+                        reason=None,
+                        storage_deleted=False,
+                        previous_state={},
+                        at=tied_at,
+                    ),
+                ]
+            )
+            await session.commit()
+
+    asyncio.get_event_loop().run_until_complete(add_tied_events())
+
+    events = client.get(
+        f"/api/projects/{pid}/images/deletion-events",
+        params={"image_id": str(image_id)},
+    )
+    assert events.status_code == 200, events.text
+    assert [event["id"] for event in events.json()["events"]] == [
+        str(newer_id),
+        str(older_id),
+    ]
 
 
 def test_force_delete_is_permanent_and_audited(client, monkeypatch):
@@ -211,6 +353,55 @@ def test_soft_delete_image_removes_inspection_part_references(client):
     assert metadata["overlay_images"] == {}
 
 
+def test_reference_cleanup_preserves_different_image_with_duplicate_filename():
+    deleted_image_id = uuid.uuid4()
+    retained_image_id = uuid.uuid4()
+
+    updated = image_deletion_service._metadata_without_image_reference(
+        {
+            "source_images": [
+                {
+                    "image_id": str(deleted_image_id),
+                    "filename": "duplicate.png",
+                    "side": "front",
+                    "modality": "visible",
+                    "overlay": False,
+                },
+                {
+                    "image_id": str(retained_image_id),
+                    "filename": "duplicate.png",
+                    "side": "back",
+                    "modality": "visible",
+                    "overlay": False,
+                },
+                {
+                    # Legacy references have no stable identity, so filename
+                    # remains their only safe deletion key.
+                    "filename": "duplicate.png",
+                    "side": "top",
+                    "modality": "visible",
+                    "overlay": False,
+                },
+            ],
+        },
+        filename="duplicate.png",
+        image_id=deleted_image_id,
+    )
+
+    assert updated is not None
+    assert updated["source_images"] == [
+        {
+            "image_id": str(retained_image_id),
+            "filename": "duplicate.png",
+            "side": "back",
+            "modality": "visible",
+            "overlay": False,
+        }
+    ]
+    assert updated["configured_views"] == ["back"]
+    assert updated["view_images"] == {"back": "duplicate.png"}
+
+
 def test_soft_delete_image_removes_unreferenced_associated_project_metadata(client):
     pid = _create_project(client)
     metadata_key = "associated:file-one.nsipro"
@@ -253,3 +444,362 @@ def test_soft_delete_image_keeps_project_metadata_still_used_by_another_image(cl
 
     meta_after = client.get(f"/api/projects/{pid}/metadata/{metadata_key}")
     assert meta_after.status_code == 200, meta_after.text
+
+
+@pytest.mark.asyncio
+async def test_soft_delete_service_commits_database_side_effects_once(
+    db_session,
+):
+    user = models.User(email="single-commit@example.com")
+    project = models.Project(
+        name="Single commit deletion",
+        meta_group_id="single-commit-group",
+        created_by=user.email,
+    )
+    db_session.add_all([user, project])
+    await db_session.flush()
+    image = models.DataInstance(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        filename="single-commit.png",
+        object_storage_key=f"single-commit/{uuid.uuid4()}.png",
+        content_type="image/png",
+        size_bytes=8,
+        metadata_json={},
+        uploaded_by_user_id=user.email,
+        uploader_id=user.id,
+        storage_deleted=False,
+    )
+    db_session.add(image)
+    await db_session.commit()
+
+    async def unused_storage_delete(_bucket, _key):
+        raise AssertionError("soft deletion must not touch object storage")
+
+    with patch.object(
+        db_session,
+        "commit",
+        wraps=db_session.commit,
+    ) as commit_spy:
+        outcome = await image_deletion_service.delete_authorized_image(
+            db=db_session,
+            project_id=project.id,
+            image_id=image.id,
+            actor_user_id=user.id,
+            actor_email=user.email,
+            reason="single atomic transaction",
+            retention_days=60,
+            force=False,
+            storage_bucket="test-bucket",
+            delete_storage=unused_storage_delete,
+        )
+
+    assert commit_spy.await_count == 1
+    assert outcome.soft_deleted_now is True
+    assert outcome.storage_deleted_now is False
+    events = (
+        await db_session.execute(
+            select(models.ImageDeletionEvent).where(
+                models.ImageDeletionEvent.image_id == image.id
+            )
+        )
+    ).scalars().all()
+    assert [event.action for event in events] == ["soft_delete"]
+
+
+@pytest.mark.asyncio
+async def test_soft_delete_service_rolls_back_all_late_side_effects(
+    db_session,
+    monkeypatch,
+):
+    metadata_key = "associated:atomic-delete.nsipro"
+    user = models.User(email="rollback-delete@example.com")
+    project = models.Project(
+        name="Rollback deletion",
+        meta_group_id="rollback-delete-group",
+        created_by=user.email,
+    )
+    db_session.add_all([user, project])
+    await db_session.flush()
+    image = models.DataInstance(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        filename="rollback-delete.png",
+        object_storage_key=f"rollback-delete/{uuid.uuid4()}.png",
+        content_type="image/png",
+        size_bytes=8,
+        metadata_json={"associated_metadata_ref": metadata_key},
+        uploaded_by_user_id=user.email,
+        uploader_id=user.id,
+        storage_deleted=False,
+    )
+    project_metadata = models.ProjectMetadata(
+        project_id=project.id,
+        key=metadata_key,
+        value={"source_filename": "atomic-delete.nsipro"},
+    )
+    part = models.InspectionPart(
+        project_id=project.id,
+        serial_number="ROLLBACK-PART",
+        metadata_json={
+            "source_images": [
+                {
+                    "image_id": str(image.id),
+                    "filename": image.filename,
+                    "side": "front",
+                    "modality": "visible",
+                    "overlay": False,
+                }
+            ],
+            "configured_views": ["front"],
+            "modalities": ["visible"],
+            "view_images": {"front": image.filename},
+            "overlay_images": {},
+        },
+    )
+    db_session.add_all([image, project_metadata, part])
+    await db_session.commit()
+    image_id = image.id
+    part_id = part.id
+    project_metadata_id = project_metadata.id
+
+    def fail_late_audit_write(**_kwargs):
+        raise RuntimeError("forced late deletion failure")
+
+    monkeypatch.setattr(
+        image_deletion_service,
+        "_add_deletion_event",
+        fail_late_audit_write,
+    )
+
+    async def unused_storage_delete(_bucket, _key):
+        raise AssertionError("failed soft deletion must not touch storage")
+
+    with pytest.raises(RuntimeError, match="forced late deletion failure"):
+        await image_deletion_service.delete_authorized_image(
+            db=db_session,
+            project_id=project.id,
+            image_id=image_id,
+            actor_user_id=user.id,
+            actor_email=user.email,
+            reason="must roll back every side effect",
+            retention_days=60,
+            force=False,
+            storage_bucket="test-bucket",
+            delete_storage=unused_storage_delete,
+        )
+
+    db_session.expire_all()
+    persisted_image = await db_session.get(models.DataInstance, image_id)
+    persisted_part = await db_session.get(models.InspectionPart, part_id)
+    persisted_metadata = await db_session.get(
+        models.ProjectMetadata,
+        project_metadata_id,
+    )
+    events = (
+        await db_session.execute(
+            select(models.ImageDeletionEvent).where(
+                models.ImageDeletionEvent.image_id == image_id
+            )
+        )
+    ).scalars().all()
+
+    assert persisted_image.deleted_at is None
+    assert persisted_metadata is not None
+    assert persisted_part.metadata_json["source_images"][0]["image_id"] == str(
+        image_id
+    )
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_force_delete_reconciles_after_storage_success_and_db_failure(
+    db_session,
+):
+    user = models.User(email="force-reconcile@example.com")
+    project = models.Project(
+        name="Force delete reconciliation",
+        meta_group_id="force-reconcile-group",
+        created_by=user.email,
+    )
+    db_session.add_all([user, project])
+    await db_session.flush()
+    image = models.DataInstance(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        filename="force-reconcile.png",
+        object_storage_key=f"force-reconcile/{uuid.uuid4()}.png",
+        content_type="image/png",
+        size_bytes=8,
+        metadata_json={},
+        uploaded_by_user_id=user.email,
+        uploader_id=user.id,
+        storage_deleted=False,
+    )
+    db_session.add(image)
+    await db_session.commit()
+    image_id = image.id
+    project_id = project.id
+    user_id = user.id
+    actor_email = user.email
+
+    storage_delete_calls = 0
+
+    async def idempotent_storage_delete(_bucket, _key):
+        nonlocal storage_delete_calls
+        storage_delete_calls += 1
+        return True
+
+    real_commit = db_session.commit
+    commit_count = 0
+
+    async def fail_force_publication_commit():
+        nonlocal commit_count
+        commit_count += 1
+        if commit_count == 2:
+            raise RuntimeError("forced publication commit failure")
+        await real_commit()
+
+    with (
+        patch.object(
+            db_session,
+            "commit",
+            side_effect=fail_force_publication_commit,
+        ),
+        pytest.raises(
+            RuntimeError,
+            match="forced publication commit failure",
+        ),
+    ):
+        await image_deletion_service.delete_authorized_image(
+            db=db_session,
+            project_id=project_id,
+            image_id=image_id,
+            actor_user_id=user_id,
+            actor_email=actor_email,
+            reason="reconcile permanent deletion",
+            retention_days=60,
+            force=True,
+            storage_bucket="test-bucket",
+            delete_storage=idempotent_storage_delete,
+        )
+
+    db_session.expire_all()
+    after_failure = await db_session.get(models.DataInstance, image_id)
+    failure_events = (
+        await db_session.execute(
+            select(models.ImageDeletionEvent).where(
+                models.ImageDeletionEvent.image_id == image_id
+            )
+        )
+    ).scalars().all()
+    assert after_failure.deleted_at is not None
+    assert after_failure.storage_deleted is False
+    assert [event.action for event in failure_events] == ["soft_delete"]
+
+    outcome = await image_deletion_service.delete_authorized_image(
+        db=db_session,
+        project_id=project_id,
+        image_id=image_id,
+        actor_user_id=user_id,
+        actor_email=actor_email,
+        reason="reconcile permanent deletion",
+        retention_days=60,
+        force=True,
+        storage_bucket="test-bucket",
+        delete_storage=idempotent_storage_delete,
+    )
+    assert outcome.storage_deleted_now is True
+    assert outcome.image.storage_deleted is True
+    assert storage_delete_calls == 2
+
+    events = (
+        await db_session.execute(
+            select(models.ImageDeletionEvent)
+            .where(models.ImageDeletionEvent.image_id == image_id)
+            .order_by(
+                models.ImageDeletionEvent.at.asc(),
+                models.ImageDeletionEvent.id.asc(),
+            )
+        )
+    ).scalars().all()
+    assert [event.action for event in events] == [
+        "soft_delete",
+        "force_delete",
+    ]
+
+
+def test_force_delete_storage_failure_is_retryable(client, monkeypatch):
+    pid = _create_project(client)
+    img = _upload_image(client, pid, filename="retry-force.png")
+    image_id = img["id"]
+
+    monkeypatch.setattr(
+        "routers.images.delete_file_from_s3",
+        lambda _bucket, _key: False,
+    )
+    failed = client.request(
+        "DELETE",
+        f"/api/projects/{pid}/images/{image_id}",
+        json={"reason": "retry failed storage delete", "force": True},
+    )
+    assert failed.status_code == 502, failed.text
+    assert "recoverably soft-deleted" in failed.json()["detail"]
+
+    after_failure = client.get(
+        f"/api/projects/{pid}/images",
+        params={"include_deleted": True},
+    )
+    failed_image = next(
+        image for image in after_failure.json() if image["id"] == image_id
+    )
+    assert failed_image["deleted_at"] is not None
+    assert failed_image["storage_deleted"] is False
+
+    failed_events = client.get(
+        f"/api/projects/{pid}/images/deletion-events",
+        params={"image_id": image_id},
+    ).json()["events"]
+    assert [event["action"] for event in failed_events] == ["soft_delete"]
+
+    monkeypatch.setattr(
+        "routers.images.delete_file_from_s3",
+        lambda _bucket, _key: True,
+    )
+    retried = client.request(
+        "DELETE",
+        f"/api/projects/{pid}/images/{image_id}",
+        json={"reason": "retry failed storage delete", "force": True},
+    )
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["storage_deleted"] is True
+
+    retried_events = client.get(
+        f"/api/projects/{pid}/images/deletion-events",
+        params={"image_id": image_id},
+    ).json()["events"]
+    assert sorted(event["action"] for event in retried_events) == [
+        "force_delete",
+        "soft_delete",
+    ]
+
+
+def test_delete_cache_failure_does_not_mask_committed_success(
+    client,
+    monkeypatch,
+):
+    pid = _create_project(client)
+    img = _upload_image(client, pid, filename="cache-failure.png")
+
+    class BrokenCache:
+        def clear_pattern(self, _pattern):
+            raise RuntimeError("cache unavailable")
+
+    monkeypatch.setattr(images_router, "get_cache", lambda: BrokenCache())
+    deleted = client.request(
+        "DELETE",
+        f"/api/projects/{pid}/images/{img['id']}",
+        json={"reason": "cache failure remains successful"},
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["deleted_at"] is not None

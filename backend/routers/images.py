@@ -39,6 +39,7 @@ from utils.boto3_client import (
 from utils.serialization import to_data_instance_schema
 from utils.file_security import get_content_disposition_header
 from utils.cache_manager import get_cache
+from services import image_deletion as image_deletion_service
 import json as _json
 import numpy as np
 from PIL import Image, ImageSequence
@@ -103,64 +104,6 @@ def _decode_image_page_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid image page cursor") from exc
     return created_at, image_id
 
-
-def _candidate_project_metadata_keys(metadata: Any) -> set[str]:
-    if not isinstance(metadata, dict):
-        return set()
-    keys: set[str] = set()
-    for raw in metadata.get("associated_metadata_refs") or []:
-        if raw:
-            keys.add(str(raw))
-    raw_ref = metadata.get("associated_metadata_ref")
-    if raw_ref:
-        keys.add(str(raw_ref))
-    associated = metadata.get("associated_metadata")
-    if isinstance(associated, dict):
-        for candidate_key in ("project_metadata_key", "key"):
-            raw = associated.get(candidate_key)
-            if raw:
-                keys.add(str(raw))
-    sources = metadata.get("associated_metadata_sources")
-    if isinstance(sources, list):
-        for source in sources:
-            if not isinstance(source, dict):
-                continue
-            for candidate_key in ("project_metadata_key", "key"):
-                raw = source.get(candidate_key)
-                if raw:
-                    keys.add(str(raw))
-    return {key for key in keys if key}
-
-
-async def _remove_unreferenced_project_metadata_for_image(
-    db: AsyncSession,
-    *,
-    project_id: uuid.UUID,
-    deleted_image_id: uuid.UUID,
-    image_metadata: Any,
-    deleted_by: Optional[str],
-) -> int:
-    candidate_keys = _candidate_project_metadata_keys(image_metadata)
-    if not candidate_keys:
-        return 0
-
-    result = await db.execute(
-        select(models.DataInstance.metadata_json)
-        .where(
-            models.DataInstance.project_id == project_id,
-            models.DataInstance.id != deleted_image_id,
-            models.DataInstance.deleted_at.is_(None),
-        )
-    )
-    referenced_elsewhere: set[str] = set()
-    for other_metadata in result.scalars().all():
-        referenced_elsewhere.update(_candidate_project_metadata_keys(other_metadata))
-
-    removed_count = 0
-    for key in sorted(candidate_keys - referenced_elsewhere):
-        if await crud.delete_project_metadata_by_key(db=db, project_id=project_id, key=key, deleted_by=deleted_by):
-            removed_count += 1
-    return removed_count
 
 VOXEL_DATA_EXTENSIONS = {".npy", ".npz", ".inspiro"}
 MAX_UPLOAD_BYTES = MAX_VOLUME_LOAD_BYTES
@@ -4315,6 +4258,57 @@ class ImageDeleteRequest(BaseModel):
     reason: str
     force: Optional[bool] = False
 
+
+async def _delete_image_storage_object(
+    bucket_name: str,
+    object_storage_key: str,
+) -> bool:
+    """Run the legacy blocking boto3 deletion without blocking the event loop."""
+
+    async with _storage_operation_slot():
+        return await asyncio.to_thread(
+            delete_file_from_s3,
+            bucket_name,
+            object_storage_key,
+        )
+
+
+def _clear_image_caches_best_effort(
+    *,
+    project_id: uuid.UUID,
+    image_id: uuid.UUID,
+) -> None:
+    """Cache failures must not turn a committed mutation into an HTTP failure."""
+
+    try:
+        cache = get_cache()
+    except Exception:
+        logger.warning(
+            "Image cache lookup failed after mutation attempt",
+            extra={"project_id": str(project_id), "image_id": str(image_id)},
+            exc_info=True,
+        )
+        return
+
+    for pattern in (
+        f"project_images:{project_id}",
+        f"image:{image_id}:",
+        f"thumbnail:{image_id}",
+    ):
+        try:
+            cache.clear_pattern(pattern)
+        except Exception:
+            logger.warning(
+                "Image cache invalidation failed after mutation attempt",
+                extra={
+                    "project_id": str(project_id),
+                    "image_id": str(image_id),
+                    "cache_pattern": pattern,
+                },
+                exc_info=True,
+            )
+
+
 @router.delete("/projects/{project_id}/images/{image_id}", response_model=schemas.DataInstance)
 async def delete_image(
     project_id: uuid.UUID,
@@ -4323,44 +4317,45 @@ async def delete_image(
     db: AsyncSession = Depends(get_db),
     current_user: schemas.User = Depends(get_current_user),
 ):
-    if len(body.reason or "") < settings.IMAGE_DELETE_REASON_MIN_CHARS:
+    normalized_reason = body.reason.strip()
+    if len(normalized_reason) < settings.IMAGE_DELETE_REASON_MIN_CHARS:
         raise HTTPException(status_code=400, detail=f"Reason must be at least {settings.IMAGE_DELETE_REASON_MIN_CHARS} characters")
     db_image = await get_image_or_403_writable(image_id, db, current_user)
     if db_image.project_id != project_id:
         raise HTTPException(status_code=404, detail="Image not found")
-    retention_days = settings.IMAGE_DELETE_RETENTION_DAYS
-    actor_user_id = current_user.id
-    if not db_image.deleted_at:
-        prev_state = {"deleted_at": None}
-        image_metadata_before_delete = db_image.metadata_json if isinstance(db_image.metadata_json, dict) else {}
-        db_image = await crud.soft_delete_image(db, db_image, actor_user_id=actor_user_id, reason=body.reason, retention_days=retention_days)
-        await _remove_unreferenced_project_metadata_for_image(
-            db,
+
+    try:
+        outcome = await image_deletion_service.delete_authorized_image(
+            db=db,
             project_id=project_id,
-            deleted_image_id=db_image.id,
-            image_metadata=image_metadata_before_delete,
-            deleted_by=current_user.email,
+            image_id=image_id,
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            reason=normalized_reason,
+            retention_days=settings.IMAGE_DELETE_RETENTION_DAYS,
+            force=bool(body.force),
+            storage_bucket=settings.S3_BUCKET,
+            delete_storage=_delete_image_storage_object,
         )
-        await crud.remove_image_from_inspection_parts(
-            db,
-            project_id,
-            filename=db_image.filename,
-            image_id=db_image.id,
-            updated_by=current_user.email,
+    except image_deletion_service.ImageDeletionNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image not found",
+        ) from exc
+    except image_deletion_service.ImageStorageDeletionFailed as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Unable to permanently delete image from object storage; "
+                "the image remains recoverably soft-deleted"
+            ),
+        ) from exc
+    finally:
+        _clear_image_caches_best_effort(
+            project_id=project_id,
+            image_id=image_id,
         )
-        await crud.create_image_deletion_event(db, image=db_image, actor_user_id=actor_user_id, action="soft_delete", reason=body.reason, previous_state=prev_state)
-    if body.force and not db_image.storage_deleted:
-        # Future: verify current_user is project owner/admin; placeholder uses membership only.
-        delete_file_from_s3(settings.S3_BUCKET, db_image.object_storage_key)
-        await crud.mark_image_storage_deleted(db, db_image, actor_user_id=actor_user_id, hard=True)
-        await crud.create_image_deletion_event(db, image=db_image, actor_user_id=actor_user_id, action="force_delete", reason=body.reason, previous_state={})
-    await db.commit()
-    await db.refresh(db_image)
-    cache = get_cache()
-    cache.clear_pattern(f"project_images:{project_id}")
-    cache.clear_pattern(f"image:{image_id}:")
-    cache.clear_pattern(f"thumbnail:{image_id}")
-    return to_data_instance_schema(db_image)
+    return to_data_instance_schema(outcome.image)
 
 @router.post("/projects/{project_id}/images/{image_id}/restore", response_model=schemas.DataInstance)
 async def restore_deleted_image(
@@ -4372,23 +4367,37 @@ async def restore_deleted_image(
     db_image = await get_image_or_403_writable(image_id, db, current_user)
     if db_image.project_id != project_id:
         raise HTTPException(status_code=404, detail="Image not found")
-    if not db_image.deleted_at:
-        return to_data_instance_schema(db_image)
-    if db_image.storage_deleted:
-        raise HTTPException(status_code=409, detail="Image permanently deleted")
-    from datetime import datetime, timezone
-    retention_deadline = db_image.pending_hard_delete_at
-    if retention_deadline and datetime.now(timezone.utc) > retention_deadline:
-        raise HTTPException(status_code=410, detail="Retention expired")
-    await crud.restore_image(db, db_image)
-    await crud.create_image_deletion_event(db, image=db_image, actor_user_id=current_user.id, action="restore", reason=None, previous_state={})
-    await db.commit()
-    await db.refresh(db_image)
-    cache = get_cache()
-    cache.clear_pattern(f"project_images:{project_id}")
-    cache.clear_pattern(f"image:{image_id}:")
-    cache.clear_pattern(f"thumbnail:{image_id}")
-    return to_data_instance_schema(db_image)
+
+    try:
+        restored_image = (
+            await image_deletion_service.restore_authorized_image(
+                db=db,
+                project_id=project_id,
+                image_id=image_id,
+                actor_user_id=current_user.id,
+            )
+        )
+    except image_deletion_service.ImageDeletionNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image not found",
+        ) from exc
+    except image_deletion_service.ImagePermanentlyDeleted as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Image permanently deleted",
+        ) from exc
+    except image_deletion_service.ImageRetentionExpired as exc:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Retention expired",
+        ) from exc
+    finally:
+        _clear_image_caches_best_effort(
+            project_id=project_id,
+            image_id=image_id,
+        )
+    return to_data_instance_schema(restored_image)
 
 @router.get("/projects/{project_id}/images/deletion-events", response_model=schemas.ImageDeletionEventList)
 async def list_image_deletion_events(

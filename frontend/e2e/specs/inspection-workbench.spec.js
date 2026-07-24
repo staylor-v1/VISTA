@@ -441,7 +441,7 @@ test.describe('PT3 Real 3DGS mode', () => {
 });
 
 test.describe('PT3 large NPY lazy MPR loading', () => {
-  test('bounds slice requests and keeps a segmented overlay aligned with the base volume', async ({ page }) => {
+  test('bounds slice requests and keeps a segmented overlay aligned with the base volume', { tag: '@critical' }, async ({ page }) => {
     test.setTimeout(180_000);
     await page.setViewportSize({ width: 1280, height: 860 });
     const dimensions = { axial: 749, coronal: 1010, sagittal: 984 };
@@ -719,6 +719,71 @@ test.describe('PT3 large NPY lazy MPR loading', () => {
         expect(isBrightNeutral(evidence.legacyBottomBaseEdge)).toBe(true);
       }
     }
+
+    const persistedSlicePositions = {
+      axial: '321',
+      coronal: '654',
+      sagittal: '777',
+    };
+    for (const [axis, index] of Object.entries(persistedSlicePositions)) {
+      const slider = page.locator(`#mpr-slice-${axis}`);
+      await slider.fill(index);
+      await expect(slider).toHaveValue(index);
+    }
+    await page.getByTestId('mpr-pane-sagittal').dispatchEvent('wheel', { deltaY: 80 });
+    persistedSlicePositions.sagittal = '778';
+    await expect(page.locator('#mpr-slice-sagittal')).toHaveValue('778');
+
+    await page.getByTestId('mpr-pane-3d').dispatchEvent('wheel', { deltaY: -80 });
+    await expect(mprPanel).toHaveAttribute('data-active-pane', 'volume');
+    await expect(mprPanel).toHaveAttribute('data-last-active-axis', 'sagittal');
+    const compact3dScene = page.getByRole('button', { name: 'Open 3D part view fullscreen' });
+    await compact3dScene.press('Enter');
+    const fullscreen3dScene = page.getByRole('application', {
+      name: 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.',
+    });
+    await fullscreen3dScene.press('ArrowRight');
+    await page.getByRole('button', { name: 'Close fullscreen 3D view' }).click();
+    const persistedNavigation = await mprPanel.evaluate((panel) => ({
+      activePane: panel.dataset.activePane,
+      lastActiveAxis: panel.dataset.lastActiveAxis,
+      zoom: panel.dataset.zoom,
+      panX: panel.dataset.panX,
+      panY: panel.dataset.panY,
+      rotationX: panel.dataset.rotationX,
+      rotationY: panel.dataset.rotationY,
+    }));
+    expect(persistedNavigation).toEqual({
+      activePane: 'volume',
+      lastActiveAxis: 'sagittal',
+      zoom: '1.42',
+      panX: '20',
+      panY: '-14',
+      rotationX: '-22',
+      rotationY: '37',
+    });
+    await expect.poll(() => inFlightSliceRequests).toBe(0);
+
+    await page.getByRole('tab', { name: 'Project Data' }).click();
+    await expect(page.getByTestId('project-data-summary')).toBeVisible();
+    await page.getByRole('tab', { name: 'Inspection' }).click();
+    await expect(mprPanel).toBeVisible();
+    await expect(page.locator('.mpr-slice-canvas[data-slice-load-status="ready"]')).toHaveCount(3);
+    for (const [axis, index] of Object.entries(persistedSlicePositions)) {
+      await expect(page.locator(`#mpr-slice-${axis}`)).toHaveValue(index);
+    }
+    await expect(mprPanel).toHaveAttribute('data-active-pane', persistedNavigation.activePane);
+    await expect(mprPanel).toHaveAttribute('data-last-active-axis', persistedNavigation.lastActiveAxis);
+    await expect(mprPanel).toHaveAttribute('data-zoom', persistedNavigation.zoom);
+    await expect(mprPanel).toHaveAttribute('data-pan-x', persistedNavigation.panX);
+    await expect(mprPanel).toHaveAttribute('data-pan-y', persistedNavigation.panY);
+    await expect(mprPanel).toHaveAttribute('data-rotation-x', persistedNavigation.rotationX);
+    await expect(mprPanel).toHaveAttribute('data-rotation-y', persistedNavigation.rotationY);
+    await expect(annotationList).toContainText('External: overlay for nist_part.npy');
+    await expect.poll(async () => page.evaluate(() => ['axial', 'coronal', 'sagittal'].every((axis) => {
+      const canvas = document.querySelector(`[data-testid="mpr-preview-${axis}"] canvas`);
+      return canvas?.getAttribute('data-overlay-color-modes') === 'rgba';
+    }))).toBe(true);
 
     for (const axis of ['axial', 'coronal', 'sagittal']) {
       await page.getByTestId(`mpr-pane-${axis}`).locator('.mpr-pane-header').click();

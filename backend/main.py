@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import tempfile
 from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status, HTTPException
@@ -157,7 +158,11 @@ async def lifespan(app: FastAPI):
             logger.warning("WARNING: Boto3 S3 client not initialized. Object storage operations will fail.")
     # Ensure a writable tmp dir exists for any runtime needs
     # Use /tmp for Docker environments where cwd may be read-only
-    tmp_dir = "/tmp" if os.getenv('DISABLE_FILE_LOGGING', '').lower() == 'true' else os.path.join(os.getcwd(), "tmp")
+    tmp_dir = (
+        tempfile.gettempdir()
+        if os.getenv('DISABLE_FILE_LOGGING', '').lower() == 'true'
+        else os.path.join(os.getcwd(), "tmp")
+    )
     os.makedirs(tmp_dir, exist_ok=True)
     logger.info("Application startup complete.")
     yield

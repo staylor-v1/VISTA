@@ -63,6 +63,10 @@ describe('GroupGalleryView', () => {
 
     expect(screen.getAllByText('SN001').length).toBeGreaterThan(0);
     expect(screen.getByText('Back to Groups')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId('image-gallery')).toBeInTheDocument();
+      expect(screen.getByText('Test Project')).toBeInTheDocument();
+    });
   });
 
   test('fetches and renders images for the group', async () => {
@@ -106,6 +110,10 @@ describe('GroupGalleryView', () => {
     render(<BrowserRouter><GroupGalleryView /></BrowserRouter>);
 
     expect(screen.getAllByText('Ungrouped').length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(screen.getByTestId('image-gallery')).toBeInTheDocument();
+      expect(screen.getByText('Test Project')).toBeInTheDocument();
+    });
   });
 
   test('filters out deleted images', async () => {

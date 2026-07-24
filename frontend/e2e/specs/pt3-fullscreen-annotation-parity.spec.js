@@ -260,9 +260,18 @@ async function countMagentaAnnotationPixels(canvas) {
 }
 
 test.describe('PT3 fullscreen annotation parity', () => {
-  test('shares MPR names, renders spatial annotations, and keeps compact controls separate', async ({ page }) => {
+  test('shares MPR names, renders spatial annotations, and keeps compact controls separate', { tag: '@critical' }, async ({ page }) => {
     test.setTimeout(90_000);
     await page.setViewportSize({ width: 1440, height: 900 });
+    await page.addInitScript(() => {
+      const nativeGetContext = window.HTMLCanvasElement.prototype.getContext;
+      window.HTMLCanvasElement.prototype.getContext = function getContext(type, ...args) {
+        if (['webgl', 'webgl2', 'experimental-webgl'].includes(String(type).toLowerCase())) {
+          return null;
+        }
+        return nativeGetContext.call(this, type, ...args);
+      };
+    });
 
     const { projectId } = await mockInspectionWorkbenchRoutes(page, {
       type: 'PT3',
@@ -288,6 +297,7 @@ test.describe('PT3 fullscreen annotation parity', () => {
     await page.getByLabel('3D view').selectOption('ray-march:composite');
     const viewer = page.getByTestId('pt3-gaussian-splat-viewer');
     await expect(viewer).toBeVisible();
+    await expect(viewer).toHaveAttribute('data-renderer-type', 'canvas2d-fallback');
     await page.getByRole('button', { name: 'Open 3D part view fullscreen' }).click();
 
     const fullscreen = page.getByRole('dialog', { name: '3D reconstruction' });

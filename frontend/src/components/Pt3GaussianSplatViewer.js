@@ -3,7 +3,6 @@ import { generateTransferFunctionLut } from './pt3TransferFunctions';
 import {
   createPt3PerspectiveProjector,
   getPhysicalBounds,
-  normalizeVolumeMetadata,
   normalizeAxisMirrorScale,
   pointInsideCropBox,
   voxelToPhysical,
@@ -14,7 +13,17 @@ import {
   loadVolumeTextureImages,
   normalizePt3ReconstructionOptions,
 } from './pt3ThreeRenderer';
-import { MECHANICAL_TRANSFER_PRESETS, getMechanicalCropBox, getMechanicalVolumeMetadata, makeMechanicalFallbackSplats } from './pt3MechanicalVisualization';
+import {
+  MECHANICAL_TRANSFER_PRESETS,
+  getMechanicalCropBox,
+  getMechanicalVolumeDescriptor,
+  makeMechanicalFallbackSplats,
+} from './pt3MechanicalVisualization';
+import {
+  createPt3VolumeDescriptor,
+  getPt3VolumeMetadata,
+  isPt3VolumeDescriptor,
+} from './pt3VolumeDescriptor';
 import { getSegmentDisplayStyle, normalizePt3Segmentation, segmentColorToRgba } from './pt3Segmentation';
 import { renderPt3VectorAnnotations } from './pt3VectorAnnotations';
 import {
@@ -361,7 +370,29 @@ function createSplatWorker() {
 }
 
 function buildMetadata(part) {
-  return getMechanicalVolumeMetadata(part);
+  return getMechanicalVolumeDescriptor(part);
+}
+
+function resolveViewerVolumeDescriptor(candidate, part = null) {
+  return isPt3VolumeDescriptor(candidate)
+    ? candidate
+    : candidate
+      ? createPt3VolumeDescriptor({
+        sourceKind: 'synthetic',
+        partMetadata: candidate,
+        allowSynthetic: true,
+      })
+      : getMechanicalVolumeDescriptor(part);
+}
+
+function normalizeViewerVolumeMetadata(candidate, part = null) {
+  const descriptor = resolveViewerVolumeDescriptor(candidate, part);
+  return getPt3VolumeMetadata(
+    descriptor,
+    !isPt3VolumeDescriptor(candidate) && candidate && typeof candidate === 'object'
+      ? candidate
+      : {},
+  );
 }
 
 function drawProjectedGaussian(ctx, { x, y, sigmaMajor, sigmaMinor, angle, color, alpha }) {
@@ -411,7 +442,7 @@ export async function loadPt3ExternalVolumeOverlayPoints(
     ? volumeOverlayImageStacks.filter((stack) => Array.isArray(stack) && stack.length > 0)
     : [];
   if (stacks.length === 0 || maxPoints < 1) return null;
-  const normalizedMetadata = normalizeVolumeMetadata(metadata);
+  const normalizedMetadata = normalizeViewerVolumeMetadata(metadata);
   const [dimensionX, dimensionY, dimensionZ] = normalizedMetadata.dimensions;
   const retainedPositions = [];
   const retainedColors = [];
@@ -505,7 +536,7 @@ function renderPreview(ctx, {
   ctx.clearRect(0, 0, width, height);
   const cx = width / 2; const cy = height / 2;
   const bounds = getPhysicalBounds(metadata);
-  const normalizedMetadata = normalizeVolumeMetadata(metadata);
+  const normalizedMetadata = normalizeViewerVolumeMetadata(metadata);
   const project = createPt3PerspectiveProjector({ metadata, width, height, rotation, zoom, mirrorScale });
   const centerVoxel = normalizedMetadata.dimensions.map((dimension) => (dimension - 1) / 2);
   const referencePixelsPerUnit = project(voxelToPhysical(centerVoxel, normalizedMetadata))[3];
@@ -695,6 +726,7 @@ function renderPreview(ctx, {
 
 export default function Pt3GaussianSplatViewer({
   part,
+  volumeDescriptor = null,
   volumeMetadata = null,
   projectId,
   volumeImageStack = EMPTY_VOLUME_IMAGE_STACK,
@@ -783,9 +815,20 @@ export default function Pt3GaussianSplatViewer({
   const splatPointSize = isPureSplatMode ? configuredSplatPointSize : 1;
   const splatContrast = isPureSplatMode ? configuredSplatContrast : 1;
   const splatGuidesVisible = isPureSplatMode ? configuredSplatGuides : showSliceGuides;
+  const resolvedVolumeDescriptor = useMemo(
+    () => (
+      isPt3VolumeDescriptor(volumeDescriptor)
+        ? volumeDescriptor
+        : resolveViewerVolumeDescriptor(volumeMetadata || buildMetadata(part), part)
+    ),
+    [part, volumeDescriptor, volumeMetadata],
+  );
   const metadata = useMemo(
-    () => normalizeVolumeMetadata(volumeMetadata || buildMetadata(part)),
-    [part, volumeMetadata],
+    () => getPt3VolumeMetadata(
+      resolvedVolumeDescriptor,
+      volumeMetadata && typeof volumeMetadata === 'object' ? volumeMetadata : {},
+    ),
+    [resolvedVolumeDescriptor, volumeMetadata],
   );
   const sliceLocatorGeometry = useMemo(() => buildPt3SliceLocatorGeometry({
     metadata,
@@ -1056,6 +1099,7 @@ export default function Pt3GaussianSplatViewer({
       }
     };
     createThreeMechanicalRenderer(canvas, {
+      volumeDescriptor: resolvedVolumeDescriptor,
       metadata,
       mode,
       volumeImageStack,
@@ -1089,7 +1133,7 @@ export default function Pt3GaussianSplatViewer({
       initializationController.abort();
       disposeThreeRenderer(threeRendererRef, canvas);
     };
-  }, [isPureSplatMode, metadata, mode, segmentationContract.labelSlices, volumeImageStack, volumeOverlayImageStacks]);
+  }, [isPureSplatMode, metadata, mode, resolvedVolumeDescriptor, segmentationContract.labelSlices, volumeImageStack, volumeOverlayImageStacks]);
 
   useEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return undefined;

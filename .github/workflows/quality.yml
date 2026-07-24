@@ -1,0 +1,166 @@
+name: Quality Gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  critical-playwright:
+    name: Critical Playwright journeys
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CI: "true"
+      PLAYWRIGHT_BROWSERS_PATH: "0"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install lockfile dependencies
+        working-directory: frontend
+        run: npm ci --legacy-peer-deps
+
+      - name: Install lockfile-pinned Chromium locally
+        working-directory: frontend
+        run: ./node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Run critical browser journeys
+        working-directory: frontend
+        run: npm run test:e2e:critical
+
+      - name: Upload critical Playwright failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: critical-playwright-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            frontend/artifacts/
+            frontend/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  nightly-playwright:
+    name: Nightly full Playwright
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CI: "true"
+      PLAYWRIGHT_BROWSERS_PATH: "0"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install lockfile dependencies
+        working-directory: frontend
+        run: npm ci --legacy-peer-deps
+
+      - name: Install lockfile-pinned Chromium locally
+        working-directory: frontend
+        run: ./node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Run the complete browser suite without retries
+        working-directory: frontend
+        run: npm run test:e2e -- --project=chromium-local --workers=1 --retries=0
+
+      - name: Upload nightly Playwright failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-playwright-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            frontend/artifacts/
+            frontend/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  nightly-async-jest:
+    name: Nightly async Jest repeat
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: "true"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install lockfile dependencies
+        working-directory: frontend
+        run: npm ci --legacy-peer-deps
+
+      - name: Repeat async-sensitive Jest suites
+        working-directory: frontend
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/jest-flake
+          for iteration in 1 2 3 4 5 6 7 8 9 10; do
+            echo "Async Jest repeat ${iteration}/10"
+            npm run test:unit:async -- --detectOpenHandles 2>&1 \
+              | tee "artifacts/jest-flake/run-${iteration}.log"
+          done
+
+      - name: Upload async Jest failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: async-jest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: frontend/artifacts/jest-flake/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  nightly-backend-load:
+    name: Nightly backend load contracts
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install locked development dependencies
+        run: uv sync --frozen --group dev
+
+      - name: Run backend load contracts serially
+        run: uv run pytest -q -m load -n 0 backend/tests/load

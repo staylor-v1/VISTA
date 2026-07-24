@@ -31,6 +31,11 @@ if ! command -v npm >/dev/null 2>&1; then
   echo "Error: npm not found. Please install Node.js and npm."
   exit 1
 fi
+if [ ! -x "frontend/node_modules/.bin/react-scripts" ]; then
+  echo "Error: locked frontend dependencies are missing."
+  echo "Run 'cd frontend && npm ci' before starting the test suite."
+  exit 1
+fi
 
 # Run tests
 cd frontend
@@ -39,13 +44,14 @@ echo "============================================="
 
 set +e
 
-# Run Jest tests, excluding the custom test-runner script
+# Run Jest through the committed package script. npm never downloads a missing
+# executable here, unlike npx.
 echo "Jest tests:"
+JEST_ARGS=(--passWithNoTests)
 if [ "$VERBOSE_MODE" = true ]; then
-  npx react-scripts test --testPathIgnorePatterns=test-runner.cjs --watchAll=false --passWithNoTests --verbose
-else
-  npx react-scripts test --testPathIgnorePatterns=test-runner.cjs --watchAll=false --passWithNoTests
+  JEST_ARGS+=(--verbose)
 fi
+npm run test:unit:ci -- "${JEST_ARGS[@]}"
 JEST_EXIT_CODE=$?
 
 # Run the custom test runner separately

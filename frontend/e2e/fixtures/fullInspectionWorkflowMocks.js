@@ -52,8 +52,8 @@ async function mockFullInspectionWorkflowRoutes(page) {
       metadata: {
         defects: [{ severity: 'minor' }],
         view_images: {
-          front: 'housing-e2e-a-front.png',
-          back: 'housing-e2e-a-back.png',
+          front: 'part-a-front.png',
+          back: 'part-a-back.png',
         },
       },
     },
@@ -66,7 +66,7 @@ async function mockFullInspectionWorkflowRoutes(page) {
       metadata: {
         defects: [{ severity: 'critical' }],
         view_images: {
-          front: 'housing-e2e-b-front.png',
+          front: 'part-b-front.png',
         },
       },
     },
@@ -134,6 +134,35 @@ async function mockFullInspectionWorkflowRoutes(page) {
               inspection: { required_annotations: 1 },
             },
           },
+        }),
+      });
+      return;
+    }
+
+    if (url.endsWith(`/api/projects/${projectId}/data-summary`) && method === 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          part_count: mutableParts.length,
+          active_image_count: uploadedImages.length,
+          image_metadata_fields: 0,
+          overlay_layer_count: bundleSummary.overlaysConfiguredLayers,
+          annotation_count: bundleSummary.annotationsTotal,
+        }),
+      });
+      return;
+    }
+
+    if (new URL(url).pathname === `/api/projects/${projectId}/images-page` && method === 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: uploadedImages,
+          total: uploadedImages.length,
+          next_cursor: null,
+          has_more: false,
         }),
       });
       return;

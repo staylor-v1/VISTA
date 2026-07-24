@@ -57,10 +57,11 @@ describe('GroupedImagesPage', () => {
     delete global.fetch;
   });
 
-  test('shows loading spinner initially', () => {
+  test('shows loading spinner initially', async () => {
     mockFetchResponses();
     renderPage();
     expect(screen.getByText('Loading groups...')).toBeInTheDocument();
+    expect(await screen.findByText('Serial 001')).toBeInTheDocument();
   });
 
   test('renders group rows after loading', async () => {

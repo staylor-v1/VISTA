@@ -3,8 +3,6 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import ImageUploader, { buildDuplicateFilenameMap, buildInspectionPartIngestPayload, formatUploadSize, parseAssociatedMetadataText, tagDuplicateFilename } from '../ImageUploader';
 import { BATCH_UPLOAD_MAX_BYTES } from '../imageUploadBatches';
 
-jest.setTimeout(30000);
-
 const makeFile = (name) => new File(['data'], name, { type: 'image/png' });
 
 const batchPayload = (images, failed = []) => ({
@@ -36,6 +34,15 @@ function renderUploader(props = {}) {
     ...props,
   };
   return { ...render(<ImageUploader {...defaultProps} />), props: defaultProps };
+}
+
+async function waitForSuccessfulUpload(props) {
+  await waitFor(() => {
+    expect(props.onUploadComplete).toHaveBeenCalled();
+  });
+  await waitFor(() => {
+    expect(screen.getByRole('button', { name: /upload images/i })).not.toBeDisabled();
+  });
 }
 
 beforeEach(() => {
@@ -73,13 +80,11 @@ describe('ImageUploader', () => {
         };
       });
 
-      renderUploader();
+      const { props } = renderUploader();
       selectFiles([makeFile('overlay.png'), makeFile('overlay.png')]);
       fireEvent.click(screen.getByRole('button', { name: /upload images/i }));
 
-      await waitFor(() => {
-        expect(fetchSpy).toHaveBeenCalledTimes(1);
-      });
+      await waitForSuccessfulUpload(props);
 
       const body = fetchSpy.mock.calls[0][1].body;
       expect(fetchSpy.mock.calls[0][0]).toBe('/api/projects/proj-1/images/batch');
@@ -227,9 +232,7 @@ describe('ImageUploader', () => {
 
       fireEvent.click(screen.getByRole('button', { name: /upload images/i }));
 
-      await waitFor(() => {
-        expect(fetchSpy).toHaveBeenCalledTimes(1);
-      });
+      await waitForSuccessfulUpload(props);
 
       const [url, options] = fetchSpy.mock.calls[0];
       expect(url).toBe('/api/projects/proj-1/images/batch');
@@ -1154,9 +1157,7 @@ describe('ImageUploader', () => {
 
       fireEvent.click(screen.getByRole('button', { name: /upload images/i }));
 
-      await waitFor(() => {
-        expect(fetchSpy).toHaveBeenCalledTimes(1);
-      });
+      await waitForSuccessfulUpload(props);
 
       const body = fetchSpy.mock.calls[0][1].body;
       expect((await batchManifest(body))[0].metadata).toEqual({ source: 'manual' });
@@ -1171,7 +1172,7 @@ describe('ImageUploader', () => {
         json: async () => batchPayload([{ id: 'img-1' }]),
       });
 
-      renderUploader();
+      const { props } = renderUploader();
       const files = [makeFile('lot1_SN001.png')];
       selectFiles(files);
 
@@ -1192,9 +1193,7 @@ describe('ImageUploader', () => {
 
       fireEvent.click(screen.getByRole('button', { name: /upload images/i }));
 
-      await waitFor(() => {
-        expect(fetchSpy).toHaveBeenCalledTimes(1);
-      });
+      await waitForSuccessfulUpload(props);
 
       const body = fetchSpy.mock.calls[0][1].body;
       expect((await batchManifest(body))[0]).toEqual(expect.objectContaining({
@@ -1640,7 +1639,7 @@ describe('ImageUploader', () => {
         json: async () => batchPayload([{ id: 'img-1' }]),
       });
 
-      renderUploader();
+      const { props } = renderUploader();
       const files = [makeFile('lot1_SN001.png')];
       selectFiles(files);
 
@@ -1663,9 +1662,7 @@ describe('ImageUploader', () => {
 
       fireEvent.click(screen.getByRole('button', { name: /upload images/i }));
 
-      await waitFor(() => {
-        expect(fetchSpy).toHaveBeenCalledTimes(1);
-      });
+      await waitForSuccessfulUpload(props);
 
       const body = fetchSpy.mock.calls[0][1].body;
       const metadata = (await batchManifest(body))[0].metadata;

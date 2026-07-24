@@ -1670,7 +1670,14 @@ describe('InspectionWorkbenchPanel', () => {
   });
 
   test('exposes every axis slice for a 300 frame 300px 3D TIFF stack', async () => {
-    const onMprSlicePositionChange = jest.fn();
+    const onMprSessionChange = jest.fn();
+    const mprSession = {
+      slicePosition: { axial: 17, coronal: 23, sagittal: 31 },
+      activePane: 'coronal',
+      lastActiveAxis: 'coronal',
+      viewportTransform: { zoom: 1.5, panX: 12, panY: -8 },
+      rotation: { x: -12, y: 42 },
+    };
     const tiffScenario = {
       user: 'tiff-300',
       batches: [{ id: 'batch-tiff-300', name: 'Batch TIFF 300' }],
@@ -1712,8 +1719,8 @@ describe('InspectionWorkbenchPanel', () => {
       <InspectionWorkbenchPanel
         projectId="proj-1"
         projectType="PT3"
-        sessionMprSlicePosition={{ axial: 17, coronal: 23, sagittal: 31 }}
-        onMprSlicePositionChange={onMprSlicePositionChange}
+        mprSession={mprSession}
+        onMprSessionChange={onMprSessionChange}
       />,
     );
 
@@ -1728,7 +1735,10 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('mpr-pane-3d')).toHaveTextContent('3D');
 
     fireEvent.change(document.querySelector('#mpr-slice-axial'), { target: { value: '299' } });
-    expect(onMprSlicePositionChange).toHaveBeenLastCalledWith({ axial: 299, coronal: 23, sagittal: 31 });
+    expect(onMprSessionChange).toHaveBeenLastCalledWith({
+      ...mprSession,
+      slicePosition: { axial: 299, coronal: 23, sagittal: 31 },
+    });
     fireEvent.change(document.querySelector('#mpr-slice-coronal'), { target: { value: '299' } });
     fireEvent.change(document.querySelector('#mpr-slice-sagittal'), { target: { value: '299' } });
 
@@ -1768,22 +1778,126 @@ describe('InspectionWorkbenchPanel', () => {
         },
       ],
     };
-    mockWorkbenchFetch(npyScenario);
-    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+    const rendererSpy = jest.spyOn(pt3ThreeRenderer, 'createThreeMechanicalRenderer')
+      .mockResolvedValue({
+        rendererType: 'three-webgl-raymarch',
+        render: jest.fn(),
+        dispose: jest.fn(),
+      });
+    let view;
+    try {
+      mockWorkbenchFetch(npyScenario);
+      view = render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
 
-    await screen.findByTestId('mpr-panel');
+      await screen.findByTestId('mpr-panel');
 
-    expect(document.querySelector('#mpr-slice-axial')).toHaveAttribute('max', '199');
-    expect(document.querySelector('#mpr-slice-coronal')).toHaveAttribute('max', '549');
-    expect(document.querySelector('#mpr-slice-sagittal')).toHaveAttribute('max', '299');
-    expect(screen.getByTestId('mpr-pane-axial')).toHaveTextContent(/99 \/ 199/);
-    expect(screen.getByTestId('mpr-pane-coronal')).toHaveTextContent(/274 \/ 549/);
-    expect(screen.getByTestId('mpr-pane-sagittal')).toHaveTextContent(/149 \/ 299/);
-    await waitFor(() => {
-      const axialCanvas = screen.getByTestId('mpr-preview-axial').querySelector('canvas');
-      expect(axialCanvas).toHaveAttribute('width', '300');
-      expect(axialCanvas).toHaveAttribute('height', '550');
-    });
+      expect(document.querySelector('#mpr-slice-axial')).toHaveAttribute('max', '199');
+      expect(document.querySelector('#mpr-slice-coronal')).toHaveAttribute('max', '549');
+      expect(document.querySelector('#mpr-slice-sagittal')).toHaveAttribute('max', '299');
+      expect(screen.getByTestId('mpr-pane-axial')).toHaveTextContent(/99 \/ 199/);
+      expect(screen.getByTestId('mpr-pane-coronal')).toHaveTextContent(/274 \/ 549/);
+      expect(screen.getByTestId('mpr-pane-sagittal')).toHaveTextContent(/149 \/ 299/);
+      await waitFor(() => {
+        const axialCanvas = screen.getByTestId('mpr-preview-axial').querySelector('canvas');
+        expect(axialCanvas).toHaveAttribute('width', '300');
+        expect(axialCanvas).toHaveAttribute('height', '550');
+      });
+
+      fireEvent.change(screen.getByLabelText('3D view'), {
+        target: { value: 'ray-march:composite' },
+      });
+      await waitFor(() => expect(rendererSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          volumeDescriptor: expect.objectContaining({
+            source: expect.objectContaining({ imageId: 'img-npy-200' }),
+          }),
+        }),
+      ));
+    } finally {
+      view?.unmount();
+      rendererSpy.mockRestore();
+    }
+  });
+
+  test('keeps an aligned 3D overlay loaded while annotation rendering is toggled', async () => {
+    const dimensions = { axial: 4, coronal: 6, sagittal: 8 };
+    const baseSource = {
+      filename: 'toggle-base.npy',
+      image_id: 'toggle-base',
+      load_mode: 'volume',
+      volume_shape: dimensions,
+      channel_count: 1,
+      color_mode: 'scalar',
+    };
+    const overlaySource = {
+      filename: 'toggle-segments.npy',
+      image_id: 'toggle-segments',
+      load_mode: 'volume',
+      volume_shape: dimensions,
+      channel_count: 4,
+      color_mode: 'rgba',
+      overlay: true,
+      overlay_base_image_id: 'toggle-base',
+    };
+    const renderer = {
+      rendererType: 'three-webgl-raymarch',
+      hasExternalOverlay: true,
+      render: jest.fn(),
+      dispose: jest.fn(),
+    };
+    const rendererSpy = jest.spyOn(pt3ThreeRenderer, 'createThreeMechanicalRenderer')
+      .mockResolvedValue(renderer);
+    let view;
+    try {
+      mockWorkbenchFetch({
+        user: 'overlay-render-toggle',
+        batches: [{ id: 'batch-toggle', name: 'Toggle batch' }],
+        workspaceState: { selected_batch_id: 'batch-toggle', selected_part_id: 'part-toggle' },
+        parts: [{
+          id: 'part-toggle',
+          batch_id: 'batch-toggle',
+          serial_number: 'TOGGLE-001',
+          display_name: 'Overlay toggle volume',
+          review_state: 'in_review',
+          metadata: {
+            volume_shape: dimensions,
+            source_images: [baseSource, overlaySource],
+          },
+        }],
+        projectImages: [
+          { id: 'toggle-base', filename: baseSource.filename, metadata: baseSource },
+          { id: 'toggle-segments', filename: overlaySource.filename, metadata: overlaySource },
+        ],
+      });
+      view = render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
+
+      await screen.findByTestId('mpr-panel');
+      fireEvent.change(screen.getByLabelText('3D view'), {
+        target: { value: 'ray-march:composite' },
+      });
+      const viewer = await screen.findByTestId('pt3-gaussian-splat-viewer');
+      await waitFor(() => expect(viewer)
+        .toHaveAttribute('data-external-overlay-rendered', 'true'));
+
+      fireEvent.keyDown(
+        screen.getByRole('button', { name: 'Open 3D part view fullscreen' }),
+        { key: 'Enter' },
+      );
+      const fullscreen = screen.getByRole('dialog', { name: '3D reconstruction' });
+      const renderAnnotationsToggle = within(fullscreen).getByLabelText('Render annotations');
+      const initializationCount = rendererSpy.mock.calls.length;
+
+      fireEvent.click(renderAnnotationsToggle);
+      expect(viewer).toHaveAttribute('data-external-overlay-rendered', 'false');
+      fireEvent.click(renderAnnotationsToggle);
+      await waitFor(() => expect(viewer)
+        .toHaveAttribute('data-external-overlay-rendered', 'true'));
+      expect(rendererSpy).toHaveBeenCalledTimes(initializationCount);
+    } finally {
+      view?.unmount();
+      rendererSpy.mockRestore();
+    }
   });
 
   test('probes legacy volume metadata once and renders an RGBA overlay over a scalar source', async () => {
@@ -2410,6 +2524,11 @@ describe('InspectionWorkbenchPanel', () => {
     expect(splatOrbitX).toHaveValue('-27');
     fireEvent.keyDown(fullscreenScene, { key: 'ArrowDown' });
     expect(splatOrbitX).toHaveValue('-22');
+    await waitFor(() => {
+      expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent(
+        'Real 3DGS unavailable',
+      );
+    });
 
     const lastControl = within(splatControls).getByRole('button', { name: '3DGS Zoom +' });
     const annotationVisibilityControl = within(screen.getByLabelText('3D annotations'))
@@ -4715,8 +4834,12 @@ describe('InspectionWorkbenchPanel', () => {
     fireEvent.change(screen.getByLabelText('Display window minimum'), { target: { value: '20000' } });
     fireEvent.change(screen.getByLabelText('Display window maximum'), { target: { value: '50000' } });
     fireEvent.change(screen.getByTestId('mpr-part-selector'), { target: { value: 'part-uint16-b' } });
-    expect(screen.getByLabelText('Display window minimum')).toHaveValue(20000);
-    expect(screen.getByLabelText('Display window maximum')).toHaveValue(50000);
+    await waitFor(() => {
+      expect(screen.getByLabelText('Display window minimum')).toHaveValue(20000);
+      expect(screen.getByLabelText('Display window maximum')).toHaveValue(50000);
+      expect(screen.getByTestId('annotation-list')).toHaveTextContent('No annotations captured.');
+      expect(screen.getByTestId('volume-metadata-probe-warning')).toHaveTextContent('part-uint16-b.npy');
+    });
   });
 
   test('reloads annotations after A to B to A navigation instead of reusing embedded part metadata', async () => {
@@ -4872,6 +4995,75 @@ describe('InspectionWorkbenchPanel', () => {
     ));
   });
 
+  test('uses launch pane over the clamped parent session and publishes each navigation action once', async () => {
+    const onMprSessionChange = jest.fn();
+    const parentSession = {
+      slicePosition: { axial: 900, coronal: 34, sagittal: -8 },
+      activePane: 'coronal',
+      lastActiveAxis: 'coronal',
+      viewportTransform: { zoom: 2, panX: 24, panY: -16 },
+      rotation: { x: -12, y: 42 },
+    };
+    mockWorkbenchFetch(scenarioByUser[2]);
+    render(
+      <InspectionWorkbenchPanel
+        projectId="proj-1"
+        projectType="PT3"
+        launchFilters={{ active_mpr_pane: 'sagittal' }}
+        mprSession={parentSession}
+        onMprSessionChange={onMprSessionChange}
+      />,
+    );
+
+    const panel = await screen.findByTestId('mpr-panel');
+    await waitFor(() => expect(panel).toHaveAttribute('data-active-pane', 'sagittal'));
+    expect(panel).toHaveAttribute('data-last-active-axis', 'sagittal');
+    expect(panel).toHaveAttribute('data-zoom', '2');
+    expect(panel).toHaveAttribute('data-pan-x', '24');
+    expect(panel).toHaveAttribute('data-pan-y', '-16');
+    expect(panel).toHaveAttribute('data-rotation-x', '-12');
+    expect(panel).toHaveAttribute('data-rotation-y', '42');
+    expect(document.querySelector('#mpr-slice-axial')).toHaveValue('127');
+    expect(document.querySelector('#mpr-slice-coronal')).toHaveValue('34');
+    expect(document.querySelector('#mpr-slice-sagittal')).toHaveValue('0');
+    expect(onMprSessionChange).toHaveBeenCalledTimes(1);
+    expect(onMprSessionChange).toHaveBeenLastCalledWith({
+      ...parentSession,
+      slicePosition: { axial: 127, coronal: 34, sagittal: 0 },
+      activePane: 'sagittal',
+      lastActiveAxis: 'sagittal',
+    });
+
+    onMprSessionChange.mockClear();
+    fireEvent.change(document.querySelector('#mpr-slice-coronal'), { target: { value: '45' } });
+    expect(onMprSessionChange).toHaveBeenCalledTimes(1);
+    expect(onMprSessionChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      slicePosition: { axial: 127, coronal: 45, sagittal: 0 },
+      activePane: 'sagittal',
+      lastActiveAxis: 'sagittal',
+    }));
+
+    fireEvent.wheel(screen.getByTestId('mpr-pane-3d'), { deltaY: -80 });
+    expect(onMprSessionChange).toHaveBeenCalledTimes(2);
+    expect(onMprSessionChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      activePane: 'volume',
+      lastActiveAxis: 'sagittal',
+      viewportTransform: { zoom: 2.12, panX: 24, panY: -16 },
+    }));
+
+    const scene = screen.getByRole('button', { name: 'Open 3D part view fullscreen' });
+    fireEvent.keyDown(scene, { key: 'Enter' });
+    const fullscreenScene = screen.getByRole('application', {
+      name: 'Fullscreen 3D part view. Use arrow keys to orbit, plus and minus to zoom, and zero to reset.',
+    });
+    onMprSessionChange.mockClear();
+    fireEvent.keyDown(fullscreenScene, { key: 'ArrowRight' });
+    expect(onMprSessionChange).toHaveBeenCalledTimes(1);
+    expect(onMprSessionChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      rotation: { x: -12, y: 47 },
+    }));
+  });
+
   test.each([
     ['shell', 'orientation'],
     ['splat', 'orientation'],
@@ -4922,7 +5114,14 @@ describe('InspectionWorkbenchPanel', () => {
     ));
 
     fireEvent.change(screen.getByTestId('mpr-part-selector'), { target: { value: 'part-adv-2' } });
-    expect(modeSelect).toHaveValue('ray-march:xray');
+    await waitFor(() => {
+      expect(modeSelect).toHaveValue('ray-march:xray');
+      expect(screen.getByTestId('annotation-list')).toHaveTextContent('No annotations captured.');
+      expect(screen.getByTestId('pt3-gaussian-splat-viewer')).not.toHaveAttribute(
+        'data-renderer-type',
+        'pending',
+      );
+    });
   });
 
   test('legacy hybrid hydration always resets ray style to Composite', async () => {
@@ -4962,7 +5161,10 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('mpr-part-selector')).toHaveValue('part-adv-2');
     expect(screen.getByTestId('mpr-pane-coronal')).toHaveTextContent('No volume stack images');
     fireEvent.change(screen.getByTestId('mpr-part-selector'), { target: { value: 'part-adv-1' } });
-    expect(screen.getByTestId('mpr-part-selector')).toHaveValue('part-adv-1');
+    await waitFor(() => {
+      expect(screen.getByTestId('mpr-part-selector')).toHaveValue('part-adv-1');
+      expect(screen.getByTestId('annotation-list')).toHaveTextContent('seed-adv');
+    });
     expect(screen.queryByRole('img', { name: /Volume reconstruction slice/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/axial/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/coronal/i)).not.toBeInTheDocument();
@@ -6017,6 +6219,12 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByTestId('segmentation-helper-3d-stage')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Polygon:/i })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Brush 3D mode' })).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() => {
+      const viewer = within(screen.getByTestId('segmentation-helper-3d-stage'))
+        .getByTestId('pt3-gaussian-splat-viewer');
+      expect(viewer).not.toHaveAttribute('data-renderer-type', 'pending');
+      expect(viewer).toHaveTextContent(/Ray march (?:ready|fallback)/i);
+    });
   });
 
   test('compacts a schema-maximum legacy segment before applying the newest 3D gesture', async () => {
@@ -6311,7 +6519,7 @@ describe('InspectionWorkbenchPanel', () => {
       });
     };
 
-    const assertConnectedShape = (shape) => {
+    const assertConnectedShape = async (shape, expectedAreaCount) => {
       installSlicePixels(shape);
       fireEvent.click(screen.getByRole('button', { name: /^Connected:/i }));
       fireCoordinatePointerEvent(stage, 'pointerdown', {
@@ -6327,19 +6535,41 @@ describe('InspectionWorkbenchPanel', () => {
       expect(pathData).not.toContain('h 80');
       expect(stage.querySelector('.segmentation-helper-point')).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: 'Add selection' }));
+      await waitFor(() => {
+        expect(screen.getByTestId('segmentation-segment-list')).toHaveTextContent(
+          `${expectedAreaCount} areas`,
+        );
+      });
     };
 
-    assertConnectedShape({
+    await assertConnectedShape({
       background: 255,
       shape: { x: 18, y: 24, width: 20, height: 16, value: 0 },
-    });
-    expect(screen.getByTestId('segmentation-segment-list')).toHaveTextContent('1 areas');
+    }, 1);
+    await screen.findByRole('button', { name: /Hide vista segment Segment A/i });
 
-    assertConnectedShape({
+    await assertConnectedShape({
       background: 0,
       shape: { x: 42, y: 50, width: 14, height: 18, value: 255 },
+    }, 2);
+    await waitFor(() => {
+      expect(global.fetch.mock.calls.some(([url, options]) => (
+        url.includes('/annotations/annotation-1') && options?.method === 'PATCH'
+      ))).toBe(true);
     });
-    expect(screen.getByTestId('segmentation-segment-list')).toHaveTextContent('2 areas');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close Segmentation Helpers' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Segmentation Helpers' })).not.toBeInTheDocument();
+    });
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /Edit annotation Created with VISTA Segmentation Helpers\./i,
+      }),
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId('segmentation-segment-list')).toHaveTextContent('2 areas');
+    });
   });
 
 

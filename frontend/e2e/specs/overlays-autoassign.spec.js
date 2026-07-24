@@ -42,5 +42,8 @@ test('shows Autoassign on the Overlays tab and assigns filename matches', async 
 
   await overlaysPanel.getByRole('button', { name: 'Autoassign' }).click();
   await expect(overlaysPanel.getByRole('status')).toContainText('Autoassigned 2 overlays.');
+  await expect(overlaysPanel.getByTestId('overlay-target-camera-base-id').getByRole('button', { name: 'camera_overlay.png' })).toBeVisible();
+  await expect(overlaysPanel.getByTestId('overlay-target-scan-base-id').getByRole('button', { name: 'scan (duplicate).npy' })).toBeVisible();
+  await expect(overlaysPanel.getByTestId('overlays-unassigned-target')).toContainText('No available overlay images.');
   await overlaysPanel.screenshot({ path: screenshotPath });
 });

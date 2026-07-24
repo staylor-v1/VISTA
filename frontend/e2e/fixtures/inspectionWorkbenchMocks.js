@@ -498,6 +498,57 @@ async function mockInspectionWorkbenchRoutes(page, {
       });
       return;
     }
+    if (url.endsWith(`/api/projects/${projectId}/parts/overlay-assignments`) && method === 'POST') {
+      const payload = route.request().postDataJSON() || {};
+      const overlayImageId = String(payload.overlay_image_id || '').trim();
+      const overlayFilename = String(payload.overlay_filename || '').trim();
+      const baseImageId = String(payload.base_image_id || '').trim();
+      const baseFilename = String(payload.base_filename || '').trim();
+      mutableParts = mutableParts.map((part) => {
+        const sourceImages = Array.isArray(part?.metadata?.source_images)
+          ? part.metadata.source_images
+          : [];
+        const ownsBaseImage = sourceImages.some((record) => (
+          !record?.overlay
+          && (
+            (baseImageId && String(record.image_id || '') === baseImageId)
+            || (!baseImageId && baseFilename && String(record.filename || '') === baseFilename)
+          )
+        ));
+        const withoutOverlay = sourceImages.filter((record) => (
+          String(record?.image_id || '') !== overlayImageId
+        ));
+        if (!ownsBaseImage) {
+          if (withoutOverlay.length === sourceImages.length) return part;
+          return {
+            ...part,
+            metadata: { ...part.metadata, source_images: withoutOverlay },
+          };
+        }
+        return {
+          ...part,
+          metadata: {
+            ...part.metadata,
+            source_images: [
+              ...withoutOverlay,
+              {
+                filename: overlayFilename,
+                image_id: overlayImageId,
+                overlay: true,
+                overlay_base_filename: baseFilename,
+                overlay_base_image_id: baseImageId,
+              },
+            ],
+          },
+        };
+      });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ assigned: true }),
+      });
+      return;
+    }
     if (url.includes(`/api/projects/${projectId}/parts/`) && url.endsWith('/annotations') && method === 'GET') {
       const partId = url.split('/parts/').at(-1).split('/annotations')[0];
       await route.fulfill({

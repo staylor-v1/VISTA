@@ -1,4 +1,8 @@
 import { getPhysicalBounds, normalizeVolumeMetadata, pointInsideCropBox } from './pt3VolumeGeometry';
+import {
+  createPt3VolumeDescriptor,
+  getPt3VolumeMetadata,
+} from './pt3VolumeDescriptor';
 
 export const MECHANICAL_TRANSFER_PRESETS = {
   machinedMetal: { label: 'Machined metal', window: 220, level: 150, opacity: 0.76, colorStops: [[0, [15, 23, 42]], [0.35, [100, 116, 139]], [0.72, [203, 213, 225]], [1, [255, 255, 255]]] },
@@ -6,7 +10,7 @@ export const MECHANICAL_TRANSFER_PRESETS = {
   defect: { label: 'Void / defect contrast', window: 140, level: 95, opacity: 0.64, colorStops: [[0, [2, 6, 23]], [0.38, [251, 146, 60]], [0.72, [239, 68, 68]], [1, [254, 242, 242]]] },
 };
 
-export function getMechanicalVolumeMetadata(part) {
+export function getMechanicalVolumeDescriptor(part) {
   const partMetadata = part?.metadata && typeof part.metadata === 'object'
     ? part.metadata
     : {};
@@ -47,26 +51,44 @@ export function getMechanicalVolumeMetadata(part) {
     ? realAsset.source_physical_space
     : {};
   const authoritativeVolume = Boolean(sourceRecord || sourceDimensions);
-  return normalizeVolumeMetadata({
-    dimensions,
-    spacing: declaredGeometry.spacing
-      || partMetadata.spacing
-      || partMetadata.voxel_spacing
-      || fittedSourceGeometry.spacing
-      || (authoritativeVolume ? [1, 1, 1] : [0.08, 0.08, 0.12]),
-    origin: declaredGeometry.origin
-      || partMetadata.origin
-      || fittedSourceGeometry.origin
-      || [0, 0, 0],
-    direction: declaredGeometry.direction
-      || partMetadata.direction
-      || fittedSourceGeometry.direction,
-    scalarRange: declaredGeometry.scalar_range
-      || partMetadata.scalar_range
-      || partMetadata.intensity_range
-      || realAsset.scalar_range
-      || [0, 255],
-    modality: partMetadata.modality || 'industrial_ct',
+  return createPt3VolumeDescriptor({
+    sourceKind: 'synthetic',
+    partMetadata: {
+      ...partMetadata,
+      volume_shape: {
+        sagittal: dimensions[0],
+        coronal: dimensions[1],
+        axial: dimensions[2],
+      },
+      scalar_range: declaredGeometry.scalar_range
+        || partMetadata.scalar_range
+        || partMetadata.intensity_range
+        || realAsset.scalar_range
+        || [0, 255],
+      pt3_volume_geometry: {
+        ...declaredGeometry,
+        spacing: declaredGeometry.spacing
+          || partMetadata.spacing
+          || partMetadata.voxel_spacing
+          || fittedSourceGeometry.spacing
+          || (authoritativeVolume ? [1, 1, 1] : [0.08, 0.08, 0.12]),
+        origin: declaredGeometry.origin
+          || partMetadata.origin
+          || fittedSourceGeometry.origin
+          || [0, 0, 0],
+        direction: declaredGeometry.direction
+          || partMetadata.direction
+          || fittedSourceGeometry.direction,
+      },
+    },
+    allowSynthetic: true,
+  });
+}
+
+export function getMechanicalVolumeMetadata(part) {
+  const descriptor = getMechanicalVolumeDescriptor(part);
+  return getPt3VolumeMetadata(descriptor, {
+    modality: part?.metadata?.modality || 'industrial_ct',
     sourceId: part?.id || 'mechanical-local-preview',
   });
 }

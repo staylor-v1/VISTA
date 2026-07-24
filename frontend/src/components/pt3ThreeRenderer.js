@@ -10,6 +10,7 @@ import {
   MPR_SERVER_SLICE_MAX_CONCURRENCY,
   scheduleMprServerSliceTask,
 } from './mprServerSliceScheduler';
+import { getPt3VolumeMetadata } from './pt3VolumeDescriptor';
 
 let threeModulePromise = null;
 
@@ -976,6 +977,7 @@ export const PT3_VOLUME_FRAGMENT_SHADER = `
 `;
 
 export async function createThreeMechanicalRenderer(canvas, {
+  volumeDescriptor = null,
   metadata,
   mode,
   volumeImageStack = [],
@@ -985,6 +987,9 @@ export async function createThreeMechanicalRenderer(canvas, {
   onError,
 }) {
   if (!canvas || mode === 'splat') return null;
+  const rendererMetadata = getPt3VolumeMetadata(volumeDescriptor)
+    || getPt3VolumeMetadata(metadata)
+    || metadata;
   const THREE = await loadThree();
   throwIfAborted(signal);
   const renderer = new THREE.WebGLRenderer({
@@ -1061,9 +1066,9 @@ export async function createThreeMechanicalRenderer(canvas, {
     renderer.dispose();
     throw error;
   }
-  const dimensions = metadata?.dimensions || [1, 1, 1];
-  const spacing = metadata?.spacing || [1, 1, 1];
-  const size = getPt3ViewSize(metadata);
+  const dimensions = rendererMetadata?.dimensions || [1, 1, 1];
+  const spacing = rendererMetadata?.spacing || [1, 1, 1];
+  const size = getPt3ViewSize(rendererMetadata);
   let scene;
   let camera;
   let geometry;
@@ -1079,7 +1084,7 @@ export async function createThreeMechanicalRenderer(canvas, {
   try {
     throwIfAborted(signal);
     scene = new THREE.Scene();
-    const clipping = getPt3CameraClippingRange(metadata);
+    const clipping = getPt3CameraClippingRange(rendererMetadata);
     camera = new THREE.PerspectiveCamera(
       PT3_VIEW_CAMERA_FOV_DEGREES,
       1,
@@ -1257,7 +1262,7 @@ export async function createThreeMechanicalRenderer(canvas, {
     }
     renderer.setSize(1, 1, false);
     camera.aspect = 1;
-    camera.position.z = getPt3CameraDistance(metadata);
+    camera.position.z = getPt3CameraDistance(rendererMetadata);
     camera.updateProjectionMatrix();
     volumeGroup.updateMatrixWorld();
     inverseMatrix.copy(volumeGroup.matrixWorld).invert();
@@ -1328,6 +1333,7 @@ export async function createThreeMechanicalRenderer(canvas, {
         signal,
       ),
       createBaseRenderer: () => createThreeMechanicalRenderer(canvas, {
+        volumeDescriptor,
         metadata,
         mode,
         volumeImageStack,
@@ -1392,7 +1398,7 @@ export async function createThreeMechanicalRenderer(canvas, {
       volumeGroup.scale.set(worldScale.x, worldScale.y, worldScale.z);
       // Keep the camera outside the rotated volume at every zoom level. Three's
       // optical zoom changes framing without dollying through the volume.
-      camera.position.z = getPt3CameraDistance(metadata);
+      camera.position.z = getPt3CameraDistance(rendererMetadata);
       sliceGuides.axial.guide.position.z = sliceOffset(slicePosition?.axial, dimensions[2], spacing[2]);
       sliceGuides.coronal.guide.position.y = sliceOffset(slicePosition?.coronal, dimensions[1], spacing[1]);
       sliceGuides.sagittal.guide.position.x = sliceOffset(slicePosition?.sagittal, dimensions[0], spacing[0]);

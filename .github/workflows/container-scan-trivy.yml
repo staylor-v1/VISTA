@@ -31,16 +31,18 @@ jobs:
           tags: security-scan:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          
-      - name: Run Trivy vulnerability scanner
+
+      # Generate and publish the report before enforcing the same severity
+      # policy so findings remain available when the final scan fails.
+      - name: Generate Trivy vulnerability report
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: 'security-scan:latest'
           format: 'sarif'
           output: 'trivy-results.sarif'
           severity: 'CRITICAL,HIGH'
-          exit-code: 0
-          ignore-unfixed: true
+          exit-code: '0'
+          ignore-unfixed: false
 
       - name: Upload Trivy scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4
@@ -48,6 +50,25 @@ jobs:
         with:
           sarif_file: 'trivy-results.sarif'
           category: 'container-scan'
+
+      - name: Upload Trivy scan artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-container-scan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: trivy-results.sarif
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce Trivy HIGH and CRITICAL vulnerability gate
+        uses: aquasecurity/trivy-action@v0.35.0
+        if: always()
+        with:
+          image-ref: 'security-scan:latest'
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+          ignore-unfixed: false
 
   dependency-scan:
     name: Dependency Security Scan
@@ -57,7 +78,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -67,28 +88,93 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install safety bandit semgrep
+          python -m pip install \
+            "safety==3.8.1" \
+            "bandit==1.9.4" \
+            "semgrep==1.170.0"
 
       - name: Run Safety (Python dependency vulnerability scanner)
+        if: always()
+        shell: bash
         run: |
-          uv export --no-hashes > /tmp/requirements.txt
-          safety check -r /tmp/requirements.txt --json --output safety-results.json || true
+          mkdir -p security-scan-status
+          set +e
+          uv export --frozen --no-dev --no-hashes --output-file /tmp/vista-runtime-requirements.txt \
+            2>&1 | tee safety-export.log
+          export_status=${PIPESTATUS[0]}
+          if [ "$export_status" -eq 0 ]; then
+            safety check -r /tmp/vista-runtime-requirements.txt \
+              --output json \
+              2> >(tee safety-scan.log >&2) | tee safety-results.json
+            scan_status=${PIPESTATUS[0]}
+          else
+            scan_status=$export_status
+            printf '%s\n' "Safety did not run because the locked dependency export failed." \
+              > safety-scan.log
+          fi
+          set -e
+          printf '%s\n' "$scan_status" > security-scan-status/safety.exit-code
 
       - name: Run Bandit (Python security linter)
+        if: always()
         working-directory: ./backend
+        shell: bash
         run: |
-          bandit -r . -f json -o bandit-results.json || true
+          mkdir -p ../security-scan-status
+          set +e
+          bandit -r . -x ./tests -ll -ii -f json -o bandit-results.json \
+            2>&1 | tee bandit-scan.log
+          scan_status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$scan_status" > ../security-scan-status/bandit.exit-code
 
       - name: Run Semgrep (Static analysis for security bugs)
+        if: always()
+        shell: bash
         run: |
-          semgrep --config=auto --json --output=semgrep-results.json . || true
+          mkdir -p security-scan-status
+          set +e
+          semgrep --config=p/security-audit \
+            --severity WARNING --severity ERROR --error \
+            --json --output=semgrep-results.json backend \
+            2>&1 | tee semgrep-scan.log
+          scan_status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$scan_status" > security-scan-status/semgrep.exit-code
 
       - name: Upload scan artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: security-scan-results
+          name: python-security-scan-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             safety-results.json
+            safety-export.log
+            safety-scan.log
             backend/bandit-results.json
+            backend/bandit-scan.log
             semgrep-results.json
+            semgrep-scan.log
+            security-scan-status/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce Python security scan results
+        if: always()
+        shell: bash
+        run: |
+          failed=0
+          for scanner in safety bandit semgrep; do
+            status_file="security-scan-status/${scanner}.exit-code"
+            if [ ! -f "$status_file" ]; then
+              echo "::error::${scanner} did not produce an exit status."
+              failed=1
+              continue
+            fi
+            scan_status=$(<"$status_file")
+            if [ "$scan_status" != "0" ]; then
+              echo "::error::${scanner} security gate failed with exit code ${scan_status}. Inspect the uploaded scan artifact."
+              failed=1
+            fi
+          done
+          exit "$failed"

@@ -7,8 +7,6 @@ import {
   runImageUploadPlan,
 } from '../imageUploadBatches';
 
-jest.setTimeout(30000);
-
 function makeItem(clientIndex, name = `image-${clientIndex}.png`, contents = 'x') {
   return {
     clientIndex,

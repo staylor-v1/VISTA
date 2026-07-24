@@ -2,6 +2,7 @@ import pytest
 import pytest_asyncio
 import asyncio
 import os
+from contextlib import contextmanager
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
@@ -26,8 +27,11 @@ os.environ["S3_BUCKET"] = "test-bucket"
 os.environ["SKIP_HEADER_CHECK"] = "true"
 os.environ["DEBUG"] = "true"
 from main import app
+from core import group_auth_helper
 from core.database import Base, get_db
 from core.schemas import User
+from routers import images as images_router
+from utils import cache_manager, volume_cache
 
 SMOKE_TEST_NODE_SUFFIXES = {
     "test_unified_auth.py::TestRequireProxyUser::test_api_key_create_rejected_with_bearer",
@@ -63,6 +67,61 @@ async def override_get_db():
         yield session
 
 app.dependency_overrides[get_db] = override_get_db
+
+
+def _clear_safe_process_caches():
+    """Clear completed process-local cache state without disturbing live work."""
+    group_auth_helper._group_membership_cache.clear()
+
+    # Do not call get_cache(): most tests never need a CacheManager, and cleanup
+    # must not create a disk cache merely to clear it.
+    with cache_manager._cache_lock:
+        if cache_manager._cache_manager is not None:
+            cache_manager._cache_manager.clear()
+
+    # In-flight render futures intentionally remain registered. Removing them
+    # could duplicate active work or strand waiters on a still-running render.
+    with images_router._volume_slice_png_cache_lock:
+        images_router._volume_slice_png_cache.clear()
+    with images_router._volume_render_summary_cache_lock:
+        images_router._volume_render_summary_cache.clear()
+
+    # This helper locks the memmap/signature registries, drops their entries,
+    # and closes only the process-local handles it removed. Materialization
+    # tasks and persistent cache files are deliberately left alone.
+    volume_cache._reset_volume_cache_for_tests()
+
+
+@contextmanager
+def _isolated_backend_process_state():
+    """Restore dependency overrides and safe caches after one test body."""
+    original_overrides = app.dependency_overrides
+    overrides_snapshot = dict(original_overrides)
+    try:
+        yield
+    finally:
+        try:
+            _clear_safe_process_caches()
+        finally:
+            # Restore both mapping identity and contents in case a test replaced
+            # app.dependency_overrides instead of mutating it in place.
+            app.dependency_overrides = original_overrides
+            original_overrides.clear()
+            original_overrides.update(overrides_snapshot)
+
+
+@pytest.fixture(autouse=True)
+def isolate_backend_process_state():
+    """Prevent safe process-local test mutations from leaking across tests."""
+    with _isolated_backend_process_state():
+        yield
+
+
+@pytest.fixture
+def backend_process_state_isolation_context():
+    """Expose the autouse fixture's context for single-test teardown assertions."""
+    return _isolated_backend_process_state
+
 
 @pytest.fixture
 def client():

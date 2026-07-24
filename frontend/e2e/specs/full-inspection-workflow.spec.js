@@ -11,7 +11,7 @@ async function expectRawImageCount(page, expectedCount) {
 }
 
 test.describe('Full inspection workflow end-to-end', () => {
-  test('creates project, uploads files, inspects parts, and validates report readiness', async ({ page }) => {
+  test('creates project, uploads files, inspects parts, and validates report readiness', { tag: '@critical' }, async ({ page }) => {
     const {
       projectId,
       getUploadedImages,
@@ -57,10 +57,10 @@ test.describe('Full inspection workflow end-to-end', () => {
     await expect(workbench).toBeVisible();
 
     await expect(workbench.locator('.flexlayout__tab_button', { hasText: 'Part Summary' }).first()).toBeVisible();
-    const frontImageButton = workbench.locator('.part-summary-images button', { hasText: 'FRONT' }).first();
+    const frontImageButton = workbench.getByRole('button', { name: /^FRONT\b/ }).first();
     await expect(frontImageButton).toBeVisible();
     await frontImageButton.click();
-    await expect(workbench.locator('.part-summary-images button.active', { hasText: 'FRONT' }).first()).toBeVisible();
+    await expect(frontImageButton).toHaveClass(/selected/);
 
     await page.getByRole('button', { name: 'Pass' }).click();
     await expect(page.getByText('Passed: 1')).toBeVisible();

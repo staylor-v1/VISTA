@@ -7,8 +7,10 @@ Vista's tests are organized as a layered, efficient pyramid: deterministic unit 
 | Layer | Command | Purpose |
 | --- | --- | --- |
 | Backend smoke | `pytest -q -m smoke` | Runs representative authentication, project, upload, grouping, inspection, analysis, export, and deletion workflows in seconds. |
-| Backend unit and API integration | `pytest -q` | Runs FastAPI router, CRUD, model/schema, cache, security, export, metadata, and analysis toolbox tests. |
-| Frontend unit/component | `cd frontend && CI=true npm run test:unit:ci` | Runs React Testing Library/Jest tests once in-band for deterministic CI behavior. |
+| Backend unit and API integration | `./test/backend_tests.sh` | Runs FastAPI router, CRUD, model/schema, cache, security, export, metadata, and analysis toolbox tests with a fixed worker count. |
+| PostgreSQL integration | `cd backend && VISTA_POSTGRES_TEST_DATABASE_URL=postgresql+asyncpg://user:pass@localhost/vista_test python -m pytest -q -m postgres -n 0 tests/postgres` | Runs Alembic, native server-default/timezone, transactional, proxy-auth, and deletion-audit contracts serially against a disposable PostgreSQL database. |
+| Backend scheduled load | `cd backend && python -m pytest -q -m load -n 0 tests/load` | Runs high-volume ingest/list contracts serially outside the pull-request feedback loop. |
+| Frontend unit/component | `./test/frontend_tests.sh` | Runs React Testing Library/Jest tests once in-band plus the custom test runner. |
 | Frontend end-to-end | `cd frontend && npm run test:e2e` | Runs Playwright workflows against the React app with network mocks. |
 | Frontend all | `cd frontend && npm run test:ci` | Runs the frontend unit suite followed by Playwright E2E tests. |
 
@@ -33,6 +35,49 @@ Vista's tests are organized as a layered, efficient pyramid: deterministic unit 
 5. Every new bug fix should add the lowest-layer regression test that would have caught it; only add E2E coverage when browser integration is the risk.
 6. Keep the `smoke` marker on representative existing workflows rather than maintaining a duplicate smoke-only implementation.
 
+## PostgreSQL integration lane
+
+The normal backend runner always selects `not postgres and not load`, so its
+fast SQLite fixtures remain isolated from opt-in database and high-volume
+lanes. PostgreSQL tests live under `backend/tests/postgres/`, carry the
+registered `postgres` marker, use a separate async engine and FastAPI `get_db`
+override, and are always run serially.
+
+Set `VISTA_POSTGRES_TEST_DATABASE_URL` to an explicitly disposable database to
+opt in. As a destructive-operation guard, its database name must start with
+`test_` or end with `_test`; generic databases such as `postgres` and the
+PostgreSQL templates are rejected. Without the variable, direct collection of
+the lane skips cleanly. The fixture upgrades that database with Alembic and
+truncates application tables between tests; it must never use
+`Base.metadata.create_all`. CI additionally proves the incremental
+`20260428_0008` to `head` upgrade before running the contracts with
+`DEBUG=false`, `SKIP_HEADER_CHECK=false`, and a proxy shared secret.
+
+## Project-type and scheduled-load contracts
+
+PT1/PT2/PT3 API coverage is matrixed only where the project type changes the
+contract: generated defect names, configuration-clone compatibility, and the
+PT3-only volume-reconstruction boundary. Progressive workflow tests use one
+representative project type so user-complexity scenarios do not multiply
+identical API behavior.
+
+High-volume tests live under `backend/tests/load/` and carry the registered
+`load` marker. The normal backend runner selects
+`not postgres and not load`; run the load lane explicitly and serially on a
+schedule. The initial contract ingests and lists 1,000 uniquely encoded images
+so dropped, duplicated, or misnamed records are detectable.
+
+## Security scan gates
+
+The security workflow always publishes scanner output before enforcing its
+result. Trivy gates all fixed and unfixed HIGH/CRITICAL container findings.
+Safety gates known vulnerabilities in the locked runtime dependency export.
+Bandit scans production backend code at MEDIUM-or-higher severity and
+confidence, while Semgrep gates WARNING/ERROR findings from its security-audit
+ruleset. Scanner releases are pinned exactly so CI policy cannot drift between
+runs. A missing scanner status is itself a failure, and JSON, logs, status files,
+and SARIF remain available as workflow artifacts when a gate fails.
+
 ## Red-team robustness checklist
 
 Use this checklist when adding or refactoring tests:
@@ -44,25 +89,12 @@ Use this checklist when adding or refactoring tests:
 - Large metadata payloads, unusual Unicode filenames, duplicate names, and mixed project types.
 - Browser viewport changes, splitter resizing, keyboard-only operation, and focus restoration after modals.
 
-### Backend follow-up risks
-
-The streamlined suite deliberately does not encode the following behaviors as
-accepted contracts. They need production-level decisions before adding
-regression coverage:
-
-- Deletion-audit events currently sort only by descending timestamp, so events
-  with identical timestamps have no deterministic secondary order.
-- Image-deletion reasons accept whitespace-only values because validation
-  checks the untrimmed string length.
-- SQLite test normalization masks database-specific server defaults and nullable
-  restore-deadline behavior; PostgreSQL integration coverage is the appropriate
-  place to pin those contracts.
-
 ## Done criteria for test refactors
 
 A test refactor is complete only when:
 
-- Backend tests pass with `pytest -q` after installing project dependencies.
-- Frontend unit tests pass with `CI=true npm run test:unit:ci`.
+- Locked dependencies are installed before testing with `uv sync --frozen --group dev` and `cd frontend && npm ci`; test commands never install dependencies.
+- Backend tests pass with `./test/backend_tests.sh`.
+- Frontend unit tests pass with `./test/frontend_tests.sh`.
 - Playwright tests either pass with `npm run test:e2e` or have a documented environment blocker such as missing system browser dependencies.
 - Any new test helpers are shared rather than duplicated and do not hide unexpected console errors.
