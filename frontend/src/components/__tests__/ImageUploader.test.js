@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import ImageUploader, { buildDuplicateFilenameMap, buildInspectionPartIngestPayload, formatUploadSize, parseAssociatedMetadataText, tagDuplicateFilename } from '../ImageUploader';
 import { BATCH_UPLOAD_MAX_BYTES } from '../imageUploadBatches';
 
@@ -34,6 +34,40 @@ function renderUploader(props = {}) {
     ...props,
   };
   return { ...render(<ImageUploader {...defaultProps} />), props: defaultProps };
+}
+
+const singleS3HierarchyFilename = 'D1001_LOT01_SET01_SN0001_front_visual_false.jpg';
+
+function mockSingleS3HierarchyImport(ingestResponse) {
+  return jest.spyOn(global, 'fetch')
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        objects: [{
+          key: `incoming/${singleS3HierarchyFilename}`,
+          filename: singleS3HierarchyFilename,
+          size: 12,
+        }],
+      }),
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        imported: [{ id: 'img-front', filename: singleS3HierarchyFilename }],
+        failed: [],
+      }),
+    })
+    .mockResolvedValueOnce(ingestResponse);
+}
+
+async function loadSingleS3HierarchyFile() {
+  fireEvent.change(screen.getByLabelText('S3 URL (Optional)'), {
+    target: { value: 's3://source-bucket/incoming' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: /load files from s3/i }));
+  await screen.findByTestId('s3-file-picker');
+  await waitFor(() => expect(screen.getByLabelText('Delimiter')).toHaveValue('_'));
+  fireEvent.click(screen.getByRole('button', { name: /load selected s3 files/i }));
 }
 
 async function waitForSuccessfulUpload(props) {
@@ -430,6 +464,12 @@ describe('ImageUploader', () => {
       expect(screen.getByTestId('s3-file-picker')).toBeInTheDocument();
       expect(screen.getByText(/0 \/ 1 selected/)).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /load selected s3 files/i })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Select Retryable Failures' })).toBeDisabled();
+      const unknownCheckbox = screen.getByLabelText(/a\.png/i);
+      expect(unknownCheckbox).not.toBeDisabled();
+      fireEvent.click(unknownCheckbox);
+      expect(screen.getByText(/1 \/ 1 selected/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /load selected s3 files/i })).not.toBeDisabled();
     });
 
     test('blocks an uncertain S3 retry until authoritative reconciliation succeeds', async () => {
@@ -669,6 +709,228 @@ describe('ImageUploader', () => {
       expect(screen.getByText(/0 \/ 2 selected/)).toBeInTheDocument();
     });
 
+    test('does not filename-correlate a foreign explicit source key to a duplicate basename', async () => {
+      const objects = [
+        { key: 'incoming/left/photo.png', filename: 'photo.png', size: 12 },
+        { key: 'incoming/right/photo.png', filename: 'photo.png', size: 13 },
+      ];
+      const fetchSpy = jest.spyOn(global, 'fetch')
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ objects }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            imported: [
+              {
+                id: 'left-image',
+                filename: 'photo.png',
+                metadata: { source_s3_key: objects[0].key },
+              },
+              {
+                id: 'foreign-image',
+                filename: 'photo.png',
+                metadata: { source_s3_key: 'another-prefix/photo.png' },
+              },
+            ],
+            failed: [],
+          }),
+        });
+      const { props } = renderUploader();
+
+      fireEvent.change(screen.getByLabelText('S3 URL (Optional)'), {
+        target: { value: 's3://source-bucket/incoming' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /load files from s3/i }));
+      await screen.findByText(/2 \/ 2 selected/);
+      fireEvent.click(screen.getByRole('button', { name: /load selected s3 files/i }));
+
+      await waitFor(() => expect(props.onUploadComplete).toHaveBeenCalledTimes(1));
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(props.onUploadComplete).toHaveBeenCalledWith(
+        [expect.objectContaining({ id: 'left-image' })],
+        expect.objectContaining({
+          confirmedSucceeded: 1,
+          confirmedFailed: 0,
+          completionUnknown: 1,
+          requiresAuthoritativeReconciliation: true,
+        }),
+      );
+      expect(props.setError).toHaveBeenLastCalledWith(expect.stringContaining('1 completion unknown'));
+      expect(screen.getByText(/0 \/ 2 selected/)).toBeInTheDocument();
+    });
+
+    test('treats duplicate and conflicting response outcomes as completion unknown', async () => {
+      const objects = [
+        { key: 'incoming/a.png', filename: 'a.png', size: 12 },
+        { key: 'incoming/b.png', filename: 'b.png', size: 13 },
+      ];
+      jest.spyOn(global, 'fetch')
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ objects }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            imported: [
+              { id: 'a-first', filename: 'a.png', metadata: { source_s3_key: objects[0].key } },
+              { id: 'a-duplicate', filename: 'a.png', metadata: { source_s3_key: objects[0].key } },
+              { id: 'b-imported', filename: 'b.png', metadata: { source_s3_key: objects[1].key } },
+            ],
+            failed: [{ key: objects[1].key, error: 'copy was rejected' }],
+          }),
+        });
+      const { props } = renderUploader();
+
+      fireEvent.change(screen.getByLabelText('S3 URL (Optional)'), {
+        target: { value: 's3://source-bucket/incoming' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /load files from s3/i }));
+      await screen.findByText(/2 \/ 2 selected/);
+      fireEvent.click(screen.getByRole('button', { name: /load selected s3 files/i }));
+
+      await waitFor(() => expect(props.onUploadComplete).toHaveBeenCalledTimes(1));
+      expect(props.onUploadComplete).toHaveBeenCalledWith(
+        [],
+        expect.objectContaining({
+          confirmedSucceeded: 0,
+          confirmedFailed: 0,
+          completionUnknown: 2,
+          requiresAuthoritativeReconciliation: true,
+        }),
+      );
+      expect(props.setError).toHaveBeenLastCalledWith(expect.stringContaining('2 completion unknown'));
+      expect(screen.getByText(/0 \/ 2 selected/)).toBeInTheDocument();
+    });
+
+    test('bounds and formats a structured S3 import rejection in the failure summary', async () => {
+      const longReason = `invalid key ${'x'.repeat(500)}`;
+      const importJson = jest.fn().mockResolvedValue({
+        detail: [{
+          loc: ['body', 'keys', 0],
+          msg: longReason,
+          type: 'value_error',
+        }],
+      });
+      jest.spyOn(global, 'fetch')
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            objects: [{ key: 'incoming/a.png', filename: 'a.png', size: 12 }],
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 422,
+          statusText: 'Unprocessable Entity',
+          json: importJson,
+        });
+      const { props } = renderUploader();
+
+      fireEvent.change(screen.getByLabelText('S3 URL (Optional)'), {
+        target: { value: 's3://source-bucket/incoming' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /load files from s3/i }));
+      await screen.findByTestId('s3-file-picker');
+      fireEvent.click(screen.getByRole('button', { name: /load selected s3 files/i }));
+
+      await waitFor(() => expect(props.onUploadComplete).toHaveBeenCalledTimes(1));
+      const finalError = props.setError.mock.calls.at(-1)[0];
+      expect(finalError).toContain('S3 load complete: 0 succeeded, 1 failed out of 1.');
+      expect(finalError).toContain('First confirmed failure: body.keys.0: invalid key');
+      expect(finalError).toContain('...');
+      expect(finalError).not.toContain('[object Object]');
+      expect(finalError.length).toBeLessThan(450);
+      expect(importJson).toHaveBeenCalledTimes(1);
+      expect(props.onUploadComplete).toHaveBeenCalledWith(
+        [],
+        expect.objectContaining({
+          confirmedFailed: 1,
+          completionUnknown: 0,
+          requiresAuthoritativeReconciliation: false,
+        }),
+      );
+    });
+
+    test('accumulates confirmed successes and preserves unattempted definite failures across retries', async () => {
+      const objects = [
+        { key: 'incoming/a.png', filename: 'a.png', size: 12 },
+        { key: 'incoming/b.png', filename: 'b.png', size: 13 },
+        { key: 'incoming/c.png', filename: 'c.png', size: 14 },
+      ];
+      const importBodies = [];
+      let importAttempt = 0;
+      jest.spyOn(global, 'fetch').mockImplementation(async (url, options) => {
+        if (String(url).endsWith('/s3/list')) {
+          return { ok: true, json: async () => ({ objects }) };
+        }
+        if (String(url).endsWith('/s3/import')) {
+          const body = JSON.parse(options.body);
+          importBodies.push(body);
+          importAttempt += 1;
+          if (importAttempt === 1) {
+            return {
+              ok: true,
+              json: async () => ({
+                imported: [{
+                  id: 'image-a',
+                  filename: 'a.png',
+                  metadata: { source_s3_key: objects[0].key },
+                }],
+                failed: [
+                  { key: objects[1].key, error: 'retry b' },
+                  { key: objects[2].key, error: 'retry c' },
+                ],
+              }),
+            };
+          }
+          return {
+            ok: true,
+            json: async () => ({
+              imported: [{
+                id: 'image-b',
+                filename: 'b.png',
+                metadata: { source_s3_key: objects[1].key },
+              }],
+              failed: [],
+            }),
+          };
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      const { props } = renderUploader();
+
+      fireEvent.change(screen.getByLabelText('S3 URL (Optional)'), {
+        target: { value: 's3://source-bucket/incoming' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /load files from s3/i }));
+      await screen.findByText(/3 \/ 3 selected/);
+      fireEvent.click(screen.getByRole('button', { name: /load selected s3 files/i }));
+
+      await waitFor(() => expect(props.onUploadComplete).toHaveBeenCalledTimes(1));
+      expect(screen.getByText(/2 \/ 3 selected/)).toBeInTheDocument();
+      expect(screen.getByLabelText(/a\.png/i)).toBeDisabled();
+      expect(screen.getByLabelText(/b\.png/i)).not.toBeDisabled();
+      expect(screen.getByLabelText(/c\.png/i)).not.toBeDisabled();
+
+      fireEvent.click(screen.getByLabelText(/c\.png/i));
+      expect(screen.getByText(/1 \/ 3 selected/)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /load selected s3 files/i }));
+
+      await waitFor(() => expect(props.onUploadComplete).toHaveBeenCalledTimes(2));
+      expect(importBodies.map((body) => body.keys)).toEqual([
+        objects.map((object) => object.key),
+        [objects[1].key],
+      ]);
+      expect(screen.getByTestId('s3-file-picker')).toBeInTheDocument();
+      expect(screen.getByText(/0 \/ 3 selected/)).toBeInTheDocument();
+      expect(screen.getByLabelText(/a\.png/i)).toBeDisabled();
+      expect(screen.getByLabelText(/b\.png/i)).toBeDisabled();
+      expect(screen.getByLabelText(/c\.png/i)).not.toBeDisabled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Select Retryable Failures' }));
+      expect(screen.getByText(/1 \/ 3 selected/)).toBeInTheDocument();
+      expect(screen.getByLabelText(/a\.png/i)).not.toBeChecked();
+      expect(screen.getByLabelText(/b\.png/i)).not.toBeChecked();
+      expect(screen.getByLabelText(/c\.png/i)).toBeChecked();
+    });
+
     test('loads S3 hierarchy filenames with extracted metadata and ingest payload', async () => {
       const fetchSpy = jest.spyOn(global, 'fetch')
         .mockResolvedValueOnce({
@@ -724,6 +986,117 @@ describe('ImageUploader', () => {
       }));
     });
 
+    test('surfaces a 422 ingest detail after confirming that S3 images are committed', async () => {
+      const ingestJson = jest.fn().mockResolvedValue({
+        detail: 'Inspection hierarchy payload is invalid',
+      });
+      const fetchSpy = mockSingleS3HierarchyImport({
+        ok: false,
+        status: 422,
+        statusText: 'Unprocessable Entity',
+        json: ingestJson,
+      });
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      const { props } = renderUploader();
+
+      await loadSingleS3HierarchyFile();
+
+      await waitFor(() => expect(props.setError).toHaveBeenLastCalledWith(
+        'S3 image import complete: 1 loaded and committed, 0 failed out of 1. Part creation failed: Inspection hierarchy payload is invalid.',
+      ));
+      expect(ingestJson).toHaveBeenCalledTimes(1);
+      expect(fetchSpy.mock.calls.filter(([url]) => String(url).endsWith('/s3/import'))).toHaveLength(1);
+      expect(props.onUploadComplete).toHaveBeenCalledWith(
+        [{ id: 'img-front', filename: singleS3HierarchyFilename }],
+        expect.objectContaining({
+          ingestFailed: true,
+          ingestCompletionUnknown: false,
+          requiresAuthoritativeReconciliation: false,
+        }),
+      );
+    });
+
+    test('surfaces a 500 ingest detail and reconciles once without retrying image import', async () => {
+      const ingestJson = jest.fn().mockResolvedValue({
+        detail: 'Inspection database unavailable',
+      });
+      const fetchSpy = mockSingleS3HierarchyImport({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: ingestJson,
+      });
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      const onUploadComplete = jest.fn().mockResolvedValue({ reconciled: true });
+      const { props } = renderUploader({ onUploadComplete });
+
+      await loadSingleS3HierarchyFile();
+
+      await waitFor(() => expect(props.setError).toHaveBeenLastCalledWith(
+        'S3 image import complete: 1 loaded and committed, 0 failed out of 1. Part creation completion is uncertain: Inspection database unavailable. Project data was authoritatively reconciled.',
+      ));
+      expect(ingestJson).toHaveBeenCalledTimes(1);
+      expect(fetchSpy.mock.calls.filter(([url]) => String(url).endsWith('/s3/import'))).toHaveLength(1);
+      expect(onUploadComplete).toHaveBeenCalledTimes(1);
+      expect(onUploadComplete).toHaveBeenCalledWith(
+        [{ id: 'img-front', filename: singleS3HierarchyFilename }],
+        expect.objectContaining({
+          ingestFailed: true,
+          ingestCompletionUnknown: true,
+          requiresAuthoritativeReconciliation: true,
+        }),
+      );
+    });
+
+    test('falls back to ingest status text when the error response is malformed JSON', async () => {
+      const ingestJson = jest.fn().mockRejectedValue(new SyntaxError('Unexpected token'));
+      mockSingleS3HierarchyImport({
+        ok: false,
+        status: 422,
+        statusText: 'Unprocessable Entity',
+        json: ingestJson,
+      });
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      const { props } = renderUploader();
+
+      await loadSingleS3HierarchyFile();
+
+      await waitFor(() => expect(props.setError).toHaveBeenLastCalledWith(
+        'S3 image import complete: 1 loaded and committed, 0 failed out of 1. Part creation failed: Unprocessable Entity.',
+      ));
+      expect(ingestJson).toHaveBeenCalledTimes(1);
+      expect(props.onUploadComplete).toHaveBeenCalledWith(
+        expect.any(Array),
+        expect.objectContaining({ ingestCompletionUnknown: false }),
+      );
+    });
+
+    test('renders structured FastAPI ingest detail without object coercion noise', async () => {
+      const ingestJson = jest.fn().mockResolvedValue({
+        detail: [{
+          type: 'value_error',
+          loc: ['body', 'batches', 0, 'parts'],
+          msg: 'At least one part is required',
+        }],
+      });
+      mockSingleS3HierarchyImport({
+        ok: false,
+        status: 422,
+        statusText: 'Unprocessable Entity',
+        json: ingestJson,
+      });
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      const { props } = renderUploader();
+
+      await loadSingleS3HierarchyFile();
+
+      await waitFor(() => expect(props.setError).toHaveBeenLastCalledWith(
+        'S3 image import complete: 1 loaded and committed, 0 failed out of 1. Part creation failed: body.batches.0.parts: At least one part is required.',
+      ));
+      expect(ingestJson).toHaveBeenCalledTimes(1);
+      expect(props.setError.mock.calls.at(-1)[0]).not.toContain('[object Object]');
+    });
+
     test('authoritatively reconciles parts when S3 ingest transport completion is unknown', async () => {
       const filename = 'D1001_LOT01_SET01_SN0001_front_visual_false.jpg';
       const fetchSpy = jest.spyOn(global, 'fetch')
@@ -763,7 +1136,7 @@ describe('ImageUploader', () => {
       ));
       expect(fetchSpy).toHaveBeenCalledTimes(3);
       expect(props.setError).toHaveBeenLastCalledWith(
-        'S3 load complete: 1 succeeded, 0 failed out of 1; part-ingest completion was uncertain. Project data was authoritatively reconciled.',
+        'S3 image import complete: 1 loaded and committed, 0 failed out of 1. Part creation completion is uncertain: connection lost after ingest dispatch. Project data was authoritatively reconciled.',
       );
       expect(screen.queryByTestId('s3-file-picker')).not.toBeInTheDocument();
     });
@@ -834,11 +1207,28 @@ describe('ImageUploader', () => {
       });
       fireEvent.click(screen.getByRole('button', { name: /load files from s3/i }));
 
-      expect(await screen.findByText(/2000 \/ 2000 selected/, {}, { timeout: 10_000 })).toBeInTheDocument();
-      expect(screen.getByRole('status')).toHaveTextContent('listing was truncated');
+      expect(await screen.findByText(/2000 \/ 2000 selected/)).toBeInTheDocument();
+      const picker = screen.getByTestId('s3-file-picker');
+      expect(within(picker).getAllByTestId('s3-object-row')).toHaveLength(100);
+      expect(within(picker).getAllByRole('checkbox')).toHaveLength(100);
+      expect(screen.getByTestId('s3-pagination-status')).toHaveTextContent('Page 1 of 20 · Showing 1-100 of 2000 objects');
+      expect(screen.getByText(/listing was truncated/)).toBeInTheDocument();
+
+      const firstKeyCheckbox = within(picker).getAllByRole('checkbox')[0];
+      fireEvent.click(firstKeyCheckbox);
+      expect(screen.getByText(/1999 \/ 2000 selected/)).toBeInTheDocument();
+      fireEvent.click(within(picker).getByRole('button', { name: 'Next' }));
+      expect(screen.getByTestId('s3-pagination-status')).toHaveTextContent('Page 2 of 20 · Showing 101-200 of 2000 objects');
+      expect(within(picker).getAllByTestId('s3-object-row')).toHaveLength(100);
+      expect(within(picker).getAllByRole('checkbox')[0]).toBeChecked();
+      fireEvent.click(within(picker).getByRole('button', { name: 'Previous' }));
+      expect(screen.getByTestId('s3-pagination-status')).toHaveTextContent('Page 1 of 20 · Showing 1-100 of 2000 objects');
+      expect(within(picker).getAllByRole('checkbox')[0]).not.toBeChecked();
+      fireEvent.click(within(picker).getAllByRole('checkbox')[0]);
+      expect(screen.getByText(/2000 \/ 2000 selected/)).toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: /load selected s3 files/i }));
 
-      await waitFor(() => expect(props.onUploadComplete).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+      await waitFor(() => expect(props.onUploadComplete).toHaveBeenCalledTimes(1));
       expect(importBodies).toHaveLength(20);
       expect(importBodies.map((body) => body.keys.length)).toEqual(Array(20).fill(100));
       expect(maximumActiveImports).toBe(2);
@@ -847,9 +1237,113 @@ describe('ImageUploader', () => {
       expect(props.onUploadComplete.mock.calls[0][0].at(-1).metadata.source_s3_key).toBe(objects[1999].key);
       expect(ingestBodies).toHaveLength(1);
       expect(ingestBodies[0].unassigned_parts).toHaveLength(1999);
-      expect(props.setError).toHaveBeenLastCalledWith('S3 load complete: 1999 succeeded, 1 failed out of 2000.');
+      expect(props.setError).toHaveBeenLastCalledWith(
+        'S3 load complete: 1999 succeeded, 1 failed out of 2000. First confirmed failure: unreadable object.',
+      );
       expect(screen.getByText(/1 \/ 2000 selected/)).toBeInTheDocument();
+      expect(screen.getByTestId('s3-pagination-status')).toHaveTextContent(
+        'Page 12 of 20 · Showing 1101-1200 of 2000 objects',
+      );
+      const retryPageCheckboxes = within(picker).getAllByRole('checkbox');
+      const confirmedCheckbox = retryPageCheckboxes[0];
+      const failureCheckbox = retryPageCheckboxes[37];
+      expect(confirmedCheckbox).toBeDisabled();
+      expect(confirmedCheckbox).not.toBeChecked();
+      expect(failureCheckbox).not.toBeDisabled();
+      expect(failureCheckbox).toBeChecked();
+
+      fireEvent.click(within(picker).getByRole('button', { name: 'Clear Retryable Failures' }));
+      expect(screen.getByText(/0 \/ 2000 selected/)).toBeInTheDocument();
+      expect(failureCheckbox).not.toBeChecked();
+      fireEvent.click(confirmedCheckbox);
+      expect(confirmedCheckbox).not.toBeChecked();
+
+      fireEvent.click(within(picker).getByRole('button', { name: 'Select Retryable Failures' }));
+      expect(screen.getByText(/1 \/ 2000 selected/)).toBeInTheDocument();
+      expect(failureCheckbox).toBeChecked();
+      expect(confirmedCheckbox).not.toBeChecked();
       expect(fetchSpy).toHaveBeenCalledTimes(22);
+    });
+
+    test('globally selects a partial final S3 page, sends a final one-key chunk, and resets on reload', async () => {
+      const firstListing = Array.from({ length: 2001 }, (_, index) => ({
+        key: `incoming/object-${index}.png`,
+        filename: `object-${index}.png`,
+        size: 1,
+      }));
+      const secondListing = Array.from({ length: 2 }, (_, index) => ({
+        key: `replacement/object-${index}.png`,
+        filename: `replacement-${index}.png`,
+        size: 1,
+      }));
+      const importBodies = [];
+      let listingRequestCount = 0;
+      jest.spyOn(global, 'fetch').mockImplementation(async (url, options) => {
+        if (String(url).endsWith('/s3/list')) {
+          const objects = listingRequestCount === 0 ? firstListing : secondListing;
+          listingRequestCount += 1;
+          return { ok: true, json: async () => ({ objects }) };
+        }
+        if (String(url).endsWith('/s3/import')) {
+          const body = JSON.parse(options.body);
+          importBodies.push(body);
+          return {
+            ok: true,
+            json: async () => ({
+              imported: body.keys.map((key) => ({
+                id: `id-${key}`,
+                filename: key.split('/').pop(),
+                metadata: { source_s3_key: key },
+              })),
+              failed: [],
+            }),
+          };
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      const { rerender, props } = renderUploader();
+
+      fireEvent.change(screen.getByLabelText('S3 URL (Optional)'), {
+        target: { value: 's3://source-bucket/first' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /load files from s3/i }));
+      const picker = await screen.findByTestId('s3-file-picker');
+
+      for (let page = 1; page < 21; page += 1) {
+        fireEvent.click(within(picker).getByRole('button', { name: 'Next' }));
+      }
+      expect(screen.getByTestId('s3-pagination-status')).toHaveTextContent('Page 21 of 21 · Showing 2001-2001 of 2001 objects');
+      expect(within(picker).getAllByTestId('s3-object-row')).toHaveLength(1);
+      expect(within(picker).getByRole('button', { name: 'Next' })).toBeDisabled();
+      expect(within(picker).getByRole('checkbox')).toBeChecked();
+
+      fireEvent.click(within(picker).getByRole('button', { name: 'Clear Selection' }));
+      expect(screen.getByText(/0 \/ 2001 selected/)).toBeInTheDocument();
+      expect(within(picker).getByRole('checkbox')).not.toBeChecked();
+      fireEvent.click(within(picker).getByRole('button', { name: 'Select All' }));
+      expect(screen.getByText(/2001 \/ 2001 selected/)).toBeInTheDocument();
+      expect(within(picker).getByRole('checkbox')).toBeChecked();
+      fireEvent.click(within(picker).getByRole('button', { name: /load selected s3 files/i }));
+
+      await waitFor(() => expect(props.onUploadComplete).toHaveBeenCalledTimes(1));
+      expect(importBodies).toHaveLength(21);
+      expect(importBodies.filter((body) => body.keys.length === 100)).toHaveLength(20);
+      expect(importBodies.filter((body) => body.keys.length === 1)).toEqual([
+        expect.objectContaining({ keys: [firstListing[2000].key] }),
+      ]);
+      expect(props.onUploadComplete.mock.calls[0][0]).toHaveLength(2001);
+      expect(screen.queryByTestId('s3-file-picker')).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText('S3 URL (Optional)'), {
+        target: { value: 's3://source-bucket/replacement' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: /load files from s3/i }));
+      expect(await screen.findByText(/2 \/ 2 selected/)).toBeInTheDocument();
+      expect(screen.getByTestId('s3-pagination-status')).toHaveTextContent('Page 1 of 1 · Showing 1-2 of 2 objects');
+      expect(within(screen.getByTestId('s3-file-picker')).getAllByTestId('s3-object-row')).toHaveLength(2);
+
+      rerender(<ImageUploader {...props} projectId="proj-2" />);
+      expect(screen.queryByTestId('s3-file-picker')).not.toBeInTheDocument();
     });
   });
 

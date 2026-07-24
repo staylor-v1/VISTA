@@ -1374,27 +1374,46 @@ def test_import_project_s3_files_never_serializes_expired_orm_state(
     monkeypatch,
 ):
     pid = _create_project(client, name="S3 expired serialization")
+    keys = [f"incoming/expired-{index:03d}.png" for index in range(100)]
     original_flush = AsyncSession.flush
     original_commit = images_router._commit_database_transaction
     deleted_objects = []
+    inspected_keys = []
+    copied_keys = []
+    flush_calls = 0
+    commit_calls = 0
 
-    async def fake_get_s3_object_info(_bucket, _key):
+    async def fake_get_s3_object_info(_bucket, key):
+        inspected_keys.append(key)
         return {
             "size": 12,
             "content_type": "image/png",
             "metadata": {},
-            "etag": '"source-etag"',
+            "etag": f'"source-etag-{key}"',
         }
 
-    async def fake_copy_s3_object_to_s3(*_args, **_kwargs):
+    async def fake_copy_s3_object_to_s3(
+        _source_bucket,
+        source_key,
+        _destination_bucket,
+        _destination_key,
+        *,
+        source_etag=None,
+    ):
+        assert source_etag == f'"source-etag-{source_key}"'
+        copied_keys.append(source_key)
         return True
 
     async def flush_and_expire(session, *args, **kwargs):
+        nonlocal flush_calls
+        flush_calls += 1
         result = await original_flush(session, *args, **kwargs)
         session.expire_all()
         return result
 
     async def commit_and_expire(session):
+        nonlocal commit_calls
+        commit_calls += 1
         await original_commit(session)
         session.expire_all()
 
@@ -1416,19 +1435,89 @@ def test_import_project_s3_files_never_serializes_expired_orm_state(
         f"/api/projects/{pid}/s3/import",
         json={
             "s3_url": "s3://source-bucket/incoming",
-            "keys": ["incoming/expired.png"],
-            "metadata": {"source_marker": "known-values"},
+            "keys": keys,
+            "metadata": {
+                "source_marker": "known-values",
+                "source": "hostile-shared",
+                "source_s3_key": "hostile/shared.png",
+            },
+            "per_file_metadata": {
+                key: {
+                    "sequence": index,
+                    "per_file_marker": f"marker-{index:03d}",
+                    "source_s3_bucket": "hostile-per-file",
+                }
+                for index, key in enumerate(keys)
+            },
         },
     )
 
     assert response.status_code == 201, response.text
-    imported = response.json()["imported"]
-    assert len(imported) == 1
-    assert imported[0]["filename"] == "expired.png"
-    assert imported[0]["metadata"]["source_marker"] == "known-values"
-    assert imported[0]["created_at"]
-    assert imported[0]["storage_deleted"] is False
+    body = response.json()
+    assert body["failed"] == []
+    imported = body["imported"]
+    assert len(imported) == 100
+    assert [item["filename"] for item in imported] == [
+        f"expired-{index:03d}.png" for index in range(100)
+    ]
+
+    imported_schemas = [schemas.DataInstance.model_validate(item) for item in imported]
+    assert len({item.id for item in imported_schemas}) == 100
+    assert len({item.object_storage_key for item in imported_schemas}) == 100
+    for index, (key, item) in enumerate(zip(keys, imported_schemas)):
+        assert str(item.project_id) == pid
+        assert item.filename == f"expired-{index:03d}.png"
+        assert item.object_storage_key == f"{pid}/{item.id}/{item.filename}"
+        assert item.content_type == "image/png"
+        assert item.size_bytes == 12
+        assert item.metadata_ == {
+            "source_marker": "known-values",
+            "source": "s3_import",
+            "source_s3_key": key,
+            "sequence": index,
+            "per_file_marker": f"marker-{index:03d}",
+            "source_s3_bucket": "source-bucket",
+            "source_s3_url": "s3://source-bucket/incoming",
+        }
+        assert item.created_at is not None
+        assert item.created_at.tzinfo is not None
+        assert item.created_at.utcoffset() is not None
+        assert item.storage_deleted is False
+
+    assert len(inspected_keys) == 100
+    assert len(copied_keys) == 100
+    assert set(inspected_keys) == set(keys)
+    assert set(copied_keys) == set(keys)
+    assert flush_calls == 1
+    assert commit_calls == 1
     assert deleted_objects == []
+
+
+def test_import_project_s3_files_rejects_more_than_100_keys_before_storage(
+    client,
+    monkeypatch,
+):
+    pid = _create_project(client, name="S3 import count preflight")
+    storage_calls = []
+
+    async def unexpected_storage_call(*args, **kwargs):
+        storage_calls.append((args, kwargs))
+        raise AssertionError("oversized key batches must fail before HEAD or COPY")
+
+    monkeypatch.setattr(images_router, "get_s3_object_info", unexpected_storage_call)
+    monkeypatch.setattr(images_router, "copy_s3_object_to_s3", unexpected_storage_call)
+
+    response = client.post(
+        f"/api/projects/{pid}/s3/import",
+        json={
+            "s3_url": "s3://source-bucket/incoming",
+            "keys": [f"incoming/object-{index:03d}.png" for index in range(101)],
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "Import at most 100 S3 files at a time"
+    assert storage_calls == []
 
 
 def test_import_project_s3_files_uses_etag_precondition_and_cleans_failed_copy(
