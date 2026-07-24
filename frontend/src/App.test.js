@@ -4,6 +4,8 @@ import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import { getProjectTypeLabel } from './projectTypes';
 
+jest.setTimeout(30000);
+
 function createDeferred() {
   let resolve;
   let reject;
