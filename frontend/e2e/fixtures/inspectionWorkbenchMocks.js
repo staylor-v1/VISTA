@@ -289,6 +289,7 @@ async function mockInspectionWorkbenchRoutes(page, {
           description: 'Playwright synthetic project',
           meta_group_id: 'qa-team',
           project_type: type,
+          is_archived: false,
         }),
       });
       return;
@@ -320,8 +321,8 @@ async function mockInspectionWorkbenchRoutes(page, {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify([
-          { id: projectId, name: `Inspection Workbench ${type}`, project_type: type },
-          { id: 'proj-copy', name: `Template ${type} ${scenario}`, project_type: type },
+          { id: projectId, name: `Inspection Workbench ${type}`, project_type: type, is_archived: false },
+          { id: 'proj-copy', name: `Template ${type} ${scenario}`, project_type: type, is_archived: false },
         ]),
       });
       return;

@@ -16,7 +16,7 @@ from collections import OrderedDict, deque
 import zipfile
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Body
-from sqlalchemy import insert, update, select
+from sqlalchemy import insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Dict, Any
@@ -36,7 +36,13 @@ from utils.boto3_client import (
     get_s3_object_info,
     copy_s3_object_to_s3,
 )
-from utils.serialization import to_data_instance_schema
+from utils.serialization import (
+    data_instance_schema_from_values,
+    to_data_instance_schema,
+)
+from utils.transactions import (
+    commit_database_transaction as _commit_database_transaction,
+)
 from utils.file_security import get_content_disposition_header
 from utils.cache_manager import get_cache
 from services import image_deletion as image_deletion_service
@@ -1032,6 +1038,20 @@ async def import_project_s3_files(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Select at least one S3 file to import")
     if len(request.keys) > 100:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Import at most 100 S3 files at a time")
+    seen_keys: set[str] = set()
+    duplicate_keys: set[str] = set()
+    for key in request.keys:
+        if key in seen_keys:
+            duplicate_keys.add(key)
+        seen_keys.add(key)
+    if duplicate_keys:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "S3 import keys must be unique; duplicate keys: "
+                + ", ".join(sorted(duplicate_keys))
+            ),
+        )
 
     db_project = await get_project_or_403_writable(project_id, db, current_user)
     db_project_id = db_project.id
@@ -1176,7 +1196,7 @@ async def import_project_s3_files(
             copied_items.append(item)
 
     copy_finished_at = time.perf_counter()
-    imported_by_position: list[tuple[int, Any]] = []
+    imported_by_position: list[tuple[int, schemas.DataInstance]] = []
     if copied_items:
         object_storage_keys = [item["object_storage_key"] for item in copied_items]
         try:
@@ -1212,7 +1232,7 @@ async def import_project_s3_files(
                 imported_by_position.append(
                     (
                         item["position"],
-                        schemas.DataInstance(
+                        data_instance_schema_from_values(
                             id=item["image_id"],
                             project_id=db_project_id,
                             group_id=group.id if group else None,
@@ -1220,10 +1240,9 @@ async def import_project_s3_files(
                             object_storage_key=item["object_storage_key"],
                             content_type=item["content_type"],
                             size_bytes=item["size_bytes"],
-                            metadata_=item["metadata"],
+                            metadata=item["metadata"],
                             uploaded_by_user_id=current_user.email,
                             created_at=imported_at,
-                            updated_at=None,
                         ),
                     )
                 )
@@ -1572,36 +1591,6 @@ def _batch_item_failure(
         code=code,
         detail=cleaned_detail or "File could not be uploaded",
     )
-
-
-async def _commit_database_transaction(db: AsyncSession) -> None:
-    """Do not abandon an in-flight commit when its request is cancelled.
-
-    The caught ``CancelledError`` is annotated so callers can distinguish a
-    commit that completed successfully from one that failed and still needs
-    rollback/storage cleanup.
-    """
-
-    commit_task = asyncio.create_task(db.commit())
-    try:
-        await asyncio.shield(commit_task)
-    except asyncio.CancelledError as cancelled:
-        while not commit_task.done():
-            try:
-                await asyncio.shield(commit_task)
-            except asyncio.CancelledError:
-                continue
-            except BaseException:
-                break
-        commit_succeeded = False
-        if commit_task.done() and not commit_task.cancelled():
-            try:
-                commit_task.result()
-                commit_succeeded = True
-            except BaseException:
-                pass
-        setattr(cancelled, "vista_commit_succeeded", commit_succeeded)
-        raise cancelled
 
 
 async def _cleanup_batch_upload_objects(object_storage_keys: list[str]) -> None:
@@ -2011,7 +2000,7 @@ async def upload_images_to_project_batch(
         )
 
     object_storage_keys = [item["object_storage_key"] for item in uploaded_items]
-    db_images: list[tuple[int, models.DataInstance]] = []
+    uploaded_response: list[schemas.BatchImageUploadSuccess] = []
     try:
         requested_group_identifiers = sorted(
             {
@@ -2026,27 +2015,44 @@ async def upload_images_to_project_batch(
             identifiers=requested_group_identifiers,
         )
 
+        uploaded_at = datetime.now(timezone.utc)
         for item in uploaded_items:
             entry = item["entry"]
             group = groups_by_identifier.get(entry.group_identifier) if entry.group_identifier else None
+            group_id = group.id if group else None
             db_image = models.DataInstance(
                 id=item["image_id"],
                 project_id=db_project_id,
-                group_id=group.id if group else None,
+                group_id=group_id,
                 filename=entry.filename,
                 object_storage_key=item["object_storage_key"],
                 content_type=item["content_type"],
                 size_bytes=item["file_size"],
                 metadata_json=item["metadata"],
                 uploaded_by_user_id=current_user.email,
+                created_at=uploaded_at,
             )
             db.add(db_image)
-            db_images.append((entry.client_index, db_image))
+            uploaded_response.append(
+                schemas.BatchImageUploadSuccess(
+                    client_index=entry.client_index,
+                    image=data_instance_schema_from_values(
+                        id=item["image_id"],
+                        project_id=db_project_id,
+                        group_id=group_id,
+                        filename=entry.filename,
+                        object_storage_key=item["object_storage_key"],
+                        content_type=item["content_type"],
+                        size_bytes=item["file_size"],
+                        metadata=item["metadata"],
+                        uploaded_by_user_id=current_user.email,
+                        created_at=uploaded_at,
+                    ),
+                )
+            )
 
         await db.flush()
         await _commit_database_transaction(db)
-        for _client_index, db_image in db_images:
-            await db.refresh(db_image)
     except asyncio.CancelledError as exc:
         if getattr(exc, "vista_commit_succeeded", False):
             _clear_project_images_cache_best_effort(project_id)
@@ -2072,13 +2078,6 @@ async def upload_images_to_project_batch(
     # best-effort because the database and object-storage writes are durable.
     _clear_project_images_cache_best_effort(project_id)
     finished_at = time.perf_counter()
-    uploaded_response = [
-        schemas.BatchImageUploadSuccess(
-            client_index=client_index,
-            image=to_data_instance_schema(db_image),
-        )
-        for client_index, db_image in db_images
-    ]
     logger.info(
         "Image batch upload completed",
         extra={
@@ -2162,6 +2161,7 @@ async def upload_image_to_project(
             )
             resolved_group_id = groups[normalized_group_identifier].id
 
+        uploaded_at = datetime.now(timezone.utc)
         db_data_instance = models.DataInstance(
             id=image_id,
             project_id=db_project_id,
@@ -2172,6 +2172,7 @@ async def upload_image_to_project(
             metadata_json=parsed_metadata,
             uploaded_by_user_id=current_user.email,
             group_id=resolved_group_id,
+            created_at=uploaded_at,
         )
         db.add(db_data_instance)
         await db.flush()
@@ -2183,8 +2184,19 @@ async def upload_image_to_project(
             commit=False,
         )
         await db.flush()
+        response_image = data_instance_schema_from_values(
+            id=image_id,
+            project_id=db_project_id,
+            group_id=resolved_group_id,
+            filename=file.filename,
+            object_storage_key=object_storage_key,
+            content_type=file.content_type,
+            size_bytes=file_size,
+            metadata=parsed_metadata,
+            uploaded_by_user_id=current_user.email,
+            created_at=uploaded_at,
+        )
         await _commit_database_transaction(db)
-        await db.refresh(db_data_instance)
     except asyncio.CancelledError as exc:
         if getattr(exc, "vista_commit_succeeded", False):
             _clear_project_images_cache_best_effort(project_id)
@@ -2207,9 +2219,7 @@ async def upload_image_to_project(
         ) from exc
 
     _clear_project_images_cache_best_effort(project_id)
-
-    # Use utility function for consistent metadata serialization
-    return to_data_instance_schema(db_data_instance)
+    return response_image
 
 @router.get("/projects/{project_id}/images", response_model=List[schemas.DataInstance])
 async def list_images_in_project(
@@ -4309,6 +4319,47 @@ def _clear_image_caches_best_effort(
             )
 
 
+async def _persist_image_metadata(
+    *,
+    db: AsyncSession,
+    db_image: models.DataInstance,
+    image_id: uuid.UUID,
+    project_id: uuid.UUID,
+    metadata: Dict[str, Any],
+) -> schemas.DataInstance:
+    """Commit metadata with a fully materialized pre-commit response.
+
+    No ORM state or database I/O is touched after the shielded commit. Cache
+    invalidation is best-effort and therefore cannot turn a durable mutation
+    into an apparent request failure.
+    """
+
+    try:
+        db_image.metadata_json = metadata
+        await db.flush()
+        await db.refresh(db_image)
+        response_image = to_data_instance_schema(db_image)
+        await _commit_database_transaction(db)
+    except asyncio.CancelledError as exc:
+        if getattr(exc, "vista_commit_succeeded", False):
+            _clear_image_caches_best_effort(
+                project_id=project_id,
+                image_id=image_id,
+            )
+        else:
+            await db.rollback()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+
+    _clear_image_caches_best_effort(
+        project_id=project_id,
+        image_id=image_id,
+    )
+    return response_image
+
+
 @router.delete("/projects/{project_id}/images/{image_id}", response_model=schemas.DataInstance)
 async def delete_image(
     project_id: uuid.UUID,
@@ -4347,7 +4398,7 @@ async def delete_image(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=(
                 "Unable to permanently delete image from object storage; "
-                "the image remains recoverably soft-deleted"
+                "the storage outcome requires reconciliation before restore"
             ),
         ) from exc
     finally:
@@ -4355,7 +4406,7 @@ async def delete_image(
             project_id=project_id,
             image_id=image_id,
         )
-    return to_data_instance_schema(outcome.image)
+    return outcome.image
 
 @router.post("/projects/{project_id}/images/{image_id}/restore", response_model=schemas.DataInstance)
 async def restore_deleted_image(
@@ -4387,6 +4438,11 @@ async def restore_deleted_image(
             status_code=status.HTTP_409_CONFLICT,
             detail="Image permanently deleted",
         ) from exc
+    except image_deletion_service.ImageStorageDeletionPending as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Image storage deletion is pending reconciliation",
+        ) from exc
     except image_deletion_service.ImageRetentionExpired as exc:
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
@@ -4397,7 +4453,7 @@ async def restore_deleted_image(
             project_id=project_id,
             image_id=image_id,
         )
-    return to_data_instance_schema(restored_image)
+    return restored_image
 
 @router.get("/projects/{project_id}/images/deletion-events", response_model=schemas.ImageDeletionEventList)
 async def list_image_deletion_events(
@@ -4426,44 +4482,17 @@ async def update_image_metadata(
     The changes are persisted to the database and caches are invalidated.
     """
     db_image = await get_image_or_403_writable(image_id, db, current_user)
+    project_id = db_image.project_id
 
-    # Update the metadata
-    current_metadata = db_image.metadata_json or {}
+    current_metadata = dict(db_image.metadata_json or {})
     current_metadata[metadata.key] = metadata.value
-
-    # Update the database
-    await db.execute(
-        update(models.DataInstance)
-        .where(models.DataInstance.id == image_id)
-        .values(metadata_json=current_metadata)
+    return await _persist_image_metadata(
+        db=db,
+        db_image=db_image,
+        image_id=image_id,
+        project_id=project_id,
+        metadata=current_metadata,
     )
-    await db.commit()
-
-    # Invalidate caches
-    cache = get_cache()
-    cache.clear_pattern(f"image:{image_id}:")
-    cache.clear_pattern(f"project_images:{db_image.project_id}")
-    cache.clear_pattern(f"thumbnail:{image_id}")
-
-    # Return the updated image; build response dict ensuring updated metadata is present
-    await db.refresh(db_image)
-    try:
-        return schemas.DataInstance(
-            id=db_image.id,
-            project_id=db_image.project_id,
-            filename=db_image.filename,
-            object_storage_key=db_image.object_storage_key,
-            content_type=db_image.content_type,
-            size_bytes=db_image.size_bytes,
-            metadata_=current_metadata or {},
-            uploaded_by_user_id=db_image.uploaded_by_user_id,
-            uploader_id=db_image.uploader_id,
-            created_at=db_image.created_at,
-            updated_at=db_image.updated_at,
-        )
-    except Exception as e:
-        print(f"Error building DataInstance response: {e}")
-        raise
 
 @router.delete("/images/{image_id}/metadata/{key}", response_model=schemas.DataInstance, status_code=status.HTTP_200_OK)
 async def delete_image_metadata(
@@ -4478,42 +4507,15 @@ async def delete_image_metadata(
     The database is updated, and relevant caches are cleared.
     """
     db_image = await get_image_or_403_writable(image_id, db, current_user)
+    project_id = db_image.project_id
 
-    # Update the metadata
-    current_metadata = db_image.metadata_json or {}
+    current_metadata = dict(db_image.metadata_json or {})
     if key in current_metadata:
         del current_metadata[key]
-
-    # Update the database
-    await db.execute(
-        update(models.DataInstance)
-        .where(models.DataInstance.id == image_id)
-        .values(metadata_json=current_metadata)
+    return await _persist_image_metadata(
+        db=db,
+        db_image=db_image,
+        image_id=image_id,
+        project_id=project_id,
+        metadata=current_metadata,
     )
-    await db.commit()
-
-    # Invalidate caches
-    cache = get_cache()
-    cache.clear_pattern(f"image:{image_id}:")
-    cache.clear_pattern(f"project_images:{db_image.project_id}")
-    cache.clear_pattern(f"thumbnail:{image_id}")
-
-    # Return the updated image; build response dict ensuring updated metadata is present
-    await db.refresh(db_image)
-    try:
-        return schemas.DataInstance(
-            id=db_image.id,
-            project_id=db_image.project_id,
-            filename=db_image.filename,
-            object_storage_key=db_image.object_storage_key,
-            content_type=db_image.content_type,
-            size_bytes=db_image.size_bytes,
-            metadata_=current_metadata or {},
-            uploaded_by_user_id=db_image.uploaded_by_user_id,
-            uploader_id=db_image.uploader_id,
-            created_at=db_image.created_at,
-            updated_at=db_image.updated_at,
-        )
-    except Exception as e:
-        print(f"Error building DataInstance response: {e}")
-        raise

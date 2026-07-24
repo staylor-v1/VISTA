@@ -6,6 +6,7 @@ const initialProject = {
   description: 'Synthetic project for end-to-end inspection workflow coverage',
   meta_group_id: 'qa-team',
   project_type: 'PT1',
+  is_archived: false,
 };
 
 function buildReviewStatus(parts, imageCount) {

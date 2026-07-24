@@ -813,9 +813,14 @@ const DashboardSettingsModal = memo(function DashboardSettingsModal({ onClose, s
   const [acceptingDatabase, setAcceptingDatabase] = useState(false);
   const [databasePreview, setDatabasePreview] = useState(null);
   const [databaseError, setDatabaseError] = useState('');
+  const mountedRef = useRef(true);
+  const databaseUrlRef = useRef('');
+  const previewRequestRef = useRef({ generation: 0, controller: null, pending: false });
+  const acceptPendingRef = useRef(false);
 
   useEffect(() => {
     let active = true;
+    mountedRef.current = true;
     setLoadingCurrentUrl(true);
     fetch('/api/dashboard/settings/database-url')
       .then(async (response) => {
@@ -825,8 +830,15 @@ const DashboardSettingsModal = memo(function DashboardSettingsModal({ onClose, s
       })
       .then((payload) => {
         if (!active) return;
-        setCurrentDatabaseUrl(payload.database_url || '');
-        setDatabaseUrl(payload.database_url || '');
+        const loadedUrl = typeof payload.database_url === 'string'
+          ? payload.database_url
+          : '';
+        setCurrentDatabaseUrl(loadedUrl);
+        setDatabaseUrl(loadedUrl);
+        databaseUrlRef.current = loadedUrl;
+        if (payload.database_url !== undefined && typeof payload.database_url !== 'string') {
+          setDatabaseError('The current database URL response was invalid.');
+        }
       })
       .catch((error) => {
         if (!active) return;
@@ -837,60 +849,160 @@ const DashboardSettingsModal = memo(function DashboardSettingsModal({ onClose, s
       });
     return () => {
       active = false;
+      mountedRef.current = false;
+      previewRequestRef.current.generation += 1;
+      previewRequestRef.current.pending = false;
+      previewRequestRef.current.controller?.abort();
+      previewRequestRef.current.controller = null;
     };
   }, []);
 
   const trimmedDatabaseUrl = databaseUrl.trim();
   const hasDatabaseUrlChange = trimmedDatabaseUrl && trimmedDatabaseUrl !== currentDatabaseUrl;
 
-  const postDatabaseUrl = async (endpoint) => {
+  const postDatabaseUrl = async (endpoint, requestedDatabaseUrl, { signal } = {}) => {
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ database_url: trimmedDatabaseUrl }),
+      body: JSON.stringify({ database_url: requestedDatabaseUrl }),
+      signal,
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.detail || `HTTP error! status: ${response.status}`);
     return payload;
   };
 
+  const cancelPreviewRequest = () => {
+    previewRequestRef.current.generation += 1;
+    previewRequestRef.current.pending = false;
+    previewRequestRef.current.controller?.abort();
+    previewRequestRef.current.controller = null;
+    setPreviewingDatabase(false);
+  };
+
   const handlePreviewDatabase = async () => {
-    if (!hasDatabaseUrlChange) {
+    const requestedDatabaseUrl = databaseUrlRef.current.trim();
+    if (!requestedDatabaseUrl || requestedDatabaseUrl === currentDatabaseUrl) {
       setDatabaseError('Enter a new Postgres URL before previewing.');
       return;
     }
+    if (previewRequestRef.current.pending || acceptPendingRef.current) return;
+
+    const controller = new AbortController();
+    const generation = previewRequestRef.current.generation + 1;
+    previewRequestRef.current = { generation, controller, pending: true };
     setDatabaseError('');
     setDatabasePreview(null);
     setPreviewingDatabase(true);
     try {
-      const previewPayload = await postDatabaseUrl('/api/dashboard/settings/database-url/preview');
-      setDatabasePreview(previewPayload);
+      const previewPayload = await postDatabaseUrl(
+        '/api/dashboard/settings/database-url/preview',
+        requestedDatabaseUrl,
+        { signal: controller.signal },
+      );
+      if (
+        !previewPayload
+        || typeof previewPayload.database_url !== 'string'
+        || !Array.isArray(previewPayload.projects)
+      ) {
+        throw new Error('The dashboard preview response was invalid.');
+      }
+      if (
+        mountedRef.current
+        && previewRequestRef.current.generation === generation
+        && databaseUrlRef.current.trim() === requestedDatabaseUrl
+      ) {
+        setDatabasePreview({
+          ...previewPayload,
+          project_count: Number.isFinite(previewPayload.project_count)
+            ? previewPayload.project_count
+            : previewPayload.projects.length,
+        });
+      }
     } catch (error) {
-      setDatabaseError(error.message || 'Unable to preview the dashboard from that URL.');
+      if (
+        error?.name !== 'AbortError'
+        && mountedRef.current
+        && previewRequestRef.current.generation === generation
+      ) {
+        setDatabaseError(error.message || 'Unable to preview the dashboard from that URL.');
+      }
     } finally {
-      setPreviewingDatabase(false);
+      if (previewRequestRef.current.generation === generation) {
+        previewRequestRef.current.pending = false;
+        previewRequestRef.current.controller = null;
+        if (mountedRef.current) setPreviewingDatabase(false);
+      }
     }
   };
 
-  const handleAcceptDatabase = async () => {
-    if (!hasDatabaseUrlChange) {
+  const handleAcceptDatabase = async (requestedDatabaseUrl) => {
+    if (typeof requestedDatabaseUrl !== 'string') {
+      setDatabaseError('The database URL must be a string.');
+      return;
+    }
+    const capturedDatabaseUrl = requestedDatabaseUrl.trim();
+    if (!capturedDatabaseUrl || capturedDatabaseUrl === currentDatabaseUrl) {
       setDatabaseError('Enter a new Postgres URL before accepting.');
       return;
     }
+    if (acceptPendingRef.current) return;
+
+    acceptPendingRef.current = true;
+    cancelPreviewRequest();
     setDatabaseError('');
     setAcceptingDatabase(true);
     try {
-      const acceptedPayload = await postDatabaseUrl('/api/dashboard/settings/database-url/accept');
-      setCurrentDatabaseUrl(acceptedPayload.database_url || trimmedDatabaseUrl);
-      setDatabaseUrl(acceptedPayload.database_url || trimmedDatabaseUrl);
+      let acceptedPayload;
+      try {
+        acceptedPayload = await postDatabaseUrl(
+          '/api/dashboard/settings/database-url/accept',
+          capturedDatabaseUrl,
+        );
+      } catch (acceptError) {
+        if (mountedRef.current) {
+          setDatabaseError(acceptError.message || 'Unable to switch to that Postgres URL.');
+        }
+        return;
+      }
+      if (!mountedRef.current) return;
+      const acceptedPayloadUrl = acceptedPayload?.database_url;
+      const hasValidAcceptedPayloadUrl = (
+        typeof acceptedPayloadUrl === 'string'
+        && acceptedPayloadUrl.trim().length > 0
+      );
+      const acceptedUrl = hasValidAcceptedPayloadUrl
+        ? acceptedPayloadUrl.trim()
+        : capturedDatabaseUrl;
+      setCurrentDatabaseUrl(acceptedUrl);
+      setDatabaseUrl(acceptedUrl);
+      databaseUrlRef.current = acceptedUrl;
       setDatabasePreview(null);
       showToast('Postgres database URL updated for this backend session.', 'success');
-      await onDatabaseAccepted?.();
-    } catch (error) {
-      setDatabaseError(error.message || 'Unable to switch to that Postgres URL.');
+      if (!hasValidAcceptedPayloadUrl) {
+        setDatabaseError(
+          'Database switched successfully, but the backend returned an invalid database URL. The submitted URL is shown.',
+        );
+      }
+      try {
+        await onDatabaseAccepted?.();
+      } catch (_refreshError) {
+        if (mountedRef.current) {
+          setDatabaseError(
+            'Database switched successfully, but dashboard projects could not be refreshed. Reload the page to retry.',
+          );
+        }
+      }
     } finally {
-      setAcceptingDatabase(false);
+      acceptPendingRef.current = false;
+      if (mountedRef.current) setAcceptingDatabase(false);
     }
+  };
+
+  const handleClose = () => {
+    if (acceptPendingRef.current) return;
+    cancelPreviewRequest();
+    onClose();
   };
 
   return (
@@ -898,7 +1010,13 @@ const DashboardSettingsModal = memo(function DashboardSettingsModal({ onClose, s
       <div className="modal-content dashboard-settings-modal">
         <div className="modal-header">
           <h3 id="dashboard-settings-title">Dashboard Settings</h3>
-          <button type="button" className="modal-close-btn" onClick={onClose} aria-label="Close dashboard settings">
+          <button
+            type="button"
+            className="modal-close-btn"
+            onClick={handleClose}
+            aria-label="Close dashboard settings"
+            disabled={acceptingDatabase}
+          >
             &times;
           </button>
         </div>
@@ -948,8 +1066,12 @@ const DashboardSettingsModal = memo(function DashboardSettingsModal({ onClose, s
                     type="text"
                     className="form-control"
                     value={databaseUrl}
+                    disabled={acceptingDatabase}
                     onChange={(event) => {
-                      setDatabaseUrl(event.target.value);
+                      const nextDatabaseUrl = event.target.value;
+                      databaseUrlRef.current = nextDatabaseUrl;
+                      cancelPreviewRequest();
+                      setDatabaseUrl(nextDatabaseUrl);
                       setDatabasePreview(null);
                       setDatabaseError('');
                     }}
@@ -973,7 +1095,7 @@ const DashboardSettingsModal = memo(function DashboardSettingsModal({ onClose, s
                   <button
                     type="button"
                     className="btn btn-success"
-                    onClick={handleAcceptDatabase}
+                    onClick={() => handleAcceptDatabase(databaseUrlRef.current)}
                     disabled={previewingDatabase || acceptingDatabase || !hasDatabaseUrlChange}
                   >
                     {acceptingDatabase ? 'Submitting…' : 'Submit Postgres URL'}
@@ -984,7 +1106,7 @@ const DashboardSettingsModal = memo(function DashboardSettingsModal({ onClose, s
           </section>
         </div>
         <div className="modal-footer">
-          <button type="button" className="btn btn-secondary" onClick={onClose}>Close</button>
+          <button type="button" className="btn btn-secondary" onClick={handleClose} disabled={acceptingDatabase}>Close</button>
         </div>
       </div>
 
@@ -998,6 +1120,7 @@ const DashboardSettingsModal = memo(function DashboardSettingsModal({ onClose, s
                 className="modal-close-btn"
                 onClick={() => setDatabasePreview(null)}
                 aria-label="Close dashboard preview"
+                disabled={acceptingDatabase}
               >
                 &times;
               </button>
@@ -1035,10 +1158,15 @@ const DashboardSettingsModal = memo(function DashboardSettingsModal({ onClose, s
               )}
             </div>
             <div className="modal-footer">
-              <button type="button" className="btn btn-secondary" onClick={() => setDatabasePreview(null)}>
+              <button type="button" className="btn btn-secondary" onClick={() => setDatabasePreview(null)} disabled={acceptingDatabase}>
                 Keep Editing
               </button>
-              <button type="button" className="btn btn-success" onClick={handleAcceptDatabase} disabled={acceptingDatabase}>
+              <button
+                type="button"
+                className="btn btn-success"
+                onClick={() => handleAcceptDatabase(databasePreview.database_url)}
+                disabled={acceptingDatabase}
+              >
                 {acceptingDatabase ? 'Submitting…' : 'Submit This URL'}
               </button>
             </div>
@@ -1450,7 +1578,7 @@ function App() {
   }, [showArchived]);
 
 
-  const HomePage = () => (
+  const homePage = (
     <div className="App">
       <header className="App-header">
         <div className="header-content">
@@ -1620,7 +1748,7 @@ function App() {
     <>
     <ScrollToTop />
     <Routes>
-      <Route path="/" element={<HomePage />} />
+      <Route path="/" element={homePage} />
       <Route
         path="/project/:id"
         element={

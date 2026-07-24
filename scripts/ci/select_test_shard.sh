@@ -3,16 +3,20 @@
 # Select one deterministic, whole-file test shard.
 #
 # Usage:
-#   sh scripts/ci/select_test_shard.sh ROOT PATTERN INDEX TOTAL
+#   sh scripts/ci/select_test_shard.sh ROOT PATTERNS INDEX TOTAL [EXCLUDE_PREFIXES]
 #
-# PATTERN is matched against paths relative to ROOT using find's shell-pattern
-# syntax. INDEX is one-based, matching GitLab's CI_NODE_INDEX/CI_NODE_TOTAL.
-# Selected paths are printed relative to the caller's current directory.
+# PATTERNS is a comma-separated list matched against paths relative to ROOT
+# using find's shell-pattern syntax. EXCLUDE_PREFIXES is an optional
+# comma-separated list of directory prefixes relative to ROOT. Overlapping
+# patterns are de-duplicated. INDEX is one-based, matching GitLab's
+# CI_NODE_INDEX/CI_NODE_TOTAL. Selected paths are printed relative to the
+# caller's current directory.
 
 set -eu
+set -f
 
 usage() {
-    echo "Usage: $0 ROOT PATTERN INDEX TOTAL" >&2
+    echo "Usage: $0 ROOT PATTERNS INDEX TOTAL [EXCLUDE_PREFIXES]" >&2
 }
 
 fail() {
@@ -22,7 +26,7 @@ fail() {
 
 is_positive_integer() {
     case "$1" in
-        ''|*[!0-9]*)
+        ''|0*|*[!0-9]*)
             return 1
             ;;
     esac
@@ -30,27 +34,64 @@ is_positive_integer() {
     [ "$1" -ge 1 ] 2>/dev/null
 }
 
-if [ "$#" -ne 4 ]; then
+if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
     usage
     exit 2
 fi
 
 root=$1
-pattern=$2
+patterns=$2
 index=$3
 total=$4
+exclude_prefixes=${5:-}
+maximum_shards=64
 
-[ -n "$pattern" ] || fail "PATTERN must not be empty"
+[ -n "$patterns" ] || fail "PATTERNS must not be empty"
+case "$patterns" in
+    ,*|*,|*,,*)
+        fail "PATTERNS must not contain an empty pattern"
+        ;;
+esac
 [ -d "$root" ] || fail "ROOT must be an existing directory: $root"
 is_positive_integer "$index" || fail "INDEX must be a positive integer: $index"
 is_positive_integer "$total" || fail "TOTAL must be a positive integer: $total"
+[ "$total" -le "$maximum_shards" ] ||
+    fail "TOTAL must not exceed $maximum_shards"
 [ "$index" -le "$total" ] || fail "INDEX must not exceed TOTAL"
 
-case "$pattern" in
-    /*)
-        fail "PATTERN must be relative to ROOT: $pattern"
-        ;;
-esac
+old_ifs=$IFS
+IFS=,
+set -- $patterns
+IFS=$old_ifs
+[ "$#" -gt 0 ] || fail "PATTERNS must contain at least one pattern"
+for pattern do
+    [ -n "$pattern" ] || fail "PATTERNS must not contain an empty pattern"
+    case "$pattern" in
+        /*)
+            fail "PATTERNS must be relative to ROOT: $pattern"
+            ;;
+    esac
+done
+
+if [ -n "$exclude_prefixes" ]; then
+    case "$exclude_prefixes" in
+        ,*|*,|*,,*)
+            fail "EXCLUDE_PREFIXES must not contain an empty prefix"
+            ;;
+    esac
+    IFS=,
+    set -- $exclude_prefixes
+    IFS=$old_ifs
+    for exclude_prefix do
+        [ -n "$exclude_prefix" ] ||
+            fail "EXCLUDE_PREFIXES must not contain an empty prefix"
+        case "$exclude_prefix" in
+            /*|../*|*/../*|*/..)
+                fail "EXCLUDE_PREFIXES must be relative to ROOT: $exclude_prefix"
+                ;;
+        esac
+    done
+fi
 
 caller_directory=$(pwd -P) || fail "could not determine the current directory"
 root_directory=$(
@@ -102,12 +143,40 @@ trap cleanup EXIT HUP INT TERM
 
 (
     cd "$root_directory"
-    find . -type f -path "./$pattern" -printf '%s\t%P\n'
+    IFS=,
+    for pattern in $patterns; do
+        find . -type f -path "./$pattern" -printf '%s\t%P\n'
+    done
 ) >"$manifest_file" || fail "could not enumerate test files under ROOT"
 
+# Exclusions are directory-prefix matches. De-duplicate paths before balancing
+# so a Jest file matching both a suffix pattern and __tests__ is run once.
 # Largest files are assigned first. Equal-sized files are ordered by path.
-LC_ALL=C sort -t "$(printf '\t')" -k1,1nr -k2,2 "$manifest_file" \
-    >"$ordered_file" || fail "could not order the test manifest"
+if ! awk \
+    -F "$(printf '\t')" \
+    -v excludes="$exclude_prefixes" '
+        BEGIN {
+            exclude_count = split(excludes, exclude, ",")
+        }
+        {
+            path = $2
+            skipped = 0
+            for (item = 1; item <= exclude_count; item++) {
+                if (exclude[item] != "" &&
+                    (path == exclude[item] ||
+                     index(path, exclude[item] "/") == 1)) {
+                    skipped = 1
+                    break
+                }
+            }
+            if (!skipped && !seen[path]++) {
+                print
+            }
+        }
+    ' "$manifest_file" |
+    LC_ALL=C sort -t "$(printf '\t')" -k1,1nr -k2,2 >"$ordered_file"; then
+    fail "could not normalize and order the test manifest"
+fi
 
 awk \
     -F "$(printf '\t')" \

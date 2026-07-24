@@ -92,6 +92,7 @@ jest.mock('../components/InspectionWorkbenchPanel', () => {
   const MockInspectionWorkbenchPanel = ({
     launchFilters,
     mprSession,
+    readOnly,
     onMprSessionChange,
     onInspectionShareStateChange,
   }) => (
@@ -99,6 +100,7 @@ jest.mock('../components/InspectionWorkbenchPanel', () => {
       <div>Inspection workbench</div>
       <output data-testid="inspection-launch-filters">{JSON.stringify(launchFilters || null)}</output>
       <output data-testid="inspection-mpr-session">{JSON.stringify(mprSession || null)}</output>
+      <output data-testid="inspection-read-only">{String(readOnly)}</output>
       <button
         type="button"
         onClick={() => onMprSessionChange?.({
@@ -1130,6 +1132,7 @@ describe('Project query parameter tab selection', () => {
       selected_image_ref: 'image-7',
       active_metadata_tab: 'details',
     }));
+    expect(screen.getByTestId('inspection-read-only')).toHaveTextContent('true');
   });
 
   test('retains the full MPR session when Inspection unmounts during tab navigation', async () => {

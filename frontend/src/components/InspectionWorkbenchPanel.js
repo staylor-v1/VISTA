@@ -3717,9 +3717,20 @@ export function buildInspectionShareParams(state = {}) {
   return params;
 }
 
+function fetchInspectionResource(readOnly, input, init = {}) {
+  const method = String(init?.method || 'GET').toUpperCase();
+  if (readOnly && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    const error = new Error('Inspection workbench is read-only.');
+    error.name = 'ReadOnlyError';
+    return Promise.reject(error);
+  }
+  return fetch(input, init);
+}
+
 function InspectionWorkbenchPanel({
   projectId,
   projectType,
+  readOnly = false,
   hierarchy,
   launchFilters,
   mprSession,
@@ -3993,6 +4004,31 @@ function InspectionWorkbenchPanel({
   const fullscreenGeometryDragPreviewRef = useRef(null);
   const suppressNextTileClickRef = useRef(false);
   const mprOverlayCanvasRef = useRef(null);
+
+  useEffect(() => {
+    if (!readOnly) return;
+    setAnnotationToolMode('');
+    setOtherAnnotationModalVisible(false);
+    setAnnotationEditModalVisible(false);
+    setSegmentationHelperOpen(false);
+    setEditingSegmentationSegmentId('');
+    setSegmentationPendingSelection(null);
+    setSegmentationDraftShape(null);
+    setTileAnnotationDraft(null);
+    setTileAnnotationPreview(null);
+    setTileGeometryDragPreview(null);
+    setMprAnnotationDraft(null);
+    setMprAnnotationPreview(null);
+    setMprGeometryDragPreview(null);
+    setFullscreenMeasureActive(false);
+    setFullscreenBoxActive(false);
+    setFullscreenCropActive(false);
+    setFullscreenCalibrationPromptVisible(false);
+    setTileCalibrationPromptImageId(null);
+    setFullscreenEditingEndpoint(null);
+    setFullscreenEditingBoxCorner(null);
+    setFullscreenGeometryDragPreview(null);
+  }, [readOnly]);
   const [mprFallbackOverlaySize, setMprFallbackOverlaySize] = useState({ width: 0, height: 0 });
   const appliedLaunchFiltersSignatureRef = useRef('');
 
@@ -4108,11 +4144,11 @@ function InspectionWorkbenchPanel({
         setError(null);
 
         const [batchResp, partResp, workspaceResp, configResp, metadataResp, imagePageData] = await Promise.all([
-          fetch(`/api/projects/${projectId}/batches`, { signal: controller.signal }),
-          fetch(`/api/projects/${projectId}/parts`, { signal: controller.signal }),
-          fetch(`/api/projects/${projectId}/workspace-state`, { signal: controller.signal }),
-          fetch(`/api/projects/${projectId}/configuration`, { signal: controller.signal }),
-          fetch(`/api/projects/${projectId}/metadata-dict`, { signal: controller.signal }),
+          fetchInspectionResource(false, `/api/projects/${projectId}/batches`, { signal: controller.signal }),
+          fetchInspectionResource(false, `/api/projects/${projectId}/parts`, { signal: controller.signal }),
+          fetchInspectionResource(false, `/api/projects/${projectId}/workspace-state`, { signal: controller.signal }),
+          fetchInspectionResource(false, `/api/projects/${projectId}/configuration`, { signal: controller.signal }),
+          fetchInspectionResource(false, `/api/projects/${projectId}/metadata-dict`, { signal: controller.signal }),
           fetchProjectImagePages(projectId, { includeDeleted: true, signal: controller.signal }),
         ]);
         if (!active) return;
@@ -4302,6 +4338,7 @@ function InspectionWorkbenchPanel({
 
 
   async function saveInspectionColumnWidths(columnWidths) {
+    if (readOnly) return;
     const nextConfig = {
       ...(projectConfiguration && typeof projectConfiguration === 'object' ? projectConfiguration : {}),
       inspection_layout: {
@@ -4314,7 +4351,7 @@ function InspectionWorkbenchPanel({
     };
 
     try {
-      const resp = await fetch(`/api/projects/${projectId}/configuration`, {
+      const resp = await fetchInspectionResource(readOnly, `/api/projects/${projectId}/configuration`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ config: nextConfig }),
@@ -4409,7 +4446,7 @@ function InspectionWorkbenchPanel({
       const cacheKey = `${String(projectId)}:${candidate.imageId}`;
       let probe = volumeMetadataProbeCacheRef.current.get(cacheKey);
       if (!probe) {
-        probe = fetch(`/api/images/${encodeURIComponent(candidate.imageId)}/volume-metadata`)
+        probe = fetchInspectionResource(false, `/api/images/${encodeURIComponent(candidate.imageId)}/volume-metadata`)
           .then(async (response) => {
             if (!response.ok) throw new Error(`metadata request failed (${response.status})`);
             return normalizeProbedVolumeMetadata(await response.json());
@@ -4728,6 +4765,7 @@ function InspectionWorkbenchPanel({
     ? String(fullscreenImageModal.sliceKey || getMprSliceKey(fullscreenImageModal.axis, fullscreenImageModal.sliceIndex))
     : '';
   const applySessionCalibration = useCallback((imageId, calibration) => {
+    if (readOnly) return false;
     if (!imageId || !isValidCalibration(calibration)) return false;
     const key = String(imageId);
     setSessionCalibrationByImageId((prev) => ({ ...prev, [key]: calibration }));
@@ -4736,7 +4774,7 @@ function InspectionWorkbenchPanel({
       calibration_default: prev?.calibration_default || calibration,
     }));
     return true;
-  }, []);
+  }, [readOnly]);
 
   const handleFullscreenCalibrationChange = useCallback((calibration) => {
     if (!applySessionCalibration(fullscreenBackingImageId, calibration)) return;
@@ -4750,6 +4788,7 @@ function InspectionWorkbenchPanel({
   }, [applySessionCalibration, tileCalibrationPromptImageId]);
 
   const requireCalibrationForAnnotation = useCallback((imageId, { surface = 'tile', toolMode = annotationToolMode } = {}) => {
+    if (readOnly) return false;
     if (toolMode === 'crop') return true;
     const annotationImageId = getAnnotationSourceImageIdForImage(imageId);
     if (getCalibrationForImage(annotationImageId)) return true;
@@ -4761,7 +4800,7 @@ function InspectionWorkbenchPanel({
       setTileCalibrationPromptImageId(annotationImageId ? String(annotationImageId) : null);
     }
     return false;
-  }, [annotationToolMode, getAnnotationSourceImageIdForImage, getCalibrationForImage]);
+  }, [annotationToolMode, getAnnotationSourceImageIdForImage, getCalibrationForImage, readOnly]);
 
   const selectedImageRecord = useMemo(() => {
     if (!selectedImageRef) return null;
@@ -4811,7 +4850,7 @@ function InspectionWorkbenchPanel({
       const cacheKey = `${String(projectId)}:${imageId}:${MPR_VOLUME_RENDER_SUMMARY_VERSION}`;
       let request = volumeRenderSummaryCacheRef.current.get(cacheKey);
       if (!request) {
-        request = fetch(getVolumeRenderSummaryUrl(volume)).then(async (response) => {
+        request = fetchInspectionResource(false, getVolumeRenderSummaryUrl(volume)).then(async (response) => {
           if (!response.ok) throw new Error(`render summary request failed (${response.status})`);
           return response.json();
         });
@@ -5003,6 +5042,9 @@ function InspectionWorkbenchPanel({
   }, [getMprAnnotationImage, mprDimensions, slicePosition, volumeCacheState.cache]);
 
   const openMprAnnotationTool = useCallback((axis, mode) => {
+    // Opening a slice fullscreen is a viewing action. Archived projects may
+    // still inspect slices; only the annotation modes are mutations.
+    if (readOnly && mode) return;
     const sliceContext = getMprAnnotationSliceContext(axis);
     const hasVolumeStack = hasMprVolumeSource(volumeImageStack);
     const fallbackImage = !hasVolumeStack
@@ -5030,7 +5072,7 @@ function InspectionWorkbenchPanel({
     setFullscreenBoxActive(mode === 'box');
     setFullscreenCalibrationPromptVisible(false);
     setAnnotationDraft((prev) => ({ ...prev, comment: `${mode === 'measure' ? 'Measurement' : 'Box'} on ${axisLabel} ${sliceValue}` }));
-  }, [getMprAnnotationSliceContext, shellImageLayers, volumeImageStack]);
+  }, [getMprAnnotationSliceContext, readOnly, shellImageLayers, volumeImageStack]);
 
   const canShowStackReconstruction = volumePreviewLayers.length > 0;
   const canShowShellReconstruction = shellImageLayers.length > 0;
@@ -5351,7 +5393,7 @@ function InspectionWorkbenchPanel({
       const requestMutationRevision = annotationsMutationRevisionRef.current;
       setAnnotationsLoading(true);
       try {
-        const resp = await fetch(`/api/projects/${projectId}/parts/${selectedPart.id}/annotations`);
+        const resp = await fetchInspectionResource(false, `/api/projects/${projectId}/parts/${selectedPart.id}/annotations`);
         if (!resp.ok) {
           throw new Error(`Failed to load annotations (${resp.status})`);
         }
@@ -5397,7 +5439,7 @@ function InspectionWorkbenchPanel({
     if (loading || !workspaceStateLoaded) return;
     const saveHandle = setTimeout(async () => {
       try {
-        await fetch(`/api/projects/${projectId}/workspace-state`, {
+        await fetchInspectionResource(readOnly, `/api/projects/${projectId}/workspace-state`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -5457,6 +5499,7 @@ function InspectionWorkbenchPanel({
     mprReconstructionMode,
     mprProjectionMirror,
     rayMarchSettings,
+    readOnly,
     selectedBatchId,
     selectedPart,
     slicePosition,
@@ -5494,9 +5537,10 @@ function InspectionWorkbenchPanel({
   ]);
 
   const updatePartReviewState = useCallback(async (part, nextState) => {
+    if (readOnly) return;
     try {
       setSavingPartId(part.id);
-      const resp = await fetch(`/api/projects/${projectId}/parts/${part.id}`, {
+      const resp = await fetchInspectionResource(readOnly, `/api/projects/${projectId}/parts/${part.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ review_state: nextState }),
@@ -5511,7 +5555,7 @@ function InspectionWorkbenchPanel({
     } finally {
       setSavingPartId(null);
     }
-  }, [projectId]);
+  }, [projectId, readOnly]);
 
   useEffect(() => {
     if (!selectedPart?.id) return undefined;
@@ -5661,6 +5705,7 @@ function InspectionWorkbenchPanel({
   };
 
   const openSegmentationHelper = (event) => {
+    if (readOnly) return;
     segmentationHelperOpenerRef.current = event?.currentTarget || document.activeElement;
     const fallbackAxis = activeMprPane === 'volume' ? 'axial' : activeMprPane;
     const axis = MPR_AXES.includes(fallbackAxis) ? fallbackAxis : 'axial';
@@ -5764,7 +5809,8 @@ function InspectionWorkbenchPanel({
           continue;
         }
         try {
-          const resp = await fetch(
+          const resp = await fetchInspectionResource(
+            readOnly,
             `/api/projects/${queue.projectId}/parts/${queue.partId}/annotations/${encodeURIComponent(String(annotationId))}`,
             { method: 'DELETE' },
           );
@@ -5802,7 +5848,8 @@ function InspectionWorkbenchPanel({
       }
       const payload = makeVistaSegmentAnnotationPayload(mutation.segment, queue.lastSavedAnnotation || null);
       try {
-        const resp = await fetch(
+        const resp = await fetchInspectionResource(
+          readOnly,
           annotationId
             ? `/api/projects/${queue.projectId}/parts/${queue.partId}/annotations/${encodeURIComponent(String(annotationId))}`
             : `/api/projects/${queue.projectId}/parts/${queue.partId}/annotations`,
@@ -5894,6 +5941,7 @@ function InspectionWorkbenchPanel({
   };
 
   const persistSegmentationSegment = (segment) => {
+    if (readOnly) return Promise.resolve(null);
     if (!selectedPart?.id || !segment) return Promise.resolve(null);
     const localId = String(segment.id || segment.annotationId || '');
     if (!localId) return Promise.resolve(null);
@@ -5948,6 +5996,7 @@ function InspectionWorkbenchPanel({
   };
 
   const deleteSegmentationSegment = (segmentId) => {
+    if (readOnly) return Promise.resolve(false);
     if (!selectedPart?.id || !segmentId) return Promise.resolve(false);
     const segment = segmentationSegments.find((candidate) => (
       String(candidate.id) === String(segmentId)
@@ -5987,6 +6036,7 @@ function InspectionWorkbenchPanel({
   };
 
   const addSegmentationSegment = () => {
+    if (readOnly) return;
     cancelSegmentationDraft();
     const dimensions = getMprAxisImageDimensions(segmentationHelperAxis, mprDimensions, volumeCacheState.cache);
     const nextSegment = createDefaultSegment(segmentationSegments.length, {
@@ -6007,12 +6057,14 @@ function InspectionWorkbenchPanel({
   };
 
   const updateSegmentationSegment = (segmentId, patch) => {
+    if (readOnly) return;
     setSegmentationSegments((prev) => prev.map((segment) => (
       segment.id === segmentId ? { ...segment, ...patch } : segment
     )));
   };
 
   const saveSegmentationSegmentPatch = async (segmentId, patch = {}) => {
+    if (readOnly) return null;
     const segment = segmentationSegments.find((entry) => String(entry.id) === String(segmentId));
     if (!segment) return null;
     const volumeDimensions = getSegmentationVolumeDimensions();
@@ -6292,6 +6344,7 @@ function InspectionWorkbenchPanel({
   );
 
   const buildConnectedVolumeSegmentationSelection = async (position) => {
+    if (readOnly) return;
     const sourceAxis = segmentationHelperAxis;
     const sourceSliceIndex = getSegmentationCanonicalSliceIndex(sourceAxis);
     const seedVoxel = getSegmentationVoxelPosition(position, sourceAxis);
@@ -6311,7 +6364,8 @@ function InspectionWorkbenchPanel({
       let result;
       const volumeCache = volumeCacheState.cache;
       if (isServerVolumeDescriptor(volumeCache)) {
-        const response = await fetch(
+        const response = await fetchInspectionResource(
+          readOnly,
           `/api/images/${encodeURIComponent(String(volumeCache.imageId))}/volume-connected-selection`,
           {
             method: 'POST',
@@ -6469,6 +6523,7 @@ function InspectionWorkbenchPanel({
   };
 
   const runSegmentationMlHelper = async (event, position) => {
+    if (readOnly) return;
     if (!selectedPart?.id || !position) return;
     const cacheKey = getSegmentationMlCacheKey(segmentationHelperAxis);
     const cached = segmentationMlCacheRef.current.get(cacheKey);
@@ -6484,7 +6539,7 @@ function InspectionWorkbenchPanel({
     setSegmentationMlLoading(true);
     setSegmentationMlStatus('Running ML helper on this slice...');
     try {
-      const resp = await fetch(`/api/projects/${projectId}/parts/${selectedPart.id}/slice-segmentation`, {
+      const resp = await fetchInspectionResource(readOnly, `/api/projects/${projectId}/parts/${selectedPart.id}/slice-segmentation`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -6510,6 +6565,7 @@ function InspectionWorkbenchPanel({
   };
 
   const commitSegmentationShape = (shape, explicitOperation = segmentationOperation) => {
+    if (readOnly) return;
     if (!shape || !selectedSegmentationSegment) return;
     const makeCompactedVolumeArea = (compacted) => ({
       id: `volume-snapshot-${Date.now()}`,
@@ -6594,6 +6650,7 @@ function InspectionWorkbenchPanel({
   };
 
   const commitPendingSegmentationSelection = (operation = segmentationOperation) => {
+    if (readOnly) return;
     if (!segmentationPendingSelection) return;
     commitSegmentationShape(segmentationPendingSelection, operation);
   };
@@ -6604,6 +6661,7 @@ function InspectionWorkbenchPanel({
   };
 
   const handleSegmentationStagePointerDown = (event) => {
+    if (readOnly) return;
     if (!selectedSegmentationSegment || (event.button !== undefined && event.button !== 0)) return;
     if (segmentationPointerSessionRef.current) {
       event.preventDefault();
@@ -6689,6 +6747,7 @@ function InspectionWorkbenchPanel({
   };
 
   const handleSegmentationStagePointerMove = (event) => {
+    if (readOnly) return;
     const pointerSession = segmentationPointerSessionRef.current;
     if (pointerSession
       && pointerSession.pointerId !== undefined
@@ -6753,6 +6812,7 @@ function InspectionWorkbenchPanel({
   };
 
   const handleSegmentationStagePointerUp = (event) => {
+    if (readOnly) return;
     const pointerSession = segmentationPointerSessionRef.current;
     if (pointerSession
       && pointerSession.pointerId !== undefined
@@ -6824,6 +6884,7 @@ function InspectionWorkbenchPanel({
   };
 
   const completeSegmentationPolygon = (event) => {
+    if (readOnly) return;
     if (segmentationTool !== 'polygon') return;
     const draft = segmentationDraftRef.current;
     if (!draft || draft.tool !== 'polygon' || (draft.points || []).length < 3) return;
@@ -6948,11 +7009,12 @@ function InspectionWorkbenchPanel({
 
 
   const deleteAnalyzeOverlay = useCallback(async (entry) => {
+    if (readOnly) return;
     const overlayId = entry?.imageId || entry?.imageRef;
     if (!overlayId) return;
     try {
       setDeletingOverlayId(String(overlayId));
-      const resp = await fetch(`/api/projects/${projectId}/analyze/overlays/${encodeURIComponent(String(overlayId))}`, {
+      const resp = await fetchInspectionResource(readOnly, `/api/projects/${projectId}/analyze/overlays/${encodeURIComponent(String(overlayId))}`, {
         method: 'DELETE',
       });
       if (!resp.ok) throw new Error(`Failed to delete Analyze overlay (${resp.status})`);
@@ -6964,7 +7026,7 @@ function InspectionWorkbenchPanel({
     } finally {
       setDeletingOverlayId('');
     }
-  }, [projectId]);
+  }, [projectId, readOnly]);
 
   const resetAnnotationDraft = () => {
     setAnnotationDraft({
@@ -6978,6 +7040,7 @@ function InspectionWorkbenchPanel({
   };
 
   const setTileAnnotationMode = (mode) => {
+    if (readOnly) return;
     setAnnotationToolMode((prev) => (prev === mode ? '' : mode));
     setTileAnnotationDraft(null);
     setTileAnnotationPreview(null);
@@ -6989,6 +7052,7 @@ function InspectionWorkbenchPanel({
   };
 
   const openAnnotationEditModal = (annotation) => {
+    if (readOnly) return;
     if (!annotation?.id) return;
     setSelectedAnnotationId(annotation.id);
     setAnnotationEditDraft({
@@ -7008,6 +7072,7 @@ function InspectionWorkbenchPanel({
   };
 
   const createAnnotation = async () => {
+    if (readOnly) return;
     if (!selectedPart?.id || !annotationDraft.defect_class.trim()) return;
     const mutationPartId = String(selectedPart.id);
     const mutationScope = `${projectId}:${mutationPartId}`;
@@ -7027,7 +7092,7 @@ function InspectionWorkbenchPanel({
     };
 
     try {
-      const resp = await fetch(`/api/projects/${projectId}/parts/${mutationPartId}/annotations`, {
+      const resp = await fetchInspectionResource(readOnly, `/api/projects/${projectId}/parts/${mutationPartId}/annotations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -7048,6 +7113,7 @@ function InspectionWorkbenchPanel({
   };
 
   const createMeasurementAnnotation = async ({ imageId, line, name, color, distanceMm, modality, geometryPatch = {}, metadataPatch = {} }) => {
+    if (readOnly) return null;
     if (!selectedPart?.id || !line || !line.imageWidth || !line.imageHeight) return;
     const mutationPartId = String(selectedPart.id);
     const mutationScope = `${projectId}:${mutationPartId}`;
@@ -7075,7 +7141,7 @@ function InspectionWorkbenchPanel({
       hidden: false,
     };
     try {
-      const resp = await fetch(`/api/projects/${projectId}/parts/${mutationPartId}/annotations`, {
+      const resp = await fetchInspectionResource(readOnly, `/api/projects/${projectId}/parts/${mutationPartId}/annotations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -7139,7 +7205,7 @@ function InspectionWorkbenchPanel({
       hidden: false,
     };
     try {
-      const resp = await fetch(`/api/projects/${projectId}/parts/${mutationPartId}/annotations`, {
+      const resp = await fetchInspectionResource(readOnly, `/api/projects/${projectId}/parts/${mutationPartId}/annotations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -7159,6 +7225,7 @@ function InspectionWorkbenchPanel({
   };
 
   const createCubeAnnotation = async ({ axis, firstBox, secondBox, color }) => {
+    if (readOnly) return null;
     if (!selectedPart?.id || !axis || !isFiniteAnnotationBox(firstBox) || !isFiniteAnnotationBox(secondBox)) return null;
     const mutationPartId = String(selectedPart.id);
     const mutationScope = `${projectId}:${mutationPartId}`;
@@ -7208,7 +7275,7 @@ function InspectionWorkbenchPanel({
       hidden: false,
     };
     try {
-      const resp = await fetch(`/api/projects/${projectId}/parts/${mutationPartId}/annotations`, {
+      const resp = await fetchInspectionResource(readOnly, `/api/projects/${projectId}/parts/${mutationPartId}/annotations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -7228,6 +7295,7 @@ function InspectionWorkbenchPanel({
   };
 
   const updateMeasurementAnnotationLine = async (lineId, nextLine) => {
+    if (readOnly) return null;
     if (!selectedPart?.id || !lineId || !isFiniteMeasurementLine(nextLine)) return null;
     const mutationPartId = String(selectedPart.id);
     const mutationScope = `${projectId}:${mutationPartId}`;
@@ -7264,7 +7332,7 @@ function InspectionWorkbenchPanel({
       },
     };
     try {
-      const resp = await fetch(`/api/projects/${projectId}/parts/${mutationPartId}/annotations/${lineId}`, {
+      const resp = await fetchInspectionResource(readOnly, `/api/projects/${projectId}/parts/${mutationPartId}/annotations/${lineId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -7293,6 +7361,7 @@ function InspectionWorkbenchPanel({
   };
 
   const updateBoxAnnotationGeometry = async (boxId, nextBox) => {
+    if (readOnly) return null;
     if (!selectedPart?.id || !boxId || !isFiniteAnnotationBox(nextBox)) return null;
     const mutationPartId = String(selectedPart.id);
     const mutationScope = `${projectId}:${mutationPartId}`;
@@ -7337,7 +7406,7 @@ function InspectionWorkbenchPanel({
       },
     };
     try {
-      const resp = await fetch(`/api/projects/${projectId}/parts/${mutationPartId}/annotations/${boxId}`, {
+      const resp = await fetchInspectionResource(readOnly, `/api/projects/${projectId}/parts/${mutationPartId}/annotations/${boxId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -7357,6 +7426,7 @@ function InspectionWorkbenchPanel({
   };
 
   const deleteMeasurementAnnotation = async (lineId) => {
+    if (readOnly) return;
     if (!selectedPart?.id || !lineId) return;
     const mutationPartId = String(selectedPart.id);
     const mutationScope = `${projectId}:${mutationPartId}`;
@@ -7367,7 +7437,7 @@ function InspectionWorkbenchPanel({
       return;
     }
     try {
-      const resp = await fetch(`/api/projects/${projectId}/parts/${mutationPartId}/annotations/${lineId}`, {
+      const resp = await fetchInspectionResource(readOnly, `/api/projects/${projectId}/parts/${mutationPartId}/annotations/${lineId}`, {
         method: 'DELETE',
       });
       if (!resp.ok) throw new Error(`Failed to delete measurement annotation (${resp.status})`);
@@ -7386,6 +7456,7 @@ function InspectionWorkbenchPanel({
   };
 
   const createCropChildImage = async ({ parentImageId, cropBox, cropAnnotationId = '', title = '' }) => {
+    if (readOnly) return null;
     if (!selectedPart?.id || !parentImageId || !isFiniteAnnotationBox(cropBox)) return null;
     const parentImage = projectImageLookup[parentImageId] || {};
     const parentFilename = parentImage.filename || parentImageId || 'image';
@@ -7443,13 +7514,13 @@ function InspectionWorkbenchPanel({
       const formData = new FormData();
       formData.append('file', blob, cropFilename);
       formData.append('metadata', JSON.stringify(metadata));
-      const uploadResp = await fetch(`/api/projects/${projectId}/images`, {
+      const uploadResp = await fetchInspectionResource(readOnly, `/api/projects/${projectId}/images`, {
         method: 'POST',
         body: formData,
       });
       if (!uploadResp.ok) throw new Error(`Failed to upload cropped image (${uploadResp.status})`);
       const createdImage = await uploadResp.json();
-      const assignResp = await fetch(`/api/projects/${projectId}/parts/image-assignments`, {
+      const assignResp = await fetchInspectionResource(readOnly, `/api/projects/${projectId}/parts/image-assignments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filename: createdImage.filename || cropFilename, to_part_id: selectedPart.id }),
@@ -7499,6 +7570,7 @@ function InspectionWorkbenchPanel({
   };
 
   const cropBoxAnnotation = async (annotation) => {
+    if (readOnly) return;
     if (!selectedPart?.id || !annotation?.id || !isBoundingBoxAnnotation(annotation)) return;
     const cropBox = getAnnotationCropBox(annotation);
     if (!cropBox) return;
@@ -7518,6 +7590,7 @@ function InspectionWorkbenchPanel({
   };
 
   const updateCropChildSubtitle = async (entry, subtitle) => {
+    if (readOnly) return;
     if (!selectedPart?.id || !entry?.cropChild) return;
     const imageKey = String(entry.imageId || entry.imageRef || entry.filename || '');
     setParts((prev) => prev.map((part) => {
@@ -7535,7 +7608,7 @@ function InspectionWorkbenchPanel({
       };
     }));
     try {
-      const resp = await fetch(`/api/projects/${projectId}/parts/${selectedPart.id}/source-images/${encodeURIComponent(imageKey)}`, {
+      const resp = await fetchInspectionResource(readOnly, `/api/projects/${projectId}/parts/${selectedPart.id}/source-images/${encodeURIComponent(imageKey)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ crop_subtitle: subtitle }),
@@ -7552,6 +7625,43 @@ function InspectionWorkbenchPanel({
     const mutationScope = `${projectId}:${mutationPartId}`;
     const mutationGeneration = activePartMutationGeneration;
     const hidden = !visible;
+    if (readOnly) {
+      if (item.source.resource === 'annotation') {
+        setAnnotations((prev) => prev.map((annotation) => (
+          String(annotation.id) === String(item.source.resourceId)
+            ? { ...annotation, hidden }
+            : annotation
+        )));
+        setSegmentationSegments((prev) => prev.map((segment) => (
+          [segment.id, segment.annotationId].some(
+            (candidate) => String(candidate) === String(item.source.resourceId),
+          )
+            ? { ...segment, visible }
+            : segment
+        )));
+      } else if (item.source.resource === 'source_image') {
+        setParts((prev) => prev.map((part) => {
+          if (String(part.id) !== mutationPartId) return part;
+          const sourceImages = Array.isArray(part.metadata?.source_images)
+            ? part.metadata.source_images
+            : [];
+          return {
+            ...part,
+            metadata: {
+              ...(part.metadata || {}),
+              source_images: sourceImages.map((entry) => (
+                [entry?.image_id, entry?.filename].some(
+                  (candidate) => String(candidate) === String(item.source.resourceId),
+                )
+                  ? { ...entry, hidden }
+                  : entry
+              )),
+            },
+          };
+        }));
+      }
+      return;
+    }
     if (item.source.resource === 'annotation') {
       if (item.kind === 'vista_segment') {
         const segment = segmentationSegments.find((candidate) => (
@@ -7566,7 +7676,8 @@ function InspectionWorkbenchPanel({
         }
       }
       try {
-        const resp = await fetch(
+        const resp = await fetchInspectionResource(
+          readOnly,
           `/api/projects/${projectId}/parts/${mutationPartId}/annotations/${encodeURIComponent(String(item.source.resourceId))}`,
           {
             method: 'PATCH',
@@ -7589,7 +7700,8 @@ function InspectionWorkbenchPanel({
     }
     if (item.source.resource === 'source_image') {
       try {
-        const resp = await fetch(
+        const resp = await fetchInspectionResource(
+          readOnly,
           `/api/projects/${projectId}/parts/${mutationPartId}/source-images/${encodeURIComponent(String(item.source.resourceId))}`,
           {
             method: 'PATCH',
@@ -8096,7 +8208,7 @@ function InspectionWorkbenchPanel({
                   type="button"
                   className="btn btn-secondary btn-sm"
                   onClick={openSegmentationHelper}
-                  disabled={!selectedPart}
+                  disabled={!selectedPart || readOnly}
                 >
                   Segmentation Helpers
                 </button>
@@ -8264,7 +8376,7 @@ function InspectionWorkbenchPanel({
                           selectedAnnotationId,
                           opacityMultiplier: annotationOpacityMultiplier,
                         })}
-                        {mprSliceLines.map((line) => {
+	                        {!readOnly && mprSliceLines.map((line) => {
                           const endpointPositions = getMeasurementEndpointViewBoxPosition(line);
                           const isSelected = String(selectedAnnotationId || '') === String(line.id || '');
                           return (
@@ -8320,7 +8432,7 @@ function InspectionWorkbenchPanel({
                             </g>
                           );
                         })}
-                        {mprEditableSliceBoxes.map((box) => {
+	                        {!readOnly && mprEditableSliceBoxes.map((box) => {
                           const cornerPositions = getAnnotationBoxCornerViewBoxPosition(box);
                           const isSelected = String(selectedAnnotationId || '') === String(box.id || '');
                           return (
@@ -8856,13 +8968,15 @@ function InspectionWorkbenchPanel({
                             aria-label={`Subtitle for ${entry.label || 'crop child image'}`}
                             placeholder="Add subtitle (e.g. Feature 1)"
                             value={entry.cropSubtitle || ''}
+                            disabled={readOnly}
+                            readOnly={readOnly}
                             onClick={(event) => event.stopPropagation()}
                             onKeyDown={(event) => event.stopPropagation()}
                             onChange={(event) => updateCropChildSubtitle(entry, event.target.value)}
                           />
                         )}
                       </div>
-                      {entry.overlay && entry.imageId && (
+                      {!readOnly && entry.overlay && entry.imageId && (
                         <button
                           type="button"
                           className="inspection-overlay-delete"
@@ -8918,7 +9032,7 @@ function InspectionWorkbenchPanel({
 	                          <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 ${tileOverlayWidth} ${tileOverlayHeight}`} preserveAspectRatio="xMidYMid meet" aria-label="tile measurement overlay">
 	                            <g transform={`scale(${tileOverlayWidth / 1000} ${tileOverlayHeight / 1000})`}>
 	                              {renderAnnotationOverlay({ measurementLines: [...tileMeasurementLines, ...tilePreviewLines], boxes: [...tileBoxes, ...tilePreviewBoxes], fontSize: 30, selectedAnnotationId, opacityMultiplier: annotationOpacityMultiplier })}
-                                  {renderTileAnnotationEditingTargets({
+                                  {!readOnly && renderTileAnnotationEditingTargets({
                                     measurementLines: tileMeasurementLines,
                                     boxes: tileBoxes,
                                     selectedAnnotationId,
@@ -8963,7 +9077,7 @@ function InspectionWorkbenchPanel({
 	                          <svg className="inspection-fullscreen-measurement-overlay" viewBox={`0 0 ${tileOverlayWidth} ${tileOverlayHeight}`} preserveAspectRatio="xMidYMid meet" aria-label="tile measurement overlay">
 	                            <g transform={`scale(${tileOverlayWidth / 1000} ${tileOverlayHeight / 1000})`}>
 	                              {renderAnnotationOverlay({ measurementLines: [...tileMeasurementLines, ...tilePreviewLines], boxes: [...tileBoxes, ...tilePreviewBoxes], fontSize: 30, selectedAnnotationId, opacityMultiplier: annotationOpacityMultiplier })}
-                                  {renderTileAnnotationEditingTargets({
+                                  {!readOnly && renderTileAnnotationEditingTargets({
                                     measurementLines: tileMeasurementLines,
                                     boxes: tileBoxes,
                                     selectedAnnotationId,
@@ -9031,7 +9145,7 @@ function InspectionWorkbenchPanel({
 	          </span>
 	        </label>
 	        <p className="muted">For selected part: {selectedPart?.serial_number || 'No part selected'}</p>
-	        <div className="annotation-tool-buttons" aria-label="Annotation tools">
+	        {!readOnly && <div className="annotation-tool-buttons" aria-label="Annotation tools">
 	          <button
 	            type="button"
 	            className={`btn btn-secondary ${annotationToolMode === 'measure' ? 'active' : ''}`}
@@ -9083,7 +9197,7 @@ function InspectionWorkbenchPanel({
 	          >
 	            Other
 	          </button>
-	        </div>
+	        </div>}
 	        {annotationToolMode === 'measure' && (
 	          <p className="muted annotation-tool-hint">
 	            Click two points {projectType === 'PT3' ? 'on an MPR slice' : 'on a tile'} to place a measurement line.
@@ -9115,6 +9229,7 @@ function InspectionWorkbenchPanel({
               imageId={tileCalibrationPromptImageId}
               image={projectImageLookup[tileCalibrationPromptImageId]}
               onCalibrationChange={handleTileCalibrationChange}
+              readOnly={readOnly}
             />
           </div>
         )}
@@ -9188,7 +9303,7 @@ function InspectionWorkbenchPanel({
                     >
                       {item.visible ? 'Hide' : 'Show'}
                     </button>
-                    {projectType !== 'PT3' && isAnnotation && isBoundingBoxAnnotation(annotation) && (
+                    {!readOnly && projectType !== 'PT3' && isAnnotation && isBoundingBoxAnnotation(annotation) && (
                       <button
                         type="button"
                         className="annotation-entry-crop"
@@ -9203,7 +9318,7 @@ function InspectionWorkbenchPanel({
                         {croppingAnnotationId === annotation.id ? 'Cropping…' : 'Crop'}
                       </button>
                     )}
-                    {isAnnotation && (
+                    {!readOnly && isAnnotation && (
                       <button
                         type="button"
                         className="annotation-entry-edit"
@@ -9233,7 +9348,7 @@ function InspectionWorkbenchPanel({
                         Edit
                       </button>
                     )}
-                    {isAnnotation && (
+                    {!readOnly && isAnnotation && (
                       <button
                         type="button"
                         className="annotation-entry-delete"
@@ -9287,7 +9402,7 @@ function InspectionWorkbenchPanel({
 	  };
 
 	  const renderOtherAnnotationModal = () => {
-	    if (!otherAnnotationModalVisible) return null;
+	    if (readOnly || !otherAnnotationModalVisible) return null;
 	    return (
 	      <div className="modal" style={{ display: 'flex' }} onClick={() => setOtherAnnotationModalVisible(false)}>
 	        <div className="modal-content workbench-utility-modal other-annotation-modal" role="dialog" aria-label="Other annotation" onClick={(event) => event.stopPropagation()}>
@@ -9376,6 +9491,7 @@ function InspectionWorkbenchPanel({
 
 
   const updateAnnotationFromModal = async () => {
+    if (readOnly) return;
     const selected = annotations.find((annotation) => annotation.id === selectedAnnotationId);
     if (!selected || !selectedPart?.id) return;
     const mutationPartId = String(selectedPart.id);
@@ -9385,7 +9501,7 @@ function InspectionWorkbenchPanel({
     const fillOpacity = clampRange(Number(draft.fill_opacity), 0, 1, getAnnotationFillOpacity(selected));
     const color = getAnnotationColor({ metadata: { annotation_color: draft.color } }, getAnnotationColor(selected));
     try {
-      const resp = await fetch(`/api/projects/${projectId}/parts/${mutationPartId}/annotations/${selected.id}`, {
+      const resp = await fetchInspectionResource(readOnly, `/api/projects/${projectId}/parts/${mutationPartId}/annotations/${selected.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -9414,7 +9530,7 @@ function InspectionWorkbenchPanel({
   };
 
   const renderAnnotationEditModal = () => {
-    if (!annotationEditModalVisible) return null;
+    if (readOnly || !annotationEditModalVisible) return null;
     const selected = annotations.find((annotation) => annotation.id === selectedAnnotationId);
     if (!selected) return null;
     const draft = annotationEditDraft || {
@@ -9501,7 +9617,7 @@ function InspectionWorkbenchPanel({
   };
 
   const renderSegmentationHelperModal = () => {
-    if (!segmentationHelperOpen) return null;
+    if (readOnly || !segmentationHelperOpen) return null;
     const axis = MPR_AXES.includes(segmentationHelperAxis) ? segmentationHelperAxis : 'axial';
     const dimensions = getMprAxisImageDimensions(axis, mprDimensions, volumeCacheState.cache);
     const canonicalSliceIndex = getSegmentationCanonicalSliceIndex(
@@ -10387,21 +10503,21 @@ function InspectionWorkbenchPanel({
             <>
               <button
                 className="btn btn-success"
-                disabled={savingPartId === selectedPart.id}
+                disabled={readOnly || savingPartId === selectedPart.id}
                 onClick={() => updatePartReviewState(selectedPart, 'pass')}
               >
                 Pass
               </button>
               <button
                 className="btn btn-secondary"
-                disabled={savingPartId === selectedPart.id}
+                disabled={readOnly || savingPartId === selectedPart.id}
                 onClick={() => updatePartReviewState(selectedPart, 'unreviewed')}
               >
                 Reset
               </button>
               <button
                 className="btn btn-danger"
-                disabled={savingPartId === selectedPart.id}
+                disabled={readOnly || savingPartId === selectedPart.id}
                 onClick={() => updatePartReviewState(selectedPart, 'reject_confirmed')}
               >
                 Reject
@@ -10524,6 +10640,7 @@ function InspectionWorkbenchPanel({
   };
 
   const startTileAnnotationGeometryDrag = (event, kind, operation, geometry, imageId) => {
+    if (readOnly) return;
     if (
       !geometry?.id
       || (event.button !== undefined && event.button !== 0)
@@ -10600,6 +10717,7 @@ function InspectionWorkbenchPanel({
   };
 
   const finishTileAnnotationGeometryDrag = async (event, { cancel = false } = {}) => {
+    if (readOnly) return;
     const drag = tileAnnotationGeometryDragRef.current;
     if (!drag || (
       drag.pointerId !== undefined
@@ -10674,6 +10792,7 @@ function InspectionWorkbenchPanel({
   };
 
 	  const handleTileAnnotationPointerDown = (event, imageId) => {
+	    if (readOnly) return false;
 	    if (!annotationToolMode) return false;
 	    event.preventDefault();
 	    event.stopPropagation();
@@ -10707,6 +10826,7 @@ function InspectionWorkbenchPanel({
 	  };
 
 	  const handleTileBoxPointerDown = (event, imageId) => {
+	    if (readOnly) return false;
 	    if (!['box', 'crop'].includes(annotationToolMode)) return false;
 	    if (event.button !== undefined && event.button !== 0) return false;
 	    event.preventDefault();
@@ -10725,6 +10845,7 @@ function InspectionWorkbenchPanel({
 	  };
 
 	  const handleTileBoxPointerUp = (event, imageId) => {
+	    if (readOnly) return false;
 	    if (!['box', 'crop'].includes(annotationToolMode)) return false;
 	    event.preventDefault();
 	    event.stopPropagation();
@@ -10807,6 +10928,7 @@ function InspectionWorkbenchPanel({
 	  };
 
   const handleMprAnnotationPointerDown = (event, axis) => {
+    if (readOnly) return false;
     if (!['measure', 'box', 'cube'].includes(annotationToolMode)) return false;
     if (event.button !== undefined && event.button !== 0) return false;
     event.preventDefault();
@@ -10903,6 +11025,7 @@ function InspectionWorkbenchPanel({
   };
 
   const handleMprAnnotationPointerUp = (event, axis) => {
+    if (readOnly) return false;
     if (!['box', 'cube'].includes(annotationToolMode)) return false;
     event.preventDefault();
     event.stopPropagation();
@@ -10988,6 +11111,7 @@ function InspectionWorkbenchPanel({
   };
 
   const startMprAnnotationGeometryDrag = (event, kind, operation, geometry, axis, sliceIndex) => {
+    if (readOnly) return;
     if (
       annotationToolMode
       || !geometry?.id
@@ -11062,6 +11186,7 @@ function InspectionWorkbenchPanel({
   };
 
   const finishMprAnnotationGeometryDrag = async (event, { cancel = false } = {}) => {
+    if (readOnly) return;
     const drag = mprAnnotationGeometryDragRef.current;
     if (!drag || (
       drag.pointerId !== undefined
@@ -11187,6 +11312,7 @@ function InspectionWorkbenchPanel({
 	  };
 
   const toggleFullscreenMeasure = () => {
+    if (readOnly) return;
     if (fullscreenMeasureActive) {
       setFullscreenMeasureActive(false);
       setPendingMeasurePoint(null);
@@ -11211,6 +11337,7 @@ function InspectionWorkbenchPanel({
 	  };
 
 	  const toggleFullscreenBox = () => {
+	    if (readOnly) return;
 	    if (fullscreenBoxActive || fullscreenCropActive) {
 	      setFullscreenBoxActive(false);
 	      setPendingBoxPoint(null);
@@ -11232,6 +11359,7 @@ function InspectionWorkbenchPanel({
 	  };
 
   const toggleFullscreenCrop = () => {
+    if (readOnly) return;
     if (fullscreenCropActive) {
       setFullscreenCropActive(false);
       setPendingBoxPoint(null);
@@ -11254,6 +11382,7 @@ function InspectionWorkbenchPanel({
   };
 
 	  const commitFullscreenBox = async (box) => {
+	    if (readOnly) return null;
 	    if (isFiniteAnnotationBox(box)) {
 	      if (!requireCalibrationForAnnotation(fullscreenBackingImageId, { surface: 'fullscreen', toolMode: 'box' })) {
 	        setPendingBoxPoint(null);
@@ -11288,6 +11417,7 @@ function InspectionWorkbenchPanel({
 	  };
 
   const commitFullscreenMeasureLine = async (line) => {
+    if (readOnly) return null;
     if (!line) return;
     if (!getCalibrationForImage(getAnnotationSourceImageIdForImage(fullscreenBackingImageId))) {
       setPendingMeasurePoint(null);
@@ -11331,6 +11461,7 @@ function InspectionWorkbenchPanel({
 	  };
 
   const handleFullscreenMeasurePointerDown = async (event) => {
+    if (readOnly) return;
     if (event.button !== undefined && event.button !== 0) return;
     const position = getFullscreenImagePointerPosition(event);
     if (!position) return;
@@ -11391,6 +11522,7 @@ function InspectionWorkbenchPanel({
   };
 
   const handleFullscreenMeasurePointerUp = async (event) => {
+    if (readOnly) return;
     if (!fullscreenMeasureActive) return;
     const firstPoint = pendingMeasurePointRef.current || pendingMeasurePoint;
     if (!firstPoint) return;
@@ -11421,6 +11553,7 @@ function InspectionWorkbenchPanel({
   };
 
 	  const handleFullscreenBoxPointerDown = (event) => {
+	    if (readOnly) return;
 	    if (!fullscreenBoxActive && !fullscreenCropActive) return;
 	    if (event.button !== undefined && event.button !== 0) return;
 	    const position = getFullscreenImagePointerPosition(event);
@@ -11440,6 +11573,7 @@ function InspectionWorkbenchPanel({
 	  };
 
 	  const handleFullscreenBoxPointerUp = async (event) => {
+	    if (readOnly) return;
 	    if (!fullscreenBoxActive && !fullscreenCropActive) return;
 	    const position = getFullscreenImagePointerPosition(event);
 	    event.preventDefault();
@@ -11575,6 +11709,7 @@ function InspectionWorkbenchPanel({
   };
 
   const startFullscreenAnnotationDrag = (event, kind, operation, geometry) => {
+    if (readOnly) return;
     if (!geometry?.id || (event.button !== undefined && event.button !== 0)) return;
     const position = getFullscreenGeometryPointerPosition(event, geometry);
     if (!position) return;
@@ -11630,6 +11765,7 @@ function InspectionWorkbenchPanel({
   };
 
   const finishFullscreenAnnotationDrag = async (event, { cancel = false } = {}) => {
+    if (readOnly) return;
     const drag = fullscreenAnnotationDragRef.current;
     if (!drag || (event.pointerId !== undefined && drag.pointerId !== event.pointerId)) return;
     event.preventDefault();
@@ -11644,6 +11780,7 @@ function InspectionWorkbenchPanel({
   };
 
 	  const startFullscreenEndpointEdit = (event, line, endpoint) => {
+	    if (readOnly) return;
 	    event.preventDefault();
 	    event.stopPropagation();
     if (String(fullscreenBoundsEditAnnotationId || '') !== String(line?.id || '')) return;
@@ -11661,6 +11798,7 @@ function InspectionWorkbenchPanel({
   };
 
   const handleFullscreenEndpointDotClick = (event, line, endpoint) => {
+    if (readOnly) return;
     event.preventDefault();
     event.stopPropagation();
     if (fullscreenEditingEndpoint?.lineId) {
@@ -11671,6 +11809,7 @@ function InspectionWorkbenchPanel({
   };
 
   const startFullscreenBoxCornerEdit = (event, box, corner) => {
+    if (readOnly) return;
     event.preventDefault();
     event.stopPropagation();
     if (String(fullscreenBoundsEditAnnotationId || '') !== String(box?.id || '')) return;
@@ -11686,6 +11825,7 @@ function InspectionWorkbenchPanel({
   };
 
   const handleFullscreenBoxCornerDotClick = (event, box, corner) => {
+    if (readOnly) return;
     event.preventDefault();
     event.stopPropagation();
     if (fullscreenEditingBoxCorner?.boxId) {
@@ -11903,17 +12043,17 @@ function InspectionWorkbenchPanel({
 	                />
 	                Show annotations
 	              </label>
-	              <button type="button" className={`btn btn-secondary ${fullscreenMeasureActive ? 'active' : ''}`} onClick={toggleFullscreenMeasure}>
+	              <button type="button" className={`btn btn-secondary ${fullscreenMeasureActive ? 'active' : ''}`} disabled={readOnly} onClick={toggleFullscreenMeasure}>
 	                {fullscreenMeasureActive ? 'Done Measuring' : 'Measure'}
 	              </button>
                   <button type="button" className="btn btn-secondary" onClick={() => setFullscreenImageZoom({ scale: 1, originX: 50, originY: 50, panX: 0, panY: 0 })}>
                     Reset zoom
                   </button>
-	              <button type="button" className={`btn btn-secondary ${fullscreenBoxActive ? 'active' : ''}`} onClick={toggleFullscreenBox}>
+	              <button type="button" className={`btn btn-secondary ${fullscreenBoxActive ? 'active' : ''}`} disabled={readOnly} onClick={toggleFullscreenBox}>
 	                Draw box
 	              </button>
                   {!isMprFullscreen && (
-                    <button type="button" className={`btn btn-secondary ${fullscreenCropActive ? 'active' : ''}`} onClick={toggleFullscreenCrop}>
+	                    <button type="button" className={`btn btn-secondary ${fullscreenCropActive ? 'active' : ''}`} disabled={readOnly} onClick={toggleFullscreenCrop}>
                       New Crop
                     </button>
                   )}
@@ -11931,6 +12071,7 @@ function InspectionWorkbenchPanel({
                 imageId={fullscreenImageId}
                 image={fullscreenImageRecord}
                 onCalibrationChange={handleFullscreenCalibrationChange}
+                readOnly={readOnly}
               />
             </div>
           )}
@@ -12030,7 +12171,7 @@ function InspectionWorkbenchPanel({
                           >
                             {getMeasurementLineLabel(line)}
                           </text>
-                          {line.id !== 'fullscreen-measure-preview' && (
+	                          {!readOnly && line.id !== 'fullscreen-measure-preview' && (
                             <line
                               className="inspection-annotation-drag-target"
                               x1={(line.x1 / line.imageWidth) * 1000}
@@ -12046,7 +12187,7 @@ function InspectionWorkbenchPanel({
                               onPointerCancel={(event) => finishFullscreenAnnotationDrag(event, { cancel: true })}
                             />
                           )}
-                          {endpointActive && ['start', 'end'].map((endpoint) => (
+                          {!readOnly && endpointActive && ['start', 'end'].map((endpoint) => (
                             <circle
                               key={endpoint}
                               className="inspection-measurement-endpoint-dot"
@@ -12092,13 +12233,13 @@ function InspectionWorkbenchPanel({
                             width={(box.width / box.imageWidth) * 1000}
                             height={(box.height / box.imageHeight) * 1000}
                             fill="transparent"
-                            pointerEvents="all"
+                            pointerEvents={readOnly ? 'none' : 'all'}
                             onPointerDown={(event) => startFullscreenAnnotationDrag(event, 'box', 'translate', box)}
                             onPointerMove={handleFullscreenAnnotationDragMove}
                             onPointerUp={finishFullscreenAnnotationDrag}
                             onPointerCancel={(event) => finishFullscreenAnnotationDrag(event, { cancel: true })}
                           />
-                          {cornerActive && Object.entries(cornerPositions).map(([corner, point]) => (
+                          {!readOnly && cornerActive && Object.entries(cornerPositions).map(([corner, point]) => (
                             <circle
                               key={corner}
                               className="inspection-box-corner-dot"
@@ -12176,7 +12317,7 @@ function InspectionWorkbenchPanel({
 	                          onClick={() => {
 	                            if (inspectionItem?.source.resource === 'annotation') {
 	                              setSelectedAnnotationId(annotation.id);
-	                              if (['measurement', 'box'].includes(annotation.annotationType)) {
+	                              if (!readOnly && ['measurement', 'box'].includes(annotation.annotationType)) {
 	                                setFullscreenBoundsEditAnnotationId(annotation.id);
 	                              }
 	                            }
@@ -12199,7 +12340,7 @@ function InspectionWorkbenchPanel({
 	                            {itemVisible ? 'Hide' : 'Show'}
 	                          </button>
 	                        )}
-	                        {projectType !== 'PT3' && annotation.annotationType === 'box' && !isMprFullscreen && (
+	                        {!readOnly && projectType !== 'PT3' && annotation.annotationType === 'box' && !isMprFullscreen && (
 	                          <button
 	                            type="button"
 	                            className="inspection-fullscreen-annotation-crop"
@@ -12213,7 +12354,7 @@ function InspectionWorkbenchPanel({
 	                            {croppingAnnotationId === annotation.id ? '…' : 'Crop'}
 	                          </button>
 	                        )}
-	                        {inspectionItem?.source.resource !== 'source_image' && (
+	                        {!readOnly && inspectionItem?.source.resource !== 'source_image' && (
 	                          <button
 	                            type="button"
 	                            className="inspection-fullscreen-annotation-delete"
@@ -12264,21 +12405,21 @@ function InspectionWorkbenchPanel({
                     <div className="workbench-detail-actions">
                       <button
                         className="btn btn-success"
-                        disabled={savingPartId === selectedPart.id}
+                        disabled={readOnly || savingPartId === selectedPart.id}
                         onClick={() => updatePartReviewState(selectedPart, 'pass')}
                       >
                         Pass
                       </button>
                       <button
                         className="btn btn-secondary"
-                        disabled={savingPartId === selectedPart.id}
+                        disabled={readOnly || savingPartId === selectedPart.id}
                         onClick={() => updatePartReviewState(selectedPart, 'unreviewed')}
                       >
                         Reset
                       </button>
                       <button
                         className="btn btn-danger"
-                        disabled={savingPartId === selectedPart.id}
+                        disabled={readOnly || savingPartId === selectedPart.id}
                         onClick={() => updatePartReviewState(selectedPart, 'reject_confirmed')}
                       >
                         Reject

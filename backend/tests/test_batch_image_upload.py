@@ -153,6 +153,62 @@ def test_batch_upload_authorizes_and_commits_once_preserving_client_order_and_gr
     assert invalidations == [f"project_images:{project_id}"]
 
 
+def test_batch_upload_materializes_response_before_commit_without_cleanup(
+    client,
+    monkeypatch,
+):
+    project_id = _create_project(client, name="Batch immutable response")
+    original_commit = images_router._commit_database_transaction
+    original_refresh = AsyncSession.refresh
+    commit_finished = False
+    uploaded_objects = []
+    deleted_objects = []
+
+    async def track_upload(*, object_name, **_kwargs):
+        uploaded_objects.append(object_name)
+        return True
+
+    def track_delete(_bucket, object_storage_key):
+        deleted_objects.append(object_storage_key)
+        return True
+
+    async def commit_and_expire(session):
+        nonlocal commit_finished
+        await original_commit(session)
+        session.expire_all()
+        commit_finished = True
+
+    async def reject_post_commit_refresh(session, *args, **kwargs):
+        if commit_finished:
+            raise AssertionError("batch response must not refresh after commit")
+        return await original_refresh(session, *args, **kwargs)
+
+    def reject_orm_serialization(_db_image):
+        raise AssertionError("batch response must use pre-commit scalar values")
+
+    monkeypatch.setattr(images_router, "upload_file_to_s3", track_upload)
+    monkeypatch.setattr(images_router, "delete_file_from_s3", track_delete)
+    monkeypatch.setattr(images_router, "_commit_database_transaction", commit_and_expire)
+    monkeypatch.setattr(AsyncSession, "refresh", reject_post_commit_refresh)
+    monkeypatch.setattr(images_router, "to_data_instance_schema", reject_orm_serialization)
+
+    response = _batch_request(
+        client,
+        project_id,
+        [("source.png", _image_bytes(marker=b"known"), "image/png")],
+        [_manifest_entry(7, "materialized.png", marker="known-values")],
+    )
+
+    assert response.status_code == 201, response.text
+    uploaded = response.json()["uploaded"]
+    assert [item["client_index"] for item in uploaded] == [7]
+    assert uploaded[0]["image"]["filename"] == "materialized.png"
+    assert uploaded[0]["image"]["metadata"]["marker"] == "known-values"
+    assert uploaded[0]["image"]["created_at"]
+    assert len(uploaded_objects) == 1
+    assert deleted_objects == []
+
+
 def test_batch_upload_s3_concurrency_is_capped_at_six(client, monkeypatch):
     project_id = _create_project(client, name="Concurrency")
     active = 0

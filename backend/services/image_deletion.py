@@ -7,6 +7,7 @@ project metadata, and deletion audit events.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -15,16 +16,19 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core import models
+from core import models, schemas
 import utils.crud as crud
+from utils.serialization import to_data_instance_schema
+from utils.transactions import commit_database_transaction
 
 
 StorageDelete = Callable[[str, str], Awaitable[bool]]
+FORCE_DELETE_PENDING_ACTION = "force_delete_pending"
 
 
 @dataclass(frozen=True, slots=True)
 class ImageDeletionOutcome:
-    image: models.DataInstance
+    image: schemas.DataInstance
     soft_deleted_now: bool
     storage_deleted_now: bool
     project_metadata_removed: int
@@ -43,8 +47,76 @@ class ImagePermanentlyDeleted(RuntimeError):
     """A restore was requested after permanent storage deletion."""
 
 
+class ImageStorageDeletionPending(RuntimeError):
+    """A restore was requested while permanent deletion needs reconciliation."""
+
+
 class ImageRetentionExpired(RuntimeError):
     """A restore was requested after its retention deadline."""
+
+
+async def _delete_storage_to_completion(
+    *,
+    delete_storage: StorageDelete,
+    storage_bucket: str,
+    storage_object_key: str,
+) -> tuple[bool, asyncio.CancelledError | None]:
+    """Wait for an irreversible storage request even if its caller is cancelled.
+
+    Object-store clients generally cannot cancel an already-running blocking
+    delete.  Shielding the task lets this service observe the definitive result
+    and publish it to the database before propagating request cancellation.
+    """
+
+    storage_task = asyncio.create_task(
+        delete_storage(storage_bucket, storage_object_key)
+    )
+    request_cancellation: asyncio.CancelledError | None = None
+    try:
+        storage_deleted = await asyncio.shield(storage_task)
+    except asyncio.CancelledError as exc:
+        if storage_task.cancelled():
+            raise
+        request_cancellation = exc
+        while not storage_task.done():
+            try:
+                await asyncio.shield(storage_task)
+            except asyncio.CancelledError:
+                if storage_task.cancelled():
+                    raise
+                continue
+            except BaseException:
+                break
+        if storage_task.cancelled():
+            raise request_cancellation
+        try:
+            storage_deleted = storage_task.result()
+        except Exception as storage_exc:
+            raise ImageStorageDeletionFailed from storage_exc
+    except Exception as exc:
+        raise ImageStorageDeletionFailed from exc
+
+    return bool(storage_deleted), request_cancellation
+
+
+async def _get_force_delete_pending_event(
+    *,
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    image_id: uuid.UUID,
+) -> models.ImageDeletionEvent | None:
+    result = await db.execute(
+        select(models.ImageDeletionEvent)
+        .where(
+            models.ImageDeletionEvent.project_id == project_id,
+            models.ImageDeletionEvent.image_id == image_id,
+            models.ImageDeletionEvent.action == FORCE_DELETE_PENDING_ACTION,
+        )
+        .order_by(models.ImageDeletionEvent.id.asc())
+        .limit(1)
+        .with_for_update()
+    )
+    return result.scalar_one_or_none()
 
 
 def _candidate_project_metadata_keys(metadata: Any) -> set[str]:
@@ -331,20 +403,21 @@ async def _stage_soft_delete(
 def _log_soft_delete_side_effects(
     *,
     project_id: uuid.UUID,
-    image: models.DataInstance,
+    image_id: uuid.UUID,
+    image_filename: str,
     actor_email: str,
-    removed_metadata: list[models.ProjectMetadata],
-    updated_parts: list[models.InspectionPart],
+    removed_metadata: list[tuple[uuid.UUID, str]],
+    updated_parts_count: int,
 ) -> None:
-    for metadata in removed_metadata:
+    for metadata_id, metadata_key in removed_metadata:
         crud.log_db_operation(
             "DELETE",
             "project_metadata",
-            metadata.id,
+            metadata_id,
             actor_email,
-            {"key": metadata.key, "project_id": str(project_id)},
+            {"key": metadata_key, "project_id": str(project_id)},
         )
-    if updated_parts:
+    if updated_parts_count:
         crud.log_db_operation(
             "UPDATE",
             "inspection_parts",
@@ -352,9 +425,9 @@ def _log_soft_delete_side_effects(
             actor_email,
             {
                 "action": "remove_image_references",
-                "filename": image.filename,
-                "image_id": str(image.id),
-                "parts_updated": len(updated_parts),
+                "filename": image_filename,
+                "image_id": str(image_id),
+                "parts_updated": updated_parts_count,
             },
         )
 
@@ -381,8 +454,11 @@ async def delete_authorized_image(
 
     soft_deleted_now = False
     storage_deleted_now = False
-    removed_metadata: list[models.ProjectMetadata] = []
-    updated_parts: list[models.InspectionPart] = []
+    removed_metadata_count = 0
+    updated_parts_count = 0
+    phase_one_removed_metadata_log: list[tuple[uuid.UUID, str]] = []
+    phase_one_image_id = image_id
+    phase_one_image_filename = ""
 
     try:
         image = await _get_locked_image(
@@ -401,9 +477,51 @@ async def delete_authorized_image(
                 retention_days=retention_days,
                 now=datetime.now(timezone.utc),
             )
+            phase_one_removed_metadata_log = [
+                (metadata.id, metadata.key)
+                for metadata in removed_metadata
+            ]
+            removed_metadata_count = len(removed_metadata)
+            updated_parts_count = len(updated_parts)
+        storage_already_deleted = bool(image.storage_deleted)
+        existing_force_delete_pending = None
+        if force and not storage_already_deleted:
+            existing_force_delete_pending = (
+                await _get_force_delete_pending_event(
+                    db=db,
+                    project_id=project_id,
+                    image_id=image_id,
+                )
+            )
+        force_delete_pending_now = bool(
+            force
+            and not storage_already_deleted
+            and existing_force_delete_pending is None
+        )
+        if force_delete_pending_now:
+            # This audit row is a durable pre-I/O intent marker. It blocks
+            # restore until a confirmed storage result is published, without
+            # claiming that permanent deletion has already completed.
+            _add_deletion_event(
+                db=db,
+                image=image,
+                actor_user_id=actor_user_id,
+                action=FORCE_DELETE_PENDING_ACTION,
+                reason=reason,
+                previous_state={"storage_delete_pending": True},
+            )
+        if soft_deleted_now or force_delete_pending_now:
             await db.flush()
             await db.refresh(image)
-        await db.commit()
+        phase_one_image = to_data_instance_schema(image)
+        phase_one_image_id = image.id
+        phase_one_image_filename = image.filename
+        storage_object_key = image.object_storage_key
+        await commit_database_transaction(db)
+    except asyncio.CancelledError as exc:
+        if not getattr(exc, "vista_commit_succeeded", False):
+            await db.rollback()
+        raise
     except BaseException:
         await db.rollback()
         raise
@@ -411,29 +529,37 @@ async def delete_authorized_image(
     if soft_deleted_now:
         _log_soft_delete_side_effects(
             project_id=project_id,
-            image=image,
+            image_id=phase_one_image_id,
+            image_filename=phase_one_image_filename,
             actor_email=actor_email,
-            removed_metadata=removed_metadata,
-            updated_parts=updated_parts,
+            removed_metadata=phase_one_removed_metadata_log,
+            updated_parts_count=updated_parts_count,
         )
 
-    if not force or image.storage_deleted:
+    if not force or storage_already_deleted:
         return ImageDeletionOutcome(
-            image=image,
+            image=phase_one_image,
             soft_deleted_now=soft_deleted_now,
             storage_deleted_now=False,
-            project_metadata_removed=len(removed_metadata),
-            inspection_parts_updated=len(updated_parts),
+            project_metadata_removed=removed_metadata_count,
+            inspection_parts_updated=updated_parts_count,
         )
 
-    try:
-        storage_deleted = await delete_storage(
-            storage_bucket,
-            image.object_storage_key,
+    storage_deleted, storage_request_cancellation = (
+        await _delete_storage_to_completion(
+            delete_storage=delete_storage,
+            storage_bucket=storage_bucket,
+            storage_object_key=storage_object_key,
         )
-    except Exception as exc:
-        raise ImageStorageDeletionFailed from exc
+    )
     if not storage_deleted:
+        if storage_request_cancellation is not None:
+            setattr(
+                storage_request_cancellation,
+                "vista_storage_delete_succeeded",
+                False,
+            )
+            raise storage_request_cancellation
         raise ImageStorageDeletionFailed
 
     # Re-lock after external I/O. A concurrent restore may have won while the
@@ -441,6 +567,9 @@ async def delete_authorized_image(
     # this transaction so an active row can never reference missing storage.
     phase_two_removed_metadata: list[models.ProjectMetadata] = []
     phase_two_updated_parts: list[models.InspectionPart] = []
+    phase_two_removed_metadata_log: list[tuple[uuid.UUID, str]] = []
+    phase_two_image_id = image_id
+    phase_two_image_filename = phase_one_image_filename
     phase_two_soft_deleted = False
     try:
         image = await _get_locked_image(
@@ -448,6 +577,13 @@ async def delete_authorized_image(
             project_id=project_id,
             image_id=image_id,
         )
+        pending_event = await _get_force_delete_pending_event(
+            db=db,
+            project_id=project_id,
+            image_id=image_id,
+        )
+        if pending_event is not None:
+            await db.delete(pending_event)
         if not image.storage_deleted:
             if image.deleted_at is None:
                 phase_two_soft_deleted = True
@@ -462,6 +598,10 @@ async def delete_authorized_image(
                         now=datetime.now(timezone.utc),
                     )
                 )
+                phase_two_removed_metadata_log = [
+                    (metadata.id, metadata.key)
+                    for metadata in phase_two_removed_metadata
+                ]
             image.storage_deleted = True
             image.hard_deleted_at = (
                 image.hard_deleted_at or datetime.now(timezone.utc)
@@ -478,30 +618,51 @@ async def delete_authorized_image(
             storage_deleted_now = True
             await db.flush()
             await db.refresh(image)
-        await db.commit()
+        phase_two_image = to_data_instance_schema(image)
+        phase_two_image_id = image.id
+        phase_two_image_filename = image.filename
+        await commit_database_transaction(db)
+    except asyncio.CancelledError as exc:
+        if not getattr(exc, "vista_commit_succeeded", False):
+            await db.rollback()
+        raise
     except BaseException:
         await db.rollback()
         raise
 
     if phase_two_soft_deleted:
         soft_deleted_now = True
-        removed_metadata.extend(phase_two_removed_metadata)
-        updated_parts.extend(phase_two_updated_parts)
+        removed_metadata_count += len(phase_two_removed_metadata)
+        updated_parts_count += len(phase_two_updated_parts)
         _log_soft_delete_side_effects(
             project_id=project_id,
-            image=image,
+            image_id=phase_two_image_id,
+            image_filename=phase_two_image_filename,
             actor_email=actor_email,
-            removed_metadata=phase_two_removed_metadata,
-            updated_parts=phase_two_updated_parts,
+            removed_metadata=phase_two_removed_metadata_log,
+            updated_parts_count=len(phase_two_updated_parts),
         )
 
-    return ImageDeletionOutcome(
-        image=image,
+    outcome = ImageDeletionOutcome(
+        image=phase_two_image,
         soft_deleted_now=soft_deleted_now,
         storage_deleted_now=storage_deleted_now,
-        project_metadata_removed=len(removed_metadata),
-        inspection_parts_updated=len(updated_parts),
+        project_metadata_removed=removed_metadata_count,
+        inspection_parts_updated=updated_parts_count,
     )
+    if storage_request_cancellation is not None:
+        setattr(
+            storage_request_cancellation,
+            "vista_storage_delete_succeeded",
+            True,
+        )
+        setattr(
+            storage_request_cancellation,
+            "vista_force_delete_published",
+            True,
+        )
+        raise storage_request_cancellation
+    return outcome
 
 
 async def restore_authorized_image(
@@ -511,7 +672,7 @@ async def restore_authorized_image(
     image_id: uuid.UUID,
     actor_user_id: uuid.UUID | None,
     now: datetime | None = None,
-) -> models.DataInstance:
+) -> schemas.DataInstance:
     """Restore a recoverable image and append its audit event atomically."""
 
     try:
@@ -520,11 +681,21 @@ async def restore_authorized_image(
             project_id=project_id,
             image_id=image_id,
         )
-        if image.deleted_at is None:
-            await db.commit()
-            return image
         if image.storage_deleted:
             raise ImagePermanentlyDeleted
+        if (
+            await _get_force_delete_pending_event(
+                db=db,
+                project_id=project_id,
+                image_id=image_id,
+            )
+            is not None
+        ):
+            raise ImageStorageDeletionPending
+        if image.deleted_at is None:
+            response_image = to_data_instance_schema(image)
+            await commit_database_transaction(db)
+            return response_image
 
         current_time = _utc(now or datetime.now(timezone.utc))
         retention_deadline = image.pending_hard_delete_at
@@ -548,8 +719,13 @@ async def restore_authorized_image(
         )
         await db.flush()
         await db.refresh(image)
-        await db.commit()
-        return image
+        response_image = to_data_instance_schema(image)
+        await commit_database_transaction(db)
+        return response_image
+    except asyncio.CancelledError as exc:
+        if not getattr(exc, "vista_commit_succeeded", False):
+            await db.rollback()
+        raise
     except BaseException:
         await db.rollback()
         raise

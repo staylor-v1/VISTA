@@ -22,16 +22,20 @@ def _run_selector(
     pattern: str,
     index: str | int,
     total: str | int,
+    exclude_prefixes: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    arguments = [
+        "sh",
+        str(SELECTOR),
+        root,
+        pattern,
+        str(index),
+        str(total),
+    ]
+    if exclude_prefixes is not None:
+        arguments.append(exclude_prefixes)
     return subprocess.run(
-        [
-            "sh",
-            str(SELECTOR),
-            root,
-            pattern,
-            str(index),
-            str(total),
-        ],
+        arguments,
         cwd=working_directory,
         check=False,
         capture_output=True,
@@ -45,8 +49,16 @@ def _selected_paths(
     pattern: str,
     index: int,
     total: int,
+    exclude_prefixes: str | None = None,
 ) -> list[str]:
-    result = _run_selector(working_directory, root, pattern, index, total)
+    result = _run_selector(
+        working_directory,
+        root,
+        pattern,
+        index,
+        total,
+        exclude_prefixes,
+    )
     assert result.returncode == 0, result.stderr
     return result.stdout.splitlines()
 
@@ -56,9 +68,17 @@ def _all_shards(
     root: str,
     pattern: str,
     total: int,
+    exclude_prefixes: str | None = None,
 ) -> list[list[str]]:
     return [
-        _selected_paths(working_directory, root, pattern, index, total)
+        _selected_paths(
+            working_directory,
+            root,
+            pattern,
+            index,
+            total,
+            exclude_prefixes,
+        )
         for index in range(1, total + 1)
     ]
 
@@ -104,6 +124,32 @@ def test_shards_have_complete_disjoint_file_coverage(tmp_path: Path) -> None:
     _assert_complete_disjoint_partition(shards, expected)
 
 
+def test_multiple_patterns_are_deduplicated_and_prefixes_are_excluded(
+    tmp_path: Path,
+) -> None:
+    expected = {
+        "suite/test_alpha.py",
+        "suite/nested/bravo_test.py",
+        "suite/nested/test_both_test.py",
+    }
+    for relative_path in expected:
+        _write_sized_file(tmp_path / relative_path, 10)
+    _write_sized_file(tmp_path / "suite/postgres/test_database.py", 100)
+    _write_sized_file(tmp_path / "suite/load/stress_test.py", 100)
+    _write_sized_file(tmp_path / "suite/not_a_test.txt", 100)
+
+    shards = _all_shards(
+        tmp_path,
+        "suite",
+        "test_*.py,*_test.py",
+        2,
+        "postgres,load",
+    )
+
+    assert sum(len(shard) for shard in shards) == len(expected)
+    _assert_complete_disjoint_partition(shards, expected)
+
+
 def test_largest_first_assignment_balances_total_file_bytes(tmp_path: Path) -> None:
     for number, size in enumerate([80, 70, 60, 50, 40, 30, 20, 10]):
         _write_sized_file(tmp_path / "suite" / f"case-{number}.test", size)
@@ -140,6 +186,10 @@ def test_empty_match_succeeds_without_output(tmp_path: Path) -> None:
         ("suite", "*.test", 1, 0),
         ("suite", "*.test", 1, "four"),
         ("suite", "*.test", 5, 4),
+        ("suite", "*.test", 1, 65),
+        ("suite", "*.test", "01", 4),
+        ("suite", "*.test", 1, "04"),
+        ("suite", "*.test,,*.spec", 1, 4),
     ],
 )
 def test_invalid_inputs_are_rejected(
@@ -172,24 +222,78 @@ def test_wrong_argument_count_is_rejected(tmp_path: Path) -> None:
     assert "Usage:" in result.stderr
 
 
+@pytest.mark.parametrize("exclude_prefixes", [",load", "postgres,", "../outside"])
+def test_invalid_exclusion_prefixes_are_rejected(
+    tmp_path: Path,
+    exclude_prefixes: str,
+) -> None:
+    (tmp_path / "suite").mkdir()
+
+    result = _run_selector(
+        tmp_path,
+        "suite",
+        "*.test",
+        1,
+        4,
+        exclude_prefixes,
+    )
+
+    assert result.returncode != 0
+    assert "EXCLUDE_PREFIXES" in result.stderr
+
+
 @pytest.mark.parametrize(
-    ("root", "pattern", "expected_paths"),
+    ("root", "pattern", "expected_paths", "exclude_prefixes"),
     [
         (
             "backend/tests",
-            "test_*.py",
+            "test_*.py,*_test.py,*/test_*.py,*/*_test.py",
             {
                 path.as_posix()
-                for path in (REPO_ROOT / "backend" / "tests").glob("test_*.py")
+                for pattern in ("test_*.py", "*_test.py")
+                for path in (REPO_ROOT / "backend" / "tests").rglob(pattern)
+                if path.relative_to(
+                    REPO_ROOT / "backend" / "tests"
+                ).parts[0]
+                not in {"postgres", "load"}
             },
+            "postgres,load",
         ),
         (
             "frontend/src",
-            "*.test.js",
+            (
+                "*.test.js,*.test.jsx,*.test.ts,*.test.tsx,"
+                "*.spec.js,*.spec.jsx,*.spec.ts,*.spec.tsx,"
+                "__tests__/*.js,__tests__/*.jsx,"
+                "__tests__/*.ts,__tests__/*.tsx,"
+                "*/__tests__/*.js,*/__tests__/*.jsx,"
+                "*/__tests__/*.ts,*/__tests__/*.tsx"
+            ),
             {
                 path.as_posix()
-                for path in (REPO_ROOT / "frontend" / "src").rglob("*.test.js")
+                for path in (REPO_ROOT / "frontend" / "src").rglob("*")
+                if path.is_file()
+                and (
+                    any(
+                        path.name.endswith(suffix)
+                        for suffix in (
+                            ".test.js",
+                            ".test.jsx",
+                            ".test.ts",
+                            ".test.tsx",
+                            ".spec.js",
+                            ".spec.jsx",
+                            ".spec.ts",
+                            ".spec.tsx",
+                        )
+                    )
+                    or (
+                        "__tests__" in path.parts
+                        and path.suffix in {".js", ".jsx", ".ts", ".tsx"}
+                    )
+                )
             },
+            None,
         ),
     ],
 )
@@ -197,12 +301,19 @@ def test_current_test_trees_distribute_across_four_shards(
     root: str,
     pattern: str,
     expected_paths: set[str],
+    exclude_prefixes: str | None,
 ) -> None:
     expected_relative_paths = {
         Path(path).relative_to(REPO_ROOT).as_posix() for path in expected_paths
     }
 
-    shards = _all_shards(REPO_ROOT, root, pattern, 4)
+    shards = _all_shards(
+        REPO_ROOT,
+        root,
+        pattern,
+        4,
+        exclude_prefixes,
+    )
 
     assert all(shard for shard in shards)
     _assert_complete_disjoint_partition(shards, expected_relative_paths)

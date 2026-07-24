@@ -3607,8 +3607,21 @@ def _upload_image(client, project_id, filename, metadata, color):
     return response.json()
 
 
-def test_multi_part_multi_modality_overlay_project_can_be_reset_to_empty(client):
+def test_multi_part_multi_modality_overlay_project_can_be_reset_to_empty(
+    client,
+    monkeypatch,
+):
     headers = {"X-User-Id": "reset-workflow@example.com", "X-User-Groups": '["reset-workflow"]'}
+    deleted_storage_keys = []
+
+    def delete_fixture_object(_bucket_name, object_name):
+        deleted_storage_keys.append(object_name)
+        return True
+
+    monkeypatch.setattr(
+        "routers.images.delete_file_from_s3",
+        delete_fixture_object,
+    )
     project_resp = client.post(
         "/api/projects/",
         json={
@@ -3758,6 +3771,9 @@ def test_multi_part_multi_modality_overlay_project_can_be_reset_to_empty(client)
         assert delete_image_resp.status_code == 200, delete_image_resp.text
         assert delete_image_resp.json()["deleted_at"] is not None
         assert delete_image_resp.json()["storage_deleted"] is True
+    assert deleted_storage_keys == [
+        image["object_storage_key"] for image in uploaded_images
+    ]
 
     empty_parts_resp = client.get(f"/api/projects/{project_id}/parts", headers=headers)
     assert empty_parts_resp.status_code == 200, empty_parts_resp.text

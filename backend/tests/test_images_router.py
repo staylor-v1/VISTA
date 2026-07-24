@@ -833,12 +833,28 @@ def test_upload_variable_bit_depth_scalar_images_records_actual_display_window_m
 def test_upload_image_serializes_after_expired_commit_state(client, monkeypatch):
     pid = _create_project(client, name="expired-upload-serialization")
     original_commit = images_router._commit_database_transaction
+    original_refresh = AsyncSession.refresh
+    commit_finished = False
+    deleted_objects = []
 
     async def commit_and_expire(session):
+        nonlocal commit_finished
         await original_commit(session)
         session.expire_all()
+        commit_finished = True
+
+    async def reject_post_commit_refresh(session, *args, **kwargs):
+        if commit_finished:
+            raise AssertionError("upload response must not refresh after commit")
+        return await original_refresh(session, *args, **kwargs)
+
+    def track_delete(_bucket, object_storage_key):
+        deleted_objects.append(object_storage_key)
+        return True
 
     monkeypatch.setattr(images_router, "_commit_database_transaction", commit_and_expire)
+    monkeypatch.setattr(AsyncSession, "refresh", reject_post_commit_refresh)
+    monkeypatch.setattr(images_router, "delete_file_from_s3", track_delete)
 
     response = client.post(
         f"/api/projects/{pid}/images",
@@ -849,6 +865,73 @@ def test_upload_image_serializes_after_expired_commit_state(client, monkeypatch)
     body = response.json()
     assert body["filename"] == "expired-state.png"
     assert body["created_at"]
+    assert deleted_objects == []
+
+
+def test_upload_response_matches_sqlite_persisted_defaults_and_timestamp(client):
+    pid = _create_project(client, name="persisted-upload-parity")
+    uploaded = client.post(
+        f"/api/projects/{pid}/images",
+        files={"file": ("parity.png", _make_png_bytes(), "image/png")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    upload_body = uploaded.json()
+
+    listed = client.get(f"/api/projects/{pid}/images")
+    assert listed.status_code == 200, listed.text
+    persisted = next(
+        item for item in listed.json() if item["id"] == upload_body["id"]
+    )
+
+    assert upload_body["storage_deleted"] is False
+    assert persisted["storage_deleted"] is False
+    assert persisted["created_at"] == upload_body["created_at"]
+
+
+def test_upload_image_cancelled_after_successful_commit_preserves_storage(
+    client,
+    monkeypatch,
+):
+    pid = _create_project(client, name="cancelled-after-commit")
+    original_commit = images_router._commit_database_transaction
+    uploaded_objects = []
+    deleted_objects = []
+
+    async def track_upload(*, object_name, **_kwargs):
+        uploaded_objects.append(object_name)
+        return True
+
+    def track_delete(_bucket, object_storage_key):
+        deleted_objects.append(object_storage_key)
+        return True
+
+    async def commit_then_cancel(session):
+        await original_commit(session)
+        cancelled = asyncio.CancelledError()
+        setattr(cancelled, "vista_commit_succeeded", True)
+        raise cancelled
+
+    monkeypatch.setattr(images_router, "upload_file_to_s3", track_upload)
+    monkeypatch.setattr(images_router, "delete_file_from_s3", track_delete)
+    monkeypatch.setattr(images_router, "_commit_database_transaction", commit_then_cancel)
+
+    # Starlette's BaseHTTPMiddleware translates the propagated cancellation
+    # into this stable request-level error for TestClient callers.
+    with pytest.raises(RuntimeError, match="No response returned"):
+        client.post(
+            f"/api/projects/{pid}/images",
+            files={"file": ("committed.png", _make_png_bytes(), "image/png")},
+        )
+
+    assert len(uploaded_objects) == 1
+    assert deleted_objects == []
+
+    # The request was cancelled, but its explicitly successful commit remains
+    # authoritative. Restore the helper before issuing a verification request.
+    monkeypatch.setattr(images_router, "_commit_database_transaction", original_commit)
+    listed = client.get(f"/api/projects/{pid}/images")
+    assert listed.status_code == 200
+    assert [item["filename"] for item in listed.json()] == ["committed.png"]
 
 
 def test_upload_inspiro_voxel_data_accepts_3d_arrays(client):
@@ -1286,6 +1369,68 @@ def test_import_project_s3_files_creates_image_records(client, monkeypatch):
     assert [item["filename"] for item in listed.json()] == ["a.png"]
 
 
+def test_import_project_s3_files_never_serializes_expired_orm_state(
+    client,
+    monkeypatch,
+):
+    pid = _create_project(client, name="S3 expired serialization")
+    original_flush = AsyncSession.flush
+    original_commit = images_router._commit_database_transaction
+    deleted_objects = []
+
+    async def fake_get_s3_object_info(_bucket, _key):
+        return {
+            "size": 12,
+            "content_type": "image/png",
+            "metadata": {},
+            "etag": '"source-etag"',
+        }
+
+    async def fake_copy_s3_object_to_s3(*_args, **_kwargs):
+        return True
+
+    async def flush_and_expire(session, *args, **kwargs):
+        result = await original_flush(session, *args, **kwargs)
+        session.expire_all()
+        return result
+
+    async def commit_and_expire(session):
+        await original_commit(session)
+        session.expire_all()
+
+    def reject_orm_serialization(_db_image):
+        raise AssertionError("S3 import response must use pre-commit scalar values")
+
+    def track_delete(_bucket, object_storage_key):
+        deleted_objects.append(object_storage_key)
+        return True
+
+    monkeypatch.setattr(images_router, "get_s3_object_info", fake_get_s3_object_info)
+    monkeypatch.setattr(images_router, "copy_s3_object_to_s3", fake_copy_s3_object_to_s3)
+    monkeypatch.setattr(AsyncSession, "flush", flush_and_expire)
+    monkeypatch.setattr(images_router, "_commit_database_transaction", commit_and_expire)
+    monkeypatch.setattr(images_router, "to_data_instance_schema", reject_orm_serialization)
+    monkeypatch.setattr(images_router, "delete_file_from_s3", track_delete)
+
+    response = client.post(
+        f"/api/projects/{pid}/s3/import",
+        json={
+            "s3_url": "s3://source-bucket/incoming",
+            "keys": ["incoming/expired.png"],
+            "metadata": {"source_marker": "known-values"},
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    imported = response.json()["imported"]
+    assert len(imported) == 1
+    assert imported[0]["filename"] == "expired.png"
+    assert imported[0]["metadata"]["source_marker"] == "known-values"
+    assert imported[0]["created_at"]
+    assert imported[0]["storage_deleted"] is False
+    assert deleted_objects == []
+
+
 def test_import_project_s3_files_uses_etag_precondition_and_cleans_failed_copy(
     client,
     monkeypatch,
@@ -1364,6 +1509,49 @@ def test_s3_copy_helper_passes_source_etag_precondition(monkeypatch):
             "CopySourceIfMatch": '"inspected-version"',
         }
     ]
+
+
+def test_import_project_s3_files_rejects_duplicate_keys_before_storage(
+    client,
+    monkeypatch,
+):
+    pid = _create_project(client, name="S3 duplicate preflight")
+    storage_calls = []
+
+    async def unexpected_storage_call(*args, **kwargs):
+        storage_calls.append((args, kwargs))
+        raise AssertionError("duplicate keys must fail before object storage")
+
+    monkeypatch.setattr(
+        images_router,
+        "get_s3_object_info",
+        unexpected_storage_call,
+    )
+    monkeypatch.setattr(
+        images_router,
+        "copy_s3_object_to_s3",
+        unexpected_storage_call,
+    )
+
+    response = client.post(
+        f"/api/projects/{pid}/s3/import",
+        json={
+            "s3_url": "s3://source-bucket/incoming",
+            "keys": [
+                "incoming/repeated.png",
+                "incoming/other.png",
+                "incoming/repeated.png",
+                "incoming/other.png",
+            ],
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == (
+        "S3 import keys must be unique; duplicate keys: "
+        "incoming/other.png, incoming/repeated.png"
+    )
+    assert storage_calls == []
 
 
 def test_import_project_s3_files_rejects_key_outside_prefix(client):

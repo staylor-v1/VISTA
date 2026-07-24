@@ -40,7 +40,7 @@ function testImageViewFallback() {
 
   const hasFallbackLogic = content.includes('include_deleted=true');
   const hasErrorHandling = content.includes('Direct image fetch failed');
-  const hasProjectEndpointFallback = content.includes('projectImages.find');
+  const hasProjectEndpointFallback = /\.find\s*\(\s*\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*=>\s*String\(\1\.id\)\s*===\s*String\(imageId\)\s*\)/.test(content);
 
   return hasFallbackLogic && hasErrorHandling && hasProjectEndpointFallback;
 }

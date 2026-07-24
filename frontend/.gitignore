@@ -19,6 +19,9 @@
 .env.production.local
 /artifacts/*.png
 /artifacts/playwright-report/
+/artifacts/playwright-blob/
+/artifacts/playwright-junit/
+/artifacts/playwright/
 /test-results/
 /.local/
 

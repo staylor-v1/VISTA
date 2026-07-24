@@ -3374,6 +3374,83 @@ describe('InspectionWorkbenchPanel', () => {
     expect(global.fetch.mock.calls.some((call) => call[0].includes('/annotations') && call[1]?.method === 'POST')).toBe(false);
   });
 
+  test('removes calibration and annotation mutation tools for archived projects', async () => {
+    mockWorkbenchFetch({ ...scenarioByUser[0], metadataDict: {} });
+    const tileView = render(
+      <InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" readOnly />,
+    );
+    await waitFor(() => expect(screen.getByAltText('front view')).toBeInTheDocument());
+
+    expect(screen.queryByRole('button', { name: 'Measure on tiles' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Draw box on tiles' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Set Calibration' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Measurement calibration required' })).not.toBeInTheDocument();
+
+    tileView.unmount();
+    mockWorkbenchFetch({ ...scenarioByUser[0], metadataDict: {} });
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" readOnly />);
+    const fullscreenTileImage = await screen.findByAltText('front view');
+    fireEvent.click(fullscreenTileImage);
+
+    expect(screen.getByRole('button', { name: 'Measure' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Draw box' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'New Crop' })).toBeDisabled();
+    expect(screen.queryByRole('dialog', { name: 'Measurement calibration required' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Set Calibration' })).not.toBeInTheDocument();
+  });
+
+  test('keeps archived inspection viewing controls local and sends no mutation requests', async () => {
+    mockWorkbenchFetch(scenarioByUser[0]);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" readOnly />);
+
+    await waitFor(() => expect(screen.getByAltText('front view')).toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('Loading annotations…')).not.toBeInTheDocument());
+    expect(screen.getByTestId('annotation-list')).toHaveTextContent('seed-basic');
+
+    const hideButton = screen.getByRole('button', { name: /Hide seed-basic/i });
+    fireEvent.click(hideButton);
+    expect(await screen.findByRole('button', { name: /Show seed-basic/i })).toBeInTheDocument();
+
+    expect(screen.queryByRole('button', { name: /Edit annotation seed-basic/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Delete annotation seed-basic/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Pass' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Reset' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeDisabled();
+
+    fireEvent.keyDown(document, { key: 'q' });
+    const forbiddenRequests = global.fetch.mock.calls.filter(([, options = {}]) => (
+      ['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())
+    ));
+    expect(forbiddenRequests).toEqual([]);
+  });
+
+  test('keeps archived PT3 segments viewable without exposing segment mutations', async () => {
+    const scenario = makePt3ScenarioWithMetadata({
+      annotations: [makeVistaSegmentAnnotation()],
+    });
+    mockWorkbenchFetch(scenario);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" readOnly />);
+
+    const helperButton = await screen.findByRole('button', { name: 'Segmentation Helpers' });
+    expect(helperButton).toBeDisabled();
+    await waitFor(() => expect(screen.queryByText('Loading annotations…')).not.toBeInTheDocument());
+    expect(screen.getByTestId('annotation-list')).toHaveTextContent('Internal pore');
+    expect(screen.queryByRole('button', { name: 'Edit Internal pore' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Delete annotation Internal pore/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Hide vista segment Internal pore/i }));
+    expect(await screen.findByRole('button', { name: /Show vista segment Internal pore/i })).toBeInTheDocument();
+
+    const axialPane = screen.getByTestId('mpr-pane-axial');
+    fireEvent.click(axialPane.querySelector('.mpr-pane-header'));
+    expect(await screen.findByTestId('fullscreen-mpr-slice')).toHaveAttribute('data-mpr-axis', 'axial');
+
+    const forbiddenRequests = global.fetch.mock.calls.filter(([, options = {}]) => (
+      ['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())
+    ));
+    expect(forbiddenRequests).toEqual([]);
+  });
+
   test('renders measurement line and length text in both tile and fullscreen overlays', async () => {
     mockWorkbenchFetch({
       ...scenarioByUser[0],

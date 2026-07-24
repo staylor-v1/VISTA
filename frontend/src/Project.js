@@ -1194,6 +1194,7 @@ function Project({ currentUserGroups = [] }) {
         <InspectionWorkbenchPanel
           projectId={id}
           projectType={project?.project_type}
+          readOnly={project?.is_archived !== false}
           hierarchy={interfaceHierarchy.inspection}
           launchFilters={inspectionLaunchFilters}
           mprSession={inspectionMprSession}

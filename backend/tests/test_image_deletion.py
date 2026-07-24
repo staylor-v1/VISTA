@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import threading
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -8,6 +9,7 @@ from unittest.mock import patch
 import pytest
 from PIL import Image
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import models
 from routers import images as images_router
@@ -174,6 +176,275 @@ def test_restore_soft_deleted_image_clears_deletion_state(client):
         "soft_delete",
         "restore",
     }
+
+
+def test_delete_and_restore_materialize_responses_before_expiring_commit(
+    client,
+    monkeypatch,
+):
+    pid = _create_project(client)
+    metadata_key = "associated:expire-boundary.nsipro"
+    metadata_response = client.post(
+        f"/api/projects/{pid}/metadata",
+        json={
+            "key": metadata_key,
+            "value": {"source_filename": "expire-boundary.nsipro"},
+        },
+    )
+    assert metadata_response.status_code == 201, metadata_response.text
+    image = _upload_image(
+        client,
+        pid,
+        filename="expire-boundary.png",
+        metadata={"associated_metadata_ref": metadata_key},
+    )
+    part_response = client.post(
+        f"/api/projects/{pid}/parts",
+        json={
+            "serial_number": "EXPIRING-DELETE",
+            "display_name": "Expiring delete",
+        },
+    )
+    assert part_response.status_code == 201, part_response.text
+    assignment = client.post(
+        f"/api/projects/{pid}/parts/image-assignments",
+        json={
+            "filename": image["filename"],
+            "to_part_id": part_response.json()["id"],
+        },
+    )
+    assert assignment.status_code == 200, assignment.text
+
+    original_commit = AsyncSession.commit
+    commit_count = 0
+
+    async def commit_and_expire(session, *args, **kwargs):
+        nonlocal commit_count
+        result = await original_commit(session, *args, **kwargs)
+        session.expire_all()
+        commit_count += 1
+        return result
+
+    monkeypatch.setattr(AsyncSession, "commit", commit_and_expire)
+
+    deleted = client.request(
+        "DELETE",
+        f"/api/projects/{pid}/images/{image['id']}",
+        json={"reason": "exercise expired delete boundary"},
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["deleted_at"] is not None
+
+    restored = client.post(
+        f"/api/projects/{pid}/images/{image['id']}/restore"
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["deleted_at"] is None
+
+    # The no-op restore path also commits to release its row lock and must
+    # return the snapshot created before that commit expires the ORM row.
+    restored_again = client.post(
+        f"/api/projects/{pid}/images/{image['id']}/restore"
+    )
+    assert restored_again.status_code == 200, restored_again.text
+    assert restored_again.json()["deleted_at"] is None
+    assert commit_count == 3
+
+
+def test_force_delete_confirmed_commit_cancellation_preserves_published_state(
+    client,
+    monkeypatch,
+):
+    pid = _create_project(client)
+    image = _upload_image(client, pid, filename="cancelled-force.png")
+    deleted_storage_keys = []
+    commit_count = 0
+    original_commit = image_deletion_service.commit_database_transaction
+
+    def delete_storage_file(_bucket_name, object_name):
+        deleted_storage_keys.append(object_name)
+        return True
+
+    async def cancel_after_second_successful_commit(session):
+        nonlocal commit_count
+        commit_count += 1
+        await original_commit(session)
+        if commit_count == 2:
+            cancelled = asyncio.CancelledError()
+            setattr(cancelled, "vista_commit_succeeded", True)
+            raise cancelled
+
+    monkeypatch.setattr(
+        "routers.images.delete_file_from_s3",
+        delete_storage_file,
+    )
+    monkeypatch.setattr(
+        image_deletion_service,
+        "commit_database_transaction",
+        cancel_after_second_successful_commit,
+    )
+
+    with pytest.raises(RuntimeError, match="No response returned"):
+        client.request(
+            "DELETE",
+            f"/api/projects/{pid}/images/{image['id']}",
+            json={
+                "reason": "publish force state despite cancellation",
+                "force": True,
+            },
+        )
+
+    assert commit_count == 2
+    assert deleted_storage_keys == [image["object_storage_key"]]
+
+    persisted = client.get(
+        f"/api/projects/{pid}/images?include_deleted=true"
+    )
+    assert persisted.status_code == 200, persisted.text
+    persisted_image = next(
+        item for item in persisted.json() if item["id"] == image["id"]
+    )
+    assert persisted_image["storage_deleted"] is True
+    assert persisted_image["hard_deleted_at"] is not None
+
+    events = client.get(
+        f"/api/projects/{pid}/images/deletion-events",
+        params={"image_id": image["id"]},
+    )
+    assert events.status_code == 200, events.text
+    assert {event["action"] for event in events.json()["events"]} == {
+        "soft_delete",
+        "force_delete",
+    }
+
+
+@pytest.mark.asyncio
+async def test_force_delete_cancellation_waits_for_storage_thread_and_publishes(
+    db_session,
+):
+    user = models.User(email="force-storage-cancel@example.com")
+    project = models.Project(
+        name="Force storage cancellation",
+        meta_group_id="force-storage-cancel-group",
+        created_by=user.email,
+    )
+    db_session.add_all([user, project])
+    await db_session.flush()
+    image = models.DataInstance(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        filename="force-storage-cancel.png",
+        object_storage_key=f"force-storage-cancel/{uuid.uuid4()}.png",
+        content_type="image/png",
+        size_bytes=8,
+        metadata_json={},
+        uploaded_by_user_id=user.email,
+        uploader_id=user.id,
+        storage_deleted=False,
+    )
+    db_session.add(image)
+    await db_session.commit()
+    image_id = image.id
+    project_id = project.id
+    user_id = user.id
+    actor_email = user.email
+
+    storage_started = threading.Event()
+    release_storage = threading.Event()
+    storage_completed = threading.Event()
+
+    def blocking_storage_delete():
+        storage_started.set()
+        assert release_storage.wait(timeout=2)
+        storage_completed.set()
+        return True
+
+    async def threaded_storage_delete(_bucket, _key):
+        return await asyncio.to_thread(blocking_storage_delete)
+
+    delete_task = asyncio.create_task(
+        image_deletion_service.delete_authorized_image(
+            db=db_session,
+            project_id=project_id,
+            image_id=image_id,
+            actor_user_id=user_id,
+            actor_email=actor_email,
+            reason="cancel while object storage is deleting",
+            retention_days=60,
+            force=True,
+            storage_bucket="test-bucket",
+            delete_storage=threaded_storage_delete,
+        )
+    )
+    assert await asyncio.to_thread(storage_started.wait, 1)
+    delete_task.cancel()
+    release_storage.set()
+
+    with pytest.raises(asyncio.CancelledError) as cancelled:
+        await delete_task
+
+    assert storage_completed.is_set()
+    assert getattr(
+        cancelled.value,
+        "vista_storage_delete_succeeded",
+        False,
+    )
+    assert getattr(
+        cancelled.value,
+        "vista_force_delete_published",
+        False,
+    )
+
+    db_session.expire_all()
+    persisted_image = await db_session.get(models.DataInstance, image_id)
+    events = (
+        await db_session.execute(
+            select(models.ImageDeletionEvent)
+            .where(models.ImageDeletionEvent.image_id == image_id)
+            .order_by(
+                models.ImageDeletionEvent.at.asc(),
+                models.ImageDeletionEvent.id.asc(),
+            )
+        )
+    ).scalars().all()
+
+    assert persisted_image.deleted_at is not None
+    assert persisted_image.hard_deleted_at is not None
+    assert persisted_image.storage_deleted is True
+    assert [event.action for event in events] == [
+        "soft_delete",
+        "force_delete",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_shared_commit_helper_finishes_and_marks_cancelled_commit_success():
+    commit_started = asyncio.Event()
+    release_commit = asyncio.Event()
+
+    class Session:
+        committed = False
+
+        async def commit(self):
+            commit_started.set()
+            await release_commit.wait()
+            self.committed = True
+
+    session = Session()
+    task = asyncio.create_task(
+        image_deletion_service.commit_database_transaction(session)
+    )
+    await commit_started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+
+    release_commit.set()
+    with pytest.raises(asyncio.CancelledError) as cancelled:
+        await task
+
+    assert session.committed is True
+    assert getattr(cancelled.value, "vista_commit_succeeded", False) is True
 
 
 def test_repeated_delete_restore_and_force_requests_are_idempotent(
@@ -447,6 +718,44 @@ def test_soft_delete_image_keeps_project_metadata_still_used_by_another_image(cl
 
 
 @pytest.mark.asyncio
+async def test_sqlite_storage_deleted_server_defaults_are_boolean_false(
+    db_session,
+):
+    user = models.User(email="sqlite-defaults@example.com")
+    project = models.Project(
+        name="SQLite boolean defaults",
+        meta_group_id="sqlite-defaults",
+        created_by=user.email,
+    )
+    db_session.add_all([user, project])
+    await db_session.flush()
+    image = models.DataInstance(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        filename="sqlite-default.png",
+        object_storage_key=f"sqlite-default/{uuid.uuid4()}.png",
+        content_type="image/png",
+        size_bytes=8,
+        metadata_json={},
+        uploaded_by_user_id=user.email,
+    )
+    event = models.ImageDeletionEvent(
+        image_id=image.id,
+        project_id=project.id,
+        action="soft_delete",
+        reason="default parity",
+        previous_state={},
+    )
+    db_session.add_all([image, event])
+    await db_session.commit()
+    await db_session.refresh(image)
+    await db_session.refresh(event)
+
+    assert image.storage_deleted is False
+    assert event.storage_deleted is False
+
+
+@pytest.mark.asyncio
 async def test_soft_delete_service_commits_database_side_effects_once(
     db_session,
 ):
@@ -694,8 +1003,31 @@ async def test_force_delete_reconciles_after_storage_success_and_db_failure(
         )
     ).scalars().all()
     assert after_failure.deleted_at is not None
+    assert after_failure.hard_deleted_at is None
     assert after_failure.storage_deleted is False
-    assert [event.action for event in failure_events] == ["soft_delete"]
+    assert {event.action for event in failure_events} == {
+        "soft_delete",
+        image_deletion_service.FORCE_DELETE_PENDING_ACTION,
+    }
+
+    with pytest.raises(
+        image_deletion_service.ImageStorageDeletionPending,
+    ):
+        await image_deletion_service.restore_authorized_image(
+            db=db_session,
+            project_id=project_id,
+            image_id=image_id,
+            actor_user_id=user_id,
+        )
+
+    db_session.expire_all()
+    after_rejected_restore = await db_session.get(
+        models.DataInstance,
+        image_id,
+    )
+    assert after_rejected_restore.deleted_at is not None
+    assert after_rejected_restore.hard_deleted_at is None
+    assert after_rejected_restore.storage_deleted is False
 
     outcome = await image_deletion_service.delete_authorized_image(
         db=db_session,
@@ -744,7 +1076,7 @@ def test_force_delete_storage_failure_is_retryable(client, monkeypatch):
         json={"reason": "retry failed storage delete", "force": True},
     )
     assert failed.status_code == 502, failed.text
-    assert "recoverably soft-deleted" in failed.json()["detail"]
+    assert "requires reconciliation" in failed.json()["detail"]
 
     after_failure = client.get(
         f"/api/projects/{pid}/images",
@@ -754,13 +1086,26 @@ def test_force_delete_storage_failure_is_retryable(client, monkeypatch):
         image for image in after_failure.json() if image["id"] == image_id
     )
     assert failed_image["deleted_at"] is not None
+    assert failed_image["hard_deleted_at"] is None
     assert failed_image["storage_deleted"] is False
+
+    rejected_restore = client.post(
+        f"/api/projects/{pid}/images/{image_id}/restore"
+    )
+    assert rejected_restore.status_code == 409, rejected_restore.text
+    assert (
+        rejected_restore.json()["detail"]
+        == "Image storage deletion is pending reconciliation"
+    )
 
     failed_events = client.get(
         f"/api/projects/{pid}/images/deletion-events",
         params={"image_id": image_id},
     ).json()["events"]
-    assert [event["action"] for event in failed_events] == ["soft_delete"]
+    assert {event["action"] for event in failed_events} == {
+        "soft_delete",
+        image_deletion_service.FORCE_DELETE_PENDING_ACTION,
+    }
 
     monkeypatch.setattr(
         "routers.images.delete_file_from_s3",

@@ -4,6 +4,16 @@ import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import { getProjectTypeLabel } from './projectTypes';
 
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
+
 function projectTypeCardMatcher(projectType) {
   const expected = `Type: ${getProjectTypeLabel(projectType, { short: true })}`;
   return (_content, element) => element?.classList?.contains('project-card-meta')
@@ -336,7 +346,330 @@ describe('project type UI exposure', () => {
       '/api/dashboard/settings/database-url/accept',
       expect.objectContaining({ method: 'POST', body: JSON.stringify({ database_url: 'postgresql+asyncpg://new:secret@localhost:5432/vista' }) })
     );
-  }, 30000);
+  });
+
+  test('ignores a stale dashboard preview after the database URL changes', async () => {
+    const firstPreview = createDeferred();
+    const previewBodies = [];
+    global.fetch = jest.fn((input, init = {}) => {
+      const url = typeof input === 'string' ? input : input.url;
+      const method = (init.method || 'GET').toUpperCase();
+
+      if (url.endsWith('/api/users/me')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ email: 'settings@example.com' }) });
+      }
+      if (url.endsWith('/api/users/me/groups')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ['settings-group'] });
+      }
+      if (url.endsWith('/api/projects/') && method === 'GET') {
+        return Promise.resolve({ ok: true, status: 200, json: async () => [] });
+      }
+      if (url.endsWith('/api/dashboard/settings/database-url') && method === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ database_url: 'postgresql+asyncpg://old/db' }),
+        });
+      }
+      if (url.endsWith('/api/dashboard/settings/database-url/preview') && method === 'POST') {
+        const body = JSON.parse(init.body);
+        previewBodies.push(body);
+        if (previewBodies.length === 1) return firstPreview.promise;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            database_url: body.database_url,
+            project_count: 1,
+            projects: [{
+              id: 'fresh-project',
+              name: 'Fresh Preview',
+              description: '',
+              meta_group_id: 'settings-group',
+              project_type: 'PT1',
+              image_count: 0,
+              part_count: 0,
+            }],
+          }),
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+    });
+
+    const user = userEvent.setup();
+    render(<BrowserRouter><App /></BrowserRouter>);
+    await screen.findByText('No projects yet');
+    await user.click(screen.getByRole('button', { name: 'Open dashboard settings' }));
+
+    const urlInput = await screen.findByLabelText('New Postgres URL');
+    await user.clear(urlInput);
+    await user.type(urlInput, 'postgresql+asyncpg://first/db');
+    await user.click(screen.getByRole('button', { name: 'Preview' }));
+    expect(screen.getByRole('button', { name: 'Previewing…' })).toBeDisabled();
+
+    await user.clear(urlInput);
+    await user.type(urlInput, 'postgresql+asyncpg://second/db');
+
+    await act(async () => {
+      firstPreview.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          database_url: 'postgresql+asyncpg://first/db',
+          project_count: 1,
+          projects: [{
+            id: 'stale-project',
+            name: 'Stale Preview',
+            description: '',
+            meta_group_id: 'settings-group',
+            project_type: 'PT1',
+          }],
+        }),
+      });
+      await firstPreview.promise;
+    });
+
+    expect(screen.queryByText('Stale Preview')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Preview' }));
+    expect(await screen.findByText('Fresh Preview')).toBeInTheDocument();
+    expect(previewBodies).toEqual([
+      { database_url: 'postgresql+asyncpg://first/db' },
+      { database_url: 'postgresql+asyncpg://second/db' },
+    ]);
+  });
+
+  test('accepts exactly the displayed preview URL once and locks unsafe controls while switching', async () => {
+    const acceptRequest = createDeferred();
+    global.fetch = jest.fn((input, init = {}) => {
+      const url = typeof input === 'string' ? input : input.url;
+      const method = (init.method || 'GET').toUpperCase();
+
+      if (url.endsWith('/api/users/me')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ email: 'settings@example.com' }) });
+      }
+      if (url.endsWith('/api/users/me/groups')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ['settings-group'] });
+      }
+      if (url.endsWith('/api/projects/') && method === 'GET') {
+        return Promise.resolve({ ok: true, status: 200, json: async () => [] });
+      }
+      if (url.endsWith('/api/dashboard/settings/database-url') && method === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ database_url: 'postgresql+asyncpg://old/db' }),
+        });
+      }
+      if (url.endsWith('/api/dashboard/settings/database-url/preview') && method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            database_url: 'postgresql+asyncpg://previewed/db',
+            project_count: 0,
+            projects: [],
+          }),
+        });
+      }
+      if (url.endsWith('/api/dashboard/settings/database-url/accept') && method === 'POST') {
+        return acceptRequest.promise;
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+    });
+
+    const user = userEvent.setup();
+    render(<BrowserRouter><App /></BrowserRouter>);
+    await screen.findByText('No projects yet');
+    await user.click(screen.getByRole('button', { name: 'Open dashboard settings' }));
+
+    const urlInput = await screen.findByLabelText('New Postgres URL');
+    await user.clear(urlInput);
+    await user.type(urlInput, 'postgresql://requested/db');
+    await user.click(screen.getByRole('button', { name: 'Preview' }));
+
+    const previewModal = await screen.findByRole('dialog', { name: 'Dashboard Preview' });
+    expect(within(previewModal).getByText('postgresql+asyncpg://previewed/db')).toBeInTheDocument();
+    const submitPreview = within(previewModal).getByRole('button', { name: 'Submit This URL' });
+    await user.click(submitPreview);
+    await user.click(submitPreview);
+
+    const acceptCalls = global.fetch.mock.calls.filter(([url]) => String(url).endsWith('/database-url/accept'));
+    expect(acceptCalls).toHaveLength(1);
+    expect(JSON.parse(acceptCalls[0][1].body)).toEqual({
+      database_url: 'postgresql+asyncpg://previewed/db',
+    });
+    expect(urlInput).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Close dashboard settings' })).toBeDisabled();
+    expect(within(previewModal).getByRole('button', { name: 'Keep Editing' })).toBeDisabled();
+
+    await act(async () => {
+      acceptRequest.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({ database_url: 'postgresql+asyncpg://previewed/db' }),
+      });
+      await acceptRequest.promise;
+    });
+
+    expect(await screen.findByText(/Postgres database URL updated for this backend session/i)).toBeInTheDocument();
+  });
+
+  test('reports a malformed dashboard preview response without rendering a broken modal', async () => {
+    global.fetch = jest.fn((input, init = {}) => {
+      const url = typeof input === 'string' ? input : input.url;
+      const method = (init.method || 'GET').toUpperCase();
+
+      if (url.endsWith('/api/users/me')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ email: 'settings@example.com' }) });
+      }
+      if (url.endsWith('/api/users/me/groups')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ['settings-group'] });
+      }
+      if (url.endsWith('/api/projects/') && method === 'GET') {
+        return Promise.resolve({ ok: true, status: 200, json: async () => [] });
+      }
+      if (url.endsWith('/api/dashboard/settings/database-url') && method === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ database_url: 'postgresql+asyncpg://old/db' }),
+        });
+      }
+      if (url.endsWith('/api/dashboard/settings/database-url/preview') && method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ database_url: 'postgresql+asyncpg://malformed/db', project_count: 1 }),
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+    });
+
+    const user = userEvent.setup();
+    render(<BrowserRouter><App /></BrowserRouter>);
+    await screen.findByText('No projects yet');
+    await user.click(screen.getByRole('button', { name: 'Open dashboard settings' }));
+
+    const urlInput = await screen.findByLabelText('New Postgres URL');
+    await user.clear(urlInput);
+    await user.type(urlInput, 'postgresql+asyncpg://malformed/db');
+    await user.click(screen.getByRole('button', { name: 'Preview' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The dashboard preview response was invalid.');
+    expect(screen.queryByRole('dialog', { name: 'Dashboard Preview' })).not.toBeInTheDocument();
+  });
+
+  test('keeps a successful database switch successful when the dashboard refresh fails', async () => {
+    const refreshRequest = createDeferred();
+    let projectLoadCount = 0;
+    global.fetch = jest.fn((input, init = {}) => {
+      const url = typeof input === 'string' ? input : input.url;
+      const method = (init.method || 'GET').toUpperCase();
+
+      if (url.endsWith('/api/users/me')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ email: 'settings@example.com' }) });
+      }
+      if (url.endsWith('/api/users/me/groups')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ['settings-group'] });
+      }
+      if (url.endsWith('/api/projects/') && method === 'GET') {
+        projectLoadCount += 1;
+        if (projectLoadCount === 1) {
+          return Promise.resolve({ ok: true, status: 200, json: async () => [] });
+        }
+        return refreshRequest.promise;
+      }
+      if (url.endsWith('/api/dashboard/settings/database-url') && method === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ database_url: 'postgresql+asyncpg://old/db' }),
+        });
+      }
+      if (url.endsWith('/api/dashboard/settings/database-url/accept') && method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ database_url: 'postgresql+asyncpg://accepted/db' }),
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+    });
+
+    const user = userEvent.setup();
+    render(<BrowserRouter><App /></BrowserRouter>);
+    await screen.findByText('No projects yet');
+    await user.click(screen.getByRole('button', { name: 'Open dashboard settings' }));
+    const urlInput = await screen.findByLabelText('New Postgres URL');
+    await user.clear(urlInput);
+    await user.type(urlInput, 'postgresql+asyncpg://accepted/db');
+    await user.click(screen.getByRole('button', { name: 'Submit Postgres URL' }));
+    await waitFor(() => expect(projectLoadCount).toBe(2));
+
+    await act(async () => {
+      refreshRequest.resolve({
+        ok: false,
+        status: 503,
+        json: async () => ({ detail: 'refresh unavailable' }),
+      });
+      await refreshRequest.promise;
+    });
+
+    expect(await screen.findByText(/Postgres database URL updated for this backend session/i)).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Database switched successfully, but dashboard projects could not be refreshed.',
+    );
+    expect(screen.queryByText(/Unable to switch to that Postgres URL/i)).not.toBeInTheDocument();
+    expect(screen.getAllByText('postgresql+asyncpg://accepted/db').length).toBeGreaterThan(0);
+  });
+
+  test('handles a malformed accepted database URL without putting a non-string into state', async () => {
+    global.fetch = jest.fn((input, init = {}) => {
+      const url = typeof input === 'string' ? input : input.url;
+      const method = (init.method || 'GET').toUpperCase();
+
+      if (url.endsWith('/api/users/me')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ email: 'settings@example.com' }) });
+      }
+      if (url.endsWith('/api/users/me/groups')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ['settings-group'] });
+      }
+      if (url.endsWith('/api/projects/') && method === 'GET') {
+        return Promise.resolve({ ok: true, status: 200, json: async () => [] });
+      }
+      if (url.endsWith('/api/dashboard/settings/database-url') && method === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ database_url: 'postgresql+asyncpg://old/db' }),
+        });
+      }
+      if (url.endsWith('/api/dashboard/settings/database-url/accept') && method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ database_url: 42 }),
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+    });
+
+    const user = userEvent.setup();
+    render(<BrowserRouter><App /></BrowserRouter>);
+    await screen.findByText('No projects yet');
+    await user.click(screen.getByRole('button', { name: 'Open dashboard settings' }));
+    const urlInput = await screen.findByLabelText('New Postgres URL');
+    await user.clear(urlInput);
+    await user.type(urlInput, 'postgresql+asyncpg://submitted/db');
+    await user.click(screen.getByRole('button', { name: 'Submit Postgres URL' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Database switched successfully, but the backend returned an invalid database URL.',
+    );
+    expect(urlInput).toHaveValue('postgresql+asyncpg://submitted/db');
+    expect(screen.getAllByText('postgresql+asyncpg://submitted/db').length).toBeGreaterThan(0);
+    expect(await screen.findByText(/Postgres database URL updated for this backend session/i)).toBeInTheDocument();
+  });
 
   test.each(projectTypes.flatMap((projectType) => simulatedUsers.map((userScenario) => ({ projectType, userScenario }))))(
     'shows selected project type for $projectType $userScenario.label simulated workflow',

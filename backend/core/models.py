@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -217,7 +218,7 @@ class DataInstance(Base):
     pending_hard_delete_at = Column(DateTime(timezone=True), nullable=True, index=True)
     hard_deleted_at = Column(DateTime(timezone=True), nullable=True)
     hard_deleted_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
-    storage_deleted = Column(Boolean, nullable=False, server_default='false')
+    storage_deleted = Column(Boolean, nullable=False, server_default=text('false'))
 
     # Relationships
     project = relationship("Project", back_populates="images")
@@ -238,7 +239,7 @@ class ImageDeletionEvent(Base):
     actor_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     action = Column(String(32), nullable=False)  # soft_delete, force_delete, restore, hard_delete_job
     reason = Column(Text, nullable=True)
-    storage_deleted = Column(Boolean, nullable=False, server_default='false')
+    storage_deleted = Column(Boolean, nullable=False, server_default=text('false'))
     previous_state = Column(JSON, nullable=True)
     at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
