@@ -85,6 +85,9 @@ jobs:
         DEBUG: true
         SKIP_HEADER_CHECK: true
         MOCK_USER_EMAIL: test@example.com
+        BACKEND_TEST_MAXFAIL: "0"
+        PYTEST_XDIST_WORKERS: "1"
+        FRONTEND_JEST_WORKERS: "1"
         JUNIT_XML_PATH: ${{ github.workspace }}/test-results/backend.xml
 
     - name: Verify PostgreSQL migration upgrade path
@@ -185,21 +188,6 @@ jobs:
         # Stop container
         docker stop test-container
         docker rm test-container
-
-    - name: Run tests in container
-      run: |
-        docker run --rm \
-          -e DATABASE_URL="sqlite+aiosqlite:///./test.db" \
-          -e FAST_TEST_MODE=true \
-          -e DEBUG=true \
-          -e SKIP_HEADER_CHECK=true \
-          -e POSTGRES_USER=postgres \
-          -e POSTGRES_PASSWORD=postgres \
-          -e POSTGRES_DB=postgres \
-          -e POSTGRES_SERVER=localhost \
-          --workdir /app \
-          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-          bash -c "uv sync --frozen && bash test/run_tests.sh --backend"
 
     - name: Push Docker image
       if: github.event_name != 'pull_request'
