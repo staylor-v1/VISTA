@@ -15,6 +15,7 @@ import ProjectPhaseFlow from './components/ProjectPhaseFlow';
 import ImagesToPartsTab from './components/ImagesToPartsTab';
 import BatchesTab from './components/BatchesTab';
 import RemoveImagesTab from './components/RemoveImagesTab';
+import UnloadPartsTab from './components/UnloadPartsTab';
 import OverlaysTab from './components/OverlaysTab';
 import ProjectDataMetadataTab from './components/ProjectDataMetadataTab';
 import { useInspectionWorkbenchSessionController } from './components/inspectionWorkbenchSession';
@@ -40,6 +41,7 @@ const PROJECT_DATA_TABS_REQUIRING_PARTS = new Set([
   'overlays',
   'metadata',
   'remove_images',
+  'unload_parts',
 ]);
 const PROJECT_DATA_TABS_REQUIRING_IMAGES = new Set([
   'images_to_parts',
@@ -85,6 +87,7 @@ const PROJECT_DATA_TABS = {
   overlays: { label: 'Overlays' },
   metadata: { label: 'Metadata' },
   batches: { label: 'Batches' },
+  unload_parts: { label: 'Unload Parts' },
   remove_images: { label: 'Unload Images' },
   recently_deleted: { label: 'Recently Deleted' },
 };
@@ -687,6 +690,24 @@ function Project({ currentUserGroups = [] }) {
     return refreshProjectCounts({ requestProjectId });
   }, [id, isActiveProject, markProjectCollectionsStale, refreshProjectCounts]);
 
+  const handlePartsUnloaded = useCallback(async () => {
+    const requestProjectId = id;
+    if (!isActiveProject(requestProjectId)) return 'stale';
+    markProjectCollectionsStale({ images: false, parts: true });
+    const [partsResult, countsResult] = await Promise.all([
+      reconcileProjectParts(),
+      refreshProjectCounts({ requestProjectId }),
+    ]);
+    if (!isActiveProject(requestProjectId)) return 'stale';
+    return partsResult === true && countsResult === 'fresh' ? 'fresh' : 'error';
+  }, [
+    id,
+    isActiveProject,
+    markProjectCollectionsStale,
+    reconcileProjectParts,
+    refreshProjectCounts,
+  ]);
+
   const handleMetadataAssociationsChanged = useCallback(async () => {
     const requestProjectId = id;
     if (!isActiveProject(requestProjectId)) return 'stale';
@@ -897,6 +918,9 @@ function Project({ currentUserGroups = [] }) {
   const projectPartsReady = projectPartsState.loaded
     && !projectPartsState.loading
     && !projectPartsState.stale;
+  // Keep an already-loaded tab mounted if a later reconciliation fails so it
+  // can explain that deletion succeeded but the authoritative refresh did not.
+  const projectPartsAvailable = projectPartsState.loaded;
   const projectImagesReady = projectImagesState.loaded
     && !projectImagesState.loading
     && !projectImagesState.stale;
@@ -1074,6 +1098,23 @@ function Project({ currentUserGroups = [] }) {
         />
       )}
 
+      {activeProjectDataTab === 'unload_parts' && !projectPartsAvailable && (
+        <LazyProjectDataState
+          label="Unload Parts"
+          error={projectPartsState.error}
+          onRetry={loadProjectParts}
+        />
+      )}
+
+      {activeProjectDataTab === 'unload_parts' && projectPartsAvailable && (
+        <UnloadPartsTab
+          projectId={id}
+          parts={projectParts}
+          onPartsUnloaded={handlePartsUnloaded}
+          setError={setActiveProjectError}
+        />
+      )}
+
       {activeProjectDataTab === 'remove_images' && !completeProjectCollectionsReady && (
         <LazyProjectDataState
           label="Unload Images"
@@ -1161,6 +1202,7 @@ function Project({ currentUserGroups = [] }) {
     completeProjectCollectionsReady,
     dataCounts,
     handleMetadataAssociationsChanged,
+    handlePartsUnloaded,
     handleProjectMetadataLoaded,
     handleBundleImportComplete,
     handleProjectCollectionsChanged,
@@ -1170,6 +1212,7 @@ function Project({ currentUserGroups = [] }) {
     projectImages,
     projectImagesReady,
     projectParts,
+    projectPartsAvailable,
     projectPartsReady,
     projectPartsState.error,
     recentlyDeletedLoading,

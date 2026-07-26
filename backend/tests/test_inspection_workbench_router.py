@@ -3252,6 +3252,94 @@ def test_delete_part_removes_part_without_deleting_images(client):
     assert [image["filename"] for image in images_response.json()] == [uploaded["filename"]]
 
 
+def test_delete_all_parts_is_project_scoped_idempotent_and_preserves_images_and_batches(client):
+    project_id, headers = _create_project_for_part_image_tests(client, "Bulk delete parts project")
+    other_project_id, _ = _create_project_for_part_image_tests(client, "Bulk delete isolation project")
+    uploaded = _upload_part_test_image(client, project_id, headers, "survives-bulk-part-delete.png")
+
+    batch_response = client.post(
+        f"/api/projects/{project_id}/batches",
+        json={"name": "preserved-batch", "description": "must survive part deletion"},
+        headers=headers,
+    )
+    assert batch_response.status_code == 201, batch_response.text
+    batch_id = batch_response.json()["id"]
+
+    for serial_number in ("SN-BULK-ONE", "SN-BULK-TWO"):
+        part_response = client.post(
+            f"/api/projects/{project_id}/parts",
+            json={
+                "serial_number": serial_number,
+                "display_name": serial_number,
+                "batch_id": batch_id,
+            },
+            headers=headers,
+        )
+        assert part_response.status_code == 201, part_response.text
+
+    other_part_response = client.post(
+        f"/api/projects/{other_project_id}/parts",
+        json={"serial_number": "SN-OTHER", "display_name": "Other project part"},
+        headers=headers,
+    )
+    assert other_part_response.status_code == 201, other_part_response.text
+
+    delete_response = client.delete(f"/api/projects/{project_id}/parts", headers=headers)
+    assert delete_response.status_code == 204, delete_response.text
+    assert client.get(f"/api/projects/{project_id}/parts", headers=headers).json() == []
+
+    remaining_batches = client.get(f"/api/projects/{project_id}/batches", headers=headers)
+    assert remaining_batches.status_code == 200, remaining_batches.text
+    assert [batch["id"] for batch in remaining_batches.json()] == [batch_id]
+
+    remaining_images = client.get(f"/api/projects/{project_id}/images", headers=headers)
+    assert remaining_images.status_code == 200, remaining_images.text
+    assert [image["filename"] for image in remaining_images.json()] == [uploaded["filename"]]
+
+    other_parts = client.get(f"/api/projects/{other_project_id}/parts", headers=headers)
+    assert other_parts.status_code == 200, other_parts.text
+    assert [part["serial_number"] for part in other_parts.json()] == ["SN-OTHER"]
+
+    repeated_delete_response = client.delete(f"/api/projects/{project_id}/parts", headers=headers)
+    assert repeated_delete_response.status_code == 204, repeated_delete_response.text
+
+
+def test_delete_all_parts_requires_project_access(client):
+    project_id, headers = _create_project_for_part_image_tests(client, "Bulk delete access project")
+    part_response = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={"serial_number": "SN-ACCESS", "display_name": "Access protected part"},
+        headers=headers,
+    )
+    assert part_response.status_code == 201, part_response.text
+
+    with patch("routers.inspection_workbench.is_user_in_group", return_value=False):
+        forbidden_response = client.delete(
+            f"/api/projects/{project_id}/parts",
+            headers={"X-User-Id": "outsider@example.com"},
+        )
+    assert forbidden_response.status_code == 403, forbidden_response.text
+
+    remaining_parts = client.get(f"/api/projects/{project_id}/parts", headers=headers)
+    assert [part["serial_number"] for part in remaining_parts.json()] == ["SN-ACCESS"]
+
+
+def test_delete_all_parts_matches_single_part_delete_behavior_for_archived_projects(client):
+    project_id, headers = _create_project_for_part_image_tests(client, "Archived bulk delete project")
+    part_response = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={"serial_number": "SN-ARCHIVED", "display_name": "Archived project part"},
+        headers=headers,
+    )
+    assert part_response.status_code == 201, part_response.text
+    archive_response = client.patch(f"/api/projects/{project_id}/archive", headers=headers)
+    assert archive_response.status_code == 200, archive_response.text
+
+    delete_response = client.delete(f"/api/projects/{project_id}/parts", headers=headers)
+    assert delete_response.status_code == 204, delete_response.text
+    assert client.get(f"/api/projects/{project_id}/parts", headers=headers).json() == []
+
+
 def test_overlay_assignment_maps_overlay_to_base_image(client):
     project_id, headers = _create_project_for_part_image_tests(client, "Overlay assignment project")
     base = _upload_part_test_image(client, project_id, headers, "base.png", {"side": "front", "modality": "visual"})

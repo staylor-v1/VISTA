@@ -93,10 +93,14 @@ def test_historical_production_build_keeps_runtime_and_safe_context() -> None:
 
     for excluded in (
         ".venv/",
-        "test/",
         "backend/tests/",
         "frontend/e2e/",
         "frontend/artifacts/",
         "frontend/node_modules/.cache/",
     ):
         assert excluded in dockerignore
+
+    assert "test/" not in dockerignore
+    assert "test/*" in dockerignore
+    assert "!test/data/" in dockerignore
+    assert "!test/data/**" in dockerignore

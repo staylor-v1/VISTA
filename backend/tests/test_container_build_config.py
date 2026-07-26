@@ -1,5 +1,11 @@
+import json
+import posixpath
+import re
 import shlex
+from dataclasses import dataclass
 from pathlib import Path
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -23,37 +29,261 @@ def _dockerfile_stage_parent(dockerfile: str, stage_name: str) -> str:
     return stage_header.split()[1]
 
 
-def _dockerfile_copy_sources(stage: str) -> list[str]:
-    sources: list[str] = []
-    for line in stage.splitlines():
-        stripped_line = line.strip()
-        if not stripped_line.upper().startswith("COPY "):
+@dataclass(frozen=True)
+class _DockerfileTransferInstruction:
+    command: str
+    sources: tuple[str, ...]
+    destination: str
+    from_stage: str | None
+
+
+def _dockerfile_logical_instructions(stage: str) -> list[str]:
+    instructions: list[str] = []
+    continuation: list[str] = []
+    for physical_line in stage.splitlines():
+        line = physical_line.rstrip()
+        if not continuation and (not line.strip() or line.lstrip().startswith("#")):
             continue
 
-        tokens = shlex.split(stripped_line)
-        arguments = tokens[1:]
-        while arguments and arguments[0].startswith("--"):
-            arguments.pop(0)
-        sources.extend(arguments[:-1])
+        trailing_backslashes = len(line) - len(line.rstrip("\\"))
+        continues = trailing_backslashes % 2 == 1
+        if continues:
+            line = line[:-1]
+        continuation.append(line.strip())
+        if not continues:
+            instructions.append(" ".join(continuation))
+            continuation = []
+
+    if continuation:
+        instructions.append(" ".join(continuation))
+    return instructions
+
+
+def _dockerfile_transfer_instructions(
+    stage: str,
+) -> list[_DockerfileTransferInstruction]:
+    instructions: list[_DockerfileTransferInstruction] = []
+    for logical_instruction in _dockerfile_logical_instructions(stage):
+        match = re.match(r"^(COPY|ADD)\s+(.+)$", logical_instruction, flags=re.I)
+        if match is None:
+            continue
+
+        command = match.group(1).upper()
+        arguments = match.group(2).strip()
+        from_stage: str | None = None
+        while arguments.startswith("--"):
+            option_match = re.match(
+                r"^(--[A-Za-z][A-Za-z0-9-]*)(?:=([^\s]+))?(?:\s+|$)",
+                arguments,
+            )
+            if option_match is None:
+                raise ValueError(f"Unsupported {command} option syntax: {arguments}")
+            option_name = option_match.group(1).lower()
+            option_value = option_match.group(2)
+            arguments = arguments[option_match.end() :].lstrip()
+            if option_name == "--from":
+                if option_value is None:
+                    value_tokens = shlex.split(arguments, posix=True)
+                    if not value_tokens:
+                        raise ValueError(f"{command} --from is missing a value")
+                    option_value = value_tokens[0]
+                    raw_value_match = re.match(
+                        r"^(?:\"[^\"]*\"|'[^']*'|\S+)\s*",
+                        arguments,
+                    )
+                    if raw_value_match is None:
+                        raise ValueError(f"{command} --from is missing a value")
+                    arguments = arguments[raw_value_match.end() :].lstrip()
+                from_stage = option_value
+
+        if arguments.startswith("["):
+            tokens = json.loads(arguments)
+            if not isinstance(tokens, list) or not all(
+                isinstance(token, str) for token in tokens
+            ):
+                raise ValueError(f"{command} JSON form must contain only strings")
+        else:
+            tokens = shlex.split(arguments, posix=True)
+        if len(tokens) < 2:
+            raise ValueError(f"{command} must contain a source and destination")
+        instructions.append(
+            _DockerfileTransferInstruction(
+                command=command,
+                sources=tuple(tokens[:-1]),
+                destination=tokens[-1],
+                from_stage=from_stage,
+            )
+        )
+    return instructions
+
+
+def _dockerfile_copy_sources(stage: str) -> list[str]:
+    sources: list[str] = []
+    for instruction in _dockerfile_transfer_instructions(stage):
+        if instruction.command == "COPY":
+            sources.extend(instruction.sources)
     return sources
 
 
+def _normalized_transfer_source(
+    instruction: _DockerfileTransferInstruction,
+    source: str,
+) -> str:
+    normalized_source = posixpath.normpath(source.replace("\\", "/"))
+    if instruction.from_stage is None:
+        # Docker resolves context sources relative to the context root and ignores a
+        # leading slash.
+        return normalized_source.lstrip("/")
+
+    absolute_source = f"/{normalized_source.lstrip('/')}"
+    if absolute_source == "/app":
+        return "."
+    if absolute_source.startswith("/app/"):
+        return absolute_source.removeprefix("/app/")
+    if absolute_source == "/":
+        return "."
+    return absolute_source.lstrip("/")
+
+
+def _root_test_copy_sources(stage: str) -> list[str]:
+    return [
+        normalized_source
+        for instruction in _dockerfile_transfer_instructions(stage)
+        for source in instruction.sources
+        if instruction.command == "COPY"
+        and (
+            (
+                normalized_source := _normalized_transfer_source(
+                    instruction, source
+                )
+            )
+            == "test"
+            or normalized_source.startswith("test/")
+        )
+    ]
+
+
+def _root_test_transfer_sources(stage: str) -> list[str]:
+    return [
+        normalized_source
+        for instruction in _dockerfile_transfer_instructions(stage)
+        for source in instruction.sources
+        if (
+            (
+                normalized_source := _normalized_transfer_source(
+                    instruction, source
+                )
+            )
+            in {"", ".", "test"}
+            or normalized_source.startswith("test/")
+        )
+    ]
+
+
+def _unsafe_production_transfer_sources(stage: str) -> list[str]:
+    return [
+        normalized_source
+        for instruction in _dockerfile_transfer_instructions(stage)
+        for source in instruction.sources
+        if (
+            (
+                normalized_source := _normalized_transfer_source(
+                    instruction, source
+                )
+            )
+            in {"", ".", "test"}
+            or (
+                normalized_source.startswith("test/")
+                and normalized_source != "test/data"
+                and not normalized_source.startswith("test/data/")
+            )
+        )
+    ]
+
+
 def _stage_copies_root_test(stage: str) -> bool:
-    for source in _dockerfile_copy_sources(stage):
-        normalized_source = source.removeprefix("./").rstrip("/")
-        if normalized_source in {"", ".", "test"} or normalized_source.startswith(
-            "test/"
-        ):
-            return True
-    return False
+    return bool(_root_test_transfer_sources(stage))
 
 
-def test_production_dockerfile_does_not_copy_test_only_folders_into_image():
+def test_production_dockerfile_copies_only_runtime_test_data_assets():
     dockerfile = _read_repo_file("Dockerfile")
+    base_stage = _dockerfile_stage(dockerfile, "base")
+    builder_stage = _dockerfile_stage(dockerfile, "builder")
+    final_stage = _dockerfile_stage(dockerfile, "final")
+    test_copy_instructions = [
+        (
+            [
+                _normalized_transfer_source(instruction, source)
+                for source in instruction.sources
+            ],
+            instruction.destination,
+        )
+        for instruction in _dockerfile_transfer_instructions(final_stage)
+        if instruction.command == "COPY"
+        if any(
+            _normalized_transfer_source(instruction, source) == "test"
+            or _normalized_transfer_source(instruction, source).startswith("test/")
+            for source in instruction.sources
+        )
+    ]
 
     assert "test_toolbox" not in dockerfile
-    assert "COPY test" not in dockerfile
-    assert "COPY ./test" not in dockerfile
+    assert _root_test_transfer_sources(base_stage) == []
+    assert _root_test_transfer_sources(builder_stage) == []
+    assert _unsafe_production_transfer_sources(final_stage) == []
+    assert _root_test_copy_sources(builder_stage) == []
+    assert _root_test_copy_sources(final_stage) == ["test/data"]
+    assert test_copy_instructions == [(["test/data"], "/app/test/data")]
+
+
+@pytest.mark.parametrize(
+    ("stage", "unsafe_source"),
+    [
+        ("COPY . /app", "."),
+        ('COPY ["./test/run_tests.sh", "/app/test/run_tests.sh"]', "test/run_tests.sh"),
+        (
+            "COPY \\\n"
+            "  ./test/backend_tests.sh \\\n"
+            "  /app/test/backend_tests.sh",
+            "test/backend_tests.sh",
+        ),
+        ("ADD ./test /app/test", "test"),
+        ('ADD ["./test/test_mcp_server.py", "/app/test/"]', "test/test_mcp_server.py"),
+        ("COPY --from=builder /app/test /app/test", "test"),
+        ("COPY --from=builder /app /app", "."),
+    ],
+)
+def test_production_transfer_parser_detects_test_suite_bypasses(
+    stage: str,
+    unsafe_source: str,
+):
+    assert _unsafe_production_transfer_sources(stage) == [unsafe_source]
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "COPY ./test/data /app/test/data",
+        'COPY ["./test/data", "/app/test/data"]',
+        "COPY --chown=appuser:appuser \\\n"
+        "  ./test/data/3D/geometric \\\n"
+        "  /app/test/data/3D/geometric",
+        "COPY --from=builder /app/test/data /app/test/data",
+        "ADD ./test/data/PT1/regex.txt /app/test/data/PT1/regex.txt",
+    ],
+)
+def test_production_transfer_parser_allows_only_runtime_test_data(stage: str):
+    assert _unsafe_production_transfer_sources(stage) == []
+    assert _root_test_transfer_sources(stage)
+    assert _stage_copies_root_test(stage)
+
+
+@pytest.mark.parametrize("command", ["COPY", "ADD"])
+def test_production_pre_final_stage_rejects_runtime_test_data(command: str):
+    stage = f"{command} ./test/data /app/test/data"
+
+    assert _root_test_transfer_sources(stage) == ["test/data"]
+    assert _stage_copies_root_test(stage)
 
 
 def test_ci_build_configuration_does_not_reference_removed_test_toolbox():
@@ -66,16 +296,26 @@ def test_ci_build_configuration_does_not_reference_removed_test_toolbox():
     assert "test_toolbox" not in checked_build_files
 
 
-def test_production_ignore_policy_adds_only_root_test_exclusion():
+def test_production_ignore_policy_exposes_only_runtime_test_data():
     development_ignore = _read_repo_file(".dockerignore").splitlines()
     production_ignore = _read_repo_file("Dockerfile.dockerignore").splitlines()
+    selective_production_rules = [
+        "# Keep only runtime sample assets from the root test tree. Test runners and",
+        "# suites remain outside the production build context.",
+        "test/*",
+        "!test/data/",
+        "!test/data/**",
+    ]
 
     assert "test/" not in development_ignore
-    assert production_ignore.count("test/") == 1
-    assert [line for line in production_ignore if line != "test/"] == development_ignore
+    assert production_ignore == (
+        development_ignore[: development_ignore.index("backend/tests/")]
+        + selective_production_rules
+        + development_ignore[development_ignore.index("backend/tests/") :]
+    )
 
 
-def test_root_test_assets_are_owned_and_scoped_to_backend_dev_not_toolbox():
+def test_root_test_assets_are_scoped_to_backend_dev_and_production_data_only():
     development_ignore = _read_repo_file(".dockerignore").splitlines()
     development_dockerfile = _read_repo_file("Dockerfile.dev")
     production_dockerfile = _read_repo_file("Dockerfile")
@@ -110,6 +350,10 @@ def test_root_test_assets_are_owned_and_scoped_to_backend_dev_not_toolbox():
         backend_runtime_stage,
         toolbox_stage,
         frontend_stage,
-        production_dockerfile,
     ):
         assert not _stage_copies_root_test(test_free_stage)
+
+    production_builder = _dockerfile_stage(production_dockerfile, "builder")
+    production_final = _dockerfile_stage(production_dockerfile, "final")
+    assert not _stage_copies_root_test(production_builder)
+    assert _root_test_copy_sources(production_final) == ["test/data"]

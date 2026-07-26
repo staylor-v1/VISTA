@@ -2701,6 +2701,25 @@ async def list_inspection_parts(
     return [_serialize_inspection_part(part) for part in parts]
 
 
+@router.delete("/projects/{project_id}/parts", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_all_inspection_parts(
+    project_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await _get_project_with_access_check(
+        project_id=project_id,
+        db=db,
+        current_user=current_user,
+    )
+    await crud.delete_all_inspection_parts(
+        db=db,
+        project_id=project_id,
+        deleted_by=current_user.email,
+    )
+    return None
+
+
 @router.put(
     "/projects/{project_id}/parts/{part_id}/image-display-order",
     response_model=schemas.InspectionPart,

@@ -41,6 +41,7 @@ export const UI_SECTION_GROUPS = [
           { key: 'project_data.overlays', label: 'Overlays subtab' },
           { key: 'project_data.metadata', label: 'Metadata subtab' },
           { key: 'project_data.batches', label: 'Batches subtab' },
+          { key: 'project_data.unload_parts', label: 'Unload Parts subtab' },
           { key: 'project_data.remove_images', label: 'Unload Images subtab' },
           { key: 'project_data.recently_deleted', label: 'Recently Deleted subtab' },
           { key: 'project_data.data_validation', label: 'Data Validation panel' },

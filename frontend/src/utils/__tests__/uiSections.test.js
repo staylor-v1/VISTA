@@ -4,6 +4,7 @@ describe('uiSections', () => {
   test('defaults known UI sections to visible', () => {
     expect(isUiSectionEnabled({}, 'main.analyze')).toBe(true);
     expect(isUiSectionEnabled({}, 'project_data.batches')).toBe(true);
+    expect(isUiSectionEnabled({}, 'project_data.unload_parts')).toBe(true);
   });
 
   test('preserves explicit hidden section settings', () => {
@@ -11,5 +12,6 @@ describe('uiSections', () => {
     expect(normalized['main.analyze']).toBe(false);
     expect(normalized['project_data.batches']).toBe(false);
     expect(normalized['project_data.images_to_parts']).toBe(true);
+    expect(normalized['project_data.unload_parts']).toBe(true);
   });
 });

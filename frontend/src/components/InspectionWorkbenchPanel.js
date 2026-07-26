@@ -3980,6 +3980,9 @@ function InspectionWorkbenchPanel({
   const [imageOrderError, setImageOrderError] = useState('');
   const [imageOrderAnnouncement, setImageOrderAnnouncement] = useState('');
   const imageOrderSaveRequestRef = useRef(null);
+  const imageOrderOpenButtonRef = useRef(null);
+  const imageOrderFocusRestoreRef = useRef(null);
+  const tileSizeRangeInputRef = useRef(null);
   const [projectImageLookup, setProjectImageLookup] = useState({});
   const volumeMetadataProbeCacheRef = useRef(new Map());
   const volumeRenderSummaryCacheRef = useRef(new Map());
@@ -4493,6 +4496,7 @@ function InspectionWorkbenchPanel({
 
   useEffect(() => {
     imageOrderSaveRequestRef.current = null;
+    imageOrderFocusRestoreRef.current = null;
     setImageOrderDraft(null);
     setImageOrderSaving(false);
     setImageOrderError('');
@@ -4832,17 +4836,40 @@ function InspectionWorkbenchPanel({
       if (!previous) return previous;
       return {
         ...previous,
-        imageRefs: moveInspectionImageDisplayOrder(previous.imageRefs, imageKey, direction),
+        imageRefs: moveInspectionImageDisplayOrder(
+          selectedPartImageOrderKeys,
+          imageKey,
+          direction,
+        ),
       };
     });
     setImageOrderError('');
     setImageOrderAnnouncement(`${label} moved ${direction}.`);
-  }, []);
+  }, [selectedPartImageOrderKeys]);
   const cancelImageOrderDraft = useCallback(() => {
+    imageOrderFocusRestoreRef.current = {
+      projectId: String(projectId),
+      partId: String(selectedPart?.id || ''),
+    };
     setImageOrderDraft(null);
     setImageOrderError('');
     setImageOrderAnnouncement('Image order changes canceled.');
-  }, []);
+  }, [projectId, selectedPart?.id]);
+  useEffect(() => {
+    if (imageOrderDraftIsOpen) return;
+    const focusScope = imageOrderFocusRestoreRef.current;
+    if (
+      !focusScope
+      || focusScope.projectId !== String(projectId)
+      || focusScope.partId !== String(selectedPart?.id || '')
+    ) return;
+    imageOrderFocusRestoreRef.current = null;
+    if (imageOrderOpenButtonRef.current && !imageOrderOpenButtonRef.current.disabled) {
+      imageOrderOpenButtonRef.current.focus();
+    } else {
+      tileSizeRangeInputRef.current?.focus();
+    }
+  }, [imageOrderDraftIsOpen, projectId, selectedPart?.id]);
   const saveImageOrderDraft = useCallback(async () => {
     if (
       readOnly
@@ -4851,7 +4878,9 @@ function InspectionWorkbenchPanel({
       || imageOrderSaving
       || imageOrderSaveRequestRef.current
     ) return;
-    const imageRefs = [...imageOrderDraft.imageRefs];
+    const imageRefs = [...selectedPartImageOrderKeys];
+    const requestProjectId = String(projectId);
+    const requestPartId = String(selectedPart.id);
     const requestToken = {};
     imageOrderSaveRequestRef.current = requestToken;
     setImageOrderSaving(true);
@@ -4870,10 +4899,23 @@ function InspectionWorkbenchPanel({
         throw new Error(`Unable to save image order (${response.status})`);
       }
       const updatedPart = await response.json();
+      const savedImageOrder = updatedPart?.metadata?.image_display_order;
       setParts((previous) => previous.map((part) => (
-        String(part.id) === String(updatedPart.id) ? updatedPart : part
+        String(part.id) === requestPartId && Array.isArray(savedImageOrder)
+          ? {
+            ...part,
+            metadata: {
+              ...(part.metadata && typeof part.metadata === 'object' ? part.metadata : {}),
+              image_display_order: [...savedImageOrder],
+            },
+          }
+          : part
       )));
       if (imageOrderSaveRequestRef.current !== requestToken) return;
+      imageOrderFocusRestoreRef.current = {
+        projectId: requestProjectId,
+        partId: requestPartId,
+      };
       setImageOrderDraft(null);
       setImageOrderAnnouncement('Image display order saved.');
     } catch (saveError) {
@@ -4887,12 +4929,12 @@ function InspectionWorkbenchPanel({
       }
     }
   }, [
-    imageOrderDraft,
     imageOrderDraftIsOpen,
     imageOrderSaving,
     projectId,
     readOnly,
     selectedPart,
+    selectedPartImageOrderKeys,
   ]);
   const visibleSelectedPartImageRefs = useMemo(() => {
     const hidden = new Set(hiddenViewNames.map((name) => String(name).toLowerCase()));
@@ -9054,6 +9096,7 @@ function InspectionWorkbenchPanel({
               <div className="tile-size-control">
                 <label htmlFor="inspection-tile-columns-slider">Tile size</label>
                 <input
+                  ref={tileSizeRangeInputRef}
                   id="inspection-tile-columns-slider"
                   type="range"
                   aria-label="Inspection tile columns"
@@ -9084,6 +9127,7 @@ function InspectionWorkbenchPanel({
                 <div className="inspection-image-order-control">
                   {!imageOrderDraftIsOpen ? (
                     <button
+                      ref={imageOrderOpenButtonRef}
                       type="button"
                       className="btn btn-secondary inspection-image-order-open"
                       disabled={selectedPartImageRefs.length < 2}

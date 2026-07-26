@@ -18,6 +18,7 @@ from backend.metadata.nsipro_fields import (
     flatten_nsipro_metadata,
 )
 from backend.metadata.nsipro_parsers import parse_nsipro_text
+from utils import crud
 
 
 def _by_path(metadata):
@@ -441,6 +442,54 @@ async def test_inspection_part_delete_cascades_metadata_field_rows(db_session):
         )
     ).scalar_one()
     assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_bulk_part_delete_removes_only_the_project_metadata_field_rows(db_session):
+    project = Project(
+        name="bulk field cleanup project",
+        meta_group_id="field-cascade",
+        project_type="PT3",
+    )
+    other_project = Project(
+        name="bulk field cleanup isolation project",
+        meta_group_id="field-cascade",
+        project_type="PT3",
+    )
+    db_session.add_all([project, other_project])
+    await db_session.flush()
+
+    part = InspectionPart(
+        project_id=project.id,
+        serial_number="SN-BULK-FIELD-CLEANUP",
+    )
+    other_part = InspectionPart(
+        project_id=other_project.id,
+        serial_number="SN-BULK-FIELD-KEEP",
+    )
+    db_session.add_all([part, other_part])
+    await db_session.flush()
+    db_session.add_all([
+        _stored_field(project.id, part.id),
+        _stored_field(other_project.id, other_part.id),
+    ])
+    await db_session.commit()
+
+    deleted_count = await crud.delete_all_inspection_parts(
+        db=db_session,
+        project_id=project.id,
+        deleted_by="bulk-cleanup@example.com",
+    )
+
+    assert deleted_count == 1
+    remaining_part_project_ids = (
+        await db_session.execute(select(InspectionPart.project_id))
+    ).scalars().all()
+    remaining_field_project_ids = (
+        await db_session.execute(select(InspectionPartMetadataField.project_id))
+    ).scalars().all()
+    assert remaining_part_project_ids == [other_project.id]
+    assert remaining_field_project_ids == [other_project.id]
 
 
 @pytest.mark.asyncio

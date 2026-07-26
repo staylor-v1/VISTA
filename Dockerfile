@@ -98,6 +98,8 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 
 # Copy backend code
 COPY --from=builder /app/backend /app/backend
+# Copy runtime sample assets used by Project Data's built-in example loader
+COPY ./test/data /app/test/data
 # Copy frontend build files
 COPY --from=builder /app/frontend/build /app/ui2
 # Set frontend build path environment variable

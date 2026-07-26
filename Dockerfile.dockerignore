@@ -124,7 +124,11 @@ README.docker.md
 
 # Local dependency trees and generated test artifacts
 .venv/
-test/
+# Keep only runtime sample assets from the root test tree. Test runners and
+# suites remain outside the production build context.
+test/*
+!test/data/
+!test/data/**
 backend/tests/
 backend/_cache/
 backend/logs/

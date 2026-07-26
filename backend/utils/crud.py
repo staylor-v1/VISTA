@@ -766,6 +766,42 @@ async def delete_inspection_part(
     )
     return True
 
+
+async def delete_all_inspection_parts(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    deleted_by: Optional[str] = None,
+) -> int:
+    """Delete every part and its derived metadata rows in one transaction."""
+
+    # Bulk ORM deletes do not run relationship cascades. Remove derived rows
+    # explicitly so this remains correct on databases that do not enforce
+    # foreign-key cascades (including the SQLite test configuration).
+    await db.execute(
+        delete(models.InspectionPartMetadataField).where(
+            models.InspectionPartMetadataField.project_id == project_id,
+        )
+    )
+    result = await db.execute(
+        delete(models.InspectionPart).where(
+            models.InspectionPart.project_id == project_id,
+        )
+    )
+    deleted_count = max(int(result.rowcount or 0), 0)
+    await db.commit()
+    log_db_operation(
+        "BULK_DELETE",
+        "inspection_parts",
+        project_id,
+        deleted_by or "system",
+        {
+            "project_id": str(project_id),
+            "parts_deleted": deleted_count,
+        },
+    )
+    return deleted_count
+
+
 # DataInstance CRUD operations
 async def get_data_instance(db: AsyncSession, image_id: uuid.UUID) -> Optional[models.DataInstance]:
     result = await db.execute(

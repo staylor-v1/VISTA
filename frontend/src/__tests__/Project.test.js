@@ -11,6 +11,7 @@ let mockUploadCompletionResult = null;
 let mockLatestUploadComplete = null;
 let mockLatestBundleImportComplete = null;
 let mockLatestUploaderSetError = null;
+let mockPartsUnloadRefreshResult = null;
 const mockFlushPendingAutosave = jest.fn();
 const mockNavigate = jest.fn();
 const mockNavigateToLocation = (to) => {
@@ -190,6 +191,27 @@ jest.mock('../components/OverlaysTab', () => {
   };
 });
 jest.mock('../components/BatchesTab', () => () => <div>Batches</div>);
+jest.mock('../components/UnloadPartsTab', () => {
+  const React = require('react');
+  return function MockUnloadPartsTab({ parts = [], onPartsUnloaded }) {
+    const [feedback, setFeedback] = React.useState('');
+    return (
+      <div>
+        <div>Unload parts ({parts.length} parts)</div>
+        <button
+          type="button"
+          onClick={async () => {
+            mockPartsUnloadRefreshResult = await onPartsUnloaded?.();
+            setFeedback(`Mock parts unload refresh ${mockPartsUnloadRefreshResult}`);
+          }}
+        >
+          Complete mocked parts unload
+        </button>
+        {feedback && <div>{feedback}</div>}
+      </div>
+    );
+  };
+});
 jest.mock('../components/RemoveImagesTab', () => () => <div>Remove images</div>);
 jest.mock('../components/ProjectDataMetadataTab', () => () => <div>Project data metadata</div>);
 
@@ -198,6 +220,7 @@ beforeEach(() => {
   mockLatestUploadComplete = null;
   mockLatestBundleImportComplete = null;
   mockLatestUploaderSetError = null;
+  mockPartsUnloadRefreshResult = null;
 });
 
 function deferred() {
@@ -291,12 +314,68 @@ describe('Project image summary loading', () => {
     }));
     expect(screen.getByRole('tab', { name: 'Load Images' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Images to Parts' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Unload Parts' })).toBeInTheDocument();
 
     const urls = global.fetch.mock.calls.map(([url]) => String(url));
     expect(urls.filter((url) => url === '/api/projects/proj-1/data-summary')).toHaveLength(1);
     expect(urls).not.toContain('/api/projects/proj-1/parts');
     expect(urls).not.toContain('/api/projects/proj-1/export-bundle-json');
     expect(urls.some((url) => url.includes('/images-page?') || url.includes('/images?'))).toBe(false);
+  });
+
+  test('loads only parts when the Unload Parts tab is opened', async () => {
+    render(<Project />);
+    await screen.findByTestId('project-data-counts');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Unload Parts' }));
+
+    expect(await screen.findByText('Unload parts (2 parts)')).toBeInTheDocument();
+    expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/parts')).toHaveLength(1);
+    expect(
+      global.fetch.mock.calls.some(([url]) => String(url).includes('/images-page?')),
+    ).toBe(false);
+  });
+
+  test('refreshes only parts and summary after all parts are unloaded', async () => {
+    render(<Project />);
+    await screen.findByTestId('project-data-counts');
+    fireEvent.click(screen.getByRole('tab', { name: 'Unload Parts' }));
+    await screen.findByText('Unload parts (2 parts)');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Complete mocked parts unload' }));
+
+    expect(await screen.findByText('Mock parts unload refresh fresh')).toBeInTheDocument();
+    expect(mockPartsUnloadRefreshResult).toBe('fresh');
+    expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/parts')).toHaveLength(2);
+    expect(global.fetch.mock.calls.filter(([url]) => url === '/api/projects/proj-1/data-summary')).toHaveLength(2);
+    expect(
+      global.fetch.mock.calls.some(([url]) => String(url).includes('/images-page?')),
+    ).toBe(false);
+  });
+
+  test('reports an unload refresh error when the authoritative parts reload fails', async () => {
+    const defaultFetch = global.fetch.getMockImplementation();
+    let partRequests = 0;
+    global.fetch.mockImplementation((url, options) => {
+      if (url === '/api/projects/proj-1/parts') {
+        partRequests += 1;
+        if (partRequests === 2) {
+          return Promise.resolve({ ok: false, status: 503 });
+        }
+      }
+      return defaultFetch(url, options);
+    });
+
+    render(<Project />);
+    await screen.findByTestId('project-data-counts');
+    fireEvent.click(screen.getByRole('tab', { name: 'Unload Parts' }));
+    await screen.findByText('Unload parts (2 parts)');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Complete mocked parts unload' }));
+
+    await waitFor(() => expect(mockPartsUnloadRefreshResult).toBe('error'));
+    expect(screen.getByText('Unload parts (2 parts)')).toBeInTheDocument();
+    expect(screen.getByText('Mock parts unload refresh error')).toBeInTheDocument();
   });
 
   test('refreshes the authoritative image summary once after upload completion', async () => {

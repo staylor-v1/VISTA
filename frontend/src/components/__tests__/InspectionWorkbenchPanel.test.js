@@ -1041,6 +1041,9 @@ describe('InspectionWorkbenchPanel', () => {
     await waitFor(() => {
       expect(screen.queryByRole('region', { name: 'Arrange image display order' })).not.toBeInTheDocument();
     });
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Arrange image order' })).toHaveFocus();
+    });
     const saveCalls = global.fetch.mock.calls.filter(([url, options = {}]) => (
       url.includes('/image-display-order') && options.method === 'PUT'
     ));
@@ -1062,6 +1065,9 @@ describe('InspectionWorkbenchPanel', () => {
     fireEvent.click(within(arranger).getByRole('button', { name: 'Cancel' }));
 
     expect(screen.queryByRole('region', { name: 'Arrange image display order' })).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Arrange image order' })).toHaveFocus();
+    });
     expect(document.querySelector('.view-board .view-cell-title span')).toHaveTextContent('FRONT');
     expect(global.fetch.mock.calls.some(([url, options = {}]) => (
       url.includes('/image-display-order') && options.method === 'PUT'
@@ -1098,6 +1104,240 @@ describe('InspectionWorkbenchPanel', () => {
     );
     expect(screen.getByRole('region', { name: 'Arrange image display order' })).toBeInTheDocument();
     expect(document.querySelector('.view-board .view-cell-title span')).toHaveTextContent('BACK');
+  });
+
+  test('reconciles a deleted image out of an open draft before saving', async () => {
+    mockWorkbenchFetch(makeImageOrderScenario());
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    const layerControls = await screen.findByLabelText('Image Order Part layer toggles');
+    fireEvent.click(within(layerControls).getByRole('button', { name: 'OVERLAY' }));
+    const deleteOverlayButton = await screen.findByRole('button', {
+      name: 'Delete overlay Porosity overlay',
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Arrange image order' }));
+    const arranger = screen.getByRole('region', { name: 'Arrange image display order' });
+    expect(within(arranger).getAllByRole('listitem')).toHaveLength(3);
+
+    fireEvent.click(deleteOverlayButton);
+    await waitFor(() => {
+      expect(within(arranger).getAllByRole('listitem')).toHaveLength(2);
+    });
+    expect(within(arranger).queryByRole('listitem', { name: 'Porosity overlay' }))
+      .not.toBeInTheDocument();
+
+    fireEvent.click(within(arranger).getByRole('button', { name: 'Save order' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('region', { name: 'Arrange image display order' }))
+        .not.toBeInTheDocument();
+    });
+    const saveCalls = global.fetch.mock.calls.filter(([url, options = {}]) => (
+      url.includes('/image-display-order') && options.method === 'PUT'
+    ));
+    expect(JSON.parse(saveCalls.at(-1)[1].body)).toEqual({
+      image_refs: ['order-front-id', 'order-back-id'],
+    });
+  });
+
+  test('appends a newly mapped image to an open draft and lets it move before saving', async () => {
+    const scenario = makeImageOrderScenario();
+    scenario.projectImages.push({
+      id: 'order-side-id',
+      filename: 'order-side.png',
+      metadata: {},
+    });
+    mockWorkbenchFetch(scenario);
+    const defaultFetch = global.fetch;
+    global.fetch = jest.fn((url, options = {}) => {
+      if (
+        url.endsWith('/parts/part-image-order')
+        && options.method === 'PATCH'
+      ) {
+        const payload = JSON.parse(options.body || '{}');
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            ...scenario.parts[0],
+            review_state: payload.review_state,
+            metadata: {
+              ...scenario.parts[0].metadata,
+              source_images: [
+                ...scenario.parts[0].metadata.source_images,
+                {
+                  filename: 'order-side.png',
+                  image_id: 'order-side-id',
+                  side: 'side',
+                  modality: 'visual',
+                },
+              ],
+            },
+          }),
+        });
+      }
+      return defaultFetch(url, options);
+    });
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Arrange image order' }));
+    const arranger = screen.getByRole('region', { name: 'Arrange image display order' });
+    fireEvent.click(screen.getByRole('button', { name: 'Pass' }));
+    await waitFor(() => {
+      expect(within(arranger).getAllByRole('listitem')).toHaveLength(4);
+    });
+    expect(within(arranger).getByRole('listitem', { name: 'SIDE' }))
+      .toHaveAttribute('data-image-order-key', 'order-side-id');
+
+    fireEvent.click(within(arranger).getByRole('button', { name: 'Move image 4 SIDE up' }));
+    fireEvent.click(within(arranger).getByRole('button', { name: 'Save order' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('region', { name: 'Arrange image display order' }))
+        .not.toBeInTheDocument();
+    });
+    const saveCalls = global.fetch.mock.calls.filter(([url, options = {}]) => (
+      url.includes('/image-display-order') && options.method === 'PUT'
+    ));
+    expect(JSON.parse(saveCalls.at(-1)[1].body)).toEqual({
+      image_refs: [
+        'order-front-id',
+        'order-back-id',
+        'order-side-id',
+        'order-overlay-id',
+      ],
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Arrange image order' }));
+    expect(
+      within(screen.getByRole('region', { name: 'Arrange image display order' }))
+        .getByRole('listitem', { name: 'SIDE' }),
+    ).toBeInTheDocument();
+  });
+
+  test('focuses tile size after saving an open draft that shrinks to one image', async () => {
+    const scenario = makeImageOrderScenario();
+    scenario.parts[0].metadata.analysis_outputs = [];
+    scenario.projectImages = scenario.projectImages.filter(
+      (image) => image.id !== 'order-overlay-id',
+    );
+    mockWorkbenchFetch(scenario);
+    const defaultFetch = global.fetch;
+    global.fetch = jest.fn((url, options = {}) => {
+      if (
+        url.endsWith('/parts/part-image-order')
+        && options.method === 'PATCH'
+      ) {
+        const payload = JSON.parse(options.body || '{}');
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            ...scenario.parts[0],
+            review_state: payload.review_state,
+            metadata: {
+              ...scenario.parts[0].metadata,
+              configured_views: ['front'],
+              view_images: { front: 'order-front.png' },
+              source_images: [scenario.parts[0].metadata.source_images[0]],
+            },
+          }),
+        });
+      }
+      return defaultFetch(url, options);
+    });
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Arrange image order' }));
+    const arranger = screen.getByRole('region', { name: 'Arrange image display order' });
+    fireEvent.click(screen.getByRole('button', { name: 'Pass' }));
+    await waitFor(() => {
+      expect(within(arranger).getAllByRole('listitem')).toHaveLength(1);
+    });
+
+    fireEvent.click(within(arranger).getByRole('button', { name: 'Save order' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('region', { name: 'Arrange image display order' }))
+        .not.toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: 'Arrange image order' })).toBeDisabled();
+    expect(screen.getByLabelText('Inspection tile columns')).toHaveFocus();
+  });
+
+  test('merges a delayed save order into fresh same-part metadata and review state', async () => {
+    const scenario = makeImageOrderScenario();
+    scenario.projectImages.push({
+      id: 'concurrent-image-id',
+      filename: 'concurrent.png',
+      metadata: {},
+    });
+    mockWorkbenchFetch(scenario);
+    const defaultFetch = global.fetch;
+    let resolveSave;
+    global.fetch = jest.fn((url, options = {}) => {
+      if (url.includes('/image-display-order') && options.method === 'PUT') {
+        const payload = JSON.parse(options.body || '{}');
+        return new Promise((resolve) => {
+          resolveSave = () => resolve({
+            ok: true,
+            json: async () => ({
+              ...scenario.parts[0],
+              metadata: {
+                ...scenario.parts[0].metadata,
+                image_display_order: payload.image_refs,
+              },
+            }),
+          });
+        });
+      }
+      if (
+        url.endsWith('/parts/part-image-order')
+        && options.method === 'PATCH'
+      ) {
+        const payload = JSON.parse(options.body || '{}');
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            ...scenario.parts[0],
+            review_state: payload.review_state,
+            metadata: {
+              ...scenario.parts[0].metadata,
+              concurrent_marker: 'preserve-me',
+              source_images: [
+                ...scenario.parts[0].metadata.source_images,
+                {
+                  filename: 'concurrent.png',
+                  image_id: 'concurrent-image-id',
+                  side: 'concurrent',
+                  modality: 'visual',
+                },
+              ],
+            },
+          }),
+        });
+      }
+      return defaultFetch(url, options);
+    });
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Arrange image order' }));
+    const arranger = screen.getByRole('region', { name: 'Arrange image display order' });
+    fireEvent.click(within(arranger).getByRole('button', { name: 'Move image 2 BACK up' }));
+    fireEvent.click(within(arranger).getByRole('button', { name: 'Save order' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Pass' }));
+    await waitFor(() => {
+      const tileLabels = Array.from(document.querySelectorAll('.view-cell-title span'))
+        .map((element) => element.textContent);
+      expect(tileLabels).toContain('CONCURRENT');
+    });
+
+    resolveSave();
+    await waitFor(() => {
+      expect(screen.queryByRole('region', { name: 'Arrange image display order' }))
+        .not.toBeInTheDocument();
+    });
+    expect(screen.getByText('Passed: 1')).toBeInTheDocument();
+    expect(
+      Array.from(document.querySelectorAll('.view-cell-title span'))
+        .map((element) => element.textContent),
+    ).toContain('CONCURRENT');
+    expect(screen.getByRole('button', { name: 'Arrange image order' })).toHaveFocus();
   });
 
   test('applies a successful image-order save after switching away from the part in flight', async () => {
@@ -1162,7 +1402,9 @@ describe('InspectionWorkbenchPanel', () => {
     fireEvent.click(within(arranger).getByRole('button', { name: 'Move image 2 BACK up' }));
     fireEvent.click(within(arranger).getByRole('button', { name: 'Save order' }));
 
-    fireEvent.click(document.querySelectorAll('.workbench-part-row')[1]);
+    const secondPartRow = document.querySelectorAll('.workbench-part-row')[1];
+    secondPartRow.focus();
+    fireEvent.click(secondPartRow);
     await waitFor(() => {
       expect(document.querySelector('.view-board .view-cell-title span')).toHaveTextContent('FRONT');
     });
@@ -1170,6 +1412,7 @@ describe('InspectionWorkbenchPanel', () => {
     await waitFor(() => {
       expect(screen.getAllByText('Second Image Order Part').length).toBeGreaterThan(0);
     });
+    expect(secondPartRow).toHaveFocus();
 
     fireEvent.click(document.querySelectorAll('.workbench-part-row')[0]);
     await waitFor(() => {
