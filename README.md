@@ -295,7 +295,7 @@ npm run build
 
 **Podman image:**
 ```bash
-podman build -t vista .
+podman build --ignorefile Dockerfile.dockerignore -t vista .
 podman run -p 8000:8000 vista
 ```
 
@@ -359,7 +359,7 @@ The application uses header-based authentication where the reverse proxy authent
 ### Podman Deployment
 
 ```bash
-podman build -t vista .
+podman build --ignorefile Dockerfile.dockerignore -t vista .
 podman run -p 8000:8000 vista
 ```
 
@@ -374,7 +374,7 @@ Test deployment using minikube:
 minikube start
 
 # Build and load image
-podman build -t vista:latest .
+podman build --ignorefile Dockerfile.dockerignore -t vista:latest .
 minikube image load vista:latest
 
 # Deploy

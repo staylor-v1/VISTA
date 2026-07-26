@@ -2831,6 +2831,323 @@ def _upload_part_test_volume(client, project_id, headers, filename, array, metad
     return response.json()
 
 
+def test_image_display_order_canonicalizes_aliases_and_appends_omitted_images(client):
+    project_id, headers = _create_project_for_part_image_tests(
+        client,
+        "Image display order project",
+    )
+    original_metadata = {
+        "view_images": {
+            "rear": "rear.png",
+            "front": "front.png",
+            "legacy": "view-only-legacy.png",
+        },
+        "source_images": [
+            {
+                "filename": "front.png",
+                "image_id": "front-id",
+                "side": "front",
+                "metadata": {"preserve": "front"},
+            },
+            {
+                "filename": "rear.png",
+                "image_id": "rear-id",
+                "side": "rear",
+                "metadata": {"preserve": "rear"},
+            },
+            {
+                "filename": "side.png",
+                "image_id": "side-id",
+                "side": "side",
+            },
+            {
+                "filename": "legacy-without-id.png",
+                "side": "legacy",
+            },
+        ],
+        "analysis_outputs": [
+            {
+                "filename": "overlay.png",
+                "image_id": "overlay-id",
+                "analysis_output": True,
+                "metadata": {"threshold": 17},
+            }
+        ],
+        "unrelated": {"nested": ["must", "survive"]},
+        "image_display_order": ["stale-value"],
+    }
+    part_response = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={
+            "serial_number": "DISPLAY-ORDER-1",
+            "metadata": original_metadata,
+        },
+        headers=headers,
+    )
+    assert part_response.status_code == 201, part_response.text
+    part_id = part_response.json()["id"]
+
+    response = client.put(
+        f"/api/projects/{project_id}/parts/{part_id}/image-display-order",
+        json={"image_refs": ["  overlay.png  ", "front.png"]},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    metadata = response.json()["metadata"]
+    assert metadata["image_display_order"] == [
+        "overlay-id",
+        "front-id",
+        "rear-id",
+        "view-only-legacy.png",
+        "side-id",
+        "legacy-without-id.png",
+    ]
+    assert metadata["view_images"] == original_metadata["view_images"]
+    assert metadata["source_images"] == original_metadata["source_images"]
+    assert metadata["analysis_outputs"] == original_metadata["analysis_outputs"]
+    assert metadata["unrelated"] == original_metadata["unrelated"]
+
+
+@pytest.mark.parametrize(
+    ("image_refs", "detail_fragment"),
+    [
+        ([], None),
+        (["   "], None),
+        (["front-id", " front-id "], None),
+        (["missing.png"], "Unknown image reference"),
+        (["front-id", "front.png"], "duplicates another image"),
+    ],
+)
+def test_image_display_order_rejects_invalid_references(
+    client,
+    image_refs,
+    detail_fragment,
+):
+    project_id, headers = _create_project_for_part_image_tests(
+        client,
+        "Invalid image display order project",
+    )
+    part_response = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={
+            "serial_number": "DISPLAY-ORDER-INVALID",
+            "metadata": {
+                "view_images": {"front": "front.png"},
+                "source_images": [
+                    {"filename": "front.png", "image_id": "front-id"},
+                ],
+            },
+        },
+        headers=headers,
+    )
+    assert part_response.status_code == 201, part_response.text
+
+    response = client.put(
+        (
+            f"/api/projects/{project_id}/parts/{part_response.json()['id']}"
+            "/image-display-order"
+        ),
+        json={"image_refs": image_refs},
+        headers=headers,
+    )
+
+    assert response.status_code == 422, response.text
+    if detail_fragment:
+        assert detail_fragment in response.json()["detail"]
+
+
+def test_image_display_order_rejects_ambiguous_filename_alias(client):
+    project_id, headers = _create_project_for_part_image_tests(
+        client,
+        "Ambiguous image display order project",
+    )
+    original_source_images = [
+        {"filename": "shared.png", "image_id": "front-id", "side": "front"},
+        {"filename": "shared.png", "image_id": "back-id", "side": "back"},
+    ]
+    part_response = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={
+            "serial_number": "DISPLAY-ORDER-AMBIGUOUS",
+            "metadata": {
+                "source_images": original_source_images,
+                "unrelated": "preserve me",
+            },
+        },
+        headers=headers,
+    )
+    assert part_response.status_code == 201, part_response.text
+    part_id = part_response.json()["id"]
+
+    response = client.put(
+        f"/api/projects/{project_id}/parts/{part_id}/image-display-order",
+        json={"image_refs": ["shared.png"]},
+        headers=headers,
+    )
+
+    assert response.status_code == 422, response.text
+    assert "Ambiguous image filename" in response.json()["detail"]
+    persisted = client.get(
+        f"/api/projects/{project_id}/parts",
+        headers=headers,
+    ).json()[0]["metadata"]
+    assert "image_display_order" not in persisted
+    assert persisted["source_images"] == original_source_images
+    assert persisted["unrelated"] == "preserve me"
+
+
+def test_image_display_order_excludes_stale_view_mapping_for_deleted_source(client):
+    project_id, headers = _create_project_for_part_image_tests(
+        client,
+        "Deleted image display mapping project",
+    )
+    part_response = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={
+            "serial_number": "DISPLAY-ORDER-DELETED-MAPPING",
+            "metadata": {
+                "view_images": {
+                    "front": "deleted.png",
+                    "back": "alive.png",
+                    "overlay": "deleted-overlay.png",
+                },
+                "source_images": [
+                    {
+                        "filename": "deleted.png",
+                        "image_id": "deleted-id",
+                        "side": "front",
+                        "delete_candidate": True,
+                    },
+                    {
+                        "filename": "alive.png",
+                        "image_id": "alive-id",
+                        "side": "back",
+                    },
+                ],
+                "analysis_outputs": [
+                    {
+                        "filename": "deleted-overlay.png",
+                        "image_id": "deleted-overlay-id",
+                        "analysis_output": True,
+                        "overlay_delete_candidate": True,
+                    },
+                ],
+            },
+        },
+        headers=headers,
+    )
+    assert part_response.status_code == 201, part_response.text
+
+    response = client.put(
+        (
+            f"/api/projects/{project_id}/parts/{part_response.json()['id']}"
+            "/image-display-order"
+        ),
+        json={"image_refs": ["alive-id"]},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["metadata"]["image_display_order"] == ["alive-id"]
+
+
+def test_image_display_order_does_not_resurrect_deleted_view_id_from_shared_filename(
+    client,
+):
+    project_id, headers = _create_project_for_part_image_tests(
+        client,
+        "Deleted shared-filename image mapping project",
+    )
+    part_response = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={
+            "serial_number": "DISPLAY-ORDER-DELETED-SHARED-FILENAME",
+            "metadata": {
+                "view_images": {
+                    "front": {
+                        "image_id": "deleted-id",
+                        "filename": "shared.png",
+                    },
+                },
+                "source_images": [
+                    {
+                        "filename": "shared.png",
+                        "image_id": "deleted-id",
+                        "side": "front",
+                        "delete_candidate": True,
+                    },
+                    {
+                        "filename": "shared.png",
+                        "image_id": "active-id",
+                        "side": "back",
+                    },
+                ],
+            },
+        },
+        headers=headers,
+    )
+    assert part_response.status_code == 201, part_response.text
+
+    response = client.put(
+        (
+            f"/api/projects/{project_id}/parts/{part_response.json()['id']}"
+            "/image-display-order"
+        ),
+        json={"image_refs": ["active-id"]},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["metadata"]["image_display_order"] == ["active-id"]
+
+
+def test_image_display_order_rejects_archived_project_mutation(client):
+    project_id, headers = _create_project_for_part_image_tests(
+        client,
+        "Archived image display order project",
+    )
+    part_response = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={
+            "serial_number": "DISPLAY-ORDER-ARCHIVED",
+            "metadata": {
+                "source_images": [
+                    {
+                        "filename": "front.png",
+                        "image_id": "front-id",
+                        "side": "front",
+                    },
+                    {
+                        "filename": "back.png",
+                        "image_id": "back-id",
+                        "side": "back",
+                    },
+                ],
+            },
+        },
+        headers=headers,
+    )
+    assert part_response.status_code == 201, part_response.text
+    archive_response = client.patch(
+        f"/api/projects/{project_id}/archive",
+        headers=headers,
+    )
+    assert archive_response.status_code == 200, archive_response.text
+
+    response = client.put(
+        (
+            f"/api/projects/{project_id}/parts/{part_response.json()['id']}"
+            "/image-display-order"
+        ),
+        json={"image_refs": ["back-id", "front-id"]},
+        headers=headers,
+    )
+
+    assert response.status_code == 403, response.text
+    assert "archived" in response.json()["detail"].lower()
+
+
 def test_image_assignment_can_move_image_back_to_unassigned(client):
     project_id, headers = _create_project_for_part_image_tests(client, "Unassign image project")
     uploaded = _upload_part_test_image(client, project_id, headers, "assignable.png")

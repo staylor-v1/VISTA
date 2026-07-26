@@ -171,6 +171,31 @@ class InspectionPartManualFlagUpdateRequest(BaseModel):
     manual_flagged: bool = False
 
 
+class InspectionPartImageDisplayOrderUpdateRequest(BaseModel):
+    image_refs: List[str] = Field(..., min_length=1, max_length=1000)
+
+    @field_validator("image_refs", mode="before")
+    @classmethod
+    def normalize_image_refs(cls, value):
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("image_refs must be an array")
+        normalized: List[str] = []
+        seen: set[str] = set()
+        for image_ref in value:
+            if not isinstance(image_ref, str):
+                raise ValueError("image_refs must contain only strings")
+            safe_ref = image_ref.strip()
+            if not safe_ref:
+                raise ValueError("image_refs must not contain blank references")
+            if len(safe_ref) > 2048:
+                raise ValueError("image references must be 2048 characters or fewer")
+            if safe_ref in seen:
+                raise ValueError("image_refs must not contain duplicate references")
+            seen.add(safe_ref)
+            normalized.append(safe_ref)
+        return normalized
+
+
 class InspectionPartMetadataSourcesUpdateRequest(BaseModel):
     metadata_source_keys: List[str] = Field(default_factory=list, max_length=100)
 

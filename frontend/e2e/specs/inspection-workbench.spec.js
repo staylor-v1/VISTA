@@ -18,6 +18,8 @@ const rgbaFullscreen3dNarrowScreenshotPath = path.resolve(__dirname, '../../arti
 const rgbaFullscreen3dCompactScreenshotPath = path.resolve(__dirname, '../../artifacts/rgba-segment-fullscreen-3d-compact.png');
 const annotationTransparencyScreenshotPath = path.resolve(__dirname, '../../artifacts/annotation-transparency-50.png');
 const nsiproMetadataScreenshotPath = path.resolve(__dirname, '../../artifacts/nsipro-part-metadata.png');
+const imageDisplayOrderScreenshotPath = path.resolve(__dirname, '../../artifacts/image-display-order.png');
+const imageDisplayOrderNarrowScreenshotPath = path.resolve(__dirname, '../../artifacts/image-display-order-narrow.png');
 const simulatedUsers = ['basic', 'intermediate', 'advanced'];
 
 function readMultipartJsonFilePart(bodyBuffer, fieldName) {
@@ -331,6 +333,119 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
     });
   }
 }
+
+test('image display order persists a full staged sequence across an inspection rerender', async ({ page }) => {
+  const orderedPart = {
+    id: 'part-image-order',
+    batch_id: 'batch-basic',
+    serial_number: 'SN-IMAGE-ORDER',
+    display_name: 'Image Order Housing',
+    review_state: 'in_review',
+    metadata: {
+      configured_views: ['front', 'back'],
+      modalities: ['visual'],
+      view_images: {
+        front: 'order-front.png',
+        back: 'order-back.png',
+      },
+      source_images: [
+        {
+          filename: 'order-front.png',
+          image_id: 'order-front-id',
+          side: 'front',
+          modality: 'visual',
+        },
+        {
+          filename: 'order-back.png',
+          image_id: 'order-back-id',
+          side: 'back',
+          modality: 'visual',
+        },
+      ],
+      analysis_outputs: [
+        {
+          filename: 'order-overlay.png',
+          image_id: 'order-overlay-id',
+          label: 'Porosity overlay',
+          analysis_output: true,
+          overlay: true,
+        },
+      ],
+    },
+  };
+  const images = [
+    { id: 'order-front-id', filename: 'order-front.png', metadata: {} },
+    { id: 'order-back-id', filename: 'order-back.png', metadata: {} },
+    { id: 'order-overlay-id', filename: 'order-overlay.png', metadata: {} },
+  ];
+  const {
+    projectId: mockedProjectId,
+    getImageDisplayOrderRequests,
+  } = await mockInspectionWorkbenchRoutes(page, {
+    type: 'PT1',
+    scenario: 'basic',
+    mockParts: [orderedPart],
+    mockBatches: [{ id: 'batch-basic', name: 'Batch Basic' }],
+    images,
+  });
+
+  await page.goto(`/project/${mockedProjectId}`, { waitUntil: 'networkidle' });
+  await page.getByRole('tab', { name: 'Inspection' }).click();
+  const viewBoard = page.locator('.view-board');
+  await expect(viewBoard.locator('.view-cell-title span')).toHaveText(['FRONT', 'BACK']);
+  await expect(viewBoard.locator('.view-cell')).toHaveCount(2);
+
+  await page.getByRole('button', { name: 'Arrange image order' }).click();
+  const arranger = page.getByRole('region', { name: 'Arrange image display order' });
+  await expect(arranger.getByRole('listitem')).toHaveCount(3);
+
+  await arranger.getByRole('button', { name: 'Move image 2 BACK up' }).press('Enter');
+  await expect(viewBoard.locator('.view-cell-title span')).toHaveText(['BACK', 'FRONT']);
+  await arranger.getByRole('button', { name: 'Move image 3 Porosity overlay up' }).click();
+  await expect(viewBoard.locator('.view-cell-title span')).toHaveText(['BACK', 'FRONT']);
+  await arranger.screenshot({ path: imageDisplayOrderScreenshotPath });
+
+  await page.setViewportSize({ width: 430, height: 900 });
+  await expect(arranger.locator('.inspection-image-order-kind')).toHaveCount(3);
+  await expect(arranger.locator('.inspection-image-order-kind').first()).toBeVisible();
+  await expect(arranger.getByRole('button', { name: 'Move image 1 BACK down' })).toBeVisible();
+  await expect(arranger.getByRole('button', { name: 'Save order' })).toBeVisible();
+  const narrowControls = [
+    arranger.locator('.inspection-image-order-kind').last(),
+    arranger.getByRole('button', { name: 'Move image 1 BACK down' }),
+    arranger.getByRole('button', { name: 'Save order' }),
+  ];
+  for (const control of narrowControls) {
+    const box = await control.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(430);
+  }
+  await arranger.screenshot({ path: imageDisplayOrderNarrowScreenshotPath });
+
+  await arranger.getByRole('button', { name: 'Save order' }).click();
+  await expect(arranger).toHaveCount(0);
+  await expect.poll(() => getImageDisplayOrderRequests().length).toBe(1);
+  expect(getImageDisplayOrderRequests()[0]).toEqual({
+    partId: 'part-image-order',
+    payload: {
+      image_refs: ['order-back-id', 'order-overlay-id', 'order-front-id'],
+    },
+  });
+
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.getByRole('tab', { name: 'Inspection' }).click();
+  const persistedViewBoard = page.locator('.view-board');
+  await expect(persistedViewBoard.locator('.view-cell-title span')).toHaveText(['BACK', 'FRONT']);
+  await page.getByRole('button', { name: 'Arrange image order' }).click();
+  const persistedItems = page
+    .getByRole('region', { name: 'Arrange image display order' })
+    .getByRole('listitem');
+  await expect(persistedItems).toHaveCount(3);
+  await expect(persistedItems.nth(0)).toContainText('BACK');
+  await expect(persistedItems.nth(1)).toContainText('Porosity overlay');
+  await expect(persistedItems.nth(2)).toContainText('FRONT');
+});
 
 test.describe('Inspection Workbench screenshot artifact', () => {
   test('captures PT2 inspection workbench screenshot', async ({ page }) => {

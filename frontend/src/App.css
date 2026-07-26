@@ -5346,6 +5346,210 @@ ul li:hover {
   font-size: 0.8rem;
 }
 
+.inspection-image-order-control {
+  position: relative;
+  margin-left: auto;
+}
+
+.inspection-image-order-open {
+  min-height: 34px;
+  border-radius: 3px;
+  border-color: #7b8589;
+  background: #f4f4ef;
+  color: #29353a;
+  font-family: "Bahnschrift", "DIN Alternate", sans-serif;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.025em;
+}
+
+.inspection-image-order-arranger {
+  width: min(520px, calc(100vw - 64px));
+  border: 1px solid #879196;
+  border-top: 4px solid #29353a;
+  border-radius: 2px;
+  background:
+    linear-gradient(rgba(41, 53, 58, 0.035) 1px, transparent 1px),
+    #fbfbf7;
+  background-size: 100% 24px;
+  box-shadow: 0 10px 22px rgba(23, 32, 38, 0.14);
+}
+
+.inspection-image-order-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid #c8cecf;
+  padding: 9px 10px 8px;
+  background: rgba(240, 241, 236, 0.94);
+}
+
+.inspection-image-order-heading > div {
+  display: grid;
+  gap: 1px;
+}
+
+.inspection-image-order-heading strong {
+  color: #202b30;
+  font-family: "Bahnschrift", "DIN Alternate", sans-serif;
+  font-size: 0.92rem;
+  letter-spacing: 0.015em;
+}
+
+.inspection-image-order-heading > span,
+.inspection-image-order-kicker {
+  color: #667177;
+  font-family: "Aptos Mono", "Cascadia Mono", monospace;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.inspection-image-order-list {
+  display: grid;
+  gap: 0;
+  max-height: 240px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.inspection-image-order-list li {
+  display: grid;
+  grid-template-columns: 30px minmax(90px, 1fr) max-content 58px;
+  align-items: center;
+  min-height: 38px;
+  border-bottom: 1px solid #dde1df;
+  background: rgba(255, 255, 252, 0.9);
+}
+
+.inspection-image-order-list li:last-child {
+  border-bottom: 0;
+}
+
+.inspection-image-order-index {
+  align-self: stretch;
+  display: grid;
+  place-items: center;
+  border-right: 1px solid #d3d8d7;
+  background: #e9ebe7;
+  color: #59656a;
+  font-family: "Aptos Mono", "Cascadia Mono", monospace;
+  font-size: 0.63rem;
+  font-weight: 800;
+}
+
+.inspection-image-order-name {
+  min-width: 0;
+  padding: 0 9px;
+  overflow: hidden;
+  color: #202b30;
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspection-image-order-kind {
+  border-left: 2px solid #c76220;
+  padding: 2px 7px;
+  color: #69747a;
+  font-family: "Aptos Mono", "Cascadia Mono", monospace;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.inspection-image-order-moves {
+  display: flex;
+  justify-content: flex-end;
+  gap: 3px;
+  padding-right: 6px;
+}
+
+.inspection-image-order-moves button {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid #8c969a;
+  border-radius: 2px;
+  padding: 0;
+  background: #f3f3ee;
+  color: #27343a;
+  cursor: pointer;
+  font-size: 0.82rem;
+  line-height: 1;
+}
+
+.inspection-image-order-moves button:hover:not(:disabled),
+.inspection-image-order-moves button:focus-visible {
+  border-color: #9b4c17;
+  outline: none;
+  background: #fff1e7;
+  color: #7b3b13;
+}
+
+.inspection-image-order-moves button:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.inspection-image-order-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  border-top: 1px solid #c8cecf;
+  padding: 8px 10px;
+  background: #f0f1ec;
+}
+
+.inspection-image-order-actions .btn {
+  min-height: 30px;
+  border-radius: 2px;
+  padding: 4px 10px;
+  font-size: 0.72rem;
+}
+
+.inspection-image-filter-empty {
+  grid-column: 1 / -1;
+  align-self: start;
+  margin: 0;
+  border: 1px dashed #aab2b3;
+  border-left: 3px solid #c76220;
+  padding: 12px;
+  background: #f6f6f1;
+  color: #59656a;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.inspection-image-order-error {
+  border-top: 1px solid #efc3bc;
+  border-left: 3px solid #b42318;
+  padding: 7px 9px;
+  background: #fff1ef;
+  color: #8f2017;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.inspection-image-order-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  border: 0;
+  white-space: nowrap;
+}
+
 @media (max-width: 900px) {
   .workbench-tabbed-panels {
     grid-template-columns: 1fr;
@@ -5359,6 +5563,57 @@ ul li:hover {
 
   .view-board {
     grid-template-columns: repeat(var(--inspection-tile-columns, 2), minmax(0, 1fr));
+  }
+
+  .inspection-image-order-control {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .inspection-image-order-arranger {
+    width: 100%;
+  }
+}
+
+@media (max-width: 520px) {
+  .inspection-image-order-arranger {
+    max-width: 100%;
+  }
+
+  .inspection-image-order-list li {
+    grid-template-columns: 28px minmax(0, 1fr) 54px;
+    grid-template-rows: minmax(34px, auto) auto;
+  }
+
+  .inspection-image-order-index {
+    grid-row: 1 / 3;
+  }
+
+  .inspection-image-order-name {
+    padding: 7px 8px 2px;
+  }
+
+  .inspection-image-order-kind {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: start;
+    margin: 0 8px 6px;
+    padding: 1px 5px;
+  }
+
+  .inspection-image-order-moves {
+    grid-column: 3;
+    grid-row: 1 / 3;
+    align-self: center;
+    padding-right: 4px;
+  }
+
+  .inspection-image-order-actions {
+    flex-wrap: wrap;
+  }
+
+  .inspection-image-order-actions .btn {
+    flex: 1 1 112px;
   }
 }
 
@@ -10186,4 +10441,566 @@ ul li:hover {
   max-height: 62vh;
   object-fit: contain;
   image-rendering: auto;
+}
+
+/* Project report: compact industrial inspection ledger */
+.project-report-tab {
+  --report-ink: #172026;
+  --report-muted: #647078;
+  --report-rule: #c9d0d3;
+  --report-paper: #f6f6f1;
+  --report-pass: #18794e;
+  --report-reject: #b42318;
+  --report-unreviewed: #986a10;
+  position: relative;
+  overflow: hidden;
+  border-color: #cfd5d7;
+  background:
+    linear-gradient(rgba(23, 32, 38, 0.025) 1px, transparent 1px),
+    #ffffff;
+  background-size: 100% 28px;
+  color: var(--report-ink);
+}
+
+.project-report-tab::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: #27343a;
+  content: "";
+}
+
+.project-report-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 2px 0 16px;
+  border-bottom: 2px solid var(--report-ink);
+}
+
+.project-report-heading h2 {
+  margin: 2px 0 0;
+  color: var(--report-ink);
+  font-family: "Bahnschrift", "DIN Alternate", sans-serif;
+  font-size: clamp(1.45rem, 2vw, 2rem);
+  font-stretch: condensed;
+  letter-spacing: -0.025em;
+}
+
+.project-report-heading p {
+  max-width: 680px;
+}
+
+.project-report-kicker,
+.inspection-record-overline {
+  margin: 0;
+  color: var(--report-muted);
+  font-family: "Aptos Mono", "Cascadia Mono", monospace;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.project-report-schema {
+  flex: 0 0 auto;
+  border: 1px solid var(--report-ink);
+  padding: 5px 8px 4px;
+  background: var(--report-ink);
+  color: #fff;
+  font-family: "Aptos Mono", "Cascadia Mono", monospace;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.project-report-command-bar {
+  display: grid;
+  grid-template-columns: max-content minmax(220px, 340px) max-content minmax(290px, max-content);
+  align-items: end;
+  gap: 10px;
+  padding: 14px 0;
+}
+
+.project-report-command-bar .btn,
+.project-report-command-bar .form-control {
+  min-height: 40px;
+  border-radius: 2px;
+}
+
+.project-report-evidence-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border: 1px solid #9b4c17;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.13), transparent 45%),
+    #c76220;
+  box-shadow: inset 0 -3px rgba(88, 35, 8, 0.2);
+  color: #fff;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.project-report-evidence-button:hover:not(:disabled) {
+  border-color: #71350f;
+  background-color: #ad5019;
+  color: #fff;
+}
+
+.project-report-evidence-button:focus-visible {
+  outline: 3px solid rgba(199, 98, 32, 0.3);
+  outline-offset: 2px;
+}
+
+.project-report-evidence-mark {
+  position: relative;
+  width: 17px;
+  height: 14px;
+  flex: 0 0 auto;
+  border: 2px solid currentColor;
+}
+
+.project-report-evidence-mark::before {
+  position: absolute;
+  inset: 3px auto auto 3px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
+}
+
+.project-report-evidence-mark::after {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 8px;
+  height: 5px;
+  background: linear-gradient(145deg, transparent 44%, currentColor 45%);
+  content: "";
+}
+
+.project-report-mode {
+  display: grid;
+  gap: 4px;
+}
+
+.project-report-mode .form-label {
+  margin: 0;
+  color: var(--report-muted);
+  font-family: "Aptos Mono", "Cascadia Mono", monospace;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.project-report-feedback {
+  min-height: 0;
+}
+
+.project-report-feedback .alert {
+  margin: 0 0 10px;
+  border-radius: 2px;
+}
+
+.project-report-progress {
+  margin-bottom: 10px;
+  border-left: 3px solid #285f78;
+  padding: 8px 10px;
+  background: #edf4f6;
+  color: #244d60;
+  font-family: "Aptos Mono", "Cascadia Mono", monospace;
+  font-size: 0.78rem;
+}
+
+.project-report-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.inspection-record {
+  margin-top: 6px;
+  border: 1px solid #aeb7ba;
+  border-top: 5px solid var(--report-ink);
+  background: var(--report-paper);
+  box-shadow: 0 10px 28px rgba(23, 32, 38, 0.09);
+}
+
+.inspection-record-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 20px 22px 17px;
+  border-bottom: 1px solid var(--report-rule);
+  background:
+    linear-gradient(90deg, transparent 0, transparent calc(100% - 72px), rgba(23, 32, 38, 0.04) calc(100% - 72px)),
+    #fbfbf7;
+}
+
+.inspection-record-header h3 {
+  margin: 5px 0 3px;
+  color: var(--report-ink);
+  font-family: "Bahnschrift", "DIN Alternate", sans-serif;
+  font-size: clamp(1.25rem, 2vw, 1.7rem);
+  font-stretch: condensed;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+
+.inspection-record-id {
+  margin: 0;
+  color: var(--report-muted);
+  font-family: "Aptos Mono", "Cascadia Mono", monospace;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.inspection-record-progress {
+  display: flex;
+  align-items: baseline;
+  flex: 0 0 auto;
+  gap: 5px;
+  border-left: 1px solid var(--report-rule);
+  padding-left: 22px;
+  white-space: nowrap;
+}
+
+.inspection-record-progress strong {
+  font-family: "Bahnschrift", "DIN Alternate", sans-serif;
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.inspection-record-progress span {
+  color: var(--report-muted);
+  font-family: "Aptos Mono", "Cascadia Mono", monospace;
+  font-size: 0.72rem;
+}
+
+.inspection-record-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+  border-bottom: 1px solid var(--report-rule);
+  background: #eceeea;
+}
+
+.inspection-record-summary > div {
+  min-width: 0;
+  padding: 12px 18px;
+  border-right: 1px solid var(--report-rule);
+}
+
+.inspection-record-summary > div:last-child {
+  border-right: 0;
+}
+
+.inspection-record-summary dt {
+  color: var(--report-muted);
+  font-family: "Aptos Mono", "Cascadia Mono", monospace;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.inspection-record-summary dd {
+  margin: 3px 0 0;
+  color: var(--report-ink);
+  font-family: "Bahnschrift", "DIN Alternate", sans-serif;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.inspection-summary-pass {
+  box-shadow: inset 0 3px var(--report-pass);
+}
+
+.inspection-summary-reject {
+  box-shadow: inset 0 3px var(--report-reject);
+}
+
+.inspection-summary-unreviewed {
+  box-shadow: inset 0 3px var(--report-unreviewed);
+}
+
+.inspection-record-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.inspection-record-table {
+  width: 100%;
+  min-width: 420px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  background: #fff;
+}
+
+.inspection-record-table caption {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  border: 0;
+  white-space: nowrap;
+}
+
+.inspection-record-table th,
+.inspection-record-table td {
+  border-bottom: 1px solid #d9dedd;
+  padding: 11px 16px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.inspection-record-table thead th {
+  background: #303b40;
+  color: #f8faf9;
+  font-family: "Aptos Mono", "Cascadia Mono", monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.inspection-record-table th:first-child {
+  width: 72%;
+}
+
+.inspection-record-table th:nth-child(2) {
+  width: 28%;
+}
+
+.inspection-record-table tbody tr:nth-child(even) {
+  background: #f4f5f1;
+}
+
+.inspection-record-table tbody tr:hover {
+  background: #edf2f0;
+}
+
+.inspection-record-table tbody th {
+  min-width: 0;
+  color: var(--report-ink);
+  font-weight: 600;
+}
+
+.inspection-part-cell {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+.inspection-part-index {
+  flex: 0 0 auto;
+  color: #8a9498;
+  font-family: "Aptos Mono", "Cascadia Mono", monospace;
+  font-size: 0.66rem;
+}
+
+.inspection-record-table code {
+  min-width: 0;
+  color: inherit;
+  font-family: "Aptos Mono", "Cascadia Mono", monospace;
+  font-size: 0.79rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.inspection-result {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.inspection-result-mark {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border: 2px solid currentColor;
+}
+
+.inspection-result-pass {
+  color: var(--report-pass);
+}
+
+.inspection-result-pass .inspection-result-mark {
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.inspection-result-reject {
+  color: var(--report-reject);
+}
+
+.inspection-result-reject .inspection-result-mark {
+  background:
+    linear-gradient(45deg, transparent 41%, currentColor 42%, currentColor 58%, transparent 59%),
+    linear-gradient(-45deg, transparent 41%, currentColor 42%, currentColor 58%, transparent 59%);
+}
+
+.inspection-result-unreviewed {
+  color: var(--report-unreviewed);
+}
+
+.inspection-result-unreviewed .inspection-result-mark {
+  border-radius: 50%;
+  background: transparent;
+}
+
+.inspection-record-empty {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 150px;
+  padding: 28px;
+  background:
+    repeating-linear-gradient(-45deg, #f7f7f2, #f7f7f2 8px, #f1f2ed 8px, #f1f2ed 16px);
+}
+
+.inspection-record-empty > span {
+  border: 2px solid #8b969a;
+  padding: 8px;
+  color: #657176;
+  font-family: "Aptos Mono", "Cascadia Mono", monospace;
+  font-size: 1.2rem;
+  font-weight: 800;
+}
+
+.inspection-record-empty strong {
+  display: block;
+  color: var(--report-ink);
+}
+
+.inspection-record-empty p {
+  margin: 3px 0 0;
+  color: var(--report-muted);
+}
+
+.project-report-evidence-progress {
+  border-left-color: #c76220;
+  background: #fff3e9;
+  color: #7a3d17;
+}
+
+@media (max-width: 1040px) and (min-width: 721px) {
+  .project-report-command-bar {
+    grid-template-columns: max-content minmax(220px, 1fr) max-content;
+  }
+
+  .project-report-evidence-button {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+}
+
+@media (max-width: 720px) {
+  .project-report-heading,
+  .inspection-record-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .project-report-schema {
+    align-self: flex-start;
+  }
+
+  .project-report-command-bar {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .project-report-command-bar .btn {
+    width: 100%;
+  }
+
+  .inspection-record-progress {
+    border-top: 1px solid var(--report-rule);
+    border-left: 0;
+    padding-top: 12px;
+    padding-left: 0;
+  }
+
+  .inspection-record-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .inspection-record-summary > div:nth-child(2) {
+    border-right: 0;
+  }
+
+  .inspection-record-summary > div:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--report-rule);
+  }
+
+  .project-report-error {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 480px) {
+  .inspection-record-table {
+    min-width: 0;
+  }
+
+  .inspection-record-table th,
+  .inspection-record-table td {
+    padding: 8px 5px;
+  }
+
+  .inspection-record-table thead th {
+    font-size: 0.58rem;
+    letter-spacing: 0.04em;
+  }
+
+  .inspection-record-table th:first-child {
+    width: 64%;
+  }
+
+  .inspection-record-table th:nth-child(2) {
+    width: 36%;
+  }
+
+  .inspection-part-cell {
+    gap: 5px;
+  }
+
+  .inspection-part-index {
+    display: none;
+  }
+
+  .inspection-record-table code,
+  .inspection-result {
+    font-size: 0.66rem;
+  }
+
+  .inspection-result {
+    gap: 4px;
+  }
+
+  .inspection-result-mark {
+    width: 7px;
+    height: 7px;
+    border-width: 1px;
+  }
 }

@@ -191,11 +191,6 @@ async function mockInspectionWorkbenchRoutes(page, {
   seededAnnotations = null,
 } = {}) {
   const { batches, parts, workspaceState } = createMockData(scenario);
-  const metadataNormalizationByScenario = {
-    basic: {},
-    intermediate: { segmentation_runs: 1 },
-    advanced: { segmentation_runs: 1, measurement_runs: 1, 'legacy value[]': 2 },
-  };
   const configurationByProjectId = {
     [projectId]: {
       image_modalities: [{ id: 'visual', label: 'Visual', calibration_required: false }],
@@ -251,6 +246,7 @@ async function mockInspectionWorkbenchRoutes(page, {
   const savedWorkspaceStates = [];
   const exportBundleArchiveRequests = [];
   const ingestValidationRequests = [];
+  const imageDisplayOrderRequests = [];
   const savedConfigurations = [];
   const realSplatRequests = [];
   let realSplatJob = { status: 'missing', polls: 0 };
@@ -413,22 +409,51 @@ async function mockInspectionWorkbenchRoutes(page, {
       });
       return;
     }
-    if (url.endsWith(`/api/projects/${projectId}/report-json`) && method === 'GET') {
+    if (url.endsWith(`/api/projects/${projectId}/report-json?schema_version=3`) && method === 'GET') {
+      const reportParts = mutableParts.map((part) => {
+        const inspectionResult = part.review_state === 'pass'
+          ? 'pass'
+          : ['reject', 'reject_pending', 'reject_confirmed'].includes(part.review_state)
+            ? 'reject'
+            : 'unreviewed';
+        return {
+          part_id: part.id,
+          part_identifier: part.serial_number,
+          inspection_result: inspectionResult,
+        };
+      });
+      const partStatusCounts = {
+        pass: reportParts.filter((part) => part.inspection_result === 'pass').length,
+        reject: reportParts.filter((part) => part.inspection_result === 'reject').length,
+        unreviewed: reportParts.filter((part) => part.inspection_result === 'unreviewed').length,
+      };
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          project: { id: projectId, project_type: type },
-          summary: {
-            total_images: mutableParts.length,
-            total_batches: batches.length,
-            total_parts: mutableParts.length,
-            reviewed_parts: mutableParts.filter((part) => ['pass', 'reject_pending', 'reject_confirmed'].includes(part.review_state)).length,
-            metadata_normalization: {
-              dropped_non_object_items: metadataNormalizationByScenario[scenario] || {},
-            },
+          schema_version: 3,
+          project: {
+            id: projectId,
+            name: `${type} inspection workbench project`,
+            project_type: type,
+            meta_group_id: 'qa-team',
           },
+          summary: {
+            total_parts: reportParts.length,
+            reviewed_parts: partStatusCounts.pass + partStatusCounts.reject,
+            unreviewed_parts: partStatusCounts.unreviewed,
+            part_status_counts: partStatusCounts,
+          },
+          parts: reportParts,
         }),
+      });
+      return;
+    }
+    if (url.endsWith(`/api/projects/${projectId}/report-pdf?schema_version=3`) && method === 'GET') {
+      await route.fulfill({
+        status: 200,
+        headers: { 'content-type': 'application/pdf' },
+        body: '%PDF-1.4 synthetic',
       });
       return;
     }
@@ -496,6 +521,40 @@ async function mockInspectionWorkbenchRoutes(page, {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({ project_id: targetProjectId, config: configurationByProjectId[targetProjectId] }),
+      });
+      return;
+    }
+    const imageDisplayOrderPath = new URL(url).pathname;
+    if (
+      imageDisplayOrderPath.startsWith(`/api/projects/${projectId}/parts/`)
+      && imageDisplayOrderPath.endsWith('/image-display-order')
+      && method === 'PUT'
+    ) {
+      const partId = decodeURIComponent(
+        imageDisplayOrderPath
+          .slice(`/api/projects/${projectId}/parts/`.length)
+          .split('/image-display-order')[0],
+      );
+      const payload = route.request().postDataJSON() || {};
+      imageDisplayOrderRequests.push({ partId, payload });
+      mutableParts = mutableParts.map((part) => (
+        String(part.id) === String(partId)
+          ? {
+            ...part,
+            metadata: {
+              ...(part.metadata || {}),
+              image_display_order: Array.isArray(payload.image_refs)
+                ? [...payload.image_refs]
+                : [],
+            },
+          }
+          : part
+      ));
+      const updatedPart = mutableParts.find((part) => String(part.id) === String(partId));
+      await route.fulfill({
+        status: updatedPart ? 200 : 404,
+        contentType: 'application/json',
+        body: JSON.stringify(updatedPart || { detail: 'Inspection part not found' }),
       });
       return;
     }
@@ -736,6 +795,7 @@ async function mockInspectionWorkbenchRoutes(page, {
     getWorkspaceStates: () => savedWorkspaceStates,
     getExportBundleArchiveRequests: () => exportBundleArchiveRequests,
     getIngestValidationRequests: () => ingestValidationRequests,
+    getImageDisplayOrderRequests: () => imageDisplayOrderRequests,
     getSavedConfigurations: () => savedConfigurations,
     getRealSplatRequests: () => realSplatRequests,
   };

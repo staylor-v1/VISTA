@@ -60,7 +60,7 @@ See [Configuration Guide](configuration.md) for detailed environment variable do
 ### Step 3: Build Docker Image
 
 ```bash
-podman build -t vista:latest .
+podman build --ignorefile Dockerfile.dockerignore -t vista:latest .
 ```
 
 ### Step 4: Start Infrastructure
@@ -334,7 +334,7 @@ podman-compose -f podman-compose.production.yml up -d
 git pull origin main
 
 # Rebuild image
-podman build -t vista:latest .
+podman build --ignorefile Dockerfile.dockerignore -t vista:latest .
 
 # Run migrations
 podman run --rm \
@@ -359,7 +359,7 @@ podman run -d \
 
 ```bash
 # Update image
-podman build -t vista:v1.1.0 .
+podman build --ignorefile Dockerfile.dockerignore -t vista:v1.1.0 .
 podman push your-registry/vista:v1.1.0
 
 # Update deployment

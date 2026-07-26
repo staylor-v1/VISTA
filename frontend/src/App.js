@@ -1,5 +1,12 @@
 import React, { useState, useEffect, Suspense, memo, useRef, useCallback } from 'react';
-import { Route, Routes, Link, useLocation } from 'react-router-dom';
+import {
+  Navigate,
+  Route,
+  Routes,
+  Link,
+  useLocation,
+  useParams,
+} from 'react-router-dom';
 import './App.css';
 import Toast from './components/Toast';
 import lazyWithRetry from './utils/lazyWithRetry';
@@ -9,11 +16,15 @@ import { DEFAULT_PROJECT_TYPE, PROJECT_TYPE_OPTIONS, getProjectTypeLabel } from 
 const Project = lazyWithRetry(() => import('./Project'));
 const ImageView = lazyWithRetry(() => import('./ImageView'));
 const ApiKeys = lazyWithRetry(() => import('./ApiKeys'));
-const ProjectReport = lazyWithRetry(() => import('./components/ProjectReport'));
 const GroupGalleryView = lazyWithRetry(() => import('./components/GroupGalleryView'));
 
 const DEFAULT_DASHBOARD_FETCH_TIMEOUT_MS = 10000;
 const DASHBOARD_DEBUG_MODE_STORAGE_KEY = 'vista.dashboard.debugMode';
+
+function LegacyProjectReportRedirect() {
+  const { id } = useParams();
+  return <Navigate to={`/project/${id}?tab=report`} replace />;
+}
 
 function isDashboardDebugModeStored() {
   if (typeof window === 'undefined') return false;
@@ -326,17 +337,14 @@ const EditProjectModal = memo(function EditProjectModal({ project, onClose, onSu
 });
 
 const DeleteProjectModal = memo(function DeleteProjectModal({ project, onClose, onConfirm, canDelete = true }) {
-  const [confirmationPhrase, setConfirmationPhrase] = useState('');
   const [acknowledgeIrreversible, setAcknowledgeIrreversible] = useState(false);
-  const expectedPhrase = project ? `DELETE ${project.name}` : '';
-  const isPhraseValid = confirmationPhrase === expectedPhrase;
-  const canSubmit = canDelete && isPhraseValid && acknowledgeIrreversible;
+  const canSubmit = canDelete && acknowledgeIrreversible;
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!project) return;
     if (!canSubmit) return;
-    onConfirm(project, confirmationPhrase);
+    onConfirm(project);
   };
 
   if (!project) return null;
@@ -355,22 +363,7 @@ const DeleteProjectModal = memo(function DeleteProjectModal({ project, onClose, 
           <p role="alert">
             <strong>Warning:</strong> This action is irreversible and cannot be undone.
           </p>
-          <p>
-            To confirm, type <code>{expectedPhrase}</code>.
-          </p>
           <form id="delete-project-form" onSubmit={handleSubmit}>
-            <div className="form-group">
-              <label htmlFor="delete_confirmation_phrase">Confirmation phrase *</label>
-              <input
-                id="delete_confirmation_phrase"
-                type="text"
-                className="form-control"
-                value={confirmationPhrase}
-                onChange={(e) => setConfirmationPhrase(e.target.value)}
-                placeholder={expectedPhrase}
-                required
-              />
-            </div>
             <div className="form-group">
               <label htmlFor="delete_irreversible_acknowledge">
                 <input
@@ -379,7 +372,7 @@ const DeleteProjectModal = memo(function DeleteProjectModal({ project, onClose, 
                   checked={acknowledgeIrreversible}
                   onChange={(e) => setAcknowledgeIrreversible(e.target.checked)}
                 />{' '}
-                I understand this is irreversible.
+                I understand that deleting <strong>{project.name}</strong> is irreversible.
               </label>
             </div>
             {!canDelete && (
@@ -1537,7 +1530,7 @@ function App() {
     setDeletingProject(project);
   }, [currentUserGroups]);
 
-  const handleConfirmDeleteProject = useCallback((project, confirmationPhrase) => {
+  const handleConfirmDeleteProject = useCallback((project) => {
     if (!project) return;
     setLoading(true);
 
@@ -1546,7 +1539,7 @@ function App() {
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ confirmation_phrase: confirmationPhrase }),
+      body: JSON.stringify({ confirmation_phrase: `DELETE ${project.name}` }),
     })
       .then(async (response) => {
         if (!response.ok) {
@@ -1759,11 +1752,7 @@ function App() {
       />
       <Route
         path="/project/:id/report"
-        element={
-          <Suspense fallback={<div className="loading-container">Loading report...</div>}>
-            <ProjectReport />
-          </Suspense>
-        }
+        element={<LegacyProjectReportRedirect />}
       />
       <Route
         path="/project/:id/group/:groupId"

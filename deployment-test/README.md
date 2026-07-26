@@ -17,7 +17,7 @@ Minimal Kubernetes manifests for testing deployment on minikube.
 minikube start
 
 # Build and load image
-podman build -t vista:latest .
+podman build --ignorefile Dockerfile.dockerignore -t vista:latest .
 minikube image load vista:latest
 
 # Deploy all components

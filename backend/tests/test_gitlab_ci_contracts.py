@@ -45,7 +45,7 @@ def test_gitlab_build_logs_in_and_pushes_latest_and_commit_sha_tags() -> None:
         '-u "$QUAY_USERNAME" --password-stdin'
     ) in commands
     assert (
-        "podman build "
+        "podman build --ignorefile Dockerfile.dockerignore "
         "-t $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:latest "
         "-t $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:$CI_COMMIT_SHA ."
     ) in commands

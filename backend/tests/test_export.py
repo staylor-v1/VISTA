@@ -2,11 +2,17 @@
 import io
 import uuid
 import json as _json
+import re
 import zipfile
 import pytest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
-from routers.export import _build_workbook
+from routers.export import (
+    _build_legacy_simple_report_pdf,
+    _build_simple_report_pdf,
+    _build_workbook,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -499,93 +505,167 @@ def test_export_excel_excludes_measurements_metadata(client):
     assert "lot_number" in headers
 
 
-@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
 @pytest.mark.smoke
-def test_project_json_report_supports_three_progressive_users(client, project_type):
-    scenarios = [
-        {"user": "report-basic", "level": 1, "batch_count": 1, "part_count": 1, "review_state": "unreviewed"},
-        {"user": "report-intermediate", "level": 2, "batch_count": 2, "part_count": 2, "review_state": "reject_pending"},
-        {"user": "report-advanced", "level": 3, "batch_count": 3, "part_count": 3, "review_state": "pass"},
-    ]
+def test_project_json_report_v3_has_one_ordered_row_per_part_and_explicit_v2_compatibility(client):
+    headers = {
+        "X-User-Id": "report-v2@example.com",
+        "X-User-Groups": "[\"report-v2-group\"]",
+    }
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": "Concise Inspection Report",
+            "description": "v3 report contract",
+            "meta_group_id": "report-v2-group",
+            "project_type": "PT2",
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project = project_resp.json()
 
-    for scenario in scenarios:
-        group = f"{project_type.lower()}-{scenario['user']}"
-        headers = {
-            "X-User-Id": f"{scenario['user']}-{project_type.lower()}@example.com",
-            "X-User-Groups": f"[\"{group}\"]",
-        }
-        project_resp = client.post(
-            "/api/projects/",
+    raw_parts = (
+        ("SERIAL-Z", "unreviewed", "unreviewed", False),
+        ("SERIAL-A", "in_review", "unreviewed", False),
+        ("SERIAL-M", "pass", "pass", True),
+        ("SERIAL-B", "reject_pending", "reject", True),
+        ("SERIAL-C", "reject_confirmed", "reject", True),
+    )
+    created_parts = {}
+    for serial_number, review_state, _inspection_result, _reviewed in raw_parts:
+        part_resp = client.post(
+            f"/api/projects/{project['id']}/parts",
             json={
-                "name": f"{project_type} {scenario['user']} project",
-                "description": "json report scenario",
-                "meta_group_id": group,
-                "project_type": project_type,
+                "serial_number": serial_number,
+                "display_name": serial_number,
+                "review_state": review_state,
             },
             headers=headers,
         )
-        assert project_resp.status_code == 201, project_resp.text
-        project_id = project_resp.json()["id"]
+        assert part_resp.status_code == 201, part_resp.text
+        created_parts[serial_number] = part_resp.json()
 
-        for batch_idx in range(scenario["batch_count"]):
-            batch_resp = client.post(
-                f"/api/projects/{project_id}/batches",
-                json={
-                    "name": f"batch-{batch_idx}",
-                    "description": f"scenario {scenario['user']} batch {batch_idx}",
-                },
-                headers=headers,
-            )
-            assert batch_resp.status_code == 201, batch_resp.text
-            batch_id = batch_resp.json()["id"]
+    # Multiple images for one part must not duplicate that part's report row.
+    pass_part_id = created_parts["SERIAL-M"]["id"]
+    for index in range(2):
+        image_resp = client.post(
+            f"/api/projects/{project['id']}/images",
+            files={"file": (f"duplicate-source-{index}.png", b"image-bytes", "image/png")},
+            data={"metadata": _json.dumps({"part_id": pass_part_id})},
+            headers=headers,
+        )
+        assert image_resp.status_code == 201, image_resp.text
 
-            part_resp = client.post(
-                f"/api/projects/{project_id}/parts",
-                json={
-                    "serial_number": f"{project_type}-{scenario['level']}-{batch_idx}",
-                    "display_name": f"part-{batch_idx}",
-                    "batch_id": batch_id,
-                    "review_state": scenario["review_state"] if batch_idx % 2 == 0 else "unreviewed",
-                    "metadata": {"synthetic_level": scenario["level"], "workflow_step": batch_idx + 1},
-                },
-                headers=headers,
-            )
-            assert part_resp.status_code == 201, part_resp.text
+    report_resp = client.get(f"/api/projects/{project['id']}/report-json", headers=headers)
+    assert report_resp.status_code == 200, report_resp.text
+    payload = report_resp.json()
 
-        for image_idx in range(scenario["part_count"]):
-            files = {"file": (f"{project_type}_{scenario['user']}_{image_idx}.png", b"fake-png-data", "image/png")}
-            image_resp = client.post(
-                f"/api/projects/{project_id}/images",
-                files=files,
-                data={"metadata": _json.dumps({"synthetic_level": scenario["level"], "slot": image_idx})},
-                headers=headers,
-            )
-            assert image_resp.status_code == 201, image_resp.text
+    assert set(payload) == {"schema_version", "project", "summary", "parts"}
+    assert payload["schema_version"] == 3
+    assert set(payload["project"]) == {"id", "name", "project_type", "meta_group_id"}
+    assert payload["project"] == {
+        "id": project["id"],
+        "name": "Concise Inspection Report",
+        "project_type": "PT2",
+        "meta_group_id": "report-v2-group",
+    }
+    assert set(payload["summary"]) == {
+        "total_parts",
+        "reviewed_parts",
+        "unreviewed_parts",
+        "part_status_counts",
+    }
+    assert payload["summary"] == {
+        "total_parts": 5,
+        "reviewed_parts": 3,
+        "unreviewed_parts": 2,
+        "part_status_counts": {"pass": 1, "reject": 2, "unreviewed": 2},
+    }
 
-        report_resp = client.get(f"/api/projects/{project_id}/report-json", headers=headers)
-        assert report_resp.status_code == 200, report_resp.text
-        payload = report_resp.json()
-        assert payload["project"]["project_type"] == project_type
-        assert payload["summary"]["total_batches"] == scenario["batch_count"]
-        assert payload["summary"]["total_parts"] == scenario["batch_count"]
-        assert payload["summary"]["total_images"] == scenario["part_count"]
-        assert payload["summary"]["reviewed_parts"] >= 0
-        assert payload["summary"]["unreviewed_parts"] >= 0
-        assert payload["summary"]["part_status_counts"]["unreviewed"] >= 0
-        assert "part_assignments" in payload
-        assert "part_review_summary" in payload
-        assert "image_part_mappings" in payload
-        assert isinstance(payload["part_assignments"], list)
-        assert isinstance(payload["part_review_summary"], list)
-        assert isinstance(payload["image_part_mappings"], list)
-        assert {entry["review_status"] for entry in payload["part_review_summary"]}.issubset({"pass", "reject", "unreviewed"})
-        if payload["part_assignments"]:
-            assignment = payload["part_assignments"][0]
-            assert "part_identifier" in assignment
-            assert "pass_fail" in assignment
-            assert "username" in assignment
-            assert "batch_owner" in assignment
-            assert "assigned_at" in assignment
+    expected_by_serial = {
+        serial_number: inspection_result
+        for serial_number, _review_state, inspection_result, _reviewed in raw_parts
+    }
+    assert [row["part_identifier"] for row in payload["parts"]] == [
+        "SERIAL-A",
+        "SERIAL-B",
+        "SERIAL-C",
+        "SERIAL-M",
+        "SERIAL-Z",
+    ]
+    assert len(payload["parts"]) == len(created_parts)
+    assert len({row["part_id"] for row in payload["parts"]}) == len(created_parts)
+    for row in payload["parts"]:
+        assert set(row) == {"part_id", "part_identifier", "inspection_result"}
+        assert row["part_id"] == created_parts[row["part_identifier"]]["id"]
+        assert row["inspection_result"] == expected_by_serial[row["part_identifier"]]
+
+    v2_resp = client.get(
+        f"/api/projects/{project['id']}/report-json?schema_version=2",
+        headers=headers,
+    )
+    assert v2_resp.status_code == 200, v2_resp.text
+    v2_payload = v2_resp.json()
+    assert set(v2_payload) == {
+        "project",
+        "summary",
+        "part_assignments",
+        "part_review_summary",
+        "image_part_mappings",
+    }
+    assert v2_payload["summary"]["total_images"] == 2
+    assert v2_payload["summary"]["total_batches"] == 0
+    assert v2_payload["summary"]["total_parts"] == 5
+    assert v2_payload["summary"]["reviewed_parts"] == 3
+    assert v2_payload["summary"]["metadata_normalization"] == {
+        "dropped_non_object_items": {
+            "annotations": 0,
+            "overlay_layers": 0,
+            "segmentation_runs": 0,
+            "measurement_runs": 0,
+        }
+    }
+    assert len(v2_payload["part_assignments"]) == 5
+    assert len(v2_payload["part_review_summary"]) == 5
+    assert len(v2_payload["image_part_mappings"]) == 2
+    assert {
+        row["filename"] for row in v2_payload["image_part_mappings"]
+    } == {"duplicate-source-0.png", "duplicate-source-1.png"}
+
+
+def test_project_json_report_v3_empty_project(client):
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": "Empty Inspection Report",
+            "description": "no parts",
+            "meta_group_id": "test-group",
+            "project_type": "PT3",
+        },
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project = project_resp.json()
+
+    report_resp = client.get(f"/api/projects/{project['id']}/report-json")
+    assert report_resp.status_code == 200, report_resp.text
+    payload = report_resp.json()
+
+    assert payload == {
+        "schema_version": 3,
+        "project": {
+            "id": project["id"],
+            "name": "Empty Inspection Report",
+            "project_type": "PT3",
+            "meta_group_id": "test-group",
+        },
+        "summary": {
+            "total_parts": 0,
+            "reviewed_parts": 0,
+            "unreviewed_parts": 0,
+            "part_status_counts": {"pass": 0, "reject": 0, "unreviewed": 0},
+        },
+        "parts": [],
+    }
 
 
 def test_project_json_report_forbidden_for_non_group_member(client):
@@ -605,6 +685,219 @@ def test_project_json_report_forbidden_for_non_group_member(client):
         report_resp = client.get(f"/api/projects/{project_id}/report-json")
 
     assert report_resp.status_code == 403
+
+
+def _make_report_payload(part_rows, schema_version=3):
+    parts = [
+        {
+            "part_id": str(uuid.uuid4()),
+            "part_identifier": identifier,
+            "inspection_result": inspection_result,
+        }
+        for identifier, inspection_result in part_rows
+    ]
+    if schema_version == 2:
+        for part in parts:
+            part["reviewed"] = part["inspection_result"] != "unreviewed"
+    status_counts = {
+        status: sum(part["inspection_result"] == status for part in parts)
+        for status in ("pass", "reject", "unreviewed")
+    }
+    return {
+        "schema_version": schema_version,
+        "project": {
+            "id": str(uuid.uuid4()),
+            "name": "PDF Contract Project",
+            "project_type": "PT1",
+            "meta_group_id": "pdf-report-group",
+        },
+        "summary": {
+            "total_parts": len(parts),
+            "reviewed_parts": status_counts["pass"] + status_counts["reject"],
+            "unreviewed_parts": status_counts["unreviewed"],
+            "part_status_counts": status_counts,
+        },
+        "parts": parts,
+    }
+
+
+def _pdf_page_count(pdf_bytes):
+    return len(re.findall(rb"/Type /Page\b", pdf_bytes))
+
+
+def _pdf_content_streams(pdf_bytes):
+    return re.findall(rb"stream\n(.*?)\nendstream", pdf_bytes, flags=re.DOTALL)
+
+
+def _pdf_extracted_lines(pdf_bytes):
+    lines = []
+    for stream in _pdf_content_streams(pdf_bytes):
+        for encoded_line in re.findall(rb"^\((.*)\) Tj$", stream, flags=re.MULTILINE):
+            line = (
+                encoded_line
+                .replace(rb"\\(", b"(")
+                .replace(rb"\\)", b")")
+                .replace(b"\\\\", b"\\")
+            )
+            lines.append(line.decode("latin-1"))
+    return lines
+
+
+def test_simple_pdf_report_renders_canonical_mixed_part_rows_once():
+    pdf_bytes = _build_simple_report_pdf(
+        _make_report_payload(
+            [
+                ("PART-PASS", "pass"),
+                ("PART-REJECT", "reject"),
+                ("PART-UNREVIEWED", "unreviewed"),
+            ]
+        )
+    )
+
+    assert _pdf_page_count(pdf_bytes) == 1
+    assert b"Part" in pdf_bytes
+    assert b"Result" in pdf_bytes
+    table_headers = [line for line in _pdf_extracted_lines(pdf_bytes) if line.startswith("Part ")]
+    assert len(table_headers) == 1
+    assert "Reviewed" not in table_headers[0]
+    assert pdf_bytes.count(b"PART-PASS") == 1
+    assert pdf_bytes.count(b"PART-REJECT") == 1
+    assert pdf_bytes.count(b"PART-UNREVIEWED") == 1
+    assert b"Part Pass/Fail Assignments" not in pdf_bytes
+    assert b"Part Status Summary" not in pdf_bytes
+    assert b"Image-to-Part Mapping" not in pdf_bytes
+
+
+def test_legacy_pdf_report_preserves_assignments_summary_and_mapping_pages():
+    payload = {
+        "project": {"id": "project-1", "name": "Legacy", "project_type": "PT1"},
+        "summary": {
+            "total_images": 1,
+            "total_batches": 1,
+            "total_parts": 1,
+            "reviewed_parts": 1,
+            "unreviewed_parts": 0,
+            "part_status_counts": {"pass": 1, "reject": 0, "unreviewed": 0},
+            "metadata_normalization": {"dropped_non_object_items": {}},
+        },
+        "part_assignments": [{
+            "part_identifier": "PART-PASS",
+            "pass_fail": "pass",
+            "username": "inspector",
+            "batch_owner": "owner",
+            "assigned_at": "2026-01-01",
+        }],
+        "part_review_summary": [{
+            "part_identifier": "PART-PASS",
+            "review_status": "pass",
+        }],
+        "image_part_mappings": [{
+            "filename": "source.png",
+            "part_identifier": "PART-PASS",
+        }],
+    }
+    pdf_bytes = _build_legacy_simple_report_pdf(payload)
+
+    assert _pdf_page_count(pdf_bytes) == 2
+    assert b"Part Pass/Fail Assignments" in pdf_bytes
+    assert b"Part Status Summary" in pdf_bytes
+    assert b"VISTA Report Image-to-Part Mapping" in pdf_bytes
+    assert b"source.png -> PART-PASS" in pdf_bytes
+
+
+def test_simple_pdf_report_renders_empty_part_table():
+    pdf_bytes = _build_simple_report_pdf(_make_report_payload([]))
+
+    assert _pdf_page_count(pdf_bytes) == 1
+    assert b"Total Parts: 0" in pdf_bytes
+    assert b"\\(no parts\\)" in pdf_bytes
+    assert b"Page 1 of 1" in pdf_bytes
+
+
+def test_simple_pdf_report_paginates_every_part_without_truncation():
+    part_rows = [
+        (f"PAGE-PART-{index:03d}", ("pass", "reject", "unreviewed")[index % 3])
+        for index in range(85)
+    ]
+    pdf_bytes = _build_simple_report_pdf(_make_report_payload(part_rows))
+
+    assert _pdf_page_count(pdf_bytes) == 3
+    assert b"/Count 3" in pdf_bytes
+    assert pdf_bytes.count(b"PAGE-PART-000") == 1
+    assert pdf_bytes.count(b"PAGE-PART-042") == 1
+    assert pdf_bytes.count(b"PAGE-PART-084") == 1
+    assert sum(pdf_bytes.count(f"PAGE-PART-{index:03d}".encode()) for index in range(85)) == 85
+    assert b"Page 3 of 3" in pdf_bytes
+
+
+def test_simple_pdf_report_escapes_and_wraps_special_long_identifier():
+    special_identifier = "PART (A) \\ control\nline\x01 café " + ("X" * 150)
+    pdf_bytes = _build_simple_report_pdf(
+        _make_report_payload([(special_identifier, "reject")])
+    )
+
+    assert _pdf_page_count(pdf_bytes) == 1
+    assert b"PART \\(A\\) \\\\ control line  caf\xe9" in pdf_bytes
+    assert pdf_bytes.count(b"X") == 150
+    assert pdf_bytes.endswith(b"%%EOF")
+
+
+def test_simple_pdf_report_preserves_distinct_non_latin_identifiers_as_ascii_escapes():
+    pdf_bytes = _build_simple_report_pdf(
+        _make_report_payload(
+            [
+                ("部品一", "pass"),
+                ("部品二", "reject"),
+            ]
+        )
+    )
+    extracted_text = "\n".join(_pdf_extracted_lines(pdf_bytes))
+
+    assert r"\u90e8\u54c1\u4e00" in extracted_text
+    assert r"\u90e8\u54c1\u4e8c" in extracted_text
+    assert r"\u90e8\u54c1\u4e00" != r"\u90e8\u54c1\u4e8c"
+    assert b"?" not in pdf_bytes
+
+
+def test_simple_pdf_report_wraps_max_length_project_header():
+    payload = _make_report_payload([("PART-001", "pass")])
+    payload["project"]["name"] = "P" * 255
+
+    extracted_lines = _pdf_extracted_lines(_build_simple_report_pdf(payload))
+    project_lines = [
+        line.removeprefix("Project: ")
+        for line in extracted_lines
+        if line.startswith("Project: ") or (line and set(line) == {"P"})
+    ]
+
+    assert "".join(project_lines) == "P" * 255
+    assert all(len(line) <= 84 for line in extracted_lines)
+
+
+def test_simple_pdf_report_moves_a_wrapped_logical_row_intact_to_the_next_page():
+    short_rows = [(f"SHORT-{index:02d}", "pass") for index in range(39)]
+    long_identifier = "BOUNDARY-" + ("X" * 80)
+    pdf_bytes = _build_simple_report_pdf(
+        _make_report_payload([*short_rows, (long_identifier, "reject")])
+    )
+    content_streams = _pdf_content_streams(pdf_bytes)
+
+    assert _pdf_page_count(pdf_bytes) == 2
+    assert b"BOUNDARY-" not in content_streams[0]
+    assert b"BOUNDARY-" in content_streams[1]
+    assert content_streams[1].count(b"reject") == 1
+    assert b"yes" not in content_streams[1]
+
+
+def test_simple_pdf_report_repeats_disposition_when_one_row_spans_pages():
+    huge_identifier = "HUGE-" + ("Z" * 5000)
+    content_streams = _pdf_content_streams(
+        _build_simple_report_pdf(_make_report_payload([(huge_identifier, "reject")]))
+    )
+
+    assert len(content_streams) >= 2
+    assert all(b"reject" in stream and b"yes" not in stream for stream in content_streams)
+    assert sum(stream.count(b"Z") for stream in content_streams) == 5000
 
 
 def test_project_pdf_report_supports_export(client):
@@ -628,8 +921,119 @@ def test_project_pdf_report_supports_export(client):
     report_resp = client.get(f"/api/projects/{project_id}/report-pdf", headers=headers)
     assert report_resp.status_code == 200, report_resp.text
     assert report_resp.headers["content-type"].startswith("application/pdf")
-    assert report_resp.headers["content-disposition"].endswith("-report.pdf\"")
+    assert 'filename="PDF Report Project-report.pdf"' in report_resp.headers["content-disposition"]
+    assert "filename*=UTF-8''PDF%20Report%20Project-report.pdf" in report_resp.headers["content-disposition"]
     assert report_resp.content.startswith(b"%PDF-1.4")
+    v3_headers = [
+        line for line in _pdf_extracted_lines(report_resp.content) if line.startswith("Part ")
+    ]
+    assert len(v3_headers) == 1
+    assert "Reviewed" not in v3_headers[0]
+
+    v2_report_resp = client.get(
+        f"/api/projects/{project_id}/report-pdf?schema_version=2",
+        headers=headers,
+    )
+    assert v2_report_resp.status_code == 200, v2_report_resp.text
+    assert _pdf_page_count(v2_report_resp.content) == 2
+    assert b"Part Pass/Fail Assignments" in v2_report_resp.content
+    assert b"VISTA Report Image-to-Part Mapping" in v2_report_resp.content
+
+    for endpoint in ("report-json", "report-pdf"):
+        unsupported_resp = client.get(
+            f"/api/projects/{project_id}/{endpoint}?schema_version=4",
+            headers=headers,
+        )
+        assert unsupported_resp.status_code == 422
+        assert unsupported_resp.json()["detail"] == "schema_version must be 2 or 3"
+
+
+def test_project_pdf_report_uses_safe_unicode_content_disposition(client):
+    project_name = 'Résumé "部品"/QA\r\nX-Injected: yes'
+    headers = {
+        "X-User-Id": "pdf-header@example.com",
+        "X-User-Groups": "[\"pdf-header-group\"]",
+    }
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": project_name,
+            "description": "pdf header hardening",
+            "meta_group_id": "pdf-header-group",
+            "project_type": "PT1",
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+
+    report_resp = client.get(
+        f"/api/projects/{project_resp.json()['id']}/report-pdf",
+        headers=headers,
+    )
+
+    assert report_resp.status_code == 200, report_resp.text
+    disposition = report_resp.headers["content-disposition"]
+    assert disposition.startswith('attachment; filename="')
+    assert "\r" not in disposition and "\n" not in disposition
+    assert "/" not in disposition and '\\"' not in disposition
+    assert "filename*=UTF-8''" in disposition
+    assert "%C3%A9" in disposition
+    assert "%E9%83%A8%E5%93%81" in disposition
+    assert "%0D" not in disposition and "%0A" not in disposition
+
+
+def test_project_report_with_images_pdf_endpoint_auth_filename_and_content(client):
+    project_name = 'Evidence Résumé "部品"/QA\r\nInjected'
+    headers = {
+        "X-User-Id": "evidence-report@example.com",
+        "X-User-Groups": "[\"evidence-report-group\"]",
+    }
+    project_resp = client.post(
+        "/api/projects/",
+        json={
+            "name": project_name,
+            "description": "image evidence report",
+            "meta_group_id": "evidence-report-group",
+            "project_type": "PT1",
+        },
+        headers=headers,
+    )
+    assert project_resp.status_code == 201, project_resp.text
+    project_id = project_resp.json()["id"]
+    synthetic_pdf = b"%PDF-1.4\nsynthetic evidence\n%%EOF"
+
+    with patch(
+        "routers.export.build_project_report_with_images_pdf",
+        new=AsyncMock(
+            return_value=SimpleNamespace(
+                pdf_bytes=synthetic_pdf,
+                page_count=1,
+                panel_count=0,
+                omissions=[],
+            )
+        ),
+    ):
+        report_resp = client.get(
+            f"/api/projects/{project_id}/report-with-images-pdf",
+            headers=headers,
+        )
+
+    assert report_resp.status_code == 200, report_resp.text
+    assert report_resp.content == synthetic_pdf
+    assert report_resp.headers["content-type"].startswith("application/pdf")
+    disposition = report_resp.headers["content-disposition"]
+    assert "-report-with-images.pdf" in disposition
+    assert "filename*=UTF-8''" in disposition
+    assert "%C3%A9" in disposition
+    assert "%E9%83%A8%E5%93%81" in disposition
+    assert "\r" not in disposition and "\n" not in disposition
+
+    with patch("routers.export.is_user_in_group", return_value=False):
+        forbidden_resp = client.get(
+            f"/api/projects/{project_id}/report-with-images-pdf",
+            headers={"X-User-Id": "outsider@example.com", "X-User-Groups": "[]"},
+        )
+    assert forbidden_resp.status_code == 403
 
 
 def test_project_bundle_json_supports_progressive_users_per_project_type(client):
@@ -910,80 +1314,6 @@ def test_project_bundle_json_forbidden_for_non_group_member(client):
         bundle_resp = client.get(f"/api/projects/{project_id}/export-bundle-json")
 
     assert bundle_resp.status_code == 403
-
-
-@pytest.mark.parametrize("project_type", ["PT1", "PT2", "PT3"])
-def test_project_json_report_tracks_metadata_normalization_with_progressive_users(client, project_type):
-    scenarios = (
-        {"user": "report-mixed-basic", "level": 1, "part_count": 1, "dropped_per_part": 1},
-        {"user": "report-mixed-intermediate", "level": 2, "part_count": 2, "dropped_per_part": 2},
-        {"user": "report-mixed-advanced", "level": 3, "part_count": 3, "dropped_per_part": 3},
-    )
-    for scenario in scenarios:
-        group = f"report-norm-{project_type.lower()}-{scenario['user']}"
-        headers = {"X-Forwarded-Email": f"{scenario['user']}@{group}.test"}
-        project_resp = client.post(
-            "/api/projects/",
-            json={
-                "name": f"Report normalization {project_type} {scenario['user']}",
-                "description": "report metadata normalization coverage",
-                "meta_group_id": group,
-                "project_type": project_type,
-            },
-            headers=headers,
-        )
-        assert project_resp.status_code == 201, project_resp.text
-        project_id = project_resp.json()["id"]
-
-        for idx in range(scenario["part_count"]):
-            batch_resp = client.post(
-                f"/api/projects/{project_id}/batches",
-                json={"name": f"batch-{idx}", "description": f"batch {idx}"},
-                headers=headers,
-            )
-            assert batch_resp.status_code == 201, batch_resp.text
-            batch_id = batch_resp.json()["id"]
-
-            annotations = [{"id": f"ann-{idx}", "defect_class": "scratch", "modality": "rgb"}]
-            annotations.extend([f"noise-{n}" for n in range(scenario["dropped_per_part"])])
-            part_resp = client.post(
-                f"/api/projects/{project_id}/parts",
-                json={
-                    "serial_number": f"{project_type}-REPORT-{scenario['level']}-{idx}",
-                    "display_name": f"report-part-{idx}",
-                    "batch_id": batch_id,
-                    "review_state": "pass" if idx % 2 == 0 else "unreviewed",
-                    "metadata": {
-                        "annotations": annotations,
-                        "overlay_layers": [{"id": f"overlay-{idx}", "label": "Mask", "color": "#22c55e"}],
-                        "segmentation_runs": [{"overlay_id": f"overlay-{idx}"}],
-                        "measurement_runs": [{"run_id": f"run-{idx}", "status": "completed"}],
-                    },
-                },
-                headers=headers,
-            )
-            assert part_resp.status_code == 201, part_resp.text
-
-            image_resp = client.post(
-                f"/api/projects/{project_id}/images",
-                files={"file": (f"report_{idx}.png", b"report-bytes", "image/png")},
-                data={"metadata": _json.dumps({"scenario": scenario["user"], "index": idx})},
-                headers=headers,
-            )
-            assert image_resp.status_code == 201, image_resp.text
-
-        report_resp = client.get(f"/api/projects/{project_id}/report-json", headers=headers)
-        assert report_resp.status_code == 200, report_resp.text
-        payload = report_resp.json()
-        assert payload["project"]["project_type"] == project_type
-        assert payload["summary"]["total_parts"] == scenario["part_count"]
-        assert payload["summary"]["total_images"] == scenario["part_count"]
-        assert payload["summary"]["metadata_normalization"]["dropped_non_object_items"]["annotations"] == (
-            scenario["part_count"] * scenario["dropped_per_part"]
-        )
-        assert payload["summary"]["metadata_normalization"]["dropped_non_object_items"]["overlay_layers"] == 0
-        assert payload["summary"]["metadata_normalization"]["dropped_non_object_items"]["segmentation_runs"] == 0
-        assert payload["summary"]["metadata_normalization"]["dropped_non_object_items"]["measurement_runs"] == 0
 
 
 def test_project_bundle_archive_supports_progressive_users_per_project_type(client):

@@ -398,7 +398,7 @@ services:
 
 3. **Rebuild image:**
    ```bash
-   podman build -t vista:latest .
+   podman build --ignorefile Dockerfile.dockerignore -t vista:latest .
    ```
 
 4. **Run migrations:**

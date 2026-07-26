@@ -1806,9 +1806,15 @@ function getPartImageRefs(part) {
   const refs = [];
   const claimedImages = [];
   const sourceImages = Array.isArray(part?.metadata?.source_images) ? part.metadata.source_images : [];
+  const analysisOutputs = Array.isArray(part?.metadata?.analysis_outputs) ? part.metadata.analysis_outputs : [];
+  const backingImageRecords = [...sourceImages, ...analysisOutputs]
+    .filter((record) => record && typeof record === 'object');
+  const isDeleteCandidate = (record) => Boolean(
+    record?.overlay_delete_candidate || record?.delete_candidate,
+  );
   const sourceImageByFilename = sourceImages.reduce((acc, record) => {
     const filename = String(record?.filename || '');
-    if (filename && !acc[filename]) acc[filename] = record;
+    if (filename && !isDeleteCandidate(record) && !acc[filename]) acc[filename] = record;
     return acc;
   }, {});
   const getRecordModality = (record) => String(record?.modality || record?.metadata?.modality || '').toLowerCase();
@@ -1842,10 +1848,34 @@ function getPartImageRefs(part) {
   const imagesByView = part?.metadata?.view_images;
   if (imagesByView && typeof imagesByView === 'object') {
     Object.entries(imagesByView).forEach(([viewName, imageRef]) => {
-      const ref = String(imageRef || '');
+      const viewImageId = String(
+        imageRef && typeof imageRef === 'object' ? imageRef.image_id || '' : '',
+      ).trim();
+      const viewFilename = String(
+        imageRef && typeof imageRef === 'object' ? imageRef.filename || '' : imageRef || '',
+      ).trim();
+      const ref = viewFilename || viewImageId;
       if (!ref) return;
-      const sourceRecord = sourceImageByFilename[ref] || {};
-      const identity = claimImageIdentity({ ...sourceRecord, filename: ref });
+      const matchingBackingRecords = backingImageRecords.filter((record) => {
+        const recordImageId = String(record?.image_id || '').trim();
+        const recordFilename = String(record?.filename || '').trim();
+        return viewImageId
+          ? recordImageId === viewImageId
+          : Boolean(viewFilename && recordFilename === viewFilename);
+      });
+      if (
+        matchingBackingRecords.length > 0
+        && matchingBackingRecords.every(isDeleteCandidate)
+      ) return;
+      const sourceRecord = matchingBackingRecords.find((record) => !isDeleteCandidate(record))
+        || sourceImageByFilename[viewFilename]
+        || {};
+      const identityRecord = {
+        ...sourceRecord,
+        image_id: viewImageId || sourceRecord.image_id || '',
+        filename: viewFilename || sourceRecord.filename || '',
+      };
+      const identity = claimImageIdentity(identityRecord);
       if (!identity.claimed) return;
       const imageReference = {
         id: `${part.id}-view-${viewName}`,
@@ -1853,7 +1883,8 @@ function getPartImageRefs(part) {
         modality: getRecordModality(sourceRecord),
         label: String(viewName || 'image').toUpperCase(),
         imageRef: ref,
-        imageId: sourceRecord.image_id ? String(sourceRecord.image_id) : '',
+        filename: String(identityRecord.filename || ''),
+        imageId: identityRecord.image_id ? String(identityRecord.image_id) : '',
         overlay: false,
         hidden: sourceRecord.hidden === true,
       };
@@ -1909,13 +1940,49 @@ function getPartImageRefs(part) {
   sourceImages.forEach((record, index) => {
     pushRecord(record, index, isAnalyzeOutputRecord(record));
   });
-  const analysisOutputs = part?.metadata?.analysis_outputs;
-  if (Array.isArray(analysisOutputs)) {
-    analysisOutputs.forEach((record, index) => {
-      pushRecord(record, index, true);
-    });
-  }
+  analysisOutputs.forEach((record, index) => {
+    pushRecord(record, index, true);
+  });
   return refs;
+}
+
+export function getInspectionImageOrderKey(entry) {
+  return String(entry?.imageId || entry?.filename || entry?.imageRef || '').trim();
+}
+
+export function applyInspectionImageDisplayOrder(entries, imageRefs) {
+  const remaining = Array.isArray(entries) ? [...entries] : [];
+  const ordered = [];
+  const requestedRefs = Array.isArray(imageRefs)
+    ? imageRefs.map((imageRef) => String(imageRef || '').trim()).filter(Boolean)
+    : [];
+  requestedRefs.forEach((imageRef) => {
+    let matchIndex = remaining.findIndex(
+      (entry) => getInspectionImageOrderKey(entry) === imageRef,
+    );
+    if (matchIndex < 0) {
+      matchIndex = remaining.findIndex((entry) => (
+        [entry?.filename, entry?.imageRef]
+          .map((candidate) => String(candidate || '').trim())
+          .includes(imageRef)
+      ));
+    }
+    if (matchIndex >= 0) {
+      ordered.push(remaining.splice(matchIndex, 1)[0]);
+    }
+  });
+  return [...ordered, ...remaining];
+}
+
+export function moveInspectionImageDisplayOrder(imageRefs, imageRef, direction) {
+  const order = Array.isArray(imageRefs) ? [...imageRefs] : [];
+  const currentIndex = order.indexOf(String(imageRef || '').trim());
+  if (!['up', 'down', -1, 1].includes(direction)) return order;
+  const offset = direction === 'up' || direction === -1 ? -1 : 1;
+  const nextIndex = currentIndex + offset;
+  if (currentIndex < 0 || nextIndex < 0 || nextIndex >= order.length) return order;
+  [order[currentIndex], order[nextIndex]] = [order[nextIndex], order[currentIndex]];
+  return order;
 }
 
 function isDeletedProjectImageRecord(record) {
@@ -1923,8 +1990,11 @@ function isDeletedProjectImageRecord(record) {
 }
 
 function isInspectionImageRefLoaded(entry, projectImageLookup = {}) {
+  const imageId = String(entry?.imageId || '').trim();
+  if (imageId && projectImageLookup[imageId]) {
+    return !isDeletedProjectImageRecord(projectImageLookup[imageId]);
+  }
   const candidates = [
-    entry?.imageId,
     entry?.imageRef,
     entry?.filename,
   ].map((value) => String(value || '').trim()).filter(Boolean);
@@ -3640,7 +3710,9 @@ function createInspectionFlexLayoutModel({
           type: 'tabset',
           id: INSPECTION_FLEX_TABSET_IDS.center,
           weight: centerWeight,
-          minWidth: normalizeLayoutNumber(inspectorRegion?.minWidthPx, 560),
+          minWidth: inspectionLayoutCollapsed
+            ? 0
+            : normalizeLayoutNumber(inspectorRegion?.minWidthPx, 560),
           minHeight: normalizeLayoutNumber(inspectorRegion?.minHeightPx, 320),
           children: inspectionHierarchy.centerTabs.map((tabKey) => (
             createInspectionTab(tabKey, inspectionHierarchy.regions[tabKey], tabKey)
@@ -3903,6 +3975,11 @@ function InspectionWorkbenchPanel({
   const [panelLayout, setPanelLayout] = useState(DEFAULT_PANEL_LAYOUT);
   const [normalizationTriageField, setNormalizationTriageField] = useState('');
   const [selectedImageRef, setSelectedImageRef] = useState('');
+  const [imageOrderDraft, setImageOrderDraft] = useState(null);
+  const [imageOrderSaving, setImageOrderSaving] = useState(false);
+  const [imageOrderError, setImageOrderError] = useState('');
+  const [imageOrderAnnouncement, setImageOrderAnnouncement] = useState('');
+  const imageOrderSaveRequestRef = useRef(null);
   const [projectImageLookup, setProjectImageLookup] = useState({});
   const volumeMetadataProbeCacheRef = useRef(new Map());
   const volumeRenderSummaryCacheRef = useRef(new Map());
@@ -4415,6 +4492,14 @@ function InspectionWorkbenchPanel({
   );
 
   useEffect(() => {
+    imageOrderSaveRequestRef.current = null;
+    setImageOrderDraft(null);
+    setImageOrderSaving(false);
+    setImageOrderError('');
+    setImageOrderAnnouncement('');
+  }, [projectId, selectedPart?.id]);
+
+  useEffect(() => {
     const candidates = getVolumeMetadataProbeCandidates(selectedPart, projectImageLookup);
     if (candidates.length === 0) {
       setVolumeMetadataProbeState((previous) => (
@@ -4704,8 +4789,111 @@ function InspectionWorkbenchPanel({
   }, [selectedPart, selectedViewName]);
   const selectedPartImageRefs = useMemo(() => {
     if (!selectedPart?.metadata || typeof selectedPart.metadata !== 'object') return [];
-    return getPartImageRefs(selectedPart).filter((entry) => isInspectionImageRefLoaded(entry, projectImageLookup));
-  }, [projectImageLookup, selectedPart]);
+    const mappedEntries = getPartImageRefs(selectedPart)
+      .filter((entry) => isInspectionImageRefLoaded(entry, projectImageLookup));
+    const draftMatchesSelection = (
+      imageOrderDraft
+      && String(imageOrderDraft.projectId) === String(projectId)
+      && String(imageOrderDraft.partId) === String(selectedPart.id)
+    );
+    const persistedOrder = Array.isArray(selectedPart.metadata.image_display_order)
+      ? selectedPart.metadata.image_display_order
+      : [];
+    return applyInspectionImageDisplayOrder(
+      mappedEntries,
+      draftMatchesSelection ? imageOrderDraft.imageRefs : persistedOrder,
+    );
+  }, [imageOrderDraft, projectId, projectImageLookup, selectedPart]);
+  const selectedPartImageOrderKeys = useMemo(
+    () => selectedPartImageRefs.map(getInspectionImageOrderKey).filter(Boolean),
+    [selectedPartImageRefs],
+  );
+  const imageOrderDraftIsOpen = Boolean(
+    imageOrderDraft
+    && String(imageOrderDraft.projectId) === String(projectId)
+    && String(imageOrderDraft.partId) === String(selectedPart?.id),
+  );
+  const beginImageOrderDraft = useCallback(() => {
+    if (readOnly || !selectedPart || selectedPartImageOrderKeys.length < 2) return;
+    setImageOrderDraft({
+      projectId: String(projectId),
+      partId: String(selectedPart.id),
+      imageRefs: selectedPartImageOrderKeys,
+    });
+    setImageOrderError('');
+    setImageOrderAnnouncement(
+      `Image order editor opened with ${selectedPartImageOrderKeys.length} images.`,
+    );
+  }, [projectId, readOnly, selectedPart, selectedPartImageOrderKeys]);
+  const moveImageOrderDraftEntry = useCallback((entry, direction) => {
+    const imageKey = getInspectionImageOrderKey(entry);
+    const label = String(entry?.label || entry?.viewName || entry?.filename || imageKey || 'Image');
+    setImageOrderDraft((previous) => {
+      if (!previous) return previous;
+      return {
+        ...previous,
+        imageRefs: moveInspectionImageDisplayOrder(previous.imageRefs, imageKey, direction),
+      };
+    });
+    setImageOrderError('');
+    setImageOrderAnnouncement(`${label} moved ${direction}.`);
+  }, []);
+  const cancelImageOrderDraft = useCallback(() => {
+    setImageOrderDraft(null);
+    setImageOrderError('');
+    setImageOrderAnnouncement('Image order changes canceled.');
+  }, []);
+  const saveImageOrderDraft = useCallback(async () => {
+    if (
+      readOnly
+      || !selectedPart
+      || !imageOrderDraftIsOpen
+      || imageOrderSaving
+      || imageOrderSaveRequestRef.current
+    ) return;
+    const imageRefs = [...imageOrderDraft.imageRefs];
+    const requestToken = {};
+    imageOrderSaveRequestRef.current = requestToken;
+    setImageOrderSaving(true);
+    setImageOrderError('');
+    try {
+      const response = await fetchInspectionResource(
+        readOnly,
+        `/api/projects/${projectId}/parts/${selectedPart.id}/image-display-order`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_refs: imageRefs }),
+        },
+      );
+      if (!response.ok) {
+        throw new Error(`Unable to save image order (${response.status})`);
+      }
+      const updatedPart = await response.json();
+      setParts((previous) => previous.map((part) => (
+        String(part.id) === String(updatedPart.id) ? updatedPart : part
+      )));
+      if (imageOrderSaveRequestRef.current !== requestToken) return;
+      setImageOrderDraft(null);
+      setImageOrderAnnouncement('Image display order saved.');
+    } catch (saveError) {
+      if (imageOrderSaveRequestRef.current !== requestToken) return;
+      setImageOrderError(saveError?.message || 'Unable to save image order.');
+      setImageOrderAnnouncement('Image display order was not saved.');
+    } finally {
+      if (imageOrderSaveRequestRef.current === requestToken) {
+        imageOrderSaveRequestRef.current = null;
+        setImageOrderSaving(false);
+      }
+    }
+  }, [
+    imageOrderDraft,
+    imageOrderDraftIsOpen,
+    imageOrderSaving,
+    projectId,
+    readOnly,
+    selectedPart,
+  ]);
   const visibleSelectedPartImageRefs = useMemo(() => {
     const hidden = new Set(hiddenViewNames.map((name) => String(name).toLowerCase()));
     const enabled = new Set(enabledModalities.map((name) => String(name).toLowerCase()));
@@ -8858,7 +9046,7 @@ function InspectionWorkbenchPanel({
         ) : (
           !selectedPart ? (
             <p className="muted">No part selected. Select a part to inspect mapped images.</p>
-          ) : visibleSelectedPartImageRefs.length === 0 ? (
+          ) : selectedPartImageRefs.length === 0 ? (
             <p className="muted">No mapped images for this part.</p>
           ) : (
             <>
@@ -8892,6 +9080,109 @@ function InspectionWorkbenchPanel({
                 />
                 <span>{normalizedTileColumnCount} / {tileColumnMax}</span>
               </div>
+              {!readOnly && (
+                <div className="inspection-image-order-control">
+                  {!imageOrderDraftIsOpen ? (
+                    <button
+                      type="button"
+                      className="btn btn-secondary inspection-image-order-open"
+                      disabled={selectedPartImageRefs.length < 2}
+                      onClick={beginImageOrderDraft}
+                    >
+                      Arrange image order
+                    </button>
+                  ) : (
+                    <section
+                      className="inspection-image-order-arranger"
+                      aria-label="Arrange image display order"
+                    >
+                      <div className="inspection-image-order-heading">
+                        <div>
+                          <span className="inspection-image-order-kicker">Display sequence</span>
+                          <strong>Image order</strong>
+                        </div>
+                        <span>{selectedPartImageRefs.length} mapped</span>
+                      </div>
+                      <ol
+                        className="inspection-image-order-list"
+                        aria-label="Current image display sequence"
+                      >
+                        {selectedPartImageRefs.map((entry, index) => {
+                          const imageKey = getInspectionImageOrderKey(entry);
+                          const imageLabel = String(
+                            entry.label
+                            || entry.viewName
+                            || entry.filename
+                            || imageKey
+                            || `Image ${index + 1}`,
+                          );
+                          return (
+                            <li
+                              key={imageKey || entry.id}
+                              data-image-order-key={imageKey}
+                              aria-label={imageLabel}
+                            >
+                              <span className="inspection-image-order-index">
+                                {String(index + 1).padStart(2, '0')}
+                              </span>
+                              <span className="inspection-image-order-name" title={imageLabel}>
+                                {imageLabel}
+                              </span>
+                              <span className="inspection-image-order-kind">
+                                {entry.cropChild ? 'Crop' : (entry.overlay ? 'Overlay' : 'Source')}
+                              </span>
+                              <div className="inspection-image-order-moves">
+                                <button
+                                  type="button"
+                                  aria-label={`Move image ${index + 1} ${imageLabel} up`}
+                                  disabled={imageOrderSaving || index === 0}
+                                  onClick={() => moveImageOrderDraftEntry(entry, 'up')}
+                                >
+                                  ↑
+                                </button>
+                                <button
+                                  type="button"
+                                  aria-label={`Move image ${index + 1} ${imageLabel} down`}
+                                  disabled={imageOrderSaving || index === selectedPartImageRefs.length - 1}
+                                  onClick={() => moveImageOrderDraftEntry(entry, 'down')}
+                                >
+                                  ↓
+                                </button>
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ol>
+                      {imageOrderError && (
+                        <div className="inspection-image-order-error" role="alert">
+                          {imageOrderError}
+                        </div>
+                      )}
+                      <div className="inspection-image-order-actions">
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          disabled={imageOrderSaving}
+                          onClick={cancelImageOrderDraft}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          disabled={imageOrderSaving}
+                          onClick={saveImageOrderDraft}
+                        >
+                          {imageOrderSaving ? 'Saving…' : 'Save order'}
+                        </button>
+                      </div>
+                    </section>
+                  )}
+                  <span className="inspection-image-order-live" aria-live="polite" aria-atomic="true">
+                    {imageOrderAnnouncement}
+                  </span>
+                </div>
+              )}
             </div>
             <div
               className="view-board"
@@ -8901,6 +9192,11 @@ function InspectionWorkbenchPanel({
                 '--inspection-tile-min-height': `${Math.max(240, Math.round(560 / normalizedTileColumnCount))}px`,
               }}
             >
+              {visibleSelectedPartImageRefs.length === 0 && (
+                <p className="inspection-image-filter-empty" role="status">
+                  No mapped images match the current filters.
+                </p>
+              )}
               {visibleSelectedPartImageRefs.map((entry) => {
                 const viewName = entry.viewName || 'image';
                 const imageRef = String(entry.imageRef || '');

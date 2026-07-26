@@ -75,7 +75,7 @@ def test_github_critical_e2e_gate_uses_direct_specs_and_one_worker() -> None:
 
 def test_historical_production_build_keeps_runtime_and_safe_context() -> None:
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
-    dockerignore = (REPO_ROOT / ".dockerignore").read_text(
+    dockerignore = (REPO_ROOT / "Dockerfile.dockerignore").read_text(
         encoding="utf-8"
     ).splitlines()
 

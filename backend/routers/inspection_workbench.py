@@ -30,7 +30,7 @@ from sqlalchemy.exc import IntegrityError
 from core import models, schemas
 from core.database import get_db
 from core.group_auth_helper import is_user_in_group
-from utils.dependencies import get_current_user
+from utils.dependencies import get_current_user, get_project_or_403_writable
 import utils.crud as crud
 from core.config import settings
 from core.project_types import DEFAULT_PROJECT_TYPE, normalize_project_type
@@ -379,6 +379,111 @@ def _part_annotations(part) -> List[dict]:
     metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
     annotations = metadata.get(ANNOTATIONS_METADATA_KEY)
     return list(annotations) if isinstance(annotations, list) else []
+
+
+def _part_image_display_identities(metadata: dict) -> tuple[list[str], set[str], dict[str, set[str]]]:
+    """Return natural display order plus the aliases accepted by its API."""
+
+    display_records: list[dict[str, str]] = []
+    backing_records: list[dict[str, object]] = []
+    for collection_key in ("source_images", "analysis_outputs"):
+        records = metadata.get(collection_key)
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            image_id = str(record.get("image_id") or "").strip()
+            filename = str(record.get("filename") or "").strip()
+            if image_id or filename:
+                backing_records.append(
+                    {
+                        "image_id": image_id,
+                        "filename": filename,
+                        "delete_candidate": bool(
+                            record.get("overlay_delete_candidate")
+                            or record.get("delete_candidate")
+                        ),
+                    }
+                )
+
+    view_images = metadata.get("view_images")
+    if isinstance(view_images, dict):
+        for image_ref in view_images.values():
+            if isinstance(image_ref, dict):
+                image_id = str(image_ref.get("image_id") or "").strip()
+                filename = str(image_ref.get("filename") or "").strip()
+            else:
+                image_id = ""
+                filename = str(image_ref or "").strip()
+            if not image_id and not filename:
+                continue
+            matching_backing_records = [
+                record
+                for record in backing_records
+                if (
+                    record["image_id"] == image_id
+                    if image_id
+                    else bool(filename and record["filename"] == filename)
+                )
+            ]
+            if (
+                matching_backing_records
+                and all(record["delete_candidate"] for record in matching_backing_records)
+            ):
+                continue
+            display_records.append({"image_id": image_id, "filename": filename})
+
+    for record in backing_records:
+        if record["delete_candidate"]:
+            continue
+        display_records.append(
+            {
+                "image_id": str(record["image_id"]),
+                "filename": str(record["filename"]),
+            }
+        )
+
+    image_ids = {
+        record["image_id"]
+        for record in display_records
+        if record["image_id"]
+    }
+    filename_to_ids: dict[str, set[str]] = {}
+    for record in display_records:
+        if record["filename"] and record["image_id"]:
+            filename_to_ids.setdefault(record["filename"], set()).add(record["image_id"])
+
+    natural_order: list[str] = []
+    seen_identities: set[str] = set()
+    filename_aliases: dict[str, set[str]] = {}
+    for record in display_records:
+        image_id = record["image_id"]
+        filename = record["filename"]
+        candidate_ids = filename_to_ids.get(filename, set()) if filename else set()
+        if image_id:
+            canonical_ref = image_id
+        elif len(candidate_ids) == 1:
+            canonical_ref = next(iter(candidate_ids))
+        elif len(candidate_ids) > 1:
+            # A filename shared by multiple IDs cannot identify another image.
+            # The concrete ID records are added when their collections are read.
+            continue
+        else:
+            canonical_ref = filename
+        if not canonical_ref:
+            continue
+        if canonical_ref not in seen_identities:
+            natural_order.append(canonical_ref)
+            seen_identities.add(canonical_ref)
+        if filename:
+            filename_aliases.setdefault(filename, set()).add(canonical_ref)
+
+    # Preserve the full ID ambiguity of a shared filename even if one record was
+    # de-duplicated earlier in natural-order construction.
+    for filename, candidate_ids in filename_to_ids.items():
+        filename_aliases.setdefault(filename, set()).update(candidate_ids)
+    return natural_order, image_ids, filename_aliases
 
 
 INSPECTION_MAX_ANNOTATIONS_PER_PART = 2_048
@@ -2594,6 +2699,80 @@ async def list_inspection_parts(
         review_state=review_state,
     )
     return [_serialize_inspection_part(part) for part in parts]
+
+
+@router.put(
+    "/projects/{project_id}/parts/{part_id}/image-display-order",
+    response_model=schemas.InspectionPart,
+)
+async def update_inspection_part_image_display_order(
+    project_id: uuid.UUID,
+    part_id: uuid.UUID,
+    payload: schemas.InspectionPartImageDisplayOrderUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: schemas.User = Depends(get_current_user),
+):
+    await get_project_or_403_writable(project_id, db, current_user)
+    part = await _get_locked_inspection_part(
+        db=db,
+        project_id=project_id,
+        part_id=part_id,
+    )
+    if not part:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Inspection part not found",
+        )
+
+    metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+    natural_order, image_ids, filename_aliases = _part_image_display_identities(metadata)
+    requested_order: list[str] = []
+    requested_identities: set[str] = set()
+    for image_ref in payload.image_refs:
+        if image_ref in image_ids:
+            canonical_ref = image_ref
+        else:
+            candidates = filename_aliases.get(image_ref)
+            if not candidates:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Unknown image reference '{image_ref}'",
+                )
+            if len(candidates) > 1:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Ambiguous image filename '{image_ref}'; use an image ID",
+                )
+            canonical_ref = next(iter(candidates))
+        if canonical_ref in requested_identities:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"Image reference '{image_ref}' duplicates another image "
+                    "in image_refs"
+                ),
+            )
+        requested_identities.add(canonical_ref)
+        requested_order.append(canonical_ref)
+
+    complete_order = requested_order + [
+        image_ref
+        for image_ref in natural_order
+        if image_ref not in requested_identities
+    ]
+    updated = await crud.update_inspection_part_metadata(
+        db=db,
+        project_id=project_id,
+        part_id=part_id,
+        metadata_patch={"image_display_order": complete_order},
+        updated_by=current_user.email,
+    )
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Inspection part not found",
+        )
+    return _serialize_inspection_part(updated)
 
 
 @router.put("/projects/{project_id}/parts/{part_id}/metadata-sources", response_model=schemas.InspectionPart)

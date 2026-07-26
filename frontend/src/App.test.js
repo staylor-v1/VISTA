@@ -940,14 +940,14 @@ describe('project type UI exposure', () => {
   });
 
   test.each(projectTypes.flatMap((projectType) => simulatedUsers.map((userScenario) => ({ projectType, userScenario }))))(
-    'requires explicit delete confirmation phrase for $projectType $userScenario.label simulated workflow',
+    'requires checkbox confirmation for $projectType $userScenario.label simulated delete workflow',
     async ({ projectType, userScenario }) => {
       let isDeleted = false;
+      const projectName = `${projectType} ${userScenario.label} delete target`;
+      const expectedPhrase = `DELETE ${projectName}`;
       global.fetch = jest.fn((input, init = {}) => {
         const url = typeof input === 'string' ? input : input.url;
         const method = (init.method || 'GET').toUpperCase();
-        const projectName = `${projectType} ${userScenario.label} delete target`;
-        const expectedPhrase = `DELETE ${projectName}`;
 
         if (url.endsWith('/api/users/me')) {
           return Promise.resolve({
@@ -1011,15 +1011,15 @@ describe('project type UI exposure', () => {
       await user.click(screen.getByRole('button', { name: new RegExp(`Project options for ${projectType} ${userScenario.label} delete target`) }));
       await user.click(screen.getByRole('button', { name: 'Delete' }));
 
-      expect(screen.getByRole('button', { name: 'Delete Project' })).toBeDisabled();
       const deleteProjectButton = screen.getByRole('button', { name: 'Delete Project' });
-      await user.type(screen.getByLabelText('Confirmation phrase *'), 'DELETE wrong phrase');
-      await user.click(screen.getByLabelText(/I understand this is irreversible/i));
+      const confirmationCheckbox = screen.getByRole('checkbox', {
+        name: new RegExp(`I understand that deleting ${projectName} is irreversible`, 'i'),
+      });
+      expect(screen.queryByLabelText('Confirmation phrase *')).not.toBeInTheDocument();
       expect(deleteProjectButton).toBeDisabled();
+      expect(confirmationCheckbox).not.toBeChecked();
 
-      const refreshedPhraseInput = screen.getByLabelText('Confirmation phrase *');
-      await user.clear(refreshedPhraseInput);
-      await user.type(refreshedPhraseInput, `DELETE ${projectType} ${userScenario.label} delete target`);
+      await user.click(confirmationCheckbox);
       expect(deleteProjectButton).toBeEnabled();
       await user.click(deleteProjectButton);
 

@@ -96,7 +96,7 @@ cd frontend
 npm run build
 
 # Docker image
-podman build -t vista .
+podman build --ignorefile Dockerfile.dockerignore -t vista .
 ```
 
 ## Architecture Overview
@@ -468,4 +468,3 @@ For operational security, AI coding agents must never indicate which LLM or prov
   - Suppress dependency installation and framework noise
   - Make it immediately obvious if things are working
   - Provide --verbose flag for debugging when needed
-
