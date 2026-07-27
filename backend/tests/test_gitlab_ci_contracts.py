@@ -12,12 +12,6 @@ def _pipeline(path: Path) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def _commands(job: dict) -> str:
-    commands = [*job.get("before_script", []), *job.get("script", [])]
-    assert all(isinstance(command, str) for command in commands)
-    return "\n".join(commands)
-
-
 def test_gitlab_pipeline_keeps_the_historical_build_only_contract() -> None:
     pipeline = _pipeline(GITLAB_CI)
 
@@ -38,26 +32,18 @@ def test_gitlab_pipeline_keeps_the_historical_build_only_contract() -> None:
 
 def test_gitlab_build_logs_in_and_pushes_latest_and_commit_sha_tags() -> None:
     build = _pipeline(GITLAB_CI)["build"]
-    commands = _commands(build)
 
-    assert (
+    assert build["before_script"] == [
         'echo "$QUAY_PASSWORD" | podman login quay.io '
         '-u "$QUAY_USERNAME" --password-stdin'
-    ) in commands
-    assert (
+    ]
+    assert build["script"] == [
         "podman build --ignorefile Dockerfile.dockerignore "
         "-t $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:latest "
-        "-t $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:$CI_COMMIT_SHA ."
-    ) in commands
-    assert (
-        "podman push "
-        "$QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:latest"
-    ) in commands
-    assert (
-        "podman push "
-        "$QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:$CI_COMMIT_SHA"
-    ) in commands
-    assert "publish_latest_image.sh" not in commands
+        "-t $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:$CI_COMMIT_SHA .",
+        "podman push $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:latest",
+        "podman push $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:$CI_COMMIT_SHA",
+    ]
 
 
 def test_github_workflow_retains_verification_before_its_image_build() -> None:

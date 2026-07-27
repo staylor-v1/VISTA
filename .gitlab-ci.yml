@@ -1,4 +1,5 @@
 # GitLab CI/CD configuration for building and pushing Docker images to Quay.io
+# The build-only top-level shape and exact Podman workflow are historical CI contracts.
 
 # Define variables at the top
 variables:
