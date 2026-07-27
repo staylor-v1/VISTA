@@ -36,6 +36,29 @@ jest.mock('../components/ProjectConfigurationPanel', () => {
     return (
       <div>
         <div>Project configuration editor</div>
+        <div data-testid="configuration-project-prop">
+          {JSON.stringify(props.project || null)}
+        </div>
+        <button
+          type="button"
+          onClick={() => props.onProjectUpdated?.({
+            ...props.project,
+            name: 'Updated Project',
+            meta_group_id: 'destination-group',
+          })}
+        >
+          Apply mocked project update
+        </button>
+        <button
+          type="button"
+          onClick={() => props.onProjectUpdated?.({
+            ...props.project,
+            id: 'stale-project',
+            meta_group_id: 'stale-group',
+          })}
+        >
+          Apply stale project update
+        </button>
         <button type="button" onClick={() => props.onActiveSubtabChange?.('general')}>Show general config</button>
         <button type="button" onClick={() => props.onActiveSubtabChange?.('filenameConvention')}>Show filename config</button>
         <button type="button" onClick={() => props.onActiveSubtabChange?.('hotkeys')}>Show hotkeys config</button>
@@ -300,6 +323,39 @@ describe('Project image summary loading', () => {
 
   afterEach(() => {
     jest.clearAllMocks();
+  });
+
+  test('hands the full project and a route-guarded update callback to Project Configuration', async () => {
+    mockSearch = '?tab=project_configuration';
+    window.history.pushState({}, '', `/project/proj-1${mockSearch}`);
+    const defaultFetch = global.fetch.getMockImplementation();
+    const projectPayload = {
+      id: 'proj-1',
+      name: 'Large Image Project',
+      project_type: 'PT1',
+      meta_group_id: 'source-group',
+      is_archived: false,
+    };
+    global.fetch.mockImplementation((url, options) => {
+      if (url === '/api/projects/proj-1') {
+        return Promise.resolve({ ok: true, json: async () => projectPayload });
+      }
+      return defaultFetch(url, options);
+    });
+
+    render(<Project />);
+
+    const projectProp = await screen.findByTestId('configuration-project-prop');
+    expect(projectProp).toHaveTextContent(JSON.stringify(projectPayload));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply stale project update' }));
+    expect(projectProp).toHaveTextContent(JSON.stringify(projectPayload));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply mocked project update' }));
+    await waitFor(() => {
+      expect(projectProp).toHaveTextContent('"meta_group_id":"destination-group"');
+      expect(screen.getByRole('heading', { name: 'Updated Project' })).toBeInTheDocument();
+    });
   });
 
   test('loads lightweight project counts without fetching parts, exports, or image collections', async () => {
@@ -1118,6 +1174,22 @@ describe('Project tab autosave coordination', () => {
 
     await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
     expect(screen.getByText('Project data summary')).toBeInTheDocument();
+  });
+
+  test('keeps Configuration open when a pending invalid draft cannot be flushed', async () => {
+    mockPendingAutosave = true;
+    mockFlushPendingAutosave.mockResolvedValue(false);
+    render(<Project />);
+
+    await waitFor(() => expect(screen.getByText('Project configuration editor')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'Project Data' }));
+
+    await waitFor(() => {
+      expect(mockFlushPendingAutosave).toHaveBeenCalledWith('Configuration autosaved.');
+      expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('Project configuration editor')).toBeInTheDocument();
+    expect(screen.queryByText('Project data summary')).not.toBeInTheDocument();
   });
 });
 

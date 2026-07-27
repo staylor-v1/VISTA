@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import FilenameMetadataExtractor, { applyOverlayIndicatorMetadata, buildConfiguredFilenameFields, extractValues, isFilenameConventionEnabled, stripConfiguredAbbreviation, stripExtension } from './FilenameMetadataExtractor';
 import { getConfiguredNsiproParserId, parseNsiproText } from '../metadata/nsiproParsers';
+import { appendFilenameOrdinal, assignDuplicateFilenameAliases } from '../utils/imageIdentity';
 import { runImageUploadPlan } from './imageUploadBatches';
 
 const S3_IMPORT_BATCH_SIZE = 100;
@@ -15,24 +16,20 @@ const BYTES_PER_GIB = BYTES_PER_KIB ** 3;
 const ASSOCIATED_METADATA_EXTENSIONS = ['.json', '.nsipro'];
 
 export function tagDuplicateFilename(filename = '', occurrence = 0) {
-  const safeFilename = String(filename || 'upload.bin').trim() || 'upload.bin';
+  const safeFilename = String(filename ?? '') || 'upload.bin';
   if (occurrence <= 0) return safeFilename;
-  const dotIndex = safeFilename.lastIndexOf('.');
-  const suffix = occurrence === 1 ? ' (duplicate)' : ` (duplicate ${occurrence})`;
-  if (dotIndex > 0) {
-    return `${safeFilename.slice(0, dotIndex)}${suffix}${safeFilename.slice(dotIndex)}`;
-  }
-  return `${safeFilename}${suffix}`;
+  return appendFilenameOrdinal(safeFilename, occurrence);
 }
 
 export function buildDuplicateFilenameMap(files = []) {
-  const counts = new Map();
   const mapped = new Map();
-  files.forEach((file, index) => {
-    const filename = file?.name || `upload-${index}.bin`;
-    const occurrence = counts.get(filename) || 0;
-    counts.set(filename, occurrence + 1);
-    mapped.set(file, tagDuplicateFilename(filename, occurrence));
+  const entries = files.map((file, index) => ({
+    file,
+    filename: file?.name || `upload-${index}.bin`,
+  }));
+  const decorated = assignDuplicateFilenameAliases(entries);
+  entries.forEach((entry, index) => {
+    mapped.set(entry.file, decorated[index].displayName);
   });
   return mapped;
 }
@@ -995,37 +992,28 @@ function ImageUploader({ projectId, projectType = 'PT1', projectConfiguration = 
       let completed = 0;
       let failed = 0;
       let loadedBytes = 0;
-      const occurrenceCounts = new Map();
       const uploadItems = selectedFiles.map((file, clientIndex) => {
-      const occurrence = occurrenceCounts.get(file.name) || 0;
-      occurrenceCounts.set(file.name, occurrence + 1);
-      const uploadFilename = tagDuplicateFilename(file.name, occurrence);
-      const extractedMetadata = extractorConfig.extractMetadata(file.name);
-      const mergedMetadata = (extractedMetadata || manualMetadata)
-        ? { ...(extractedMetadata || {}), ...(manualMetadata || {}) }
-        : null;
-      const metadataWithAssociatedReference = buildMetadataWithAssociatedReference(
-        mergedMetadata,
-        associatedMetadataReference,
-      );
-      const hierarchyMetadata = normalizeHierarchyMetadata(metadataWithAssociatedReference);
-      const duplicateMetadata = uploadFilename !== file.name
-        ? { original_filename: file.name, duplicate_filename_tagged: true }
-        : {};
-      const metadataForUpload = hierarchyMetadata
-        ? { ...metadataWithAssociatedReference, ...hierarchyMetadata, ...duplicateMetadata }
-        : (Object.keys(duplicateMetadata).length > 0
-          ? { ...(metadataWithAssociatedReference || {}), ...duplicateMetadata }
-          : metadataWithAssociatedReference);
-      return {
-        clientIndex,
-        file,
-        filename: uploadFilename,
-        metadata: metadataForUpload || {},
-        groupIdentifier: groupKey && extractedMetadata?.[groupKey]
-          ? String(extractedMetadata[groupKey])
-          : null,
-      };
+        const extractedMetadata = extractorConfig.extractMetadata(file.name);
+        const mergedMetadata = (extractedMetadata || manualMetadata)
+          ? { ...(extractedMetadata || {}), ...(manualMetadata || {}) }
+          : null;
+        const metadataWithAssociatedReference = buildMetadataWithAssociatedReference(
+          mergedMetadata,
+          associatedMetadataReference,
+        );
+        const hierarchyMetadata = normalizeHierarchyMetadata(metadataWithAssociatedReference);
+        const metadataForUpload = hierarchyMetadata
+          ? { ...metadataWithAssociatedReference, ...hierarchyMetadata }
+          : metadataWithAssociatedReference;
+        return {
+          clientIndex,
+          file,
+          filename: file.name,
+          metadata: metadataForUpload || {},
+          groupIdentifier: groupKey && extractedMetadata?.[groupKey]
+            ? String(extractedMetadata[groupKey])
+            : null,
+        };
       });
 
       const uploadResult = await runImageUploadPlan({

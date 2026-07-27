@@ -49,6 +49,72 @@ describe('PT3 volume overlay stack mapping', () => {
     expect(overlayStacks).toEqual([]);
   });
 
+  test('never resolves stale explicit volume IDs through a unique filename alias', () => {
+    const part = {
+      id: 'part-stale-volume-id',
+      metadata: {
+        source_images: [{
+          filename: 'shared-slice.png',
+          image_id: 'stale-base-id',
+          overlay: 'false',
+          slice_index: 0,
+        }],
+      },
+    };
+    const activeRecord = { id: 'active-base-id', filename: 'shared-slice.png' };
+    const projectImageLookup = {
+      'active-base-id': activeRecord,
+      'shared-slice.png': activeRecord,
+    };
+
+    expect(getVolumeSourceImages(part, projectImageLookup)).toEqual([]);
+  });
+
+  test('links same-name volume overlays only by exact base UUID', () => {
+    const part = {
+      id: 'part-same-name-volume-overlay',
+      metadata: {
+        source_images: [
+          { filename: 'capture.png', image_id: 'base-a', overlay: 'false', slice_index: 0 },
+          { filename: 'capture.png', image_id: 'base-b', overlay: 'false', slice_index: 1 },
+          {
+            filename: 'overlay-a.png',
+            image_id: 'overlay-a',
+            overlay: 'true',
+            overlay_base_image_id: 'base-a',
+            overlay_base_filename: 'capture.png',
+            slice_index: 0,
+          },
+          {
+            filename: 'overlay-stale.png',
+            image_id: 'overlay-stale',
+            overlay: 'true',
+            overlay_base_image_id: 'stale-base-id',
+            overlay_base_filename: 'capture.png',
+            slice_index: 0,
+          },
+        ],
+      },
+    };
+    const projectImageLookup = {
+      'base-a': { id: 'base-a', filename: 'capture.png' },
+      'base-b': { id: 'base-b', filename: 'capture.png' },
+      'overlay-a': { id: 'overlay-a', filename: 'overlay-a.png' },
+      'overlay-stale': { id: 'overlay-stale', filename: 'overlay-stale.png' },
+    };
+
+    const overlayStacks = getVolumeOverlayStacks(part, projectImageLookup);
+
+    expect(overlayStacks).toHaveLength(1);
+    expect(overlayStacks[0]).toEqual(expect.objectContaining({ id: 'overlay-a' }));
+    expect(overlayStacks[0].stack).toEqual([
+      expect.objectContaining({
+        id: 'overlay-a',
+        overlayBaseImageId: 'base-a',
+      }),
+    ]);
+  });
+
   test('represents large npy base and overlay volumes as bounded server-backed descriptors', () => {
     const dimensions = { axial: 749, coronal: 1010, sagittal: 984 };
     const part = {

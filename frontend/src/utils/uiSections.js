@@ -17,6 +17,7 @@ export const UI_SECTION_GROUPS = [
           { key: 'project_configuration.ui_configuration', label: 'UI Configuration subtab' },
           { key: 'project_configuration.owner_section', label: 'Project Owner section' },
           { key: 'project_configuration.user_section', label: 'Current User section' },
+          { key: 'project_configuration.calibration', label: 'Project Calibration section' },
           { key: 'project_configuration.process_settings', label: 'Process Settings section' },
           { key: 'project_configuration.serial_scheme', label: 'Serial Number Scheme section' },
           { key: 'project_configuration.project_phase_settings', label: 'Project Phase Settings section' },

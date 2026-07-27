@@ -1369,6 +1369,42 @@ class InspectionProjectMetadataParsersConfig(BaseModel):
     nsipro: InspectionProjectNsiproParserConfig = Field(default_factory=InspectionProjectNsiproParserConfig)
 
 
+class InspectionProjectCalibrationConfig(BaseModel):
+    pixels_per_mm: float = Field(gt=0, strict=True, allow_inf_nan=False)
+    pixels_per_inch: float = Field(gt=0, strict=True, allow_inf_nan=False)
+    unit: Literal["mm", "inches"]
+    updated_at: Optional[datetime] = None
+
+    @field_validator("pixels_per_mm", "pixels_per_inch", mode="before")
+    @classmethod
+    def validate_calibration_scale(cls, value):
+        # JSON callers have a single number type in practice. Accept ordinary
+        # integers while retaining strict rejection of booleans and strings.
+        if isinstance(value, int) and not isinstance(value, bool):
+            return float(value)
+        if isinstance(value, float) and not math.isfinite(value):
+            # Keep validation responses JSON serializable for NaN/Infinity.
+            return "non-finite"
+        return value
+
+    @model_validator(mode="after")
+    def validate_equivalent_scales(self):
+        expected_pixels_per_inch = self.pixels_per_mm * 25.4
+        if (
+            not math.isfinite(expected_pixels_per_inch)
+            or not math.isclose(
+                self.pixels_per_inch,
+                expected_pixels_per_inch,
+                rel_tol=1e-9,
+                abs_tol=0.0,
+            )
+        ):
+            raise ValueError(
+                "pixels_per_inch must equal pixels_per_mm multiplied by 25.4"
+            )
+        return self
+
+
 class InspectionProjectConfiguration(BaseModel):
     image_modalities: List[InspectionProjectModalityConfig] = Field(default_factory=list)
     part_views: List[InspectionProjectPartViewConfig] = Field(default_factory=list)
@@ -1381,6 +1417,7 @@ class InspectionProjectConfiguration(BaseModel):
     file_naming_scheme: InspectionProjectFileNamingSchemeConfig = Field(default_factory=InspectionProjectFileNamingSchemeConfig)
     project_owner: InspectionProjectOwnerConfig = Field(default_factory=InspectionProjectOwnerConfig)
     current_user: InspectionProjectCurrentUserConfig = Field(default_factory=InspectionProjectCurrentUserConfig)
+    calibration: Optional[InspectionProjectCalibrationConfig] = None
 
 
 class InspectionProjectConfigurationPayload(BaseModel):

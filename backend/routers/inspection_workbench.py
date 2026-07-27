@@ -31,6 +31,7 @@ from core import models, schemas
 from core.database import get_db
 from core.group_auth_helper import is_user_in_group
 from utils.dependencies import get_current_user, get_project_or_403_writable
+from utils.metadata_values import parse_metadata_boolean
 import utils.crud as crud
 from core.config import settings
 from core.project_types import DEFAULT_PROJECT_TYPE, normalize_project_type
@@ -400,9 +401,11 @@ def _part_image_display_identities(metadata: dict) -> tuple[list[str], set[str],
                     {
                         "image_id": image_id,
                         "filename": filename,
-                        "delete_candidate": bool(
-                            record.get("overlay_delete_candidate")
-                            or record.get("delete_candidate")
+                        "delete_candidate": (
+                            parse_metadata_boolean(
+                                record.get("overlay_delete_candidate")
+                            )
+                            or parse_metadata_boolean(record.get("delete_candidate"))
                         ),
                     }
                 )
@@ -893,7 +896,14 @@ def _prune_config_to_source_shape(*, persisted_config: dict, source_config: dict
     if not isinstance(source_config, dict):
         return persisted_config
     pruned = dict(persisted_config)
-    for optional_key in ("phase_settings", "metadata_parsers", "project_owner", "current_user", "interface_layout"):
+    for optional_key in (
+        "phase_settings",
+        "metadata_parsers",
+        "project_owner",
+        "current_user",
+        "interface_layout",
+        "calibration",
+    ):
         if optional_key not in source_config:
             pruned.pop(optional_key, None)
     return pruned
@@ -901,7 +911,7 @@ def _prune_config_to_source_shape(*, persisted_config: dict, source_config: dict
 
 
 def _dump_project_configuration_payload(config: schemas.InspectionProjectConfiguration) -> dict:
-    dumped = config.model_dump(exclude_unset=True)
+    dumped = config.model_dump(mode="json", exclude_unset=True)
     metadata_parsers = dumped.get("metadata_parsers")
     nsipro_dump = metadata_parsers.get("nsipro") if isinstance(metadata_parsers, dict) else None
     nsipro_config = getattr(getattr(config, "metadata_parsers", None), "nsipro", None)
@@ -959,7 +969,7 @@ def _metadata_from_hierarchy_filename(path: Path) -> Optional[dict]:
         "serial_number": serial_number,
         "side": side.lower(),
         "modality": modality.lower(),
-        "overlay": overlay.lower() in {"true", "1", "yes"},
+        "overlay": parse_metadata_boolean(overlay),
         "source": "vista-test-data",
     }
     if part_set_or_batch.upper().startswith("BATCH"):
@@ -977,7 +987,17 @@ def _coerce_filename_metadata(metadata: dict) -> dict:
         if key in coerced and coerced[key] is not None:
             coerced[key] = str(coerced[key]).strip().lower()
     if "overlay" in coerced:
-        coerced["overlay"] = str(coerced["overlay"]).strip().lower() in {"true", "1", "yes", "overlay", "ov", "mask", "heatmap"}
+        overlay_value = coerced["overlay"]
+        overlay_keyword = str(overlay_value).strip().lower() in {
+            "overlay",
+            "ov",
+            "mask",
+            "heatmap",
+        }
+        coerced["overlay"] = parse_metadata_boolean(
+            overlay_value,
+            fallback=overlay_keyword,
+        )
     part_set_or_batch = coerced.pop("part_set_or_batch", None)
     if part_set_or_batch and not (coerced.get("set_number") or coerced.get("batch_number")):
         part_set_or_batch = str(part_set_or_batch).strip()
@@ -1139,7 +1159,7 @@ def _rebuild_part_image_maps(metadata: dict) -> dict:
             continue
         side = str(record.get("side") or "").strip().lower()
         modality = str(record.get("modality") or "").strip().lower()
-        overlay = bool(record.get("overlay"))
+        overlay = parse_metadata_boolean(record.get("overlay"))
         normalized_record = {
             **record,
             "filename": filename,
@@ -1338,7 +1358,7 @@ def _metadata_for_source_assignment(image: models.DataInstance) -> dict:
         "image_id": str(image.id),
         "side": str(image_metadata.get("side") or "").strip().lower(),
         "modality": str(image_metadata.get("modality") or "").strip().lower(),
-        "overlay": bool(image_metadata.get("overlay")),
+        "overlay": parse_metadata_boolean(image_metadata.get("overlay")),
         "content_type": image.content_type,
         "slice_axis": image_metadata.get("slice_axis"),
         "slice_index": image_metadata.get("slice_index"),
@@ -1425,15 +1445,25 @@ async def _get_active_project_image_by_filename(
     db: AsyncSession,
     project_id: uuid.UUID,
     filename: str,
+    image_id_field: str = "image_id",
 ) -> models.DataInstance | None:
     result = await db.execute(
         select(models.DataInstance).where(
             models.DataInstance.project_id == project_id,
             models.DataInstance.filename == filename,
             models.DataInstance.deleted_at.is_(None),
-        )
+        ).limit(2)
     )
-    return result.scalars().first()
+    matches = list(result.scalars().all())
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"Multiple active images share filename {filename!r}; "
+                f"provide {image_id_field}."
+            ),
+        )
+    return matches[0] if matches else None
 
 
 NIST_FIXTURE_REUSE_FIELDS = (
@@ -3129,7 +3159,12 @@ async def _materialize_part_volume_stack(
 ) -> tuple[str, list[str]]:
     metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
     source_images = [record for record in metadata.get("source_images") or [] if isinstance(record, dict)]
-    stack_records = [record for record in source_images if record.get("image_id") and str(record.get("overlay") or "").lower() != "true"]
+    stack_records = [
+        record
+        for record in source_images
+        if record.get("image_id")
+        and not parse_metadata_boolean(record.get("overlay"))
+    ]
     if not stack_records:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No image stack slices are attached to this part for Gaussian splat generation")
     if len(stack_records) > REFERENCE_VOLUME_READ_LIMITS.max_container_members:
@@ -4780,6 +4815,7 @@ async def assign_image_to_part(
             db=db,
             project_id=project_id,
             filename=filename,
+            image_id_field="image_id",
         )
     if not image:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
@@ -4868,48 +4904,95 @@ async def assign_overlay_to_base_image(
     base_image_id = payload.base_image_id
     if base_filename == "":
         base_filename = None
-    if base_filename and overlay_filename == base_filename and (not overlay_image_id or not base_image_id or overlay_image_id == base_image_id):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Overlay image cannot be assigned to itself")
 
     if overlay_image_id:
         overlay_image = await _get_active_project_image_by_id(db=db, project_id=project_id, image_id=overlay_image_id)
     else:
-        overlay_image = await _get_active_project_image_by_filename(db=db, project_id=project_id, filename=overlay_filename)
+        overlay_image = await _get_active_project_image_by_filename(
+            db=db,
+            project_id=project_id,
+            filename=overlay_filename,
+            image_id_field="overlay_image_id",
+        )
     if not overlay_image:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Overlay image not found")
     overlay_filename = overlay_image.filename
 
+    base_image = None
+    if base_image_id:
+        base_image = await _get_active_project_image_by_id(
+            db=db,
+            project_id=project_id,
+            image_id=base_image_id,
+        )
+    elif base_filename:
+        base_image = await _get_active_project_image_by_filename(
+            db=db,
+            project_id=project_id,
+            filename=base_filename,
+            image_id_field="base_image_id",
+        )
+    if (base_image_id or base_filename) and not base_image:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Base image not found")
+    if base_image is not None:
+        base_filename = base_image.filename
+        if base_image.id == overlay_image.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Overlay image cannot be assigned to itself",
+            )
+
     all_parts = await crud.list_inspection_parts(db=db, project_id=project_id)
     from_part_id = None
     overlay_entry = None
+
+    # Discover the current overlay record without mutating anything. When a
+    # base is requested, the target/base relationship must be revalidated
+    # under its row lock before the overlay is detached from another part.
+    def find_overlay_in_fresh_records(fresh_records):
+        return (
+            fresh_records,
+            next(
+                (
+                    record
+                    for record in fresh_records
+                    if _record_matches_image_identity(
+                        record,
+                        filename=overlay_filename,
+                        image_id=overlay_image_id,
+                    )
+                ),
+                None,
+            ),
+        )
 
     for part in all_parts:
         metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
         source_images = metadata.get("source_images")
         if not isinstance(source_images, list):
             continue
-        if any(
-            _record_matches_image_identity(
-                record,
-                filename=overlay_filename,
-                image_id=overlay_image_id,
-            )
-            for record in source_images
-        ):
-            _, removed_entry = await _mutate_part_source_images_locked(
+        current_overlay_entry = next(
+            (
+                record
+                for record in source_images
+                if _record_matches_image_identity(
+                    record,
+                    filename=overlay_filename,
+                    image_id=overlay_image_id,
+                )
+            ),
+            None,
+        )
+        if current_overlay_entry is not None:
+            _, fresh_overlay_entry = await _mutate_part_source_images_locked(
                 db=db,
                 project_id=project_id,
                 part_id=part.id,
-                transform=lambda fresh_records: _remove_source_image_records(
-                    fresh_records,
-                    filename=overlay_filename,
-                    image_id=overlay_image_id,
-                    fallback_image_id=overlay_image.id,
-                ),
+                transform=find_overlay_in_fresh_records,
                 updated_by=current_user.email,
             )
-            if removed_entry is not None:
-                overlay_entry = removed_entry
+            if fresh_overlay_entry is not None:
+                overlay_entry = fresh_overlay_entry
                 from_part_id = part.id
 
     overlay_entry = _refresh_assigned_source_image_record(
@@ -4920,21 +5003,21 @@ async def assign_overlay_to_base_image(
 
     target_part = None
     base_entry = None
-    if base_filename:
-        if base_image_id:
-            base_image = await _get_active_project_image_by_id(db=db, project_id=project_id, image_id=base_image_id)
-        else:
-            base_image = await _get_active_project_image_by_filename(db=db, project_id=project_id, filename=base_filename)
-        if not base_image:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Base image not found")
-        base_filename = base_image.filename
+    if base_image is not None:
         for part in all_parts:
             metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
             source_images = metadata.get("source_images")
             if not isinstance(source_images, list):
                 continue
             for record in source_images:
-                if _record_matches_image_identity(record, filename=base_filename, image_id=base_image_id) and not bool(record.get("overlay")):
+                if (
+                    _record_matches_image_identity(
+                        record,
+                        filename=base_filename,
+                        image_id=base_image_id,
+                    )
+                    and not parse_metadata_boolean(record.get("overlay"))
+                ):
                     target_part = part
                     base_entry = record
                     break
@@ -4953,7 +5036,7 @@ async def assign_overlay_to_base_image(
                         filename=base_filename,
                         image_id=base_image_id,
                     )
-                    and not bool(record.get("overlay"))
+                    and not parse_metadata_boolean(record.get("overlay"))
                 ),
                 None,
             )
@@ -5003,6 +5086,46 @@ async def assign_overlay_to_base_image(
                 detail="Base image is no longer assigned to the inspection part",
             )
         overlay_entry = attached_overlay
+
+        # Attach first, then remove stale copies from other parts. If the base
+        # disappears between discovery and the locked mutation above, the
+        # request returns without detaching the user's existing overlay.
+        removal_parts = [
+            part
+            for part in all_parts
+            if str(part.id) != str(target_part.id)
+        ]
+    else:
+        removal_parts = all_parts
+
+    for part in removal_parts:
+        metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
+        source_images = metadata.get("source_images")
+        if not isinstance(source_images, list):
+            continue
+        if not any(
+            _record_matches_image_identity(
+                record,
+                filename=overlay_filename,
+                image_id=overlay_image_id,
+            )
+            for record in source_images
+        ):
+            continue
+        _, removed_entry = await _mutate_part_source_images_locked(
+            db=db,
+            project_id=project_id,
+            part_id=part.id,
+            transform=lambda fresh_records: _remove_source_image_records(
+                fresh_records,
+                filename=overlay_filename,
+                image_id=overlay_image_id,
+                fallback_image_id=overlay_image.id,
+            ),
+            updated_by=current_user.email,
+        )
+        if removed_entry is not None and from_part_id is None:
+            from_part_id = part.id
 
     return schemas.InspectionOverlayAssignmentResponse(
         project_id=project_id,
@@ -5060,23 +5183,70 @@ async def update_inspection_part_source_image(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Inspection part not found")
     metadata = part.metadata_json if isinstance(part.metadata_json, dict) else {}
     target_ref = str(image_ref or "").strip()
-    found = False
-    updated_collections: dict[str, list] = {}
+    collections: dict[str, list] = {}
     for collection_key in ("source_images", "analysis_outputs"):
         records = metadata.get(collection_key)
-        if not isinstance(records, list):
-            continue
+        if isinstance(records, list):
+            collections[collection_key] = records
+    image_id_matches = [
+        (collection_key, index)
+        for collection_key, records in collections.items()
+        for index, record in enumerate(records)
+        if (
+            isinstance(record, dict)
+            and target_ref
+            and str(record.get("image_id") or "").strip() == target_ref
+        )
+    ]
+    target_by_image_id = bool(image_id_matches)
+    if not target_by_image_id:
+        try:
+            uuid.UUID(target_ref)
+            target_ref_is_uuid = True
+        except (TypeError, ValueError, AttributeError):
+            target_ref_is_uuid = False
+        if target_ref_is_uuid:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Source image not found",
+            )
+        filename_matches = [
+            (collection_key, index)
+            for collection_key, records in collections.items()
+            for index, record in enumerate(records)
+            if (
+                isinstance(record, dict)
+                and target_ref
+                and str(record.get("filename") or "").strip() == target_ref
+            )
+        ]
+        if len(filename_matches) > 1:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"Multiple source image records share filename {target_ref!r}; "
+                    "use the exact image_id in the path."
+                ),
+            )
+        if not filename_matches:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Source image not found",
+            )
+
+    updated_collections: dict[str, list] = {}
+    for collection_key, records in collections.items():
         updated_records = []
         for record in records:
             if not isinstance(record, dict):
                 updated_records.append(record)
                 continue
-            record_refs = {
-                str(record.get("image_id") or "").strip(),
-                str(record.get("filename") or "").strip(),
-            }
-            if target_ref and target_ref in record_refs:
-                found = True
+            matches_target = (
+                str(record.get("image_id") or "").strip() == target_ref
+                if target_by_image_id
+                else str(record.get("filename") or "").strip() == target_ref
+            )
+            if matches_target:
                 next_record = dict(record)
                 if payload.crop_subtitle is not None:
                     next_record["crop_subtitle"] = payload.crop_subtitle.strip()
@@ -5086,8 +5256,6 @@ async def update_inspection_part_source_image(
             else:
                 updated_records.append(record)
         updated_collections[collection_key] = updated_records
-    if not found:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source image not found")
     updated_metadata = {**metadata, **updated_collections}
     normalized = (
         _rebuild_part_image_maps(updated_metadata)
@@ -5618,6 +5786,11 @@ async def update_project_configuration(
     current_user: schemas.User = Depends(get_current_user),
 ):
     project = await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    if project.is_archived:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Archived projects are read-only.",
+        )
     updated = await crud.create_or_update_project_metadata(
         db=db,
         metadata=schemas.ProjectMetadataCreate(
@@ -5721,6 +5894,11 @@ async def clone_project_configuration(
     current_user: schemas.User = Depends(get_current_user),
 ):
     target_project = await _get_project_with_access_check(project_id=project_id, db=db, current_user=current_user)
+    if target_project.is_archived:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Archived projects are read-only.",
+        )
     if payload.source_project_id == project_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

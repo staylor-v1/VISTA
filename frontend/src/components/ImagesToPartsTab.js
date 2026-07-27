@@ -6,36 +6,7 @@ import {
   getPt3AxisDimensions,
   getPt3VolumeSliceUrl,
 } from './pt3VolumeDescriptor';
-
-function tagDuplicateFilename(filename = '', occurrence = 0) {
-  const safeFilename = String(filename || 'image').trim() || 'image';
-  if (occurrence <= 0) return safeFilename;
-  const dotIndex = safeFilename.lastIndexOf('.');
-  const suffix = occurrence === 1 ? ' (duplicate)' : ` (duplicate ${occurrence})`;
-  if (dotIndex > 0) return `${safeFilename.slice(0, dotIndex)}${suffix}${safeFilename.slice(dotIndex)}`;
-  return `${safeFilename}${suffix}`;
-}
-
-function buildActiveImageRefs(images) {
-  const activeImages = (Array.isArray(images) ? images : []).filter((image) => image?.filename && !image?.deleted_at);
-  const filenameCounts = new Map();
-  return activeImages.map((image, index) => {
-    const filename = String(image.filename || '');
-    const occurrence = filenameCounts.get(filename) || 0;
-    filenameCounts.set(filename, occurrence + 1);
-    const imageId = image?.id ? String(image.id) : '';
-    return {
-      key: imageId || `filename:${filename}:${index}`,
-      id: imageId,
-      filename,
-      displayName: tagDuplicateFilename(filename, occurrence),
-      duplicateOccurrence: occurrence,
-      metadata: getImageMetadata(image),
-      contentUrl: imageId ? `/api/images/${encodeURIComponent(imageId)}/content` : '',
-      thumbnailUrl: imageId ? `/api/images/${encodeURIComponent(imageId)}/thumbnail?width=96&height=96` : '',
-    };
-  });
-}
+import { buildActiveImageCatalog, resolveImageReference } from '../utils/imageIdentity';
 
 
 function getFilenameStem(filename = '') {
@@ -90,6 +61,12 @@ function getImageMetadata(image) {
   if (image?.metadata && typeof image.metadata === 'object') return image.metadata;
   if (image?.metadata_ && typeof image.metadata_ === 'object') return image.metadata_;
   return {};
+}
+
+function compareImageRefs(left, right) {
+  return String(left?.filename || '').localeCompare(String(right?.filename || ''))
+    || (Number(left?.displayOrdinal) || 0) - (Number(right?.displayOrdinal) || 0)
+    || String(left?.displayName || '').localeCompare(String(right?.displayName || ''));
 }
 
 function buildAutoAssignFieldOptions(images, projectConfiguration = null, delimiter = '') {
@@ -193,8 +170,14 @@ function buildAutoAssignPreview(images, selectedFilenameKey, delimiter = '', opt
     .sort((left, right) => left.partKey.localeCompare(right.partKey));
 }
 
-function buildImageIndexes(images) {
-  const refs = buildActiveImageRefs(images);
+function buildAssignmentCatalog(images) {
+  const catalog = buildActiveImageCatalog(images);
+  const refs = catalog.refs.map((ref) => ({
+    ...ref,
+    metadata: getImageMetadata(ref),
+    contentUrl: ref.id ? `/api/images/${encodeURIComponent(ref.id)}/content` : '',
+    thumbnailUrl: ref.id ? `/api/images/${encodeURIComponent(ref.id)}/thumbnail?width=96&height=96` : '',
+  }));
   const byId = new Map();
   const byFilename = new Map();
   refs.forEach((ref) => {
@@ -205,31 +188,33 @@ function buildImageIndexes(images) {
   return { refs, byId, byFilename };
 }
 
-function buildImageRefFromSource(sourceRecord, imageIndexes) {
-  const imageId = sourceRecord?.image_id ? String(sourceRecord.image_id) : '';
+function buildImageRefFromSource(sourceRecord, imageCatalog) {
   const filename = typeof sourceRecord?.filename === 'string' ? sourceRecord.filename : '';
-  const matched = (imageId && imageIndexes.byId.get(imageId)) || (filename && (imageIndexes.byFilename.get(filename) || [])[0]) || null;
-  if (!matched) return null;
-  return { ...matched, filename: filename || matched.filename, id: imageId || matched.id };
+  const result = resolveImageReference({
+    image_id: sourceRecord?.image_id,
+    filename,
+  }, imageCatalog);
+  return result.status === 'resolved' ? result.ref : null;
 }
 
 function getImageAssignmentKey(imageRef) {
-  return imageRef?.id ? `id:${imageRef.id}` : `filename:${imageRef?.filename || ''}`;
+  return imageRef?.id || imageRef?.key || '';
 }
 
 function buildBuckets({ parts, images }) {
-  const imageIndexes = buildImageIndexes(images);
+  const imageCatalog = buildAssignmentCatalog(images);
   const assignedImageKeys = new Set();
-  const assignedLegacyFilenames = new Set();
   const partBuckets = (Array.isArray(parts) ? parts : []).map((part) => {
     const sourceImages = Array.isArray(part?.metadata?.source_images) ? part.metadata.source_images : [];
     const partImages = sourceImages
-      .map((record) => buildImageRefFromSource(record, imageIndexes))
-      .filter(Boolean);
-    partImages.forEach((image) => assignedImageKeys.add(getImageAssignmentKey(image)));
-    sourceImages.forEach((record) => {
-      if (!record?.image_id && record?.filename) assignedLegacyFilenames.add(String(record.filename));
-    });
+      .map((record) => buildImageRefFromSource(record, imageCatalog))
+      .filter((image) => {
+        if (!image) return false;
+        const key = getImageAssignmentKey(image);
+        if (!key || assignedImageKeys.has(key)) return false;
+        assignedImageKeys.add(key);
+        return true;
+      });
     return {
       id: part.id,
       serialNumber: part.serial_number,
@@ -238,10 +223,9 @@ function buildBuckets({ parts, images }) {
     };
   });
 
-  const unassigned = imageIndexes.refs
+  const unassigned = imageCatalog.refs
     .filter((image) => !assignedImageKeys.has(getImageAssignmentKey(image)))
-    .filter((image) => !(assignedLegacyFilenames.has(image.filename) && !image.id))
-    .sort((left, right) => left.displayName.localeCompare(right.displayName));
+    .sort(compareImageRefs);
 
   return { partBuckets, unassigned };
 }
@@ -490,7 +474,7 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
       ...localBuckets.unassigned,
       ...localBuckets.partBuckets.flatMap((part) => part.images),
     ];
-    return allImages.find((image) => image.key === imageKeyOrFilename || image.id === imageKeyOrFilename || image.filename === imageKeyOrFilename) || { filename: imageKeyOrFilename, displayName: imageKeyOrFilename };
+    return allImages.find((image) => image.key === imageKeyOrFilename || image.id === imageKeyOrFilename) || null;
   };
 
   const isMultiImageRef = (imageRef) => {
@@ -569,13 +553,13 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
           return {
             ...part,
             images: [...withoutMoved, ...movedImages.filter((img) => !withoutMoved.some((existing) => (existing.key || existing.id || existing.filename) === (img.key || img.id || img.filename)))]
-              .sort((left, right) => left.filename.localeCompare(right.filename)),
+              .sort(compareImageRefs),
           };
         }),
         unassigned: toPartId
           ? localBuckets.unassigned.filter((image) => !movedSet.has(image.key || image.id || image.filename))
           : [...localBuckets.unassigned, ...movedImages.filter((img) => !localBuckets.unassigned.some((existing) => (existing.key || existing.id || existing.filename) === (img.key || img.id || img.filename)))]
-            .sort((left, right) => left.filename.localeCompare(right.filename)),
+            .sort(compareImageRefs),
       };
       setLocalBuckets(nextBuckets);
       setSelectedUnassigned((prev) => prev.filter((key) => !movedSet.has(key)));
@@ -606,7 +590,7 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
         partBuckets: previous.partBuckets.filter((entry) => entry.id !== part.id),
         unassigned: [...previous.unassigned, ...part.images]
           .filter((image, index, all) => all.findIndex((candidate) => (candidate.key || candidate.id || candidate.filename) === (image.key || image.id || image.filename)) === index)
-          .sort((left, right) => left.filename.localeCompare(right.filename)),
+          .sort(compareImageRefs),
       }));
       setSelectedUnassigned([]);
       if (onAssignmentsChanged) await onAssignmentsChanged();
@@ -768,7 +752,7 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
             targetPart.images.push(image);
           }
         }
-        targetPart.images.sort((left, right) => left.filename.localeCompare(right.filename));
+        targetPart.images.sort(compareImageRefs);
       }
 
       setLocalBuckets({
@@ -949,3 +933,4 @@ function ImagesToPartsTab({ projectId, parts = [], images = [], projectConfigura
 }
 
 export default ImagesToPartsTab;
+export { buildBuckets };

@@ -45,6 +45,7 @@ from utils.transactions import (
 )
 from utils.file_security import get_content_disposition_header
 from utils.cache_manager import get_cache
+from utils.metadata_values import parse_metadata_boolean
 from services import image_deletion as image_deletion_service
 import json as _json
 import numpy as np
@@ -749,7 +750,7 @@ def _source_image_entry_from_data_instance(image: models.DataInstance) -> Dict[s
         "image_id": str(image.id),
         "side": str(image_metadata.get("side") or "").strip().lower(),
         "modality": str(image_metadata.get("modality") or "").strip().lower(),
-        "overlay": bool(image_metadata.get("overlay")),
+        "overlay": parse_metadata_boolean(image_metadata.get("overlay")),
         "slice_axis": image_metadata.get("slice_axis"),
         "slice_index": image_metadata.get("slice_index"),
     }
@@ -825,7 +826,7 @@ async def _autoassign_pt3_volume_upload_to_part(
         for record in source_images
         if not (
             isinstance(record, dict)
-            and (record.get("image_id") == str(image.id) or record.get("filename") == filename)
+            and str(record.get("image_id") or "").strip() == str(image.id)
         )
     ]
     source_images.append(source_entry)

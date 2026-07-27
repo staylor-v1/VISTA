@@ -61,6 +61,16 @@ import {
   inspectionMprSessionsEqual,
   normalizeInspectionMprSession,
 } from './inspectionWorkbenchSession';
+import {
+  getImageMetadata,
+  isValidCalibration,
+  resolveMeasurementCalibration,
+} from '../utils/calibration';
+import {
+  buildActiveImageCatalog,
+  getCanonicalImageId,
+  parseMetadataBoolean,
+} from '../utils/imageIdentity';
 
 const VIEW_ORDER = ['front', 'back', 'left', 'right', 'top', 'bottom'];
 const MPR_AXES = [...PT3_VOLUME_AXES];
@@ -780,36 +790,6 @@ function isFiniteAnnotationBox(box) {
   return values.every((value) => Number.isFinite(Number(value))) && Number(box.width) > 0 && Number(box.height) > 0;
 }
 
-function isValidCalibration(calibration) {
-  return Number(calibration?.pixels_per_mm) > 0;
-}
-
-function getImageMetadata(image) {
-  return (image?.metadata && typeof image.metadata === 'object')
-    ? image.metadata
-    : (image?.metadata_ && typeof image.metadata_ === 'object')
-      ? image.metadata_
-      : {};
-}
-
-function resolveMeasurementCalibration(projectMetadata, image, projectConfiguration, sessionCalibration) {
-  if (isValidCalibration(sessionCalibration)) return sessionCalibration;
-  const imageMetadata = getImageMetadata(image);
-  if (isValidCalibration(imageMetadata?.calibration_override)) return imageMetadata.calibration_override;
-  const rules = Array.isArray(projectMetadata?.calibration_rules) ? projectMetadata.calibration_rules : [];
-  const matchingRule = rules.find((rule) => (
-    rule?.metadata_key
-    && rule?.metadata_value !== undefined
-    && isValidCalibration(rule?.calibration)
-    && imageMetadata[rule.metadata_key] !== undefined
-    && String(imageMetadata[rule.metadata_key]) === String(rule.metadata_value)
-  ));
-  if (matchingRule) return matchingRule.calibration;
-  if (isValidCalibration(projectMetadata?.calibration_default)) return projectMetadata.calibration_default;
-  if (isValidCalibration(projectConfiguration?.calibration)) return projectConfiguration.calibration;
-  return null;
-}
-
 function getMeasurementLineLabel(line) {
   if (Number.isFinite(Number(line?.distanceMm))) {
     return `${Number(line.distanceMm).toFixed(2)} mm`;
@@ -1025,6 +1005,21 @@ function getPartSummaryModalities(part, imageRefs = getPartImageRefs(part)) {
   return [...orderedConfiguredModalities, ...orderedLoadedModalities];
 }
 
+function getDiscoveredModalities(part) {
+  const discovered = [
+    ...getModalities(part),
+    ...getPartImageRefs(part).map((entry) => entry?.modality),
+  ];
+  const seen = new Set();
+  return discovered
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter((value) => {
+      if (!value || seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    });
+}
+
 function getVolumeShapeFromEntry(entry, projectImageLookup = {}) {
   const isValidShape = (candidate) => MPR_AXES.every((axis) => {
     const value = Number(candidate?.[axis]);
@@ -1062,7 +1057,7 @@ function isVolumeFileEntry(entry, projectImageLookup = {}) {
 
 function getMprDimensions(part, projectImageLookup = {}) {
   const volumeSourceShape = (Array.isArray(part?.metadata?.source_images) ? part.metadata.source_images : [])
-    .filter((entry) => entry && !entry.overlay)
+    .filter((entry) => entry && !parseMetadataBoolean(entry.overlay))
     .map((entry) => getVolumeShapeFromEntry(entry, projectImageLookup))
     .find(Boolean);
   const raw = part?.metadata?.volume_shape || part?.metadata?.mpr?.volume_shape || volumeSourceShape || {};
@@ -1075,15 +1070,78 @@ function getMprDimensions(part, projectImageLookup = {}) {
 }
 
 function getProjectImageRecord(projectImageLookup = {}, entry = {}) {
-  const imageId = entry?.image_id ? String(entry.image_id) : '';
+  const imageId = entry?.image_id ? String(entry.image_id).trim() : '';
   const filename = String(entry?.filename || '');
-  return (imageId && projectImageLookup[imageId]) || (filename && projectImageLookup[filename]) || null;
+  const getOwnRecord = (key) => (
+    key && Object.prototype.hasOwnProperty.call(projectImageLookup, key)
+      ? projectImageLookup[key]
+      : null
+  );
+  if (imageId) return getOwnRecord(imageId);
+  return getOwnRecord(filename);
+}
+
+function buildProjectImageLookup(images = []) {
+  const records = Array.isArray(images) ? images : [];
+  const activeCatalog = buildActiveImageCatalog(
+    records.filter((record) => !isDeletedProjectImageRecord(record)),
+  );
+  const lookup = Object.create(null);
+
+  // Reserve every concrete ID before installing any filename aliases. An
+  // active image filename can be UUID-shaped (or equal any other image ID),
+  // but it must never shadow that explicit identity, including a deleted ID.
+  activeCatalog.refs.forEach((record) => {
+    if (record.id) lookup[record.id] = record;
+  });
+  records.forEach((record) => {
+    const id = getCanonicalImageId(record);
+    if (!id || Object.prototype.hasOwnProperty.call(lookup, id)) return;
+    lookup[id] = {
+      ...record,
+      id,
+      displayName: String(record?.displayName || record?.filename || ''),
+    };
+  });
+  activeCatalog.byFilename.forEach((matches, filename) => {
+    if (
+      matches.length === 1
+      && !Object.prototype.hasOwnProperty.call(lookup, filename)
+    ) lookup[filename] = matches[0];
+  });
+  return lookup;
+}
+
+function getProjectImageLookupRecords(projectImageLookup = {}) {
+  const records = [];
+  const seen = new Set();
+  Object.values(projectImageLookup).forEach((record) => {
+    if (!record || typeof record !== 'object') return;
+    const id = getCanonicalImageId(record);
+    const identity = id || String(record.key || '');
+    if (!identity || seen.has(identity)) return;
+    seen.add(identity);
+    records.push(record);
+  });
+  return records;
+}
+
+function upsertProjectImageRecord(projectImageLookup = {}, record = {}) {
+  const nextId = getCanonicalImageId(record);
+  const records = getProjectImageLookupRecords(projectImageLookup)
+    .filter((candidate) => !nextId || getCanonicalImageId(candidate) !== nextId);
+  return buildProjectImageLookup([...records, record]);
 }
 
 function getVolumeEntryImageId(entry, projectImageLookup = {}) {
-  const imageId = entry?.image_id ? String(entry.image_id) : '';
-  if (imageId) return imageId;
-  return getProjectImageRecord(projectImageLookup, entry)?.id || '';
+  const imageId = entry?.image_id ? String(entry.image_id).trim() : '';
+  if (imageId) {
+    if (Object.keys(projectImageLookup).length === 0) return imageId;
+    const record = getProjectImageRecord(projectImageLookup, { image_id: imageId });
+    return record?.id ? String(record.id) : '';
+  }
+  const record = getProjectImageRecord(projectImageLookup, entry);
+  return record?.id ? String(record.id) : '';
 }
 
 function getCanonicalServerVolumeDescriptor(entry, projectImageLookup = {}, probeMetadata = null) {
@@ -1265,12 +1323,12 @@ function getVolumeSourceImages(part, projectImageLookup = {}) {
   const sourceImages = part?.metadata?.source_images;
   if (!Array.isArray(sourceImages)) return [];
   const serverVolume = sourceImages
-    .filter((entry) => entry && !entry.overlay)
+    .filter((entry) => entry && !parseMetadataBoolean(entry.overlay))
     .map((entry) => createServerVolumeDescriptor(entry, projectImageLookup))
     .find(Boolean);
   if (serverVolume) return serverVolume;
   return sourceImages
-    .filter((entry) => entry && !entry.overlay)
+    .filter((entry) => entry && !parseMetadataBoolean(entry.overlay))
     .map((entry, index) => {
       const filename = String(entry?.filename || '');
       const imageId = getVolumeEntryImageId(entry, projectImageLookup);
@@ -1294,14 +1352,27 @@ function getVolumeSourceImages(part, projectImageLookup = {}) {
 function getVolumeOverlayStacks(part, projectImageLookup = {}) {
   const sourceImages = part?.metadata?.source_images;
   if (!Array.isArray(sourceImages)) return [];
-  const baseRecords = sourceImages.filter((entry) => entry && !entry.overlay);
-  const baseIds = new Set(baseRecords.map((entry) => getVolumeEntryImageId(entry, projectImageLookup)).filter(Boolean));
-  const baseFilenames = new Set(baseRecords.map((entry) => String(entry?.filename || '')).filter(Boolean));
+  const baseRecords = sourceImages
+    .filter((entry) => entry && !parseMetadataBoolean(entry.overlay))
+    .map((entry) => ({
+      imageId: getVolumeEntryImageId(entry, projectImageLookup),
+      filename: String(entry?.filename || ''),
+    }))
+    .filter((record) => record.imageId);
+  const baseIds = new Set(baseRecords.map((record) => record.imageId));
+  const baseRecordsByFilename = baseRecords.reduce((acc, record) => {
+    if (!record.filename) return acc;
+    if (!acc.has(record.filename)) acc.set(record.filename, []);
+    acc.get(record.filename).push(record);
+    return acc;
+  }, new Map());
   const overlays = sourceImages.filter((entry) => {
-    if (!entry?.overlay) return false;
+    if (!parseMetadataBoolean(entry?.overlay)) return false;
     const baseImageId = String(entry.overlay_base_image_id || '');
     const baseFilename = String(entry.overlay_base_filename || '');
-    return (baseImageId && baseIds.has(baseImageId)) || (baseFilename && baseFilenames.has(baseFilename)) || (!baseImageId && !baseFilename && baseRecords.length === 1);
+    if (baseImageId) return baseIds.has(baseImageId);
+    if (baseFilename) return (baseRecordsByFilename.get(baseFilename) || []).length === 1;
+    return baseRecords.length === 1;
   });
   const stacksByOverlayImage = new Map();
   const serverVolumesByOverlayImage = new Map();
@@ -1314,7 +1385,7 @@ function getVolumeOverlayStacks(part, projectImageLookup = {}) {
     const serverVolume = createServerVolumeDescriptor(entry, projectImageLookup, {
       overlayBaseImageId: String(entry.overlay_base_image_id || ''),
       overlayBaseFilename: String(entry.overlay_base_filename || ''),
-      hidden: entry.hidden === true,
+      hidden: parseMetadataBoolean(entry.hidden),
     });
     if (serverVolume) {
       serverVolumesByOverlayImage.set(key, serverVolume);
@@ -1330,7 +1401,7 @@ function getVolumeOverlayStacks(part, projectImageLookup = {}) {
       ...getVolumeColorLayout(entry, projectImageLookup),
       overlayBaseImageId: String(entry.overlay_base_image_id || ''),
       overlayBaseFilename: String(entry.overlay_base_filename || ''),
-      hidden: entry.hidden === true,
+      hidden: parseMetadataBoolean(entry.hidden),
     });
   });
   return [
@@ -1623,9 +1694,7 @@ function combineDisplayDomains(domains) {
 
 function getSourceImageDisplayDomain(source, projectImageLookup = {}, explicitOnly = false) {
   const metadataCandidates = [source?.metadata, source];
-  const filename = String(source?.filename || '');
-  const imageId = String(source?.image_id || '');
-  const imageRecord = projectImageLookup[imageId] || projectImageLookup[filename];
+  const imageRecord = getProjectImageRecord(projectImageLookup, source);
   metadataCandidates.push(getImageMetadata(imageRecord));
   for (const metadata of metadataCandidates) {
     const domain = explicitOnly ? getExplicitDisplayDomainFromMetadata(metadata) : getDisplayDomainFromMetadata(metadata);
@@ -1773,8 +1842,14 @@ function getShellImageLayers(part, projectImageLookup = {}) {
   if (!imagesByView || typeof imagesByView !== 'object') return [];
   return Object.entries(imagesByView)
     .map(([viewName, imageRef]) => {
-      const filename = String(imageRef || '');
-      const imageId = projectImageLookup[filename]?.id;
+      const filename = String(
+        imageRef && typeof imageRef === 'object' ? imageRef.filename || '' : imageRef || '',
+      );
+      const record = getProjectImageRecord(projectImageLookup, {
+        image_id: imageRef && typeof imageRef === 'object' ? imageRef.image_id : '',
+        filename,
+      });
+      const imageId = record?.id;
       if (!imageId) return null;
       return {
         viewName: String(viewName || '').toLowerCase(),
@@ -1809,14 +1884,24 @@ function getPartImageRefs(part) {
   const analysisOutputs = Array.isArray(part?.metadata?.analysis_outputs) ? part.metadata.analysis_outputs : [];
   const backingImageRecords = [...sourceImages, ...analysisOutputs]
     .filter((record) => record && typeof record === 'object');
-  const isDeleteCandidate = (record) => Boolean(
-    record?.overlay_delete_candidate || record?.delete_candidate,
+  const isDeleteCandidate = (record) => (
+    parseMetadataBoolean(record?.overlay_delete_candidate)
+    || parseMetadataBoolean(record?.delete_candidate)
   );
-  const sourceImageByFilename = sourceImages.reduce((acc, record) => {
-    const filename = String(record?.filename || '');
-    if (filename && !isDeleteCandidate(record) && !acc[filename]) acc[filename] = record;
+  const activeBackingRecords = backingImageRecords.filter((record) => !isDeleteCandidate(record));
+  const activeBackingRecordsByFilename = activeBackingRecords.reduce((acc, record) => {
+    const filename = String(record?.filename || '').trim();
+    if (!filename) return acc;
+    if (!acc.has(filename)) acc.set(filename, []);
+    const imageId = String(record?.image_id || '').trim();
+    const existingRecord = imageId
+      ? acc.get(filename).find(
+        (candidate) => String(candidate?.image_id || '').trim() === imageId,
+      )
+      : null;
+    if (!existingRecord) acc.get(filename).push(record);
     return acc;
-  }, {});
+  }, new Map());
   const getRecordModality = (record) => String(record?.modality || record?.metadata?.modality || '').toLowerCase();
   const claimImageIdentity = (record = {}) => {
     const imageId = String(record.image_id || '').trim();
@@ -1825,16 +1910,12 @@ function getPartImageRefs(part) {
       ? claimedImages.find((candidate) => candidate.imageId === imageId)
       : null;
     if (!existing && filename) {
-      existing = claimedImages.find((candidate) => (
-        candidate.filename === filename
-        && (!imageId || !candidate.imageId)
+      const filenameMatches = claimedImages.filter((candidate) => (
+        candidate.filename === filename && !candidate.imageId
       ));
+      if (!imageId && filenameMatches.length === 1) [existing] = filenameMatches;
     }
     if (existing) {
-      if (!existing.imageId && imageId) {
-        existing.imageId = imageId;
-        if (existing.ref && !existing.ref.imageId) existing.ref.imageId = imageId;
-      }
       if (!existing.filename && filename) {
         existing.filename = filename;
         if (existing.ref && !existing.ref.filename) existing.ref.filename = filename;
@@ -1845,57 +1926,10 @@ function getPartImageRefs(part) {
     claimedImages.push(entry);
     return { claimed: true, entry };
   };
-  const imagesByView = part?.metadata?.view_images;
-  if (imagesByView && typeof imagesByView === 'object') {
-    Object.entries(imagesByView).forEach(([viewName, imageRef]) => {
-      const viewImageId = String(
-        imageRef && typeof imageRef === 'object' ? imageRef.image_id || '' : '',
-      ).trim();
-      const viewFilename = String(
-        imageRef && typeof imageRef === 'object' ? imageRef.filename || '' : imageRef || '',
-      ).trim();
-      const ref = viewFilename || viewImageId;
-      if (!ref) return;
-      const matchingBackingRecords = backingImageRecords.filter((record) => {
-        const recordImageId = String(record?.image_id || '').trim();
-        const recordFilename = String(record?.filename || '').trim();
-        return viewImageId
-          ? recordImageId === viewImageId
-          : Boolean(viewFilename && recordFilename === viewFilename);
-      });
-      if (
-        matchingBackingRecords.length > 0
-        && matchingBackingRecords.every(isDeleteCandidate)
-      ) return;
-      const sourceRecord = matchingBackingRecords.find((record) => !isDeleteCandidate(record))
-        || sourceImageByFilename[viewFilename]
-        || {};
-      const identityRecord = {
-        ...sourceRecord,
-        image_id: viewImageId || sourceRecord.image_id || '',
-        filename: viewFilename || sourceRecord.filename || '',
-      };
-      const identity = claimImageIdentity(identityRecord);
-      if (!identity.claimed) return;
-      const imageReference = {
-        id: `${part.id}-view-${viewName}`,
-        viewName: String(viewName || '').toLowerCase(),
-        modality: getRecordModality(sourceRecord),
-        label: String(viewName || 'image').toUpperCase(),
-        imageRef: ref,
-        filename: String(identityRecord.filename || ''),
-        imageId: identityRecord.image_id ? String(identityRecord.image_id) : '',
-        overlay: false,
-        hidden: sourceRecord.hidden === true,
-      };
-      identity.entry.ref = imageReference;
-      refs.push(imageReference);
-    });
-  }
   const isAnalyzeOutputRecord = (record) => {
     const modality = String(record?.modality || '').toLowerCase();
     return Boolean(
-      record?.analysis_output
+      parseMetadataBoolean(record?.analysis_output)
       || record?.analysis_source_image_id
       || record?.overlay_base_image_id
       || modality === 'analyze-overlay'
@@ -1903,9 +1937,12 @@ function getPartImageRefs(part) {
   };
   const pushRecord = (record, index, forceOverlay = false) => {
     if (!record || typeof record !== 'object') return;
-    if (record.overlay_delete_candidate || record.delete_candidate) return;
-    const overlay = forceOverlay || record.overlay === true || record.analysis_output === true;
-    const cropChild = record.crop_child_image === true || record.cropChildImage === true;
+    if (isDeleteCandidate(record)) return;
+    const overlay = forceOverlay
+      || parseMetadataBoolean(record.overlay)
+      || parseMetadataBoolean(record.analysis_output);
+    const cropChild = parseMetadataBoolean(record.crop_child_image)
+      || parseMetadataBoolean(record.cropChildImage);
     const cropSubtitle = String(record.crop_subtitle || record.cropSubtitle || '').trim();
     const imageRef = String(record.image_id || record.filename || '');
     if (!imageRef) return;
@@ -1932,7 +1969,7 @@ function getPartImageRefs(part) {
       parentImageFilename: record.parent_image_filename ? String(record.parent_image_filename) : '',
       overlayBaseImageId: record.overlay_base_image_id ? String(record.overlay_base_image_id) : '',
       overlayBaseFilename: record.overlay_base_filename ? String(record.overlay_base_filename) : '',
-      hidden: record.hidden === true,
+      hidden: parseMetadataBoolean(record.hidden),
     };
     identity.entry.ref = imageReference;
     refs.push(imageReference);
@@ -1943,6 +1980,64 @@ function getPartImageRefs(part) {
   analysisOutputs.forEach((record, index) => {
     pushRecord(record, index, true);
   });
+
+  // source_images and analysis_outputs carry persisted UUIDs and are
+  // authoritative. view_images is a legacy presentation mapping: it may
+  // enrich one exact backing record, but an ambiguous filename must never
+  // collapse or hide same-name UUID-backed records.
+  const imagesByView = part?.metadata?.view_images;
+  if (imagesByView && typeof imagesByView === 'object') {
+    Object.entries(imagesByView).forEach(([viewName, imageRef]) => {
+      const viewImageId = String(
+        imageRef && typeof imageRef === 'object' ? imageRef.image_id || '' : '',
+      ).trim();
+      const viewFilename = String(
+        imageRef && typeof imageRef === 'object' ? imageRef.filename || '' : imageRef || '',
+      ).trim();
+      if (!viewImageId && !viewFilename) return;
+
+      let sourceRecord = null;
+      if (viewImageId) {
+        sourceRecord = activeBackingRecords.find(
+          (record) => String(record?.image_id || '').trim() === viewImageId,
+        ) || null;
+        const deletedMatches = backingImageRecords.filter(
+          (record) => String(record?.image_id || '').trim() === viewImageId,
+        );
+        if (!sourceRecord && deletedMatches.length > 0 && deletedMatches.every(isDeleteCandidate)) return;
+      } else if (viewFilename) {
+        const filenameMatches = activeBackingRecordsByFilename.get(viewFilename) || [];
+        if (filenameMatches.length > 1) return;
+        sourceRecord = filenameMatches[0] || null;
+        const deletedMatches = backingImageRecords.filter(
+          (record) => String(record?.filename || '').trim() === viewFilename,
+        );
+        if (!sourceRecord && deletedMatches.length > 0 && deletedMatches.every(isDeleteCandidate)) return;
+      }
+
+      const identityRecord = {
+        ...(sourceRecord || {}),
+        image_id: viewImageId || sourceRecord?.image_id || '',
+        filename: viewFilename || sourceRecord?.filename || '',
+      };
+      const identity = claimImageIdentity(identityRecord);
+      if (!identity.claimed) return;
+      const resolvedImageRef = String(identityRecord.image_id || identityRecord.filename || '');
+      const imageReference = {
+        id: `${part.id}-view-${viewName}`,
+        viewName: String(viewName || '').toLowerCase(),
+        modality: getRecordModality(sourceRecord),
+        label: String(viewName || 'image').toUpperCase(),
+        imageRef: resolvedImageRef,
+        filename: String(identityRecord.filename || ''),
+        imageId: identityRecord.image_id ? String(identityRecord.image_id) : '',
+        overlay: false,
+        hidden: parseMetadataBoolean(sourceRecord?.hidden),
+      };
+      identity.entry.ref = imageReference;
+      refs.push(imageReference);
+    });
+  }
   return refs;
 }
 
@@ -1986,53 +2081,55 @@ export function moveInspectionImageDisplayOrder(imageRefs, imageRef, direction) 
 }
 
 function isDeletedProjectImageRecord(record) {
-  return Boolean(record?.deleted_at || record?.deletedAt || record?.is_deleted || record?.deleted);
+  return Boolean(record?.deleted_at || record?.deletedAt)
+    || parseMetadataBoolean(record?.is_deleted)
+    || parseMetadataBoolean(record?.deleted);
 }
 
 function isInspectionImageRefLoaded(entry, projectImageLookup = {}) {
   const imageId = String(entry?.imageId || '').trim();
-  if (imageId && projectImageLookup[imageId]) {
-    return !isDeletedProjectImageRecord(projectImageLookup[imageId]);
+  if (imageId) {
+    const record = getProjectImageRecord(projectImageLookup, { image_id: imageId });
+    return Boolean(record && !isDeletedProjectImageRecord(record));
   }
-  const candidates = [
-    entry?.imageRef,
-    entry?.filename,
-  ].map((value) => String(value || '').trim()).filter(Boolean);
-  const records = candidates.map((candidate) => projectImageLookup[candidate]).filter(Boolean);
-  if (records.length === 0) return true;
-  return records.some((record) => !isDeletedProjectImageRecord(record));
-}
-
-function resolveProjectImageId(projectImageLookup, ...candidates) {
-  for (const candidate of candidates) {
-    const key = String(candidate || '');
-    if (!key) continue;
-    const record = projectImageLookup[key];
-    if (record?.id) return String(record.id);
-    if (key) return key;
-  }
-  return '';
+  const filename = String(entry?.filename || entry?.imageRef || '').trim();
+  const record = getProjectImageRecord(projectImageLookup, { filename });
+  return Boolean(record && !isDeletedProjectImageRecord(record));
 }
 
 function getAnnotationSourceImageId(entry, projectImageLookup) {
-  const imageId = resolveProjectImageId(projectImageLookup, entry?.imageId, entry?.imageRef);
+  const imageRecord = getProjectImageRecord(projectImageLookup, {
+    image_id: entry?.imageId,
+    filename: entry?.filename || entry?.imageRef,
+  });
+  const imageId = imageRecord?.id ? String(imageRecord.id) : '';
   if (!imageId) return '';
   if (!entry?.overlay) return imageId;
-  const imageRecord = projectImageLookup[entry.imageId] || projectImageLookup[entry.imageRef] || {};
-  return resolveProjectImageId(
-    projectImageLookup,
-    entry.overlayBaseImageId,
-    entry.overlayBaseFilename,
-    imageRecord?.metadata?.overlay_base_image_id,
-    imageRecord?.metadata?.analysis_source_image_id,
-    imageRecord?.metadata?.overlay_base_filename,
-    imageId,
+  const explicitBaseImageId = String(
+    entry?.overlayBaseImageId
+      || imageRecord?.metadata?.overlay_base_image_id
+      || imageRecord?.metadata?.analysis_source_image_id
+      || '',
   );
+  const baseFilename = String(
+    entry?.overlayBaseFilename
+      || imageRecord?.metadata?.overlay_base_filename
+      || '',
+  );
+  const baseRecord = getProjectImageRecord(projectImageLookup, {
+    image_id: explicitBaseImageId,
+    filename: baseFilename,
+  });
+  return baseRecord?.id ? String(baseRecord.id) : imageId;
 }
 
 function getAnnotationSourceImageIdLookup(imageEntries, projectImageLookup) {
   return imageEntries.reduce((acc, entry) => {
-    const imageId = resolveProjectImageId(projectImageLookup, entry?.imageId, entry?.imageRef);
+    const imageRecord = getProjectImageRecord(projectImageLookup, {
+      image_id: entry?.imageId,
+      filename: entry?.filename || entry?.imageRef,
+    });
+    const imageId = imageRecord?.id ? String(imageRecord.id) : '';
     const sourceImageId = getAnnotationSourceImageId(entry, projectImageLookup);
     if (imageId && sourceImageId) acc[imageId] = sourceImageId;
     if (sourceImageId) acc[sourceImageId] = sourceImageId;
@@ -3541,7 +3638,12 @@ function getOverlayLayers(part) {
   const overlays = part?.metadata?.overlay_layers;
   if (Array.isArray(overlays) && overlays.length > 0) {
     return overlays
-      .filter((overlay) => overlay && overlay.id && !overlay.overlay_delete_candidate && !overlay.delete_candidate)
+      .filter((overlay) => (
+        overlay
+        && overlay.id
+        && !parseMetadataBoolean(overlay.overlay_delete_candidate)
+        && !parseMetadataBoolean(overlay.delete_candidate)
+      ))
       .map((overlay) => ({
         id: String(overlay.id),
         label: overlay.label || String(overlay.id),
@@ -3928,7 +4030,7 @@ function InspectionWorkbenchPanel({
   const [enabledModalities, setEnabledModalities] = useState([]);
   const [selectedViewName, setSelectedViewName] = useState('');
   const [hiddenViewNames, setHiddenViewNames] = useState([]);
-  const [renderCategories, setRenderCategories] = useState(['source', 'annotation', 'crop']);
+  const [renderCategories, setRenderCategories] = useState(['source', 'overlay', 'annotation', 'crop']);
   const [tileColumnCount, setTileColumnCount] = useState(3);
   const [imageEnabled, setImageEnabled] = useState(true);
   const [measurementEntries, setMeasurementEntries] = useState([]);
@@ -4263,14 +4365,7 @@ function InspectionWorkbenchPanel({
         setWorkspaceHydration(savedState);
         setBatches(safeBatches);
         setParts(safeParts);
-        const imageLookup = (Array.isArray(imageData) ? imageData : []).reduce((acc, image) => {
-          const filename = String(image?.filename || '');
-          const id = image?.id ? String(image.id) : '';
-          if (filename) acc[filename] = image;
-          if (id) acc[id] = image;
-          return acc;
-        }, {});
-        setProjectImageLookup(imageLookup);
+        setProjectImageLookup(buildProjectImageLookup(imageData));
         const savedBatchId = String(savedState.selected_batch_id || '');
         setSelectedBatchId(savedBatchId);
         const savedReviewFilter = String(savedState.review_filter || 'all');
@@ -4557,9 +4652,9 @@ function InspectionWorkbenchPanel({
         .map((result) => result.value);
       if (successful.length > 0) {
         setProjectImageLookup((previous) => {
-          const next = { ...previous };
+          let next = previous;
           successful.forEach(({ candidate, metadata }) => {
-            const existing = previous[candidate.imageId] || previous[candidate.filename] || {};
+            const existing = getProjectImageRecord(next, { image_id: candidate.imageId }) || {};
             const filename = String(existing.filename || candidate.filename || '');
             const updated = {
               ...existing,
@@ -4571,8 +4666,7 @@ function InspectionWorkbenchPanel({
                 ...metadata,
               },
             };
-            next[candidate.imageId] = updated;
-            if (filename) next[filename] = updated;
+            next = upsertProjectImageRecord(next, updated);
           });
           return next;
         });
@@ -4952,21 +5046,28 @@ function InspectionWorkbenchPanel({
       return true;
     });
     if (projectType !== 'PT3' && !renderCategories.includes('overlay')) return categoryFiltered;
-    const overlayBaseIdentities = new Set();
+    const sourceEntries = categoryFiltered.filter((entry) => !entry.overlay);
+    const suppressedSourceEntryIds = new Set();
     categoryFiltered.forEach((entry) => {
       if (!entry.overlay) return;
-      [entry.overlayBaseImageId, entry.overlayBaseFilename]
-        .map((value) => String(value || '').trim())
-        .filter(Boolean)
-        .forEach((value) => overlayBaseIdentities.add(value));
+      const baseImageId = String(entry.overlayBaseImageId || '').trim();
+      if (baseImageId) {
+        sourceEntries
+          .filter((sourceEntry) => String(sourceEntry.imageId || '').trim() === baseImageId)
+          .forEach((sourceEntry) => suppressedSourceEntryIds.add(sourceEntry.id));
+        return;
+      }
+      const baseFilename = String(entry.overlayBaseFilename || '').trim();
+      if (!baseFilename) return;
+      const filenameMatches = sourceEntries.filter(
+        (sourceEntry) => String(sourceEntry.filename || '').trim() === baseFilename,
+      );
+      if (filenameMatches.length === 1) suppressedSourceEntryIds.add(filenameMatches[0].id);
     });
-    if (overlayBaseIdentities.size === 0) return categoryFiltered;
+    if (suppressedSourceEntryIds.size === 0) return categoryFiltered;
     return categoryFiltered.filter((entry) => {
       if (entry.overlay) return true;
-      return ![entry.imageId, entry.imageRef, entry.filename]
-        .map((value) => String(value || '').trim())
-        .filter(Boolean)
-        .some((value) => overlayBaseIdentities.has(value));
+      return !suppressedSourceEntryIds.has(entry.id);
     });
   }, [annotationsVisible, enabledModalities, hiddenViewNames, projectType, renderCategories, selectedPartImageRefs]);
   const inspectionAnnotationItems = useMemo(
@@ -5586,10 +5687,11 @@ function InspectionWorkbenchPanel({
         : '',
     );
     if (!selectedPart) return;
-    const savedModalities = Array.isArray(savedInspector.modalities)
+    const hasSavedModalities = Array.isArray(savedInspector.modalities);
+    const savedModalities = hasSavedModalities
       ? savedInspector.modalities.map((value) => String(value))
       : [];
-    setEnabledModalities(savedModalities.length > 0 ? savedModalities : getModalities(selectedPart).slice(0, 1));
+    setEnabledModalities(hasSavedModalities ? savedModalities : getDiscoveredModalities(selectedPart));
     setSelectedViewName(savedInspector.view_name ? String(savedInspector.view_name) : '');
     setImageEnabled(typeof savedInspector.image_enabled === 'boolean' ? savedInspector.image_enabled : true);
     setMeasurementEntries(normalizeSavedMeasurements(savedInspector.measurements));
@@ -7688,19 +7790,22 @@ function InspectionWorkbenchPanel({
   const createCropChildImage = async ({ parentImageId, cropBox, cropAnnotationId = '', title = '' }) => {
     if (readOnly) return null;
     if (!selectedPart?.id || !parentImageId || !isFiniteAnnotationBox(cropBox)) return null;
-    const parentImage = projectImageLookup[parentImageId] || {};
-    const parentFilename = parentImage.filename || parentImageId || 'image';
+    const canonicalParentImageId = String(parentImageId).trim();
+    const parentImage = getProjectImageRecord(
+      projectImageLookup,
+      { image_id: canonicalParentImageId },
+    ) || {};
+    const parentFilename = parentImage.filename || canonicalParentImageId || 'image';
     const parentSourceRecord = (Array.isArray(selectedPart?.metadata?.source_images) ? selectedPart.metadata.source_images : [])
-      .find((record) => [record?.image_id, record?.filename]
-        .map((value) => String(value || '').trim())
-        .includes(String(parentImageId || '').trim())
-        || String(record?.filename || '').trim() === String(parentFilename || '').trim());
+      .find((record) => (
+        String(record?.image_id || '').trim() === canonicalParentImageId
+      ));
     const parentModality = String(parentImage.modality || parentImage.metadata?.modality || parentSourceRecord?.modality || parentSourceRecord?.metadata?.modality || 'visual').trim().toLowerCase() || 'visual';
     const cropFilename = getCropUploadFilename(cropBox, parentFilename);
     const cropTitle = title || getCropImageTitle(cropBox, parentFilename);
     setError(null);
     try {
-      const sourceImage = await loadImageElement(`/api/images/${encodeURIComponent(String(parentImageId))}/content`);
+      const sourceImage = await loadImageElement(`/api/images/${encodeURIComponent(canonicalParentImageId)}/content`);
       const naturalWidth = Number(sourceImage.naturalWidth || sourceImage.width || cropBox.imageWidth || 0);
       const naturalHeight = Number(sourceImage.naturalHeight || sourceImage.height || cropBox.imageHeight || 0);
       if (!Number.isFinite(naturalWidth) || !Number.isFinite(naturalHeight) || naturalWidth <= 0 || naturalHeight <= 0) {
@@ -7723,7 +7828,7 @@ function InspectionWorkbenchPanel({
       const blob = await canvasToBlob(canvas, 'image/png');
       const metadata = {
         crop_child_image: true,
-        parent_image_id: String(parentImageId),
+        parent_image_id: canonicalParentImageId,
         parent_image_filename: parentFilename,
         crop_annotation_id: cropAnnotationId ? String(cropAnnotationId) : '',
         crop_title: cropTitle,
@@ -7753,7 +7858,11 @@ function InspectionWorkbenchPanel({
       const assignResp = await fetchInspectionResource(readOnly, `/api/projects/${projectId}/parts/image-assignments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: createdImage.filename || cropFilename, to_part_id: selectedPart.id }),
+        body: JSON.stringify({
+          filename: createdImage.filename || cropFilename,
+          image_id: createdImage.id,
+          to_part_id: selectedPart.id,
+        }),
       });
       if (!assignResp.ok) throw new Error(`Failed to add crop to inspection workbench (${assignResp.status})`);
       const sourceEntry = {
@@ -7763,18 +7872,14 @@ function InspectionWorkbenchPanel({
         modality: parentModality,
         overlay: false,
         crop_child_image: true,
-        parent_image_id: String(parentImageId),
+        parent_image_id: canonicalParentImageId,
         parent_image_filename: parentFilename,
         crop_annotation_id: cropAnnotationId ? String(cropAnnotationId) : '',
         crop_title: cropTitle,
         crop_subtitle: '',
         crop_bbox: metadata.crop_bbox,
       };
-      setProjectImageLookup((prev) => ({
-        ...prev,
-        [sourceEntry.filename]: createdImage,
-        [sourceEntry.image_id]: createdImage,
-      }));
+      setProjectImageLookup((prev) => upsertProjectImageRecord(prev, createdImage));
       setParts((prev) => prev.map((part) => {
         if (String(part.id) !== String(selectedPart.id)) return part;
         const existingSourceImages = Array.isArray(part.metadata?.source_images) ? part.metadata.source_images : [];
@@ -7875,13 +7980,29 @@ function InspectionWorkbenchPanel({
           const sourceImages = Array.isArray(part.metadata?.source_images)
             ? part.metadata.source_images
             : [];
+          const resourceImageId = String(item.overlay?.imageId || '').trim();
+          const resourceFilename = String(
+            item.overlay?.filename
+            || (!resourceImageId ? item.overlay?.imageRef : '')
+            || (!resourceImageId ? item.source.resourceId : ''),
+          ).trim();
+          const filenameMatches = resourceImageId
+            ? []
+            : sourceImages.filter((entry) => (
+              String(entry?.filename || '').trim() === resourceFilename
+            ));
           return {
             ...part,
             metadata: {
               ...(part.metadata || {}),
               source_images: sourceImages.map((entry) => (
-                [entry?.image_id, entry?.filename].some(
-                  (candidate) => String(candidate) === String(item.source.resourceId),
+                (
+                  resourceImageId
+                    ? String(entry?.image_id || '').trim() === resourceImageId
+                    : (
+                      filenameMatches.length === 1
+                      && String(entry?.filename || '').trim() === resourceFilename
+                    )
                 )
                   ? { ...entry, hidden }
                   : entry
@@ -8040,14 +8161,29 @@ function InspectionWorkbenchPanel({
                     const annotationCount = Array.isArray(part?.metadata?.annotations) ? part.metadata.annotations.length : 0;
                     const isSelected = part.id === selectedPart?.id;
                     const viewImages = part?.metadata?.view_images || {};
-                    const imageEntries = Object.entries(viewImages)
-                      .filter(([viewName, imageRef]) => isInspectionImageRefLoaded({
-                        imageRef: String(imageRef || ''),
-                        filename: String(imageRef || ''),
-                        viewName,
-                      }, projectImageLookup));
                     const partImageRefs = getPartImageRefs(part)
                       .filter((entry) => isInspectionImageRefLoaded(entry, projectImageLookup));
+                    const imageRefByViewName = new Map();
+                    partImageRefs.forEach((entry) => {
+                      const viewName = String(entry?.viewName || '').toLowerCase();
+                      if (viewName && !entry.overlay && !imageRefByViewName.has(viewName)) {
+                        imageRefByViewName.set(viewName, entry);
+                      }
+                    });
+                    const imageEntries = Object.entries(viewImages)
+                      .filter(([viewName, imageRef]) => (
+                        imageRefByViewName.has(String(viewName).toLowerCase())
+                        || isInspectionImageRefLoaded({
+                          imageId: imageRef && typeof imageRef === 'object' ? imageRef.image_id : '',
+                          imageRef: imageRef && typeof imageRef === 'object'
+                            ? imageRef.filename
+                            : String(imageRef || ''),
+                          filename: imageRef && typeof imageRef === 'object'
+                            ? imageRef.filename
+                            : String(imageRef || ''),
+                          viewName,
+                        }, projectImageLookup)
+                      ));
                     const partModalities = getPartSummaryModalities(part, partImageRefs);
                     const hasAnalyzeOverlays = partImageRefs.some((entry) => entry.overlay);
                     const hasCropImages = partImageRefs.some((entry) => entry.cropChild);
@@ -8102,7 +8238,13 @@ function InspectionWorkbenchPanel({
                                         setSelectedPartId(part.id);
                                         toggleViewVisibility(viewName);
                                         setSelectedViewName(normalizedViewName);
-                                        setSelectedImageRef(String(imageRef || ''));
+                                        setSelectedImageRef(String(
+                                          imageRefByViewName.get(normalizedViewName)?.imageRef
+                                            || (imageRef && typeof imageRef === 'object'
+                                              ? imageRef.image_id || imageRef.filename
+                                              : imageRef)
+                                            || '',
+                                        ));
                                       }}
                                     >
                                       {viewName.toUpperCase()}
@@ -9244,12 +9386,21 @@ function InspectionWorkbenchPanel({
               {visibleSelectedPartImageRefs.map((entry) => {
                 const viewName = entry.viewName || 'image';
                 const imageRef = String(entry.imageRef || '');
-                const imageRecord = projectImageLookup[entry.imageId] || projectImageLookup[imageRef];
-                const imageId = imageRecord?.id || entry.imageId || '';
+                const imageRecord = getProjectImageRecord(projectImageLookup, {
+                  image_id: entry.imageId,
+                  filename: entry.filename || imageRef,
+                });
+                const imageId = imageRecord?.id ? String(imageRecord.id) : '';
                 const baseRecord = entry.overlay
-                  ? (projectImageLookup[entry.overlayBaseImageId] || projectImageLookup[entry.overlayBaseFilename])
+                  ? getProjectImageRecord(projectImageLookup, {
+                    image_id: entry.overlayBaseImageId,
+                    filename: entry.overlayBaseFilename,
+                  })
                   : null;
-                const baseImageId = baseRecord?.id || entry.overlayBaseImageId || '';
+                const baseImageId = baseRecord?.id ? String(baseRecord.id) : '';
+                const imageDisplayName = String(
+                  imageRecord?.displayName || imageRecord?.filename || entry.filename || imageRef,
+                );
                 const annotationSourceImageId = getAnnotationSourceImageId(entry, projectImageLookup);
                 const tileAnnotationSourceImageId = String(annotationSourceImageId || imageId);
 	                const tileMeasurementLines = (measurementLinesByImageId[tileAnnotationSourceImageId] || [])
@@ -9301,6 +9452,14 @@ function InspectionWorkbenchPanel({
                     <div className={`view-cell-title ${entry.cropChild ? 'view-cell-title-crop-child' : ''}`}>
                       <div className="view-cell-title-text">
                         <span>{entry.label || viewName.toUpperCase()}</span>
+                        {imageDisplayName && (
+                          <small
+                            className="inspection-image-filename"
+                            aria-label={`Filename ${imageDisplayName}`}
+                          >
+                            {imageDisplayName}
+                          </small>
+                        )}
                         {entry.cropChild && (
                           <input
                             type="text"

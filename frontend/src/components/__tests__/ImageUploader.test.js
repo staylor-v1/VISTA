@@ -89,21 +89,26 @@ beforeEach(() => {
 describe('ImageUploader', () => {
 
   describe('Duplicate filename tagging', () => {
-    test('tags selected duplicate filenames before extension', () => {
+    test('builds numeric display aliases without changing File names', () => {
       const first = makeFile('overlay.png');
       const second = makeFile('overlay.png');
       const third = makeFile('overlay.png');
       const filenameMap = buildDuplicateFilenameMap([first, second, third]);
 
-      expect(tagDuplicateFilename('part.tif', 1)).toBe('part (duplicate).tif');
+      expect(tagDuplicateFilename('part.tif', 1)).toBe('part (1).tif');
       expect(formatUploadSize(1024 ** 2)).toBe('1.00 MB');
       expect(formatUploadSize(1024 ** 3)).toBe('1.00 GB');
       expect(filenameMap.get(first)).toBe('overlay.png');
-      expect(filenameMap.get(second)).toBe('overlay (duplicate).png');
-      expect(filenameMap.get(third)).toBe('overlay (duplicate 2).png');
+      expect(filenameMap.get(second)).toBe('overlay (1).png');
+      expect(filenameMap.get(third)).toBe('overlay (2).png');
+      expect([first.name, second.name, third.name]).toEqual([
+        'overlay.png',
+        'overlay.png',
+        'overlay.png',
+      ]);
     });
 
-    test('uploads duplicate selections with duplicate tags and original filename metadata', async () => {
+    test('uploads duplicate selections under their exact original filenames', async () => {
       const fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (_url, options) => {
         const manifest = await batchManifest(options.body);
         return {
@@ -126,14 +131,75 @@ describe('ImageUploader', () => {
       expect(fetchSpy.mock.calls[0][0]).toBe('/api/projects/proj-1/images/batch');
       expect(body.getAll('files').map((file) => file.name)).toEqual([
         'overlay.png',
-        'overlay (duplicate).png',
+        'overlay.png',
       ]);
       const manifest = await batchManifest(body);
-      expect(manifest[0].metadata).toEqual({});
-      expect(manifest[1].metadata).toMatchObject({
-        original_filename: 'overlay.png',
-        duplicate_filename_tagged: true,
+      expect(manifest).toEqual([
+        { client_index: 0, filename: 'overlay.png', metadata: {} },
+        { client_index: 1, filename: 'overlay.png', metadata: {} },
+      ]);
+      expect(manifest.flatMap((entry) => Object.keys(entry.metadata))).not.toEqual(
+        expect.arrayContaining(['original_filename', 'duplicate_filename_tagged']),
+      );
+    });
+
+    test('extracts metadata from each raw duplicate name and correlates reversed responses by client_index', async () => {
+      const fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(async (_url, options) => {
+        const manifest = await batchManifest(options.body);
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({
+            uploaded: [
+              {
+                client_index: 1,
+                image: { id: 'img-second', filename: manifest[1].filename },
+              },
+              {
+                client_index: 0,
+                image: { id: 'img-first', filename: manifest[0].filename },
+              },
+            ],
+            failed: [],
+          }),
+        };
       });
+
+      const { props } = renderUploader();
+      selectFiles([makeFile('lot1_SN001.png'), makeFile('lot1_SN001.png')]);
+      fireEvent.change(screen.getByLabelText('Delimiter'), {
+        target: { value: '_' },
+      });
+      fireEvent.change(screen.getByLabelText('Keys (comma-separated)'), {
+        target: { value: 'lot, serial' },
+      });
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /upload images/i })).not.toBeDisabled();
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /upload images/i }));
+      await waitForSuccessfulUpload(props);
+
+      const manifest = await batchManifest(fetchSpy.mock.calls[0][1].body);
+      expect(manifest).toEqual([
+        {
+          client_index: 0,
+          filename: 'lot1_SN001.png',
+          metadata: { lot: 'lot1', serial: 'SN001' },
+        },
+        {
+          client_index: 1,
+          filename: 'lot1_SN001.png',
+          metadata: { lot: 'lot1', serial: 'SN001' },
+        },
+      ]);
+      expect(props.onUploadComplete).toHaveBeenCalledWith(
+        [
+          expect.objectContaining({ id: 'img-first', filename: 'lot1_SN001.png' }),
+          expect.objectContaining({ id: 'img-second', filename: 'lot1_SN001.png' }),
+        ],
+        expect.objectContaining({ confirmedSucceeded: 2 }),
+      );
     });
 
 

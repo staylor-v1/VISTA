@@ -78,7 +78,7 @@ function GalleryGridView({
           >
             <img
               src={image.deleted_at ? DELETED_IMAGE_SVG : `/api/images/${image.id}/thumbnail?width=${thumbFetchSize}&height=${thumbFetchSize}`}
-              alt={image.filename || 'Image'}
+              alt={image.displayName || image.filename || 'Image'}
               loading="lazy"
               onLoad={() => {
                 onImageLoadStatusChange(image.id, { status: 'loaded', timestamp: new Date().toISOString() });
@@ -93,6 +93,7 @@ function GalleryGridView({
               <div className="overlay-actions">
                 <button
                   className="overlay-btn"
+                  aria-label={`View ${image.displayName || image.filename || 'image'}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     onImageClick(image.id);
@@ -101,6 +102,7 @@ function GalleryGridView({
                 {image.deleted_at && !image.storage_deleted && (
                   <button
                     className="overlay-btn"
+                    aria-label={`Restore ${image.displayName || image.filename || 'image'}`}
                     onClick={(e) => { e.stopPropagation(); onRestore(image); }}
                   >Restore</button>
                 )}
@@ -110,7 +112,7 @@ function GalleryGridView({
 
           <div className="gallery-item-info">
             <div className="item-filename">
-              {image.filename || 'Unnamed image'}
+              {image.displayName || image.filename || 'Unnamed image'}
             </div>
             <div className="item-meta">
               <span className="item-size">{formatFileSize(image.size_bytes)}</span>

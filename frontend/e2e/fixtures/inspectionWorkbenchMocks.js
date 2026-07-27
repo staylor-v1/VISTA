@@ -1,5 +1,34 @@
 const projectId = 'proj-pt1';
 
+function parseMetadataBoolean(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) && value !== 0;
+  if (typeof value === 'string') return ['1', 'true', 'yes', 'y', 'on'].includes(value.trim().toLowerCase());
+  return false;
+}
+
+function escapeXml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function createMockImageSvg(imageId) {
+  const safeImageId = String(imageId || 'unknown');
+  const hue = [...safeImageId].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 360;
+  return [
+    '<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640" viewBox="0 0 960 640">',
+    `<rect width="960" height="640" fill="hsl(${hue} 55% 23%)"/>`,
+    `<circle cx="480" cy="300" r="190" fill="hsl(${hue} 72% 52%)" opacity=".78"/>`,
+    '<path d="M180 470L350 260l135 128 140-178 160 260z" fill="rgba(255,255,255,.28)"/>',
+    `<text x="480" y="565" text-anchor="middle" fill="white" font-family="sans-serif" font-size="28">${escapeXml(safeImageId)}</text>`,
+    '</svg>',
+  ].join('');
+}
+
 const scenarioByUser = {
   basic: {
     workspaceState: {
@@ -191,6 +220,14 @@ async function mockInspectionWorkbenchRoutes(page, {
   seededAnnotations = null,
 } = {}) {
   const { batches, parts, workspaceState } = createMockData(scenario);
+  let mutableProject = {
+    id: projectId,
+    name: `Inspection Workbench ${type}`,
+    description: 'Playwright synthetic project',
+    meta_group_id: 'qa-team',
+    project_type: type,
+    is_archived: false,
+  };
   const configurationByProjectId = {
     [projectId]: {
       image_modalities: [{ id: 'visual', label: 'Visual', calibration_required: false }],
@@ -247,6 +284,10 @@ async function mockInspectionWorkbenchRoutes(page, {
   const exportBundleArchiveRequests = [];
   const ingestValidationRequests = [];
   const imageDisplayOrderRequests = [];
+  const imageAssignmentRequests = [];
+  const imageAssetRequests = [];
+  const overlayAssignmentRequests = [];
+  const projectUpdateRequests = [];
   const savedConfigurations = [];
   const realSplatRequests = [];
   let realSplatJob = { status: 'missing', polls: 0 };
@@ -275,18 +316,22 @@ async function mockInspectionWorkbenchRoutes(page, {
       await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ detail: 'Unauthorized' }) });
       return;
     }
+    if (url.endsWith(`/api/projects/${projectId}`) && method === 'PUT') {
+      const payload = route.request().postDataJSON() || {};
+      projectUpdateRequests.push({ projectId, payload });
+      mutableProject = { ...mutableProject, ...payload };
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(mutableProject),
+      });
+      return;
+    }
     if (url.endsWith(`/api/projects/${projectId}`)) {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({
-          id: projectId,
-          name: `Inspection Workbench ${type}`,
-          description: 'Playwright synthetic project',
-          meta_group_id: 'qa-team',
-          project_type: type,
-          is_archived: false,
-        }),
+        body: JSON.stringify(mutableProject),
       });
       return;
     }
@@ -376,6 +421,22 @@ async function mockInspectionWorkbenchRoutes(page, {
     }
     if (url.includes(`/api/projects/${projectId}/images`)) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(images) });
+      return;
+    }
+    if (url.includes('/api/images/') && (url.includes('/thumbnail') || url.endsWith('/content'))) {
+      const parsedUrl = new URL(url);
+      const pathParts = parsedUrl.pathname.split('/').filter(Boolean);
+      const imageId = decodeURIComponent(pathParts[2] || '');
+      imageAssetRequests.push({
+        imageId,
+        path: parsedUrl.pathname,
+        search: parsedUrl.search,
+      });
+      await route.fulfill({
+        status: 200,
+        contentType: 'image/svg+xml',
+        body: createMockImageSvg(imageId),
+      });
       return;
     }
     if (url.endsWith(`/api/projects/${projectId}/batches`)) {
@@ -558,23 +619,147 @@ async function mockInspectionWorkbenchRoutes(page, {
       });
       return;
     }
-    if (url.endsWith(`/api/projects/${projectId}/parts/overlay-assignments`) && method === 'POST') {
+    if (url.endsWith(`/api/projects/${projectId}/parts/image-assignments`) && method === 'POST') {
       const payload = route.request().postDataJSON() || {};
-      const overlayImageId = String(payload.overlay_image_id || '').trim();
-      const overlayFilename = String(payload.overlay_filename || '').trim();
-      const baseImageId = String(payload.base_image_id || '').trim();
-      const baseFilename = String(payload.base_filename || '').trim();
+      imageAssignmentRequests.push(payload);
+      const requestedImageId = String(payload.image_id || '').trim();
+      const requestedFilename = String(payload.filename || '').trim();
+      const filenameMatches = images.filter((image) => (
+        !image?.deleted_at && String(image?.filename || '') === requestedFilename
+      ));
+      const catalogImage = requestedImageId
+        ? images.find((image) => !image?.deleted_at && String(image?.id || '') === requestedImageId)
+        : (filenameMatches.length === 1 ? filenameMatches[0] : null);
+      if (!catalogImage) {
+        await route.fulfill({
+          status: requestedImageId || filenameMatches.length === 0 ? 404 : 422,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            detail: requestedImageId
+              ? 'Image not found'
+              : 'Filename is ambiguous; provide image_id',
+          }),
+        });
+        return;
+      }
+
+      const imageId = String(catalogImage.id || '');
+      const filename = String(catalogImage.filename || '');
+      const toPartId = payload.to_part_id == null ? '' : String(payload.to_part_id);
       mutableParts = mutableParts.map((part) => {
         const sourceImages = Array.isArray(part?.metadata?.source_images)
           ? part.metadata.source_images
           : [];
-        const ownsBaseImage = sourceImages.some((record) => (
-          !record?.overlay
-          && (
-            (baseImageId && String(record.image_id || '') === baseImageId)
-            || (!baseImageId && baseFilename && String(record.filename || '') === baseFilename)
-          )
-        ));
+        const withoutImage = sourceImages.filter((record) => {
+          const recordImageId = String(record?.image_id || '').trim();
+          if (imageId) return recordImageId !== imageId;
+          return recordImageId || String(record?.filename || '') !== filename;
+        });
+        if (String(part.id) !== toPartId) {
+          if (withoutImage.length === sourceImages.length) return part;
+          return {
+            ...part,
+            metadata: { ...part.metadata, source_images: withoutImage },
+          };
+        }
+        return {
+          ...part,
+          metadata: {
+            ...part.metadata,
+            source_images: [
+              ...withoutImage,
+              {
+                filename,
+                image_id: imageId || null,
+                overlay: false,
+              },
+            ],
+          },
+        };
+      });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          assigned: Boolean(toPartId),
+          image_id: imageId || null,
+          filename,
+          to_part_id: toPartId || null,
+        }),
+      });
+      return;
+    }
+    if (url.endsWith(`/api/projects/${projectId}/parts/overlay-assignments`) && method === 'POST') {
+      const payload = route.request().postDataJSON() || {};
+      overlayAssignmentRequests.push(payload);
+      const requestedOverlayImageId = String(payload.overlay_image_id || '').trim();
+      const requestedOverlayFilename = String(payload.overlay_filename || '').trim();
+      const overlayFilenameMatches = images.filter((image) => (
+        !image?.deleted_at && String(image?.filename || '') === requestedOverlayFilename
+      ));
+      const overlayImage = requestedOverlayImageId
+        ? images.find((image) => !image?.deleted_at && String(image?.id || '') === requestedOverlayImageId)
+        : (overlayFilenameMatches.length === 1 ? overlayFilenameMatches[0] : null);
+      if (!overlayImage) {
+        await route.fulfill({
+          status: requestedOverlayImageId || overlayFilenameMatches.length === 0 ? 404 : 422,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            detail: requestedOverlayImageId
+              ? 'Overlay image not found'
+              : 'Overlay filename is ambiguous; provide overlay_image_id',
+          }),
+        });
+        return;
+      }
+
+      const overlayImageId = String(overlayImage.id || '');
+      const overlayFilename = String(overlayImage.filename || '');
+      const baseImageId = String(payload.base_image_id || '').trim();
+      const baseFilename = String(payload.base_filename || '').trim();
+      const baseMatches = [];
+      mutableParts.forEach((part) => {
+        const sourceImages = Array.isArray(part?.metadata?.source_images)
+          ? part.metadata.source_images
+          : [];
+        sourceImages.forEach((record) => {
+          if (parseMetadataBoolean(record?.overlay)) return;
+          const matches = baseImageId
+            ? String(record?.image_id || '') === baseImageId
+            : (baseFilename && String(record?.filename || '') === baseFilename);
+          if (matches) baseMatches.push({ partId: String(part.id), record });
+        });
+      });
+      if (!baseImageId && baseFilename && baseMatches.length > 1) {
+        await route.fulfill({
+          status: 422,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            detail: 'Base filename is ambiguous; provide base_image_id',
+          }),
+        });
+        return;
+      }
+      const baseMatch = (baseImageId || baseFilename)
+        ? (baseMatches.length === 1 ? baseMatches[0] : null)
+        : null;
+      if ((baseImageId || baseFilename) && !baseMatch) {
+        await route.fulfill({
+          status: 404,
+          contentType: 'application/json',
+          body: JSON.stringify({ detail: 'Base image not found' }),
+        });
+        return;
+      }
+      const canonicalBaseImageId = String(baseMatch?.record?.image_id || baseImageId || '');
+      const canonicalBaseFilename = String(baseMatch?.record?.filename || baseFilename || '');
+      mutableParts = mutableParts.map((part) => {
+        const sourceImages = Array.isArray(part?.metadata?.source_images)
+          ? part.metadata.source_images
+          : [];
+        const ownsBaseImage = Boolean(
+          baseMatch && String(part.id) === baseMatch.partId,
+        );
         const withoutOverlay = sourceImages.filter((record) => (
           String(record?.image_id || '') !== overlayImageId
         ));
@@ -595,8 +780,8 @@ async function mockInspectionWorkbenchRoutes(page, {
                 filename: overlayFilename,
                 image_id: overlayImageId,
                 overlay: true,
-                overlay_base_filename: baseFilename,
-                overlay_base_image_id: baseImageId,
+                overlay_base_filename: canonicalBaseFilename,
+                overlay_base_image_id: canonicalBaseImageId,
               },
             ],
           },
@@ -605,7 +790,7 @@ async function mockInspectionWorkbenchRoutes(page, {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ assigned: true }),
+        body: JSON.stringify({ assigned: Boolean(baseMatch) }),
       });
       return;
     }
@@ -624,6 +809,7 @@ async function mockInspectionWorkbenchRoutes(page, {
       const annotation = {
         id: `ann-${partId}-${(mutableAnnotations[partId] || []).length + 1}`,
         part_id: partId,
+        annotation_kind: payload.annotation_kind || null,
         defect_class: payload.defect_class || 'Other',
         modality: payload.modality || 'visual',
         comment: payload.comment || null,
@@ -795,8 +981,14 @@ async function mockInspectionWorkbenchRoutes(page, {
     getWorkspaceStates: () => savedWorkspaceStates,
     getExportBundleArchiveRequests: () => exportBundleArchiveRequests,
     getIngestValidationRequests: () => ingestValidationRequests,
+    getImageAssignmentRequests: () => imageAssignmentRequests,
+    getImageAssetRequests: () => imageAssetRequests,
     getImageDisplayOrderRequests: () => imageDisplayOrderRequests,
+    getOverlayAssignmentRequests: () => overlayAssignmentRequests,
+    getProject: () => mutableProject,
+    getProjectUpdateRequests: () => projectUpdateRequests,
     getSavedConfigurations: () => savedConfigurations,
+    getAnnotations: () => mutableAnnotations,
     getRealSplatRequests: () => realSplatRequests,
   };
 }

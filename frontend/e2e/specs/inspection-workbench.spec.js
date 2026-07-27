@@ -20,6 +20,8 @@ const annotationTransparencyScreenshotPath = path.resolve(__dirname, '../../arti
 const nsiproMetadataScreenshotPath = path.resolve(__dirname, '../../artifacts/nsipro-part-metadata.png');
 const imageDisplayOrderScreenshotPath = path.resolve(__dirname, '../../artifacts/image-display-order.png');
 const imageDisplayOrderNarrowScreenshotPath = path.resolve(__dirname, '../../artifacts/image-display-order-narrow.png');
+const accessGroupDesktopScreenshotPath = path.resolve(__dirname, '../../artifacts/access-group-project-configuration-desktop.png');
+const accessGroupNarrowScreenshotPath = path.resolve(__dirname, '../../artifacts/access-group-project-configuration-narrow.png');
 const simulatedUsers = ['basic', 'intermediate', 'advanced'];
 
 function readMultipartJsonFilePart(bodyBuffer, fieldName) {
@@ -1257,6 +1259,62 @@ for (const projectType of ['PT1', 'PT2', 'PT3']) {
     });
   }
 }
+
+test.describe('Project Configuration Access Group', () => {
+  test('updates and persists Access Group without saving project configuration', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const {
+      projectId,
+      getProject,
+      getProjectUpdateRequests,
+      getSavedConfigurations,
+    } = await mockInspectionWorkbenchRoutes(page, {
+      type: 'PT2',
+      scenario: 'intermediate',
+    });
+    const destinationAccessGroup = 'inspection-reviewers-west';
+
+    await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
+    await page.getByRole('tab', { name: 'Project Configuration' }).click();
+    await expect(page.getByRole('tab', { name: 'General' })).toHaveAttribute('aria-selected', 'true');
+
+    const accessGroupInput = page.getByRole('textbox', { name: 'Access Group', exact: true });
+    const accessGroupCard = page.getByRole('heading', { name: 'Access Group', exact: true }).locator('..');
+    await expect(accessGroupInput).toHaveValue('qa-team');
+
+    await accessGroupInput.fill(destinationAccessGroup);
+    await page.waitForTimeout(750);
+    expect(getSavedConfigurations()).toEqual([]);
+    expect(getProjectUpdateRequests()).toEqual([]);
+
+    await page.getByRole('button', { name: 'Update Access Group' }).click();
+    await expect(accessGroupCard.getByRole('status')).toHaveText('Access Group updated.');
+    await expect(accessGroupInput).toHaveValue(destinationAccessGroup);
+    expect(getProjectUpdateRequests()).toEqual([{
+      projectId,
+      payload: { meta_group_id: destinationAccessGroup },
+    }]);
+    expect(getSavedConfigurations()).toEqual([]);
+    expect(getProject().meta_group_id).toBe(destinationAccessGroup);
+    await accessGroupCard.screenshot({
+      path: accessGroupDesktopScreenshotPath,
+      animations: 'disabled',
+    });
+
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.getByRole('tab', { name: 'Project Configuration' }).click();
+    await expect(page.getByRole('tab', { name: 'General' })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('textbox', { name: 'Access Group', exact: true })).toHaveValue(destinationAccessGroup);
+
+    await page.setViewportSize({ width: 430, height: 900 });
+    const narrowAccessGroupCard = page.getByRole('heading', { name: 'Access Group', exact: true }).locator('..');
+    await expect(narrowAccessGroupCard).toBeVisible();
+    await narrowAccessGroupCard.screenshot({
+      path: accessGroupNarrowScreenshotPath,
+      animations: 'disabled',
+    });
+  });
+});
 
 test.describe('PR-11 project configuration screenshot artifact', () => {
   test('captures PT3 advanced project configuration screenshot', async ({ page }) => {

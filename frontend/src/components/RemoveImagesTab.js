@@ -1,19 +1,25 @@
 import React, { useMemo, useState } from 'react';
+import { buildActiveImageCatalog, resolveImageReference } from '../utils/imageIdentity';
 
 function buildHierarchy(parts = [], images = []) {
-  const activeImages = images.filter((image) => !image?.deleted_at);
-  const imageByFilename = new Map(activeImages.map((image) => [image.filename, image]));
-  const assignedFilenames = new Set();
+  const imageCatalog = buildActiveImageCatalog(images);
+  const assignedImageKeys = new Set();
 
   const partBuckets = parts.map((part) => {
     const sourceImages = Array.isArray(part?.metadata?.source_images) ? part.metadata.source_images : [];
     const bucketImages = sourceImages
       .map((source) => {
-        const filename = source?.filename;
+        const filename = typeof source?.filename === 'string' ? source.filename : '';
         if (!filename) return null;
-        const image = imageByFilename.get(filename);
-        if (!image) return null;
-        assignedFilenames.add(filename);
+        const result = resolveImageReference({
+          image_id: source?.image_id,
+          filename,
+        }, imageCatalog);
+        if (result.status !== 'resolved') return null;
+        const image = result.ref;
+        const key = image.id || image.key;
+        if (!key || assignedImageKeys.has(key)) return null;
+        assignedImageKeys.add(key);
         return image;
       })
       .filter(Boolean);
@@ -26,7 +32,7 @@ function buildHierarchy(parts = [], images = []) {
     };
   });
 
-  const unassignedImages = activeImages.filter((image) => !assignedFilenames.has(image.filename));
+  const unassignedImages = imageCatalog.refs.filter((image) => !assignedImageKeys.has(image.id || image.key));
   return { partBuckets, unassignedImages };
 }
 
@@ -103,7 +109,7 @@ function RemoveImagesTab({ projectId, parts = [], images = [], onImagesRemoved, 
   const renderImageRow = (image) => (
     <label key={image.id} className="remove-images-row">
       <input type="checkbox" checked={selectedImageIds.has(image.id)} onChange={() => toggleSelected(image.id)} />
-      <span>{image.filename}</span>
+      <span>{image.displayName || image.filename}</span>
     </label>
   );
 
@@ -154,3 +160,4 @@ function RemoveImagesTab({ projectId, parts = [], images = [], onImagesRemoved, 
 }
 
 export default RemoveImagesTab;
+export { buildHierarchy };

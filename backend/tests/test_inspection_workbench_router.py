@@ -1315,6 +1315,260 @@ def test_project_configuration_clone_preserves_pt3_3d_guides(client):
     assert target_response.json()["config"]["display_settings"]["pt3_3d_guides"] == expected_guides
 
 
+def test_project_configuration_calibration_round_trip_and_clone(client):
+    headers = {
+        "X-User-Id": "project-calibration@example.com",
+        "X-User-Groups": '["project-calibration"]',
+    }
+    source_project_id, _ = _create_pt3_guide_configuration_project(
+        client,
+        "calibration-source",
+        headers=headers,
+    )
+    target_project_id, _ = _create_pt3_guide_configuration_project(
+        client,
+        "calibration-target",
+        headers=headers,
+    )
+
+    initial_response = client.get(
+        f"/api/projects/{source_project_id}/configuration",
+        headers=headers,
+    )
+    assert initial_response.status_code == 200, initial_response.text
+    source_config = initial_response.json()["config"]
+    assert "calibration" not in source_config
+
+    expected_calibration = {
+        "pixels_per_mm": 12.5,
+        "pixels_per_inch": 317.5,
+        "unit": "mm",
+        "updated_at": "2026-07-26T18:30:00Z",
+    }
+    source_config["calibration"] = expected_calibration
+    save_response = client.put(
+        f"/api/projects/{source_project_id}/configuration",
+        json={"config": source_config},
+        headers=headers,
+    )
+    assert save_response.status_code == 200, save_response.text
+    assert save_response.json()["config"]["calibration"] == expected_calibration
+
+    reload_response = client.get(
+        f"/api/projects/{source_project_id}/configuration",
+        headers=headers,
+    )
+    assert reload_response.status_code == 200, reload_response.text
+    assert reload_response.json()["config"]["calibration"] == expected_calibration
+
+    clone_response = client.post(
+        f"/api/projects/{target_project_id}/configuration/clone",
+        json={"source_project_id": source_project_id},
+        headers=headers,
+    )
+    assert clone_response.status_code == 200, clone_response.text
+    assert clone_response.json()["config"]["calibration"] == expected_calibration
+    target_response = client.get(
+        f"/api/projects/{target_project_id}/configuration",
+        headers=headers,
+    )
+    assert target_response.status_code == 200, target_response.text
+    assert target_response.json()["config"]["calibration"] == expected_calibration
+
+
+def test_project_configuration_accepts_absent_and_null_calibration(client):
+    project_id, headers = _create_pt3_guide_configuration_project(
+        client,
+        "calibration-optional",
+    )
+    initial_response = client.get(
+        f"/api/projects/{project_id}/configuration",
+        headers=headers,
+    )
+    assert initial_response.status_code == 200, initial_response.text
+    config = initial_response.json()["config"]
+    assert "calibration" not in config
+
+    config["calibration"] = None
+    clear_response = client.put(
+        f"/api/projects/{project_id}/configuration",
+        json={"config": config},
+        headers=headers,
+    )
+    assert clear_response.status_code == 200, clear_response.text
+    assert clear_response.json()["config"]["calibration"] is None
+
+    reload_response = client.get(
+        f"/api/projects/{project_id}/configuration",
+        headers=headers,
+    )
+    assert reload_response.status_code == 200, reload_response.text
+    assert reload_response.json()["config"]["calibration"] is None
+
+
+def test_archived_project_rejects_configuration_update_without_mutation(client):
+    project_id, headers = _create_pt3_guide_configuration_project(
+        client,
+        "archived-configuration",
+    )
+    initial_response = client.get(
+        f"/api/projects/{project_id}/configuration",
+        headers=headers,
+    )
+    assert initial_response.status_code == 200, initial_response.text
+    initial_config = initial_response.json()["config"]
+
+    archive_response = client.patch(
+        f"/api/projects/{project_id}/archive",
+        headers=headers,
+    )
+    assert archive_response.status_code == 200, archive_response.text
+
+    attempted_config = {
+        **initial_config,
+        "calibration": {
+            "pixels_per_mm": 10,
+            "pixels_per_inch": 254,
+            "unit": "mm",
+        },
+    }
+    update_response = client.put(
+        f"/api/projects/{project_id}/configuration",
+        json={"config": attempted_config},
+        headers=headers,
+    )
+    assert update_response.status_code == 409, update_response.text
+    assert update_response.json()["detail"] == "Archived projects are read-only."
+
+    reload_response = client.get(
+        f"/api/projects/{project_id}/configuration",
+        headers=headers,
+    )
+    assert reload_response.status_code == 200, reload_response.text
+    assert reload_response.json()["config"] == initial_config
+
+
+def test_archived_target_rejects_configuration_clone_without_mutation(client):
+    headers = {
+        "X-User-Id": "archived-clone@example.com",
+        "X-User-Groups": '["archived-clone"]',
+    }
+    source_project_id, _ = _create_pt3_guide_configuration_project(
+        client,
+        "archived-clone-source",
+        headers=headers,
+    )
+    target_project_id, _ = _create_pt3_guide_configuration_project(
+        client,
+        "archived-clone-target",
+        headers=headers,
+    )
+
+    source_response = client.get(
+        f"/api/projects/{source_project_id}/configuration",
+        headers=headers,
+    )
+    assert source_response.status_code == 200, source_response.text
+    source_config = source_response.json()["config"]
+    source_config["calibration"] = {
+        "pixels_per_mm": 10,
+        "pixels_per_inch": 254,
+        "unit": "mm",
+    }
+    save_source_response = client.put(
+        f"/api/projects/{source_project_id}/configuration",
+        json={"config": source_config},
+        headers=headers,
+    )
+    assert save_source_response.status_code == 200, save_source_response.text
+
+    target_before_response = client.get(
+        f"/api/projects/{target_project_id}/configuration",
+        headers=headers,
+    )
+    assert target_before_response.status_code == 200, target_before_response.text
+    target_before = target_before_response.json()["config"]
+    archive_response = client.patch(
+        f"/api/projects/{target_project_id}/archive",
+        headers=headers,
+    )
+    assert archive_response.status_code == 200, archive_response.text
+
+    clone_response = client.post(
+        f"/api/projects/{target_project_id}/configuration/clone",
+        json={"source_project_id": source_project_id},
+        headers=headers,
+    )
+    assert clone_response.status_code == 409, clone_response.text
+    assert clone_response.json()["detail"] == "Archived projects are read-only."
+
+    target_after_response = client.get(
+        f"/api/projects/{target_project_id}/configuration",
+        headers=headers,
+    )
+    assert target_after_response.status_code == 200, target_after_response.text
+    assert target_after_response.json()["config"] == target_before
+    assert "calibration" not in target_after_response.json()["config"]
+
+
+@pytest.mark.parametrize(
+    "invalid_calibration",
+    [
+        {},
+        {"pixels_per_mm": 0, "pixels_per_inch": 254, "unit": "mm"},
+        {"pixels_per_mm": -1, "pixels_per_inch": 254, "unit": "mm"},
+        {"pixels_per_mm": True, "pixels_per_inch": 254, "unit": "mm"},
+        {"pixels_per_mm": "10", "pixels_per_inch": 254, "unit": "mm"},
+        {"pixels_per_mm": float("nan"), "pixels_per_inch": 254, "unit": "mm"},
+        {"pixels_per_mm": 10, "pixels_per_inch": float("inf"), "unit": "mm"},
+        {"pixels_per_mm": 10, "pixels_per_inch": 255, "unit": "mm"},
+        {"pixels_per_mm": 1e308, "pixels_per_inch": 1e308, "unit": "mm"},
+        {"pixels_per_mm": 10, "pixels_per_inch": 254, "unit": "cm"},
+        {
+            "pixels_per_mm": 10,
+            "pixels_per_inch": 254,
+            "unit": "mm",
+            "updated_at": "not-a-date",
+        },
+    ],
+)
+def test_project_configuration_rejects_invalid_calibration(
+    client,
+    invalid_calibration,
+):
+    project_id, headers = _create_pt3_guide_configuration_project(
+        client,
+        f"invalid-calibration-{uuid.uuid4()}",
+    )
+    initial_response = client.get(
+        f"/api/projects/{project_id}/configuration",
+        headers=headers,
+    )
+    assert initial_response.status_code == 200, initial_response.text
+    config = initial_response.json()["config"]
+    config["calibration"] = invalid_calibration
+
+    payload = {"config": config}
+    contains_non_finite = any(
+        isinstance(value, float) and not math.isfinite(value)
+        for value in invalid_calibration.values()
+    )
+    if contains_non_finite:
+        response = client.put(
+            f"/api/projects/{project_id}/configuration",
+            content=json.dumps(payload),
+            headers={**headers, "Content-Type": "application/json"},
+        )
+    else:
+        response = client.put(
+            f"/api/projects/{project_id}/configuration",
+            json=payload,
+            headers=headers,
+        )
+
+    assert response.status_code == 422, response.text
+
+
 @pytest.mark.parametrize(
     ("field_name", "invalid_value"),
     [
@@ -3023,6 +3277,7 @@ def test_image_display_order_excludes_stale_view_mapping_for_deleted_source(clie
                         "filename": "alive.png",
                         "image_id": "alive-id",
                         "side": "back",
+                        "delete_candidate": "false",
                     },
                 ],
                 "analysis_outputs": [
@@ -3726,6 +3981,479 @@ def test_overlay_assignment_can_unassign_overlay(client):
     parts_response = client.get(f"/api/projects/{project_id}/parts", headers=headers)
     assert parts_response.status_code == 200, parts_response.text
     assert [record for record in parts_response.json()[0]["metadata"]["source_images"] if record.get("overlay")] == []
+
+
+@pytest.mark.parametrize(
+    ("overlay_value", "expected"),
+    [
+        ("overlay", True),
+        ("ov", True),
+        ("mask", True),
+        ("heatmap", True),
+        ("true", True),
+        ("yes", True),
+        ("1", True),
+        ("false", False),
+        ("no", False),
+        ("0", False),
+        ("off", False),
+    ],
+)
+def test_filename_metadata_overlay_coercion_preserves_keywords_and_strict_false_values(
+    overlay_value,
+    expected,
+):
+    from routers import inspection_workbench
+
+    coerced = inspection_workbench._coerce_filename_metadata(
+        {"overlay": overlay_value}
+    )
+
+    assert coerced["overlay"] is expected
+
+
+def test_image_assignment_requires_id_for_duplicate_filename_without_mutation(client):
+    project_id, headers = _create_project_for_part_image_tests(
+        client,
+        "Duplicate filename image assignment",
+    )
+    images = [
+        _upload_part_test_image(
+            client,
+            project_id,
+            headers,
+            "shared.png",
+            {
+                "side": side,
+                "modality": "mask",
+                "overlay": "false",
+            },
+        )
+        for side in ("front", "back", "top")
+    ]
+    part_response = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={
+            "serial_number": "DUPLICATE-IMAGE-ASSIGNMENT",
+            "metadata": {"sentinel": "unchanged"},
+        },
+        headers=headers,
+    )
+    assert part_response.status_code == 201, part_response.text
+    part_id = part_response.json()["id"]
+    original_metadata = part_response.json()["metadata"]
+
+    ambiguous_response = client.post(
+        f"/api/projects/{project_id}/parts/image-assignments",
+        json={"filename": "shared.png", "to_part_id": part_id},
+        headers=headers,
+    )
+    assert ambiguous_response.status_code == 422, ambiguous_response.text
+    assert "image_id" in ambiguous_response.json()["detail"]
+    unchanged_response = client.get(
+        f"/api/projects/{project_id}/parts",
+        headers=headers,
+    )
+    assert unchanged_response.status_code == 200, unchanged_response.text
+    assert unchanged_response.json()[0]["metadata"] == original_metadata
+
+    selected_image = images[1]
+    exact_response = client.post(
+        f"/api/projects/{project_id}/parts/image-assignments",
+        json={
+            "filename": "stale-client-name.png",
+            "image_id": selected_image["id"],
+            "to_part_id": part_id,
+        },
+        headers=headers,
+    )
+    assert exact_response.status_code == 200, exact_response.text
+    assert exact_response.json()["filename"] == "shared.png"
+
+    assigned_response = client.get(
+        f"/api/projects/{project_id}/parts",
+        headers=headers,
+    )
+    assert assigned_response.status_code == 200, assigned_response.text
+    assigned_metadata = assigned_response.json()[0]["metadata"]
+    assert [
+        record["image_id"]
+        for record in assigned_metadata["source_images"]
+    ] == [selected_image["id"]]
+    assert assigned_metadata["source_images"][0]["overlay"] is False
+
+    stale_response = client.post(
+        f"/api/projects/{project_id}/parts/image-assignments",
+        json={
+            "filename": "shared.png",
+            "image_id": str(uuid.uuid4()),
+            "to_part_id": part_id,
+        },
+        headers=headers,
+    )
+    assert stale_response.status_code == 404, stale_response.text
+    after_stale_response = client.get(
+        f"/api/projects/{project_id}/parts",
+        headers=headers,
+    )
+    assert after_stale_response.status_code == 200, after_stale_response.text
+    assert after_stale_response.json()[0]["metadata"] == assigned_metadata
+
+
+def test_overlay_assignment_resolves_duplicate_names_by_ids_before_mutation(client):
+    project_id, headers = _create_project_for_part_image_tests(
+        client,
+        "Duplicate filename overlay assignment",
+    )
+    base = _upload_part_test_image(
+        client,
+        project_id,
+        headers,
+        "scan.png",
+        {"side": "axial", "modality": "volume", "overlay": "false"},
+    )
+    overlays = [
+        _upload_part_test_image(
+            client,
+            project_id,
+            headers,
+            "scan.png",
+            {"modality": "mask", "overlay": "true"},
+        )
+        for _ in range(2)
+    ]
+    part_response = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={"serial_number": "DUPLICATE-OVERLAY-ASSIGNMENT"},
+        headers=headers,
+    )
+    assert part_response.status_code == 201, part_response.text
+    part_id = part_response.json()["id"]
+    base_assignment = client.post(
+        f"/api/projects/{project_id}/parts/image-assignments",
+        json={
+            "filename": "scan.png",
+            "image_id": base["id"],
+            "to_part_id": part_id,
+        },
+        headers=headers,
+    )
+    assert base_assignment.status_code == 200, base_assignment.text
+    before_response = client.get(
+        f"/api/projects/{project_id}/parts",
+        headers=headers,
+    )
+    assert before_response.status_code == 200, before_response.text
+    before_metadata = before_response.json()[0]["metadata"]
+
+    ambiguous_overlay = client.post(
+        f"/api/projects/{project_id}/parts/overlay-assignments",
+        json={
+            "overlay_filename": "scan.png",
+            "base_filename": "scan.png",
+        },
+        headers=headers,
+    )
+    assert ambiguous_overlay.status_code == 422, ambiguous_overlay.text
+    assert "overlay_image_id" in ambiguous_overlay.json()["detail"]
+
+    ambiguous_base = client.post(
+        f"/api/projects/{project_id}/parts/overlay-assignments",
+        json={
+            "overlay_filename": "scan.png",
+            "overlay_image_id": overlays[0]["id"],
+            "base_filename": "scan.png",
+        },
+        headers=headers,
+    )
+    assert ambiguous_base.status_code == 422, ambiguous_base.text
+    assert "base_image_id" in ambiguous_base.json()["detail"]
+
+    stale_overlay = client.post(
+        f"/api/projects/{project_id}/parts/overlay-assignments",
+        json={
+            "overlay_filename": "scan.png",
+            "overlay_image_id": str(uuid.uuid4()),
+            "base_image_id": base["id"],
+        },
+        headers=headers,
+    )
+    assert stale_overlay.status_code == 404, stale_overlay.text
+
+    stale_base = client.post(
+        f"/api/projects/{project_id}/parts/overlay-assignments",
+        json={
+            "overlay_filename": "scan.png",
+            "overlay_image_id": overlays[0]["id"],
+            "base_filename": "scan.png",
+            "base_image_id": str(uuid.uuid4()),
+        },
+        headers=headers,
+    )
+    assert stale_base.status_code == 404, stale_base.text
+
+    unchanged_response = client.get(
+        f"/api/projects/{project_id}/parts",
+        headers=headers,
+    )
+    assert unchanged_response.status_code == 200, unchanged_response.text
+    assert unchanged_response.json()[0]["metadata"] == before_metadata
+
+    exact_response = client.post(
+        f"/api/projects/{project_id}/parts/overlay-assignments",
+        json={
+            "overlay_filename": "stale-client-name.png",
+            "overlay_image_id": overlays[0]["id"],
+            "base_image_id": base["id"],
+        },
+        headers=headers,
+    )
+    assert exact_response.status_code == 200, exact_response.text
+    assert exact_response.json()["overlay_filename"] == "scan.png"
+    assert exact_response.json()["base_filename"] == "scan.png"
+    assert exact_response.json()["to_part_id"] == part_id
+
+    assigned_response = client.get(
+        f"/api/projects/{project_id}/parts",
+        headers=headers,
+    )
+    assert assigned_response.status_code == 200, assigned_response.text
+    source_images = assigned_response.json()[0]["metadata"]["source_images"]
+    assert {record["image_id"] for record in source_images} == {
+        base["id"],
+        overlays[0]["id"],
+    }
+    overlay_record = next(
+        record
+        for record in source_images
+        if record["image_id"] == overlays[0]["id"]
+    )
+    assert overlay_record["overlay_base_image_id"] == base["id"]
+
+
+def test_overlay_assignment_keeps_existing_overlay_when_base_is_not_assigned(client):
+    project_id, headers = _create_project_for_part_image_tests(
+        client,
+        "Unassigned overlay base preserves source",
+    )
+    current_base = _upload_part_test_image(
+        client,
+        project_id,
+        headers,
+        "current-base.png",
+        {"side": "front", "modality": "visual", "overlay": False},
+    )
+    unassigned_base = _upload_part_test_image(
+        client,
+        project_id,
+        headers,
+        "unassigned-base.png",
+        {"side": "back", "modality": "visual", "overlay": False},
+    )
+    overlay = _upload_part_test_image(
+        client,
+        project_id,
+        headers,
+        "assigned-overlay.png",
+        {"modality": "mask", "overlay": True},
+    )
+    part_response = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={"serial_number": "OVERLAY-SOURCE-PRESERVED"},
+        headers=headers,
+    )
+    assert part_response.status_code == 201, part_response.text
+    part_id = part_response.json()["id"]
+
+    base_assignment = client.post(
+        f"/api/projects/{project_id}/parts/image-assignments",
+        json={
+            "filename": current_base["filename"],
+            "image_id": current_base["id"],
+            "to_part_id": part_id,
+        },
+        headers=headers,
+    )
+    assert base_assignment.status_code == 200, base_assignment.text
+    overlay_assignment = client.post(
+        f"/api/projects/{project_id}/parts/overlay-assignments",
+        json={
+            "overlay_filename": overlay["filename"],
+            "overlay_image_id": overlay["id"],
+            "base_filename": current_base["filename"],
+            "base_image_id": current_base["id"],
+        },
+        headers=headers,
+    )
+    assert overlay_assignment.status_code == 200, overlay_assignment.text
+    before_response = client.get(
+        f"/api/projects/{project_id}/parts",
+        headers=headers,
+    )
+    assert before_response.status_code == 200, before_response.text
+    before_metadata = before_response.json()[0]["metadata"]
+
+    invalid_target = client.post(
+        f"/api/projects/{project_id}/parts/overlay-assignments",
+        json={
+            "overlay_filename": overlay["filename"],
+            "overlay_image_id": overlay["id"],
+            "base_filename": unassigned_base["filename"],
+            "base_image_id": unassigned_base["id"],
+        },
+        headers=headers,
+    )
+    assert invalid_target.status_code == 404, invalid_target.text
+    assert "not assigned" in invalid_target.json()["detail"]
+
+    after_response = client.get(
+        f"/api/projects/{project_id}/parts",
+        headers=headers,
+    )
+    assert after_response.status_code == 200, after_response.text
+    assert after_response.json()[0]["metadata"] == before_metadata
+
+
+def test_source_image_patch_rejects_ambiguous_filename_and_prefers_exact_id(client):
+    project_id, headers = _create_project_for_part_image_tests(
+        client,
+        "Duplicate filename source patch",
+    )
+    first_id = str(uuid.uuid4())
+    second_id = str(uuid.uuid4())
+    analysis_id = str(uuid.uuid4())
+    original_metadata = {
+        "sentinel": {"preserve": True},
+        "source_images": [
+            {
+                "filename": "repeat.png",
+                "image_id": first_id,
+                "side": "front",
+                "modality": "visual",
+                "overlay": "false",
+                "hidden": False,
+            },
+            {
+                "filename": "repeat.png",
+                "image_id": second_id,
+                "side": "front",
+                "modality": "mask",
+                "overlay": "true",
+                "hidden": False,
+            },
+        ],
+        "analysis_outputs": [
+            {
+                "filename": "repeat.png",
+                "image_id": analysis_id,
+                "analysis_output": True,
+                "overlay": True,
+                "hidden": False,
+            }
+        ],
+    }
+    part_response = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={
+            "serial_number": "DUPLICATE-SOURCE-PATCH",
+            "metadata": original_metadata,
+        },
+        headers=headers,
+    )
+    assert part_response.status_code == 201, part_response.text
+    part_id = part_response.json()["id"]
+
+    ambiguous_response = client.patch(
+        f"/api/projects/{project_id}/parts/{part_id}/source-images/repeat.png",
+        json={"hidden": True},
+        headers=headers,
+    )
+    assert ambiguous_response.status_code == 422, ambiguous_response.text
+    assert "exact image_id" in ambiguous_response.json()["detail"]
+    unchanged_response = client.get(
+        f"/api/projects/{project_id}/parts",
+        headers=headers,
+    )
+    assert unchanged_response.status_code == 200, unchanged_response.text
+    assert unchanged_response.json()[0]["metadata"] == original_metadata
+
+    exact_response = client.patch(
+        f"/api/projects/{project_id}/parts/{part_id}/source-images/{second_id}",
+        json={"hidden": True},
+        headers=headers,
+    )
+    assert exact_response.status_code == 200, exact_response.text
+    exact_metadata = exact_response.json()["metadata"]
+    source_by_id = {
+        record["image_id"]: record
+        for record in exact_metadata["source_images"]
+    }
+    assert source_by_id[first_id]["hidden"] is False
+    assert source_by_id[first_id]["overlay"] is False
+    assert source_by_id[second_id]["hidden"] is True
+    assert source_by_id[second_id]["overlay"] is True
+    assert exact_metadata["analysis_outputs"][0]["hidden"] is False
+    assert exact_metadata["sentinel"] == original_metadata["sentinel"]
+
+
+def test_source_image_patch_does_not_fallback_from_missing_uuid_to_filename(client):
+    project_id, headers = _create_project_for_part_image_tests(
+        client,
+        "UUID-shaped source filename collision",
+    )
+    missing_image_id = str(uuid.uuid4())
+    actual_image_id = str(uuid.uuid4())
+    original_metadata = {
+        "sentinel": {"preserve": True},
+        "source_images": [
+            {
+                "filename": missing_image_id,
+                "image_id": actual_image_id,
+                "side": "front",
+                "modality": "visual",
+                "overlay": "false",
+                "hidden": False,
+            },
+        ],
+    }
+    part_response = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={
+            "serial_number": "UUID-SOURCE-FILENAME-COLLISION",
+            "metadata": original_metadata,
+        },
+        headers=headers,
+    )
+    assert part_response.status_code == 201, part_response.text
+    part_id = part_response.json()["id"]
+
+    missing_id_response = client.patch(
+        (
+            f"/api/projects/{project_id}/parts/{part_id}"
+            f"/source-images/{missing_image_id}"
+        ),
+        json={"hidden": True},
+        headers=headers,
+    )
+    assert missing_id_response.status_code == 404, missing_id_response.text
+
+    unchanged_response = client.get(
+        f"/api/projects/{project_id}/parts",
+        headers=headers,
+    )
+    assert unchanged_response.status_code == 200, unchanged_response.text
+    assert unchanged_response.json()[0]["metadata"] == original_metadata
+
+    exact_response = client.patch(
+        (
+            f"/api/projects/{project_id}/parts/{part_id}"
+            f"/source-images/{actual_image_id}"
+        ),
+        json={"hidden": True},
+        headers=headers,
+    )
+    assert exact_response.status_code == 200, exact_response.text
+    assert exact_response.json()["metadata"]["source_images"][0]["hidden"] is True
 
 
 def test_duplicate_filename_assignment_and_overlay_use_image_ids(client):

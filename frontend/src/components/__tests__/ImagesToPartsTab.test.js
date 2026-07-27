@@ -1,6 +1,6 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import ImagesToPartsTab from '../ImagesToPartsTab';
+import ImagesToPartsTab, { buildBuckets } from '../ImagesToPartsTab';
 import { shouldApplyDisplayWindowToVolumeCache } from '../InspectionWorkbenchPanel';
 
 describe('ImagesToPartsTab', () => {
@@ -382,7 +382,7 @@ describe('ImagesToPartsTab', () => {
     );
 
     expect(screen.getByRole('button', { name: 'scan.npy' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'scan (duplicate).npy' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'scan (1).npy' })).toBeInTheDocument();
 
     fireEvent.dragStart(screen.getByRole('button', { name: 'scan.npy' }));
     fireEvent.drop(screen.getByTestId('images-to-parts-target-part-1'));
@@ -395,8 +395,65 @@ describe('ImagesToPartsTab', () => {
       });
     });
 
-    await waitFor(() => expect(screen.getByTestId('images-to-parts-unassigned-target')).toHaveTextContent('scan (duplicate).npy'));
+    await waitFor(() => expect(screen.getByTestId('images-to-parts-unassigned-target')).toHaveTextContent('scan (1).npy'));
     await waitFor(() => expect(screen.getByTestId('images-to-parts-unassigned-target')).not.toHaveTextContent('scan.npy'));
+  });
+
+  test('claims exact-name files only by UUID and leaves same-name twins unassigned', () => {
+    const buckets = buildBuckets({
+      parts: [{
+        id: 'part-1',
+        display_name: 'Part 1',
+        metadata: { source_images: [{ image_id: 'scan-a', filename: 'scan.png' }] },
+      }],
+      images: [
+        { id: 'scan-a', filename: 'scan.png', created_at: '2026-01-01T00:00:00Z' },
+        { id: 'scan-b', filename: 'scan.png', created_at: '2026-01-02T00:00:00Z' },
+      ],
+    });
+
+    expect(buckets.partBuckets[0].images.map((image) => image.id)).toEqual(['scan-a']);
+    expect(buckets.unassigned.map((image) => [image.id, image.displayName])).toEqual([
+      ['scan-b', 'scan (1).png'],
+    ]);
+  });
+
+  test('keeps ambiguous legacy and stale explicit assignments visible as unassigned', () => {
+    const ambiguous = buildBuckets({
+      parts: [{
+        id: 'part-legacy',
+        metadata: { source_images: [{ id: 'unrelated-record-id', filename: 'scan.png' }] },
+      }],
+      images: [
+        { id: 'scan-a', filename: 'scan.png', created_at: '2026-01-01T00:00:00Z' },
+        { id: 'scan-b', filename: 'scan.png', created_at: '2026-01-02T00:00:00Z' },
+      ],
+    });
+    expect(ambiguous.partBuckets[0].images).toEqual([]);
+    expect(ambiguous.unassigned.map((image) => image.id)).toEqual(['scan-a', 'scan-b']);
+
+    const stale = buildBuckets({
+      parts: [{
+        id: 'part-stale',
+        metadata: { source_images: [{ image_id: 'missing-id', filename: 'unique.png' }] },
+      }],
+      images: [{ id: 'active-id', filename: 'unique.png' }],
+    });
+    expect(stale.partBuckets[0].images).toEqual([]);
+    expect(stale.unassigned.map((image) => image.id)).toEqual(['active-id']);
+  });
+
+  test('ignores unrelated source record ids when resolving a unique legacy filename', () => {
+    const buckets = buildBuckets({
+      parts: [{
+        id: 'part-legacy',
+        metadata: { source_images: [{ id: 'source-row-id', filename: 'unique.png' }] },
+      }],
+      images: [{ id: 'image-uuid', filename: 'unique.png' }],
+    });
+
+    expect(buckets.partBuckets[0].images.map((image) => image.id)).toEqual(['image-uuid']);
+    expect(buckets.unassigned).toEqual([]);
   });
 
   test('automatically creates parts from selected filename segments and assigns matching images', async () => {

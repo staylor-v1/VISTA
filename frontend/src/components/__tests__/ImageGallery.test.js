@@ -139,6 +139,82 @@ describe('ImageGallery', () => {
     });
   });
 
+  describe('Duplicate filename presentation', () => {
+    const duplicateImages = [
+      {
+        id: 'duplicate-first',
+        filename: 'scan.png',
+        size_bytes: 100,
+        created_at: '2023-01-01T00:00:00Z',
+        deleted_at: null,
+        metadata: { visibility: 'hidden' },
+      },
+      {
+        id: 'duplicate-second',
+        filename: 'scan.png',
+        size_bytes: 200,
+        created_at: '2023-01-02T00:00:00Z',
+        deleted_at: null,
+        metadata: { visibility: 'shown' },
+      },
+    ];
+
+    test('shows every exact-name image with a distinct accessible grid label and UUID action', () => {
+      renderImageGallery({ images: duplicateImages });
+
+      expect(screen.getByAltText('scan.png')).toBeInTheDocument();
+      expect(screen.getByAltText('scan (1).png')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'View scan.png' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'View scan (1).png' })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByAltText('scan (1).png').closest('.gallery-item-image'));
+      expect(mockNavigate).toHaveBeenCalledWith(
+        expect.stringContaining('/view/duplicate-second?project=test-project-id'),
+      );
+    });
+
+    test('assigns aliases from the complete collection before metadata filtering', async () => {
+      renderImageGallery({ images: duplicateImages });
+
+      fireEvent.change(screen.getByDisplayValue('Filename'), {
+        target: { value: 'visibility' },
+      });
+      fireEvent.change(screen.getByPlaceholderText('Search by visibility...'), {
+        target: { value: 'shown' },
+      });
+
+      await waitFor(() => {
+        expect(screen.queryByAltText('scan.png')).not.toBeInTheDocument();
+        expect(screen.getByAltText('scan (1).png')).toBeInTheDocument();
+      });
+    });
+
+    test('keeps deleted duplicate rows in the alias set', () => {
+      renderImageGallery({
+        images: [
+          {
+            ...duplicateImages[0],
+            deleted_at: '2023-02-01T00:00:00Z',
+            storage_deleted: false,
+          },
+          duplicateImages[1],
+        ],
+      });
+
+      expect(screen.getByAltText('scan.png')).toBeInTheDocument();
+      expect(screen.getByAltText('scan (1).png')).toBeInTheDocument();
+      expect(screen.getByText('Deleted')).toBeInTheDocument();
+    });
+
+    test('uses the same distinct display labels in accessible list rows', () => {
+      renderImageGallery({ images: duplicateImages });
+      fireEvent.click(screen.getByTitle('List view'));
+
+      expect(screen.getByRole('button', { name: 'scan.png' })).toHaveTextContent('scan.png');
+      expect(screen.getByRole('button', { name: 'scan (1).png' })).toHaveTextContent('scan (1).png');
+    });
+  });
+
   describe('Deleted Images', () => {
     test('renders deleted images with placeholder SVG', () => {
       renderImageGallery({ images: [mockDeletedImage] });

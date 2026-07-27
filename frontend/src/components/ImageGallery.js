@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import GalleryListView from './GalleryListView';
 import GalleryGridView from './GalleryGridView';
@@ -6,6 +6,7 @@ import GalleryDebugPanel from './GalleryDebugPanel';
 import BulkDeleteModal from './BulkDeleteModal';
 import BulkMetadataModal from './BulkMetadataModal';
 import { getGalleryStateFromUrlOrStorage, saveGalleryState, filterBySearch, filterByReviewStatus, sortImages, writeGalleryStateToSearchParams } from '../utils/galleryState';
+import { assignDuplicateFilenameAliases } from '../utils/imageIdentity';
 import { isUserMetadataKey } from '../utils/metadataKeys';
 
 function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, refreshProjectImages }) {
@@ -60,10 +61,14 @@ function ImageGallery({ projectId, galleryKey, images, loading, onImageUpdated, 
   }, [stateKey, viewMode, thumbnailSize, sortBy, sortOrder, searchField, searchValue, reviewFilter]);
 
   const imagesPerPage = viewMode === 'list' ? 200 : 60;
+  const displayImages = useMemo(
+    () => assignDuplicateFilenameAliases(images),
+    [images],
+  );
 
   const filteredImages = sortImages(
     filterByReviewStatus(
-      filterBySearch(images, searchField, searchValue),
+      filterBySearch(displayImages, searchField, searchValue),
       reviewFilter,
       reviewStatuses
     ),

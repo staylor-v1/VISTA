@@ -137,6 +137,41 @@ def test_upload_image_and_list(client):
     assert len(items) == 1
 
 
+def test_three_same_filename_uploads_keep_distinct_catalog_rows_and_storage_keys(client):
+    pid = _create_project(client, name="Three same-name images")
+
+    uploads = []
+    for color in ((255, 0, 0), (0, 255, 0), (0, 0, 255)):
+        response = client.post(
+            f"/api/projects/{pid}/images",
+            files={"file": ("capture.png", _make_png_bytes(color=color), "image/png")},
+        )
+        assert response.status_code == 201, response.text
+        uploads.append(response.json())
+
+    upload_ids = {upload["id"] for upload in uploads}
+    storage_keys = {upload["object_storage_key"] for upload in uploads}
+    assert len(upload_ids) == 3
+    assert len(storage_keys) == 3
+    assert {
+        upload["object_storage_key"]
+        for upload in uploads
+    } == {
+        f"{pid}/{upload['id']}/capture.png"
+        for upload in uploads
+    }
+
+    listed_response = client.get(f"/api/projects/{pid}/images")
+    assert listed_response.status_code == 200, listed_response.text
+    same_name_rows = [
+        image
+        for image in listed_response.json()
+        if image["filename"] == "capture.png"
+    ]
+    assert {image["id"] for image in same_name_rows} == upload_ids
+    assert {image["object_storage_key"] for image in same_name_rows} == storage_keys
+
+
 @pytest.mark.parametrize(
     "filename,content_type,pil_format",
     [
@@ -494,6 +529,61 @@ def test_pt3_upload_numpy_volume_autoassigns_part_named_for_file(client):
             },
         }
     ]
+
+
+def test_pt3_same_filename_volume_uploads_retain_both_image_ids(client):
+    project = client.post(
+        "/api/projects/",
+        json={
+            "name": "PT3 duplicate volume names",
+            "description": None,
+            "meta_group_id": "g",
+            "project_type": "PT3",
+        },
+    )
+    assert project.status_code == 201, project.text
+    pid = project.json()["id"]
+
+    uploads = []
+    for fill_value in (1, 2):
+        payload = io.BytesIO()
+        np.save(payload, np.full((2, 3, 4), fill_value, dtype=np.uint16))
+        payload.seek(0)
+        response = client.post(
+            f"/api/projects/{pid}/images",
+            files={
+                "file": (
+                    "volume.npy",
+                    payload,
+                    "application/octet-stream",
+                )
+            },
+            data={"metadata": json.dumps({"overlay": "false"})},
+        )
+        assert response.status_code == 201, response.text
+        uploads.append(response.json())
+
+    upload_ids = [upload["id"] for upload in uploads]
+    assert len(set(upload_ids)) == 2
+
+    parts_response = client.get(f"/api/projects/{pid}/parts")
+    assert parts_response.status_code == 200, parts_response.text
+    assert len(parts_response.json()) == 1
+    source_images = parts_response.json()[0]["metadata"]["source_images"]
+    assert [record["image_id"] for record in source_images] == upload_ids
+    assert [record["filename"] for record in source_images] == [
+        "volume.npy",
+        "volume.npy",
+    ]
+    assert [record["overlay"] for record in source_images] == [False, False]
+
+    listed_response = client.get(f"/api/projects/{pid}/images")
+    assert listed_response.status_code == 200, listed_response.text
+    assert {
+        image["id"]
+        for image in listed_response.json()
+        if image["filename"] == "volume.npy"
+    } == set(upload_ids)
 
 
 def test_pt3_upload_multipage_tiff_autoassigns_part_named_for_file(client):

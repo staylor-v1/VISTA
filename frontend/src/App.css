@@ -8673,6 +8673,147 @@ ul li:hover {
   margin-bottom: 0;
 }
 
+.project-configuration-panel .project-calibration-card {
+  position: relative;
+  overflow: hidden;
+  border-color: #94a3b8;
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      rgba(15, 23, 42, 0.018) 0,
+      rgba(15, 23, 42, 0.018) 5px,
+      transparent 5px,
+      transparent 10px
+    ),
+    #fff;
+  box-shadow: inset 4px 0 0 #0f766e;
+}
+
+.project-configuration-panel .project-calibration-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.project-configuration-panel .project-calibration-heading h3 {
+  margin: 2px 0 0;
+}
+
+.project-configuration-panel .project-calibration-heading span {
+  color: #0f766e;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.project-configuration-panel .project-calibration-heading > strong {
+  padding: 4px 7px;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.06em;
+}
+
+.project-configuration-panel .project-calibration-heading > strong.is-set {
+  border-color: #5eead4;
+  background: #ccfbf1;
+  color: #115e59;
+}
+
+.project-configuration-panel .project-calibration-controls {
+  display: grid;
+  grid-template-columns: minmax(145px, 0.72fr) minmax(180px, 1fr);
+  gap: 6px 12px;
+  align-items: center;
+  margin-top: 14px;
+}
+
+.project-configuration-panel .project-calibration-controls > label {
+  color: #334155;
+  font-weight: 700;
+}
+
+.project-configuration-panel .project-calibration-controls select,
+.project-configuration-panel .project-calibration-scale-field input {
+  width: 100%;
+  min-height: 36px;
+  box-sizing: border-box;
+  padding: 7px 9px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #0f172a;
+  font-size: 0.84rem;
+}
+
+.project-configuration-panel .project-calibration-controls select:focus,
+.project-configuration-panel .project-calibration-scale-field input:focus {
+  outline: 2px solid rgba(13, 148, 136, 0.22);
+  outline-offset: 1px;
+  border-color: #0f766e;
+}
+
+.project-configuration-panel .project-calibration-scale-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+}
+
+.project-configuration-panel .project-calibration-scale-field input {
+  min-width: 0;
+  border-radius: 4px 0 0 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.project-configuration-panel .project-calibration-scale-field > span {
+  display: grid;
+  place-items: center;
+  min-width: 58px;
+  padding: 0 8px;
+  border: 1px solid #cbd5e1;
+  border-left: 0;
+  border-radius: 0 4px 4px 0;
+  background: #e2e8f0;
+  color: #334155;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.project-configuration-panel .project-calibration-card > small {
+  display: block;
+  margin-top: 8px;
+  color: #64748b;
+  font-size: 0.72rem;
+}
+
+.project-configuration-panel .project-calibration-error {
+  margin-top: 7px;
+  color: #b91c1c;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.project-configuration-panel .project-calibration-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.project-configuration-panel .project-calibration-footer output {
+  color: #475569;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.72rem;
+}
+
 .project-configuration-panel .pt3-guide-configuration-card {
   position: relative;
   overflow: hidden;
@@ -8825,9 +8966,24 @@ ul li:hover {
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.10);
 }
 
+@media (min-width: 761px) {
+  .project-configuration-panel .configuration-action-bar--calibration-safe {
+    position: static;
+  }
+}
+
 @media (max-width: 760px) {
   .configuration-sections-grid {
     grid-template-columns: 1fr;
+  }
+
+  .project-configuration-panel .project-calibration-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .project-configuration-panel .project-calibration-footer {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .project-configuration-panel .pt3-guide-card-body {

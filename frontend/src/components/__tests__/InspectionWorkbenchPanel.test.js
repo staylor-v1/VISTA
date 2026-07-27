@@ -949,7 +949,18 @@ function mockWorkbenchFetch({
             },
           }))
           : [];
-        return [...viewRecords, ...sourceRecords];
+        const analysisRecords = Array.isArray(part?.metadata?.analysis_outputs)
+          ? part.metadata.analysis_outputs.map((record, index) => ({
+            id: record.image_id || `${part.id}-analysis-${index + 1}`,
+            filename: record.filename,
+            metadata: {
+              part_id: part.id,
+              serial_number: part.serial_number,
+              ...record,
+            },
+          }))
+          : [];
+        return [...viewRecords, ...sourceRecords, ...analysisRecords];
       });
       const allImages = [...imageRecords, ...uploadedImages];
       const parsedUrl = new URL(url, 'http://vista.test');
@@ -1111,7 +1122,8 @@ describe('InspectionWorkbenchPanel', () => {
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
 
     const layerControls = await screen.findByLabelText('Image Order Part layer toggles');
-    fireEvent.click(within(layerControls).getByRole('button', { name: 'OVERLAY' }));
+    expect(within(layerControls).getByRole('button', { name: 'OVERLAY' }))
+      .toHaveAttribute('aria-pressed', 'true');
     const deleteOverlayButton = await screen.findByRole('button', {
       name: 'Delete overlay Porosity overlay',
     });
@@ -1371,6 +1383,10 @@ describe('InspectionWorkbenchPanel', () => {
         ],
       },
     });
+    scenario.projectImages.push(
+      { id: 'second-front-id', filename: 'second-front.png', metadata: {} },
+      { id: 'second-back-id', filename: 'second-back.png', metadata: {} },
+    );
     mockWorkbenchFetch(scenario);
     const defaultFetch = global.fetch;
     let resolveSave;
@@ -1574,6 +1590,60 @@ describe('InspectionWorkbenchPanel', () => {
 
     expect(within(arranger).getAllByRole('listitem')).toHaveLength(2);
     expect(within(arranger).queryByText('FRONT')).not.toBeInTheDocument();
+  });
+
+  test('reserves a deleted UUID before an active image with that UUID as its filename', async () => {
+    const collidingDeletedId = '8bd25f48-8d17-4b90-a534-e53258dca37f';
+    const scenario = makeImageOrderScenario();
+    scenario.parts[0].metadata = {
+      configured_views: ['front', 'back', 'side'],
+      modalities: ['visual'],
+      view_images: {
+        front: {
+          image_id: collidingDeletedId,
+          filename: 'deleted-original.png',
+        },
+      },
+      source_images: [
+        {
+          filename: collidingDeletedId,
+          image_id: 'active-filename-collision-id',
+          side: 'back',
+          modality: 'visual',
+          delete_candidate: 'false',
+        },
+        {
+          filename: 'alive-side.png',
+          image_id: 'alive-side-id',
+          side: 'side',
+          modality: 'visual',
+        },
+      ],
+    };
+    scenario.projectImages = [
+      {
+        id: collidingDeletedId,
+        filename: 'deleted-original.png',
+        deleted_at: '2026-07-25T12:00:00Z',
+        metadata: {},
+      },
+      {
+        id: 'active-filename-collision-id',
+        filename: collidingDeletedId,
+        metadata: {},
+      },
+      { id: 'alive-side-id', filename: 'alive-side.png', metadata: {} },
+    ];
+    mockWorkbenchFetch(scenario);
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Arrange image order' }));
+    const arranger = screen.getByRole('region', { name: 'Arrange image display order' });
+
+    expect(within(arranger).getAllByRole('listitem')).toHaveLength(2);
+    expect(within(arranger).queryByText('FRONT')).not.toBeInTheDocument();
+    expect(within(arranger).getByText('BACK').closest('li'))
+      .toHaveAttribute('data-image-order-key', 'active-filename-collision-id');
   });
 
   test('maps UI slice indices into the canonical cache dimensions used for editing', () => {
@@ -3770,12 +3840,9 @@ describe('InspectionWorkbenchPanel', () => {
     const layerControls = screen.getByLabelText('Analyze Output Part layer toggles');
     expect(within(layerControls).getByRole('button', { name: 'SOURCE' })).toHaveAttribute('aria-pressed', 'true');
     const analysisOverlayToggle = within(layerControls).getByRole('button', { name: 'OVERLAY' });
-    expect(analysisOverlayToggle).toHaveAttribute('aria-pressed', 'false');
-    expect(screen.queryByTestId('inspection-overlay-composite')).not.toBeInTheDocument();
-    fireEvent.click(analysisOverlayToggle);
+    expect(analysisOverlayToggle).toHaveAttribute('aria-pressed', 'true');
     const restoredComposite = await screen.findByTestId('inspection-overlay-composite');
     expect(restoredComposite).toBeInTheDocument();
-    expect(analysisOverlayToggle).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByLabelText('Inspection tile columns')).toHaveAttribute('max', '1');
     expect(viewBoard.style.getPropertyValue('--inspection-tile-columns')).toBe('1');
     fireEvent.change(screen.getByLabelText('Inspection tile columns'), { target: { value: '1' } });
@@ -3857,11 +3924,9 @@ describe('InspectionWorkbenchPanel', () => {
 
     await waitFor(() => expect(screen.getAllByText('Black Hat Overlay Part').length).toBeGreaterThan(0));
     const viewBoard = document.querySelector('.view-board');
-    expect(within(viewBoard).queryByTestId('inspection-overlay-composite')).not.toBeInTheDocument();
     const blackHatLayerControls = screen.getByLabelText('Black Hat Overlay Part layer toggles');
     const blackHatOverlayToggle = within(blackHatLayerControls).getByRole('button', { name: 'OVERLAY' });
-    expect(blackHatOverlayToggle).toHaveAttribute('aria-pressed', 'false');
-    fireEvent.click(blackHatOverlayToggle);
+    expect(blackHatOverlayToggle).toHaveAttribute('aria-pressed', 'true');
     await waitFor(() => expect(within(viewBoard).getAllByTestId('inspection-overlay-composite')).toHaveLength(1));
     expect(within(viewBoard).queryByAltText('front view')).not.toBeInTheDocument();
     expect(within(viewBoard).getAllByAltText('front source')).toHaveLength(1);
@@ -4117,6 +4182,63 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByRole('button', { name: 'Reject' })).toBeDisabled();
 
     fireEvent.keyDown(document, { key: 'q' });
+    const forbiddenRequests = global.fetch.mock.calls.filter(([, options = {}]) => (
+      ['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())
+    ));
+    expect(forbiddenRequests).toEqual([]);
+  });
+
+  test('read-only overlay visibility uses an explicit image ID without matching another filename', async () => {
+    const targetOverlay = {
+      filename: 'target-overlay.npy',
+      image_id: 'overlay-explicit-id',
+      label: 'Target overlay',
+      modality: 'segmentation',
+      overlay: true,
+      hidden: false,
+    };
+    const filenameCollisionOverlay = {
+      filename: 'overlay-explicit-id',
+      image_id: 'different-overlay-id',
+      label: 'Filename collision overlay',
+      modality: 'segmentation',
+      overlay: true,
+      hidden: false,
+    };
+    const baseSourceImages = scenarioByUser[2].parts[0].metadata.source_images;
+    mockWorkbenchFetch(makePt3ScenarioWithMetadata({
+      source_images: [
+        ...baseSourceImages,
+        targetOverlay,
+        filenameCollisionOverlay,
+      ],
+    }));
+    render(
+      <InspectionWorkbenchPanel
+        projectId="proj-1"
+        projectType="PT3"
+        readOnly
+      />,
+    );
+
+    const annotationList = await screen.findByTestId('annotation-list');
+    await waitFor(() => {
+      expect(within(annotationList).queryByText('Loading annotations…'))
+        .not.toBeInTheDocument();
+    });
+    fireEvent.click(within(annotationList).getByRole(
+      'button',
+      { name: 'Hide external overlay Target overlay' },
+    ));
+
+    expect(await within(annotationList).findByRole(
+      'button',
+      { name: 'Show external overlay Target overlay' },
+    )).toBeInTheDocument();
+    expect(within(annotationList).getByRole(
+      'button',
+      { name: 'Hide external overlay Filename collision overlay' },
+    )).toBeInTheDocument();
     const forbiddenRequests = global.fetch.mock.calls.filter(([, options = {}]) => (
       ['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method || 'GET').toUpperCase())
     ));
@@ -4669,7 +4791,22 @@ describe('InspectionWorkbenchPanel', () => {
         metadata: {
           ...scenarioByUser[0].parts[0].metadata,
           modalities: ['optical'],
-          source_images: [{ filename: 'front-basic.png', image_id: 'part-basic-1-image-1', side: 'front', modality: 'optical', overlay: false }],
+          source_images: [
+            {
+              filename: 'part-basic-1-image-1',
+              image_id: 'filename-collision-image',
+              side: 'collision',
+              modality: 'wrong-collision-modality',
+              overlay: false,
+            },
+            {
+              filename: 'front-basic.png',
+              image_id: 'part-basic-1-image-1',
+              side: 'front',
+              modality: 'optical',
+              overlay: false,
+            },
+          ],
           annotations: [{
             id: 'box-crop-a',
             image_id: 'part-basic-1-image-1',
@@ -4709,7 +4846,11 @@ describe('InspectionWorkbenchPanel', () => {
       expect(uploadedMetadata.crop_bbox).toEqual(expect.objectContaining({ x: 25, y: 40, width: 80, height: 50 }));
       expect(global.fetch).toHaveBeenCalledWith('/api/projects/proj-1/parts/image-assignments', expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ filename: '25_40_child of front-basic.png.png', to_part_id: 'part-basic-1' }),
+        body: JSON.stringify({
+          filename: '25_40_child of front-basic.png.png',
+          image_id: 'uploaded-image-1',
+          to_part_id: 'part-basic-1',
+        }),
       }));
       await waitFor(() => expect(screen.getByAltText('crop view')).toBeInTheDocument());
     } finally {
@@ -4909,7 +5050,6 @@ describe('InspectionWorkbenchPanel', () => {
     });
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
     await waitFor(() => expect(screen.getAllByText('5.00 mm').length).toBeGreaterThan(0));
-    fireEvent.click(screen.getByRole('button', { name: 'OVERLAY' }));
     await waitFor(() => expect(screen.getAllByText('5.00 mm').length).toBeGreaterThan(1));
 
     fireEvent.click(screen.getByTestId('inspection-overlay-composite'));
@@ -5114,7 +5254,7 @@ describe('InspectionWorkbenchPanel', () => {
     });
   });
 
-  test('assigned overlays stay hidden on PT1 part selection until toggled on', async () => {
+  test('assigned overlays are visible by default on PT1 part selection', async () => {
     const views = ['front', 'back'];
     const parts = [1, 2, 3].map((partNumber) => {
       const sourceImages = views.flatMap((view) => {
@@ -5175,18 +5315,12 @@ describe('InspectionWorkbenchPanel', () => {
     expect(screen.getByText('Overlay Part 2')).toBeInTheDocument();
     expect(screen.getByText('Overlay Part 3')).toBeInTheDocument();
 
-    expect(screen.queryByTestId('inspection-overlay-composite')).not.toBeInTheDocument();
-    expect(screen.getAllByAltText('front view')).toHaveLength(1);
-    expect(screen.getAllByAltText('back view')).toHaveLength(1);
-
     expect(screen.queryByLabelText('Image categories')).not.toBeInTheDocument();
     const layerControls = screen.getByLabelText('Overlay Part 1 layer toggles');
     const sourceToggle = within(layerControls).getByRole('button', { name: 'SOURCE' });
     const overlayToggle = within(layerControls).getByRole('button', { name: 'OVERLAY' });
     expect(sourceToggle).toHaveAttribute('aria-pressed', 'true');
-    expect(overlayToggle).toHaveAttribute('aria-pressed', 'false');
-
-    fireEvent.click(overlayToggle);
+    expect(overlayToggle).toHaveAttribute('aria-pressed', 'true');
     await waitFor(() => expect(screen.getAllByTestId('inspection-overlay-composite')).toHaveLength(2));
     expect(screen.getAllByAltText('front source')).toHaveLength(1);
     expect(screen.getAllByAltText('front overlay')).toHaveLength(1);
@@ -5366,14 +5500,14 @@ describe('InspectionWorkbenchPanel', () => {
             modalities: ['visual', 'infrared', 'uv'],
             view_images: { front: 'SN_RED_TEAM_001__front__visual.png' },
             source_images: [
-              { filename: 'SN_RED_TEAM_001__front__visual.png', image_id: 'red-team-visual', side: 'front', modality: 'visual', overlay: false },
-              { filename: 'SN_RED_TEAM_001__front__visual.backup.infrared.png', image_id: 'red-team-infrared', side: 'front', modality: 'infrared', overlay: false },
-              { filename: 'SN_RED_TEAM_001__front__visual.backup.uv.png', image_id: 'red-team-uv', side: 'front', modality: 'uv', overlay: false },
+              { filename: 'SN_RED_TEAM_001__front__visual.png', image_id: 'red-team-visual', side: 'front', modality: 'visual', overlay: 'false' },
+              { filename: 'SN_RED_TEAM_001__front__visual.backup.infrared.png', image_id: 'red-team-infrared', side: 'front', modality: 'infrared', overlay: 'false' },
+              { filename: 'SN_RED_TEAM_001__front__visual.backup.uv.png', image_id: 'red-team-uv', side: 'front', modality: 'uv', overlay: 'false' },
             ],
           },
         },
       ],
-      workspaceState: { inspector: { image_enabled: true, modalities: ['visual', 'infrared', 'uv'], view_name: 'front' } },
+      workspaceState: {},
       hotkeys: { accept_classification: 'a', reject_classification: 'r', toggle_shortcut_help: 'h' },
     });
 
@@ -5384,6 +5518,9 @@ describe('InspectionWorkbenchPanel', () => {
     expect(within(modalityToggles).getByRole('button', { name: 'VISUAL' })).toBeInTheDocument();
     expect(within(modalityToggles).getByRole('button', { name: 'INFRARED' })).toBeInTheDocument();
     expect(within(modalityToggles).getByRole('button', { name: 'UV' })).toBeInTheDocument();
+    expect(within(modalityToggles).getByRole('button', { name: 'VISUAL' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(modalityToggles).getByRole('button', { name: 'INFRARED' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(modalityToggles).getByRole('button', { name: 'UV' })).toHaveAttribute('aria-pressed', 'true');
     await waitFor(() => expect(screen.getAllByAltText('front view')).toHaveLength(3));
   });
 
@@ -5454,6 +5591,70 @@ describe('InspectionWorkbenchPanel', () => {
     expect(back).toHaveLength(1);
     expect(front[0]).toHaveAttribute('src', '/api/images/capture-front-id/content');
     expect(back[0]).toHaveAttribute('src', '/api/images/capture-back-id/content');
+  });
+
+  test('suppresses only an overlay exact base UUID and displays duplicate filename ordinals', async () => {
+    mockWorkbenchFetch({
+      user: 'same-name-overlay-base',
+      batches: [{ id: 'batch-same-name-overlay', name: 'Batch Same Name Overlay' }],
+      parts: [{
+        id: 'part-same-name-overlay',
+        batch_id: 'batch-same-name-overlay',
+        serial_number: 'SN-SAME-NAME-OVERLAY',
+        display_name: 'Same Name Overlay Part',
+        review_state: 'in_review',
+        metadata: {
+          configured_views: ['front', 'back'],
+          modalities: ['visual'],
+          source_images: [
+            {
+              filename: 'capture.png',
+              image_id: 'capture-a',
+              side: 'front',
+              modality: 'visual',
+              overlay: 'false',
+            },
+            {
+              filename: 'capture.png',
+              image_id: 'capture-b',
+              side: 'back',
+              modality: 'visual',
+              overlay: 'false',
+            },
+            {
+              filename: 'capture-mask.png',
+              image_id: 'capture-overlay',
+              side: 'front',
+              modality: 'analyze-overlay',
+              overlay: 'true',
+              analysis_output: 'true',
+              overlay_base_image_id: 'capture-a',
+              overlay_base_filename: 'capture.png',
+            },
+          ],
+        },
+      }],
+      projectImages: [
+        { id: 'capture-a', filename: 'capture.png', created_at: '2026-01-01T00:00:00Z', metadata: { modality: 'visual' } },
+        { id: 'capture-b', filename: 'capture.png', created_at: '2026-01-02T00:00:00Z', metadata: { modality: 'visual' } },
+        { id: 'capture-overlay', filename: 'capture-mask.png', created_at: '2026-01-03T00:00:00Z', metadata: { analysis_output: true } },
+      ],
+      workspaceState: {},
+      hotkeys: { accept_classification: 'a', reject_classification: 'r', toggle_shortcut_help: 'h' },
+    });
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    const composite = await screen.findByTestId('inspection-overlay-composite');
+    expect(within(composite).getByAltText('front source'))
+      .toHaveAttribute('src', '/api/images/capture-a/content');
+    expect(within(composite).getByAltText('front overlay'))
+      .toHaveAttribute('src', '/api/images/capture-overlay/content');
+    expect(screen.getByAltText('back view'))
+      .toHaveAttribute('src', '/api/images/capture-b/content');
+    expect(document.querySelectorAll('.view-board .view-cell')).toHaveLength(2);
+    expect(screen.getByText('capture (1).png')).toBeInTheDocument();
+    expect(screen.getByLabelText('Filename capture (1).png')).toBeInTheDocument();
   });
 
   test.each([

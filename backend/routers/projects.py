@@ -160,6 +160,12 @@ async def update_existing_project(
             detail=f"User '{current_user.email}' does not have access to update project '{project_id}' (group '{db_project.meta_group_id}').",
         )
 
+    if db_project.is_archived:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Archived projects are read-only.",
+        )
+
     updates = project_update.model_dump(exclude_unset=True)
     if "meta_group_id" in updates and not is_user_in_group(current_user.email, updates["meta_group_id"]):
         raise HTTPException(

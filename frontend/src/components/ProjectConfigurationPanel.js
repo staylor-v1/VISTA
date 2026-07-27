@@ -1,4 +1,13 @@
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import React, {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useId,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { PROJECT_PHASE_LABELS, PROJECT_PHASE_SEQUENCE } from '../utils/projectPhases';
 import { UI_SECTION_GROUPS, isUiSectionEnabled, normalizeUiSections } from '../utils/uiSections';
 import { buildErrorWithServiceDiagnostics } from '../utils/serviceDiagnostics';
@@ -8,6 +17,10 @@ import {
   getPt3GuideAppearance,
   normalizePt3GuideSettings,
 } from '../utils/pt3GuideSettings';
+import {
+  MM_PER_INCH,
+  areCalibrationScalesConsistent,
+} from '../utils/calibration';
 import { metadataKeyFromFilenameEntry } from './FilenameMetadataExtractor';
 
 
@@ -150,6 +163,394 @@ function isValidOptionalPt3GuideSettings(value) {
     if (candidate < definition.limits.min || candidate > definition.limits.max) return false;
     return definition.unit !== '%' || Number.isInteger(candidate);
   });
+}
+
+function isValidOptionalProjectCalibration(value) {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== 'object' || Array.isArray(value)) return false;
+  if (
+    !areCalibrationScalesConsistent(value.pixels_per_mm, value.pixels_per_inch)
+    || !['mm', 'inches'].includes(value.unit)
+  ) {
+    return false;
+  }
+  return value.updated_at === undefined
+    || value.updated_at === null
+    || (typeof value.updated_at === 'string' && Number.isFinite(Date.parse(value.updated_at)));
+}
+
+function formatCalibrationScale(value) {
+  if (!Number.isFinite(Number(value)) || Number(value) <= 0) return '';
+  return Number(Number(value).toPrecision(12)).toString();
+}
+
+function getProjectAccessGroup(project) {
+  return typeof project?.meta_group_id === 'string' ? project.meta_group_id : '';
+}
+
+function getValidatedAccessGroupProject(payload, expectedProjectId, expectedAccessGroup) {
+  const hasValidShape = (
+    payload !== null
+    && typeof payload === 'object'
+    && !Array.isArray(payload)
+    && String(payload.id) === String(expectedProjectId)
+    && payload.meta_group_id === expectedAccessGroup
+    && typeof payload.name === 'string'
+    && typeof payload.project_type === 'string'
+    && typeof payload.is_archived === 'boolean'
+  );
+  if (!hasValidShape) {
+    throw new Error('Failed to update Access Group (invalid project response).');
+  }
+  return payload;
+}
+
+function ProjectAccessGroupControl({
+  project,
+  projectId,
+  onProjectUpdated,
+}) {
+  const idPrefix = useId();
+  const initialAccessGroup = getProjectAccessGroup(project);
+  const [draftAccessGroup, setDraftAccessGroup] = useState(initialAccessGroup);
+  const [savedAccessGroup, setSavedAccessGroup] = useState(initialAccessGroup);
+  const [savingAccessGroup, setSavingAccessGroup] = useState(false);
+  const [accessGroupError, setAccessGroupError] = useState('');
+  const [accessGroupStatus, setAccessGroupStatus] = useState('');
+  const requestTokenRef = useRef(0);
+  const savedAccessGroupRef = useRef(initialAccessGroup);
+  const syncedProjectRef = useRef({
+    id: project?.id || projectId || '',
+    accessGroup: initialAccessGroup,
+  });
+
+  useEffect(() => {
+    const nextProjectId = project?.id || projectId || '';
+    const nextAccessGroup = getProjectAccessGroup(project);
+    const previousSync = syncedProjectRef.current;
+    const identityChanged = previousSync.id !== nextProjectId;
+    const acknowledgesLocalSave = !identityChanged
+      && nextAccessGroup === savedAccessGroupRef.current;
+
+    requestTokenRef.current += 1;
+    syncedProjectRef.current = {
+      id: nextProjectId,
+      accessGroup: nextAccessGroup,
+    };
+    savedAccessGroupRef.current = nextAccessGroup;
+    setDraftAccessGroup(nextAccessGroup);
+    setSavedAccessGroup(nextAccessGroup);
+    setSavingAccessGroup(false);
+    setAccessGroupError('');
+    if (!acknowledgesLocalSave) {
+      setAccessGroupStatus('');
+    }
+  }, [project?.id, project?.is_archived, project?.meta_group_id, projectId]);
+
+  const trimmedAccessGroup = draftAccessGroup.trim();
+  const accessGroupUnchanged = trimmedAccessGroup === savedAccessGroup;
+  const readOnly = project?.is_archived === true;
+
+  const updateAccessGroup = async () => {
+    if (!trimmedAccessGroup) {
+      setAccessGroupError('Access Group is required.');
+      setAccessGroupStatus('');
+      return;
+    }
+    if (trimmedAccessGroup.length > 255) {
+      setAccessGroupError('Access Group must be 255 characters or fewer.');
+      setAccessGroupStatus('');
+      return;
+    }
+    if (readOnly || savingAccessGroup || accessGroupUnchanged) return;
+
+    const targetProjectId = project?.id || projectId;
+    if (!targetProjectId) {
+      setAccessGroupError('Project details are unavailable. Reload the project and try again.');
+      setAccessGroupStatus('');
+      return;
+    }
+
+    const requestToken = requestTokenRef.current + 1;
+    requestTokenRef.current = requestToken;
+    setSavingAccessGroup(true);
+    setAccessGroupError('');
+    setAccessGroupStatus('');
+
+    try {
+      const response = await fetch(`/api/projects/${targetProjectId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ meta_group_id: trimmedAccessGroup }),
+      });
+      const payload = await parseJsonSafely(response);
+      if (!response.ok) {
+        const detail = typeof payload?.detail === 'string'
+          ? payload.detail
+          : `Failed to update Access Group (${response.status})`;
+        throw new Error(detail);
+      }
+      if (requestToken !== requestTokenRef.current) return;
+
+      const updatedProject = getValidatedAccessGroupProject(
+        payload,
+        targetProjectId,
+        trimmedAccessGroup,
+      );
+      const nextSavedAccessGroup = updatedProject.meta_group_id;
+      savedAccessGroupRef.current = nextSavedAccessGroup;
+      setSavedAccessGroup(nextSavedAccessGroup);
+      setDraftAccessGroup(nextSavedAccessGroup);
+      setAccessGroupError('');
+      setAccessGroupStatus('Access Group updated.');
+      if (typeof onProjectUpdated === 'function') {
+        onProjectUpdated(updatedProject);
+      }
+    } catch (err) {
+      if (requestToken !== requestTokenRef.current) return;
+      setAccessGroupError(err.message || 'Failed to update Access Group.');
+      setAccessGroupStatus('');
+    } finally {
+      if (requestToken === requestTokenRef.current) {
+        setSavingAccessGroup(false);
+      }
+    }
+  };
+
+  const headingId = `${idPrefix}-project-access-group-heading`;
+  const inputId = `${idPrefix}-project-access-group`;
+  const errorId = `${idPrefix}-project-access-group-error`;
+  const statusId = `${idPrefix}-project-access-group-status`;
+  const warningId = `${idPrefix}-project-access-group-warning`;
+
+  return (
+    <section className="part-detail-panel" aria-labelledby={headingId}>
+      <h3 id={headingId}>Access Group</h3>
+      <p>
+        Set the identity group that can open and manage this project.
+      </p>
+      <div id={warningId} className="alert alert-warning" role="note">
+        <strong>Security boundary:</strong>
+        {' '}
+        changing this value immediately changes project access. You must belong to the destination group.
+      </div>
+      <label htmlFor={inputId}>Access Group</label>
+      <div className="workbench-controls-row">
+        <input
+          id={inputId}
+          className="form-control"
+          type="text"
+          maxLength={255}
+          value={draftAccessGroup}
+          disabled={readOnly || savingAccessGroup}
+          aria-invalid={Boolean(accessGroupError)}
+          aria-describedby={[
+            warningId,
+            accessGroupError ? errorId : '',
+            accessGroupStatus ? statusId : '',
+          ].filter(Boolean).join(' ')}
+          onChange={(event) => {
+            setDraftAccessGroup(event.target.value);
+            setAccessGroupError('');
+            setAccessGroupStatus('');
+          }}
+        />
+        <button
+          className="btn btn-primary"
+          type="button"
+          disabled={readOnly || savingAccessGroup || accessGroupUnchanged}
+          onClick={updateAccessGroup}
+        >
+          {savingAccessGroup ? 'Updating Access Group...' : 'Update Access Group'}
+        </button>
+      </div>
+      {readOnly && <p className="muted">Archived projects are read-only.</p>}
+      {accessGroupError && (
+        <div id={errorId} className="alert alert-error" role="alert">
+          {accessGroupError}
+        </div>
+      )}
+      {accessGroupStatus && (
+        <div id={statusId} className="alert alert-success" role="status">
+          {accessGroupStatus}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ProjectCalibrationControl({
+  calibration,
+  disabled,
+  onChange,
+  onValidityChange,
+}) {
+  const calibrationIsSet = isValidOptionalProjectCalibration(calibration) && calibration != null;
+  const persistedUnit = calibration?.unit === 'inches' ? 'inches' : 'mm';
+  const [unit, setUnit] = useState(persistedUnit);
+  const [scaleTouched, setScaleTouched] = useState(false);
+  const [draftScale, setDraftScale] = useState(() => (
+    calibrationIsSet
+      ? formatCalibrationScale(
+        persistedUnit === 'inches' ? calibration.pixels_per_inch : calibration.pixels_per_mm,
+      )
+      : ''
+  ));
+
+  useEffect(() => {
+    const nextUnit = calibration?.unit === 'inches' ? 'inches' : 'mm';
+    setUnit(nextUnit);
+    setDraftScale(calibration && isValidOptionalProjectCalibration(calibration)
+      ? formatCalibrationScale(
+        nextUnit === 'inches' ? calibration.pixels_per_inch : calibration.pixels_per_mm,
+      )
+      : '');
+    setScaleTouched(false);
+    onValidityChange(true);
+  }, [
+    calibration,
+    calibration?.pixels_per_inch,
+    calibration?.pixels_per_mm,
+    calibration?.unit,
+    onValidityChange,
+  ]);
+
+  const updateScale = (nextDraft) => {
+    setDraftScale(nextDraft);
+    setScaleTouched(true);
+    const pixelsPerSelectedUnit = Number(nextDraft);
+    const selectedScaleIsValid = nextDraft !== ''
+      && Number.isFinite(pixelsPerSelectedUnit)
+      && pixelsPerSelectedUnit > 0;
+    const pixelsPerMm = unit === 'mm'
+      ? pixelsPerSelectedUnit
+      : pixelsPerSelectedUnit / MM_PER_INCH;
+    const pixelsPerInch = pixelsPerMm * MM_PER_INCH;
+    const nextScaleIsValid = selectedScaleIsValid
+      && areCalibrationScalesConsistent(pixelsPerMm, pixelsPerInch);
+    onValidityChange(nextScaleIsValid);
+    if (!nextScaleIsValid) return;
+    onChange({
+      pixels_per_mm: pixelsPerMm,
+      pixels_per_inch: pixelsPerInch,
+      unit,
+      updated_at: new Date().toISOString(),
+    });
+  };
+
+  const updateUnit = (nextUnit) => {
+    setUnit(nextUnit);
+    setScaleTouched(false);
+    onValidityChange(true);
+    if (!calibrationIsSet) {
+      setDraftScale('');
+      return;
+    }
+    setDraftScale(formatCalibrationScale(
+      nextUnit === 'inches' ? calibration.pixels_per_inch : calibration.pixels_per_mm,
+    ));
+    onChange({
+      ...calibration,
+      unit: nextUnit,
+      updated_at: new Date().toISOString(),
+    });
+  };
+
+  const draftPixelsPerSelectedUnit = Number(draftScale);
+  const draftPixelsPerMm = unit === 'mm'
+    ? draftPixelsPerSelectedUnit
+    : draftPixelsPerSelectedUnit / MM_PER_INCH;
+  const scaleIsInvalid = scaleTouched && (
+    draftScale === ''
+    || !areCalibrationScalesConsistent(
+      draftPixelsPerMm,
+      draftPixelsPerMm * MM_PER_INCH,
+    )
+  );
+  const inputLabel = unit === 'inches' ? 'Pixels per inch' : 'Pixels per millimeter';
+  const scaleDescriptionId = 'project-calibration-scale-description';
+  const validationMessageId = 'project-calibration-scale-error';
+
+  return (
+    <section
+      className="part-detail-panel project-calibration-card"
+      aria-labelledby="project-calibration-heading"
+    >
+      <div className="project-calibration-heading">
+        <div>
+          <span>METROLOGY · PROJECT DEFAULT</span>
+          <h3 id="project-calibration-heading">Project Calibration</h3>
+        </div>
+        <strong className={calibrationIsSet ? 'is-set' : ''}>
+          {calibrationIsSet ? 'CALIBRATED' : 'NOT SET'}
+        </strong>
+      </div>
+      <p>
+        Set the global image scale used when an image has no session, image, or metadata-rule calibration.
+      </p>
+      <div className="project-calibration-controls">
+        <label htmlFor="project-calibration-unit">Calibration unit</label>
+        <select
+          id="project-calibration-unit"
+          aria-label="Project calibration unit"
+          value={unit}
+          disabled={disabled}
+          onChange={(event) => updateUnit(event.target.value)}
+        >
+          <option value="mm">Millimeters (mm)</option>
+          <option value="inches">Inches (in)</option>
+        </select>
+
+        <label htmlFor="project-calibration-scale">{inputLabel}</label>
+        <div className="project-calibration-scale-field">
+          <input
+            id="project-calibration-scale"
+            aria-label={inputLabel}
+            aria-describedby={`${scaleDescriptionId}${scaleIsInvalid ? ` ${validationMessageId}` : ''}`}
+            aria-invalid={scaleIsInvalid}
+            type="number"
+            inputMode="decimal"
+            min="0"
+            step="any"
+            placeholder={unit === 'inches' ? 'e.g. 254' : 'e.g. 10'}
+            value={draftScale}
+            disabled={disabled}
+            onChange={(event) => updateScale(event.target.value)}
+          />
+          <span>px/{unit === 'inches' ? 'in' : 'mm'}</span>
+        </div>
+      </div>
+      <small id={scaleDescriptionId}>
+        Enter a positive scale. VISTA stores the equivalent millimeter and inch values.
+      </small>
+      {scaleIsInvalid && (
+        <div id={validationMessageId} className="project-calibration-error" role="alert">
+          Calibration must be a positive finite number.
+        </div>
+      )}
+      <div className="project-calibration-footer">
+        <output aria-live="polite">
+          {calibrationIsSet
+            ? `1 ${unit === 'inches' ? 'in' : 'mm'} = ${formatCalibrationScale(
+              unit === 'inches' ? calibration.pixels_per_inch : calibration.pixels_per_mm,
+            )} px`
+            : 'Measurements fall back to legacy project metadata when available.'}
+        </output>
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          disabled={disabled || calibration == null}
+          onClick={() => {
+            setScaleTouched(false);
+            onValidityChange(true);
+            onChange(null);
+          }}
+        >
+          Clear Calibration
+        </button>
+      </div>
+    </section>
+  );
 }
 
 function collectUiSectionMatches(groups = UI_SECTION_GROUPS, query = '') {
@@ -386,7 +787,8 @@ function getCloneConfigOrThrow(cloneResponseData) {
     typeof clonedConfig.display_settings.default_colormap === 'string' &&
     typeof clonedConfig.display_settings.anomaly_colormap === 'string' &&
     typeof clonedConfig.display_settings.grayscale_base_image === 'boolean' &&
-    isValidOptionalPt3GuideSettings(clonedConfig.display_settings.pt3_3d_guides);
+    isValidOptionalPt3GuideSettings(clonedConfig.display_settings.pt3_3d_guides) &&
+    isValidOptionalProjectCalibration(clonedConfig.calibration);
 
   if (!hasValidSettingsFields) {
     throw new Error('Failed to copy project configuration (invalid config settings fields)');
@@ -506,6 +908,9 @@ function validateConfiguration(config) {
   }
   if (new Set(hotkeyValues).size !== hotkeyValues.length) {
     errors.push('Hotkeys must be unique across accept, reject, and help actions.');
+  }
+  if (!isValidOptionalProjectCalibration(config.calibration)) {
+    errors.push('Project calibration requires positive finite pixel scales and a valid unit.');
   }
 
   return errors;
@@ -816,6 +1221,7 @@ const CONFIGURATION_SUBTABS = [
 const GENERAL_CONFIGURATION_SECTIONS = [
   'project_configuration.owner_section',
   'project_configuration.user_section',
+  'project_configuration.calibration',
   'project_configuration.process_settings',
   'project_configuration.serial_scheme',
   'project_configuration.project_phase_settings',
@@ -829,10 +1235,12 @@ const getConfigurationSignature = (configuration) => JSON.stringify(configuratio
 
 const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel({
   projectId,
+  project = null,
   projectType,
   currentInterfaceLayout = null,
   isAdminUser = false,
   onConfigurationSaved = null,
+  onProjectUpdated = null,
   onActiveSubtabChange = null,
 }, ref) {
   const [config, setConfig] = useState(EMPTY_CONFIG);
@@ -843,6 +1251,7 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [statusMessage, setStatusMessage] = useState('');
+  const [calibrationInputValid, setCalibrationInputValid] = useState(true);
   const [copyingConfiguration, setCopyingConfiguration] = useState(false);
   const [activeConfigurationSubtab, setActiveConfigurationSubtab] = useState('general');
   const [uiSearchQuery, setUiSearchQuery] = useState('');
@@ -854,6 +1263,13 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
   const lastSavedSignatureRef = useRef(getConfigurationSignature(EMPTY_CONFIG));
   const saveLoopPromiseRef = useRef(null);
   const autosaveRequestedDuringSaveRef = useRef(false);
+  const calibrationInputValidRef = useRef(true);
+  const readOnly = project?.is_archived === true;
+
+  const updateCalibrationInputValidity = useCallback((isValid) => {
+    calibrationInputValidRef.current = isValid;
+    setCalibrationInputValid(isValid);
+  }, []);
 
   useEffect(() => {
     configRef.current = config;
@@ -870,6 +1286,7 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
   }, []);
 
   useEffect(() => {
+    if (readOnly) return undefined;
     const loadCurrentUser = async () => {
       try {
         const resp = await fetch('/api/users/me');
@@ -887,7 +1304,8 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
       } catch (_err) {}
     };
     loadCurrentUser();
-  }, []);
+    return undefined;
+  }, [readOnly]);
   const [savingInterfaceLayoutDefault, setSavingInterfaceLayoutDefault] = useState(false);
   const [savingProjectTypeLayoutDefault, setSavingProjectTypeLayoutDefault] = useState(false);
   const hasCompatibleCopySources = availableProjects.length > 0;
@@ -909,6 +1327,15 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
     () => GENERAL_CONFIGURATION_SECTIONS.filter((sectionKey) => isUiSectionEnabled(config, sectionKey)).length,
     [config],
   );
+  const calibrationSectionVisible = isUiSectionEnabled(
+    config,
+    'project_configuration.calibration',
+  );
+  useEffect(() => {
+    if (!calibrationSectionVisible) {
+      updateCalibrationInputValidity(true);
+    }
+  }, [calibrationSectionVisible, updateCalibrationInputValidity]);
   const isPt3Project = normalizeProjectTypeSuffix(projectType || currentProjectType) === 'PT3';
   const pt3GuideSettings = normalizePt3GuideSettings(
     config.display_settings?.pt3_3d_guides,
@@ -1053,6 +1480,7 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
   );
 
   const persistConfiguration = useCallback(async (configurationToSave, statusLabel = 'Configuration saved.') => {
+    if (readOnly) return false;
     const validationErrors = validateConfiguration(configurationToSave);
     if (validationErrors.length > 0) {
       setError(validationErrors.join(' '));
@@ -1085,9 +1513,15 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
     } finally {
       setSaving(false);
     }
-  }, [onConfigurationSaved, projectId]);
+  }, [onConfigurationSaved, projectId, readOnly]);
 
   const runAutosave = useCallback((statusLabel = 'Configuration autosaved.') => {
+    if (readOnly) return Promise.resolve(true);
+    if (!calibrationInputValidRef.current) {
+      setError('Enter a valid project calibration before saving or leaving Configuration.');
+      setStatusMessage('');
+      return Promise.resolve(false);
+    }
     if (saveLoopPromiseRef.current) {
       autosaveRequestedDuringSaveRef.current = true;
       return saveLoopPromiseRef.current;
@@ -1116,16 +1550,17 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
     });
 
     return saveLoopPromiseRef.current;
-  }, [persistConfiguration]);
+  }, [persistConfiguration, readOnly]);
 
   const hasPendingAutosave = useCallback(() => {
-    if (!loadCompleteRef.current) return false;
+    if (!loadCompleteRef.current || readOnly) return false;
     return Boolean(
       autosaveTimerRef.current ||
       saveLoopPromiseRef.current ||
+      !calibrationInputValidRef.current ||
       getConfigurationSignature(configRef.current) !== lastSavedSignatureRef.current,
     );
-  }, []);
+  }, [readOnly]);
 
   const flushPendingAutosave = useCallback(async (statusLabel = 'Configuration autosaved.') => {
     if (autosaveTimerRef.current) {
@@ -1134,6 +1569,11 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
     }
     if (!hasPendingAutosave()) {
       return true;
+    }
+    if (!calibrationInputValidRef.current) {
+      setError('Enter a valid project calibration before saving or leaving Configuration.');
+      setStatusMessage('');
+      return false;
     }
     return runAutosave(statusLabel);
   }, [hasPendingAutosave, runAutosave]);
@@ -1144,7 +1584,11 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
   }), [flushPendingAutosave, hasPendingAutosave]);
 
   useEffect(() => {
-    if (!loadCompleteRef.current || loading) {
+    if (!loadCompleteRef.current || loading || readOnly) {
+      if (readOnly && autosaveTimerRef.current) {
+        window.clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
       return;
     }
     const latestSignature = getConfigurationSignature(config);
@@ -1159,9 +1603,10 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
       autosaveTimerRef.current = null;
       runAutosave();
     }, AUTOSAVE_DELAY_MS);
-  }, [config, loading, runAutosave]);
+  }, [config, loading, readOnly, runAutosave]);
 
   const saveConfiguration = async () => {
+    if (readOnly || !calibrationInputValid) return;
     if (hasPendingAutosave()) {
       await flushPendingAutosave('Configuration saved.');
       return;
@@ -1377,7 +1822,7 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
 
 
   const copyConfiguration = async () => {
-    if (!copySourceProjectId || copyingConfiguration) return;
+    if (readOnly || !copySourceProjectId || copyingConfiguration) return;
 
     try {
       setCopyingConfiguration(true);
@@ -1484,6 +1929,24 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
               <section className="part-detail-panel" aria-live="polite">
                 <p className="muted">No General configuration sections are enabled.</p>
               </section>
+            )}
+            <ProjectAccessGroupControl
+              project={project}
+              projectId={projectId}
+              onProjectUpdated={onProjectUpdated}
+            />
+            {calibrationSectionVisible && (
+              <ProjectCalibrationControl
+                calibration={config.calibration}
+                disabled={readOnly || saving}
+                onChange={(calibration) => {
+                  setConfig((previous) => ({
+                    ...previous,
+                    calibration,
+                  }));
+                }}
+                onValidityChange={updateCalibrationInputValidity}
+              />
             )}
             {isUiSectionEnabled(config, 'project_configuration.owner_section') && (
           <section className="part-detail-panel" aria-label="Project owner">
@@ -1895,7 +2358,7 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
               <select
                 aria-label="Source project"
                 value={copySourceProjectId}
-                disabled={!hasCompatibleCopySources || copyingConfiguration}
+                disabled={readOnly || !hasCompatibleCopySources || copyingConfiguration}
                 onChange={(event) => {
                   setCopySourceProjectId(event.target.value);
                   setError(null);
@@ -1912,7 +2375,7 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
               <button
                 className="btn btn-secondary"
                 type="button"
-                disabled={!copySourceProjectId || !hasCompatibleCopySources || copyingConfiguration}
+                disabled={readOnly || !copySourceProjectId || !hasCompatibleCopySources || copyingConfiguration}
                 onClick={copyConfiguration}
               >
                 {copyingConfiguration ? 'Copying...' : 'Copy from Project'}
@@ -2324,8 +2787,21 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
             </div>
           )}
 
-          <div className="workbench-controls-row configuration-action-bar">
-            <button className="btn btn-primary" type="button" disabled={saving} onClick={saveConfiguration}>
+          <div
+            className={[
+              'workbench-controls-row',
+              'configuration-action-bar',
+              activeConfigurationSubtab === 'general'
+                ? 'configuration-action-bar--calibration-safe'
+                : '',
+            ].filter(Boolean).join(' ')}
+          >
+            <button
+              className="btn btn-primary"
+              type="button"
+              disabled={readOnly || saving || !calibrationInputValid}
+              onClick={saveConfiguration}
+            >
               {saving ? 'Saving...' : 'Save Configuration'}
             </button>
             <button

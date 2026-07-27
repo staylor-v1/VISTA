@@ -207,6 +207,9 @@ function Project({ currentUserGroups = [] }) {
   const setActiveProjectClasses = useCallback((value) => {
     if (isActiveProject(id)) setClasses(value);
   }, [id, isActiveProject]);
+  const setActiveProjectValue = useCallback((value) => {
+    if (isActiveProject(id) && value?.id === id) setProject(value);
+  }, [id, isActiveProject]);
   const setActiveProjectConfigurationValue = useCallback((value) => {
     if (isActiveProject(id)) setProjectConfiguration(value);
   }, [id, isActiveProject]);
@@ -1263,11 +1266,13 @@ function Project({ currentUserGroups = [] }) {
         <>
           <ProjectConfigurationPanel
             projectId={id}
+            project={project}
             projectType={project?.project_type}
             currentInterfaceLayout={interfaceHierarchy}
             isAdminUser={currentUserGroups.includes('admin') || currentUserGroups.includes('admins')}
             ref={projectConfigurationPanelRef}
             onConfigurationSaved={setActiveProjectConfigurationValue}
+            onProjectUpdated={setActiveProjectValue}
             onActiveSubtabChange={setActiveProjectConfigurationSubtabValue}
           />
           {!project?.is_archived && activeProjectConfigurationSubtab === 'general' && (
