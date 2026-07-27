@@ -23,7 +23,7 @@ export const UI_SECTION_GROUPS = [
           { key: 'project_configuration.project_phase_settings', label: 'Project Phase Settings section' },
           { key: 'project_configuration.available_ui_sections', label: 'Available UI Sections section' },
           { key: 'project_configuration.defect_types', label: 'Defect Types section' },
-          { key: 'project_configuration.view_options', label: 'Part Views section' },
+          { key: 'project_configuration.view_options', label: 'Sides section' },
           { key: 'project_configuration.display_options', label: 'Display Settings section' },
           { key: 'project_configuration.copy_configuration', label: 'Copy Configuration section' },
           { key: 'project_configuration.classes', label: 'Classes management section' },

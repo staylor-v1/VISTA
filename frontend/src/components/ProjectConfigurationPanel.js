@@ -850,10 +850,10 @@ function validateConfiguration(config) {
   const duplicateModalityIds = modalityIds.filter((id, index) => modalityIds.indexOf(id) !== index);
 
   if (modalities.some((modality) => !modality.id || !modality.label)) {
-    errors.push('Each image modality requires both identifier and label.');
+    errors.push('Each modality requires both a filename value and label.');
   }
   if (duplicateModalityIds.length > 0) {
-    errors.push('Image modality identifiers must be unique.');
+    errors.push('Modality filename values must be unique.');
   }
 
   const partViews = (config.part_views || []).map((view) => ({
@@ -865,17 +865,17 @@ function validateConfiguration(config) {
   const duplicatePartViewIds = partViewIds.filter((id, index) => partViewIds.indexOf(id) !== index);
 
   if (partViews.some((view) => !view.id || !view.label)) {
-    errors.push('Each part view requires both identifier and label.');
+    errors.push('Each side requires both a filename value and label.');
   }
   if (duplicatePartViewIds.length > 0) {
-    errors.push('Part view identifiers must be unique.');
+    errors.push('Side filename values must be unique.');
   }
 
   const unknownModalityReference = partViews.some((view) =>
     view.required_modalities.some((requiredModality) => !modalityIds.includes(requiredModality)),
   );
   if (unknownModalityReference) {
-    errors.push('Part views can only require modalities configured in Image Modalities.');
+    errors.push('Stored side modality requirements must reference configured modalities.');
   }
 
   const defectTypes = (config.defect_types || []).map((defectType) => ({
@@ -1226,7 +1226,6 @@ const GENERAL_CONFIGURATION_SECTIONS = [
   'project_configuration.serial_scheme',
   'project_configuration.project_phase_settings',
   'project_configuration.defect_types',
-  'project_configuration.view_options',
   'project_configuration.display_options',
   'project_configuration.copy_configuration',
 ];
@@ -1724,19 +1723,40 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
   };
 
   const updateImageModality = (index, patch) => {
-    setConfig((previous) => ({
-      ...previous,
-      image_modalities: (previous.image_modalities || []).map((modality, modalityIndex) =>
-        modalityIndex === index ? { ...modality, ...patch } : modality,
-      ),
-    }));
+    setConfig((previous) => {
+      const previousId = previous.image_modalities?.[index]?.id;
+      const nextId = patch.id;
+      return {
+        ...previous,
+        image_modalities: (previous.image_modalities || []).map((modality, modalityIndex) =>
+          modalityIndex === index ? { ...modality, ...patch } : modality,
+        ),
+        part_views: nextId !== undefined && normalizeLower(previousId) !== normalizeLower(nextId)
+          ? (previous.part_views || []).map((partView) => ({
+              ...partView,
+              required_modalities: (partView.required_modalities || []).map((requiredModality) =>
+                normalizeLower(requiredModality) === normalizeLower(previousId) ? nextId : requiredModality,
+              ),
+            }))
+          : previous.part_views,
+      };
+    });
   };
 
   const removeImageModality = (index) => {
-    setConfig((previous) => ({
-      ...previous,
-      image_modalities: (previous.image_modalities || []).filter((_, modalityIndex) => modalityIndex !== index),
-    }));
+    setConfig((previous) => {
+      const removedId = previous.image_modalities?.[index]?.id;
+      return {
+        ...previous,
+        image_modalities: (previous.image_modalities || []).filter((_, modalityIndex) => modalityIndex !== index),
+        part_views: (previous.part_views || []).map((partView) => ({
+          ...partView,
+          required_modalities: (partView.required_modalities || []).filter(
+            (requiredModality) => normalizeLower(requiredModality) !== normalizeLower(removedId),
+          ),
+        })),
+      };
+    });
   };
 
   const addPartView = () => {
@@ -1864,7 +1884,7 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
         <div>
           <h2>Project Configuration</h2>
           <p>
-            Configure modalities, part views, defect definitions, process controls, and display options.
+            Configure filename side and modality labels, defect definitions, process controls, and display options.
           </p>
         </div>
       </header>
@@ -1882,12 +1902,12 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
         <>
           <div className="workbench-summary-grid" data-testid="project-configuration-summary">
             <article className="summary-card">
-              <h3>Image Modalities</h3>
-              <p>{config.image_modalities.length} configured</p>
+              <h3>Modalities</h3>
+              <p>{config.image_modalities.length} filename labels configured</p>
             </article>
             <article className="summary-card">
-              <h3>Part Views</h3>
-              <p>{config.part_views.length} configured</p>
+              <h3>Sides</h3>
+              <p>{config.part_views.length} filename labels configured</p>
             </article>
             <article className="summary-card">
               <h3>Defect Types</h3>
@@ -2208,75 +2228,6 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
           </section>
           )}
 
-          {isUiSectionEnabled(config, 'project_configuration.view_options') && (
-          <section className="part-detail-panel" aria-label="Part views">
-            <h3>Part Views</h3>
-            <p>Configure external/internal views and required modalities for each view.</p>
-            <div className="workbench-controls-row">
-              <button className="btn btn-secondary" type="button" onClick={addPartView} disabled={saving}>
-                Add Part View
-              </button>
-            </div>
-            {(config.part_views || []).length === 0 ? (
-              <p>No part views configured yet.</p>
-            ) : (
-              (config.part_views || []).map((partView, index) => (
-                <div className="workbench-controls-row config-entry-grid" key={`part-view-${index}`}>
-                  <label htmlFor={`part-view-label-${index}`}>Label</label>
-                  <input
-                    id={`part-view-label-${index}`}
-                    aria-label={`Part view label ${index + 1}`}
-                    type="text"
-                    value={partView.label || ''}
-                    onChange={(event) => updatePartView(index, { label: event.target.value })}
-                  />
-                  <label htmlFor={`part-view-id-${index}`}>Identifier</label>
-                  <input
-                    id={`part-view-id-${index}`}
-                    aria-label={`Part view id ${index + 1}`}
-                    type="text"
-                    value={partView.id || ''}
-                    onChange={(event) => updatePartView(index, { id: event.target.value })}
-                  />
-                  <label htmlFor={`part-view-required-modalities-${index}`}>Required modalities</label>
-                  <input
-                    id={`part-view-required-modalities-${index}`}
-                    aria-label={`Part view required modalities ${index + 1}`}
-                    type="text"
-                    value={(partView.required_modalities || []).join(', ')}
-                    onChange={(event) =>
-                      updatePartView(index, {
-                        required_modalities: event.target.value
-                          .split(',')
-                          .map((value) => value.trim())
-                          .filter(Boolean),
-                      })
-                    }
-                  />
-                  <label htmlFor={`part-view-source-${index}`}>Source</label>
-                  <select
-                    id={`part-view-source-${index}`}
-                    aria-label={`Part view source ${index + 1}`}
-                    value={partView.source || 'manual'}
-                    onChange={(event) => updatePartView(index, { source: event.target.value })}
-                  >
-                    <option value="manual">manual</option>
-                    <option value="auto">auto</option>
-                  </select>
-                  <button
-                    className="btn btn-secondary"
-                    type="button"
-                    aria-label={`Remove part view ${index + 1}`}
-                    onClick={() => removePartView(index)}
-                    disabled={saving}
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))
-            )}
-          </section>
-          )}
 
           {isUiSectionEnabled(config, 'project_configuration.display_options') && (
           <section className="part-detail-panel" aria-label="Display settings">
@@ -2635,8 +2586,54 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
             </div>
 
 
-            <h4>Image Modalities</h4>
-            <p>Modalities are also filename values, so define their labels and identifiers alongside the filename descriptor they populate.</p>
+            {isUiSectionEnabled(config, 'project_configuration.view_options') && (
+            <section className="filename-value-section" aria-label="Sides">
+            <h4>Sides</h4>
+            <p>Specify the potential side labels that may appear in loaded image filenames.</p>
+            <div className="workbench-controls-row">
+              <button className="btn btn-secondary" type="button" onClick={addPartView} disabled={saving}>
+                Add Side
+              </button>
+            </div>
+            {(config.part_views || []).length === 0 ? (
+              <p>No side labels configured yet.</p>
+            ) : (
+              (config.part_views || []).map((partView, index) => (
+                <div className="workbench-controls-row config-entry-grid" key={`part-view-${index}`}>
+                  <label htmlFor={`part-view-label-${index}`}>Side label</label>
+                  <input
+                    id={`part-view-label-${index}`}
+                    aria-label={`Side label ${index + 1}`}
+                    type="text"
+                    value={partView.label || ''}
+                    onChange={(event) => updatePartView(index, { label: event.target.value })}
+                  />
+                  <label htmlFor={`part-view-id-${index}`}>Filename value</label>
+                  <input
+                    id={`part-view-id-${index}`}
+                    aria-label={`Side filename value ${index + 1}`}
+                    type="text"
+                    value={partView.id || ''}
+                    onChange={(event) => updatePartView(index, { id: event.target.value })}
+                  />
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    aria-label={`Remove side ${index + 1}`}
+                    onClick={() => removePartView(index)}
+                    disabled={saving}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))
+            )}
+            </section>
+            )}
+
+            <section className="filename-value-section" aria-label="Modalities">
+            <h4>Modalities</h4>
+            <p>Specify the potential modality labels that may appear in loaded image filenames.</p>
             <div className="workbench-controls-row">
               <button className="btn btn-secondary" type="button" onClick={addImageModality} disabled={saving}>
                 Add Modality
@@ -2660,48 +2657,27 @@ const ProjectConfigurationPanel = forwardRef(function ProjectConfigurationPanel(
                         Remove
                       </button>
                     </div>
-                    <label htmlFor={`image-modality-label-${index}`}>Label</label>
+                    <label htmlFor={`image-modality-label-${index}`}>Modality label</label>
                     <input
                       id={`image-modality-label-${index}`}
-                      aria-label={`Image modality label ${index + 1}`}
+                      aria-label={`Modality label ${index + 1}`}
                       type="text"
                       value={modality.label || ''}
                       onChange={(event) => updateImageModality(index, { label: event.target.value })}
                     />
-                    <label htmlFor={`image-modality-id-${index}`}>Identifier</label>
+                    <label htmlFor={`image-modality-id-${index}`}>Filename value</label>
                     <input
                       id={`image-modality-id-${index}`}
-                      aria-label={`Image modality id ${index + 1}`}
+                      aria-label={`Modality filename value ${index + 1}`}
                       type="text"
                       value={modality.id || ''}
                       onChange={(event) => updateImageModality(index, { id: event.target.value })}
                     />
-                    <label>
-                      <input
-                        type="checkbox"
-                        aria-label={`Image modality calibration required ${index + 1}`}
-                        checked={Boolean(modality.calibration_required)}
-                        onChange={(event) =>
-                          updateImageModality(index, { calibration_required: event.target.checked })
-                        }
-                      />
-                      Calibration required
-                    </label>
-                    <label>
-                      <input
-                        type="checkbox"
-                        aria-label={`Image modality example uploaded ${index + 1}`}
-                        checked={Boolean(modality.example_image_uploaded)}
-                        onChange={(event) =>
-                          updateImageModality(index, { example_image_uploaded: event.target.checked })
-                        }
-                      />
-                      Example uploaded
-                    </label>
                   </div>
                 ))}
               </div>
             )}
+            </section>
           </section>
             </div>
           )}
