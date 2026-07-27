@@ -1,5 +1,6 @@
 # RHEL 9 / UBI 9 Minimal based production image
 # Multi-stage build for optimized production image
+# Container contract tests parse these named stages; keep the base, builder, and final aliases stable.
 FROM registry.access.redhat.com/ubi9/ubi-minimal AS base
 
 # Install Python 3.11, Node.js, and system dependencies
@@ -98,7 +99,7 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 
 # Copy backend code
 COPY --from=builder /app/backend /app/backend
-# Copy runtime sample assets used by Project Data's built-in example loader
+# Copy the only root test-tree asset needed at runtime by Project Data's built-in example loader.
 COPY ./test/data /app/test/data
 # Copy frontend build files
 COPY --from=builder /app/frontend/build /app/ui2

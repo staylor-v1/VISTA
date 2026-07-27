@@ -125,6 +125,21 @@ def _dockerfile_copy_sources(stage: str) -> list[str]:
     return sources
 
 
+def _run_build_context_bind_mounts(stage: str) -> list[str]:
+    """Return RUN instructions that can read files directly from build context."""
+    bind_mounts: list[str] = []
+    for instruction in _dockerfile_logical_instructions(stage):
+        if not re.match(r"^RUN\s", instruction, flags=re.I):
+            continue
+        mount_values = re.findall(r"(?:^|\s)--mount=([^\s]+)", instruction)
+        if any(
+            any(option.strip().lower() == "type=bind" for option in mount.split(","))
+            for mount in mount_values
+        ):
+            bind_mounts.append(instruction)
+    return bind_mounts
+
+
 def _normalized_transfer_source(
     instruction: _DockerfileTransferInstruction,
     source: str,
@@ -230,10 +245,33 @@ def test_production_dockerfile_copies_only_runtime_test_data_assets():
     assert "test_toolbox" not in dockerfile
     assert _root_test_transfer_sources(base_stage) == []
     assert _root_test_transfer_sources(builder_stage) == []
+    assert _run_build_context_bind_mounts(base_stage) == []
+    assert _run_build_context_bind_mounts(builder_stage) == []
+    assert _run_build_context_bind_mounts(final_stage) == []
     assert _unsafe_production_transfer_sources(final_stage) == []
     assert _root_test_copy_sources(builder_stage) == []
     assert _root_test_copy_sources(final_stage) == ["test/data"]
     assert test_copy_instructions == [(["test/data"], "/app/test/data")]
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "RUN --mount=type=bind,target=/src cp /src/test/run_tests.sh /app/",
+        "RUN --mount=source=.,type=bind,target=/context true",
+        "RUN --mount=target=/src,TYPE=BIND,source=. \\\n+          find /src/test -type f",
+    ],
+)
+def test_production_run_parser_detects_build_context_bind_mounts(stage: str):
+    assert _run_build_context_bind_mounts(stage) == [
+        " ".join(line.strip().removesuffix("\\").strip() for line in stage.splitlines())
+    ]
+
+
+def test_production_run_parser_allows_non_bind_buildkit_mounts():
+    stage = "RUN --mount=type=cache,target=/root/.cache uv sync --frozen"
+
+    assert _run_build_context_bind_mounts(stage) == []
 
 
 @pytest.mark.parametrize(
