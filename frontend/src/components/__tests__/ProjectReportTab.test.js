@@ -63,9 +63,9 @@ function pdfResponse(blob, contentType = 'application/pdf', overrides = {}) {
   };
 }
 
-async function chooseAction(user, label) {
-  await user.selectOptions(screen.getByLabelText(/export\/report mode/i), label);
-  await user.click(screen.getByRole('button', { name: /run export\/report/i }));
+function chooseAction(label) {
+  fireEvent.change(screen.getByLabelText(/export\/report mode/i), { target: { value: label } });
+  fireEvent.click(screen.getByRole('button', { name: /run export\/report/i }));
 }
 
 describe('ProjectReportTab', () => {
@@ -88,11 +88,10 @@ describe('ProjectReportTab', () => {
   });
 
   test('renders exactly one accessible result row per canonical part', async () => {
-    const user = userEvent.setup();
     global.fetch.mockResolvedValueOnce(jsonResponse(makeReport()));
     render(<ProjectReportTab projectId={PROJECT_ID} projectName="Turbine Cell A" setError={jest.fn()} />);
 
-    await chooseAction(user, 'report_json');
+    await chooseAction('report_json');
 
     const table = await screen.findByRole('table', { name: /inspection results by part/i });
     expect(within(table).getAllByRole('row')).toHaveLength(4);
@@ -114,11 +113,10 @@ describe('ProjectReportTab', () => {
   });
 
   test('renders a clear empty inspection record', async () => {
-    const user = userEvent.setup();
     global.fetch.mockResolvedValueOnce(jsonResponse(makeReport([])));
     render(<ProjectReportTab projectId={PROJECT_ID} projectName="Empty project" setError={jest.fn()} />);
 
-    await chooseAction(user, 'report_json');
+    await chooseAction('report_json');
 
     expect(await screen.findByText('No parts to report')).toBeInTheDocument();
     expect(screen.getByText('This project has no inspection parts yet.')).toBeInTheDocument();
@@ -152,7 +150,7 @@ describe('ProjectReportTab', () => {
       .mockResolvedValueOnce(jsonResponse(makeReport()));
     render(<ProjectReportTab projectId={PROJECT_ID} projectName="Retry project" setError={jest.fn()} />);
 
-    await chooseAction(user, 'report_json');
+    await chooseAction('report_json');
     expect(await screen.findByRole('alert')).toHaveTextContent('Failed to generate report (503)');
 
     await user.click(screen.getByRole('button', { name: /retry report/i }));
@@ -181,18 +179,16 @@ describe('ProjectReportTab', () => {
       ],
     },
   ])('rejects a report with a duplicate $label', async ({ parts }) => {
-    const user = userEvent.setup();
     global.fetch.mockResolvedValueOnce(jsonResponse(makeReport(parts)));
     render(<ProjectReportTab projectId={PROJECT_ID} projectName="Duplicate project" setError={jest.fn()} />);
 
-    await chooseAction(user, 'report_json');
+    await chooseAction('report_json');
 
     expect(await screen.findByRole('alert')).toHaveTextContent('did not match the v3 inspection report contract');
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
   test('downloads and revokes the PDF object URL without replacing the JSON table', async () => {
-    const user = userEvent.setup();
     const pdfBlob = new Blob(['%PDF-1.4 test bytes'], { type: 'application/pdf' });
     const anchorClick = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function captureDownload() {
       expect(this.href).toBe('blob:inspection-report');
@@ -208,9 +204,9 @@ describe('ProjectReportTab', () => {
       });
     render(<ProjectReportTab projectId={PROJECT_ID} projectName="Turbine Cell A" setError={jest.fn()} />);
 
-    await chooseAction(user, 'report_json');
+    await chooseAction('report_json');
     const table = await screen.findByRole('table');
-    await chooseAction(user, 'report_pdf');
+    await chooseAction('report_pdf');
 
     expect(await screen.findByText(`PDF report downloaded: ${pdfBlob.size} bytes.`)).toBeInTheDocument();
     expect(table).toBeInTheDocument();
@@ -236,7 +232,7 @@ describe('ProjectReportTab', () => {
       .mockResolvedValueOnce(pdfResponse(imageReportBlob));
     render(<ProjectReportTab projectId={PROJECT_ID} projectName="Turbine Cell A" setError={jest.fn()} />);
 
-    await chooseAction(user, 'report_json');
+    await chooseAction('report_json');
     const table = await screen.findByRole('table', { name: /inspection results by part/i });
     await user.click(screen.getByRole('button', { name: /download report with images \(pdf\)/i }));
 
@@ -266,7 +262,7 @@ describe('ProjectReportTab', () => {
       .mockResolvedValueOnce(imageReportResponse);
     render(<ProjectReportTab projectId={PROJECT_ID} projectName="Isolation project" setError={jest.fn()} />);
 
-    await chooseAction(user, 'report_json');
+    await chooseAction('report_json');
     const table = await screen.findByRole('table', { name: /inspection results by part/i });
     await user.click(screen.getByRole('button', { name: /download report with images \(pdf\)/i }));
 
@@ -284,7 +280,6 @@ describe('ProjectReportTab', () => {
   });
 
   test('disables the image report action and suppresses duplicate clicks while pending', async () => {
-    const user = userEvent.setup();
     jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
     let resolveRequest;
     const pendingResponse = new Promise((resolve) => {
@@ -318,7 +313,6 @@ describe('ProjectReportTab', () => {
     ['HTML mislabeled as a PDF', 'application/pdf', new Blob(['<html>no pdf</html>'], { type: 'application/pdf' })],
     ['an empty response', 'application/pdf', new Blob([], { type: 'application/pdf' })],
   ])('does not download %s from the PDF endpoint', async (_label, contentType, responseBlob) => {
-    const user = userEvent.setup();
     const anchorClick = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
     global.fetch.mockResolvedValueOnce({
       ok: true,
@@ -328,7 +322,7 @@ describe('ProjectReportTab', () => {
     });
     render(<ProjectReportTab projectId={PROJECT_ID} projectName="Invalid PDF" setError={jest.fn()} />);
 
-    await chooseAction(user, 'report_pdf');
+    await chooseAction('report_pdf');
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/valid PDF report/i);
     expect(anchorClick).not.toHaveBeenCalled();
@@ -368,7 +362,6 @@ describe('ProjectReportTab', () => {
   });
 
   test('project changes abort stale JSON and reset the inspection ledger', async () => {
-    const user = userEvent.setup();
     let resolveOld;
     const oldRequest = new Promise((resolve) => {
       resolveOld = resolve;
@@ -382,7 +375,7 @@ describe('ProjectReportTab', () => {
       <ProjectReportTab projectId={PROJECT_ID} projectName="Old project" setError={jest.fn()} />,
     );
 
-    await chooseAction(user, 'report_json');
+    await chooseAction('report_json');
     const oldSignal = global.fetch.mock.calls[0][1].signal;
     view.rerender(
       <ProjectReportTab projectId="project-456" projectName="New project" setError={jest.fn()} />,
@@ -395,7 +388,7 @@ describe('ProjectReportTab', () => {
     });
     expect(screen.queryByText('SERIAL-PASS')).not.toBeInTheDocument();
 
-    await chooseAction(user, 'report_json');
+    await chooseAction('report_json');
     expect(await screen.findByText('NEW-SERIAL')).toBeInTheDocument();
     expect(global.fetch.mock.calls[1][0]).toBe(
       '/api/projects/project-456/report-json?schema_version=3',
@@ -417,7 +410,7 @@ describe('ProjectReportTab', () => {
     );
 
     if (action === 'report_pdf') {
-      await chooseAction(user, 'report_pdf');
+      await chooseAction('report_pdf');
     } else {
       await user.click(screen.getByRole('button', { name: /download report with images/i }));
     }
