@@ -1383,7 +1383,7 @@ describe('ProjectConfigurationPanel', () => {
 
     await openFilenameConventionSubtab();
 
-    fireEvent.change(screen.getByLabelText('Image modality label 1'), { target: { value: 'Autosaved thermal' } });
+    fireEvent.change(screen.getByLabelText('Modality label 1'), { target: { value: 'Autosaved thermal' } });
     expect(screen.getByText('Unsaved changes will autosave shortly.')).toBeInTheDocument();
 
     act(() => {
@@ -1400,6 +1400,53 @@ describe('ProjectConfigurationPanel', () => {
       );
     });
     expect(await screen.findByText('Configuration autosaved.')).toBeInTheDocument();
+  });
+
+  test('keeps filename label lists focused and rejects blank or partial additions', async () => {
+    const config = makeConfig('PT1', 'basic');
+    mockFetch(config, 'PT1');
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await openFilenameConventionSubtab();
+
+    expect(screen.queryByLabelText('Part view required modalities 1')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Part view source 1')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Image modality calibration required 1')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Image modality example uploaded 1')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Side' }));
+    fireEvent.change(screen.getByLabelText(`Side label ${config.part_views.length + 1}`), {
+      target: { value: 'Rear side' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Modality' }));
+    fireEvent.change(screen.getByLabelText(`Modality filename value ${config.image_modalities.length + 1}`), {
+      target: { value: 'uv' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+
+    expect(await screen.findByText(/Each side requires both a filename value and label/)).toBeInTheDocument();
+    expect(screen.getByText(/Each modality requires both a filename value and label/)).toBeInTheDocument();
+  });
+
+  test('removing a modality clears hidden side requirements before saving', async () => {
+    const config = makeConfig('PT1', 'basic');
+    mockFetch(config, 'PT1');
+    render(<ProjectConfigurationPanel projectId="proj-1" />);
+
+    await openFilenameConventionSubtab();
+    fireEvent.click(screen.getByLabelText('Remove image modality 1'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
+
+    await waitFor(() => {
+      const putCalls = global.fetch.mock.calls.filter(
+        ([url, options = {}]) => url === '/api/projects/proj-1/configuration' && options.method === 'PUT',
+      );
+      expect(putCalls.length).toBeGreaterThan(0);
+      const savedConfig = JSON.parse(putCalls.at(-1)[1].body).config;
+      expect(savedConfig.image_modalities).toEqual([]);
+      expect(savedConfig.part_views[0].required_modalities).toEqual([]);
+    });
   });
 
   test('flushes pending autosave immediately for callers that must wait before leaving the tab', async () => {
@@ -1448,10 +1495,8 @@ describe('ProjectConfigurationPanel', () => {
     expect(screen.queryByLabelText('Level 1')).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Descriptor 1'), { target: { value: 'operator' } });
     fireEvent.change(container.querySelector('#image-descriptor-abbreviation-0'), { target: { value: 'OP' } });
-    fireEvent.change(screen.getByLabelText('Image modality label 1'), { target: { value: 'Thermal image' } });
-    fireEvent.change(screen.getByLabelText('Image modality id 1'), { target: { value: 'thermal' } });
-    fireEvent.click(screen.getByLabelText('Image modality calibration required 1'));
-    fireEvent.click(screen.getByLabelText('Image modality example uploaded 1'));
+    fireEvent.change(screen.getByLabelText('Modality label 1'), { target: { value: 'Thermal image' } });
+    fireEvent.change(screen.getByLabelText('Modality filename value 1'), { target: { value: 'thermal' } });
     fireEvent.click(screen.getByRole('tab', { name: 'General' }));
     await waitFor(() => expect(screen.getByLabelText('Require disposition on submit')).toBeInTheDocument());
     fireEvent.click(screen.getByLabelText('Require disposition on submit'));
@@ -1476,12 +1521,10 @@ describe('ProjectConfigurationPanel', () => {
     fireEvent.change(screen.getByLabelText('Defect type color 1'), { target: { value: '#123abc' } });
     fireEvent.change(screen.getByLabelText('Defect type definition 1'), { target: { value: 'Linear fracture' } });
 
-    fireEvent.change(screen.getByLabelText('Part view label 1'), { target: { value: 'Top view' } });
-    fireEvent.change(screen.getByLabelText('Part view id 1'), { target: { value: 'top' } });
-    fireEvent.change(screen.getByLabelText('Part view required modalities 1'), { target: { value: 'thermal' } });
-    fireEvent.change(screen.getByLabelText('Part view required modalities 2'), { target: { value: 'thermal' } });
-    fireEvent.change(screen.getByLabelText('Part view source 1'), { target: { value: 'auto' } });
-
+    fireEvent.click(screen.getByRole('tab', { name: 'Filename Convention' }));
+    fireEvent.change(screen.getByLabelText('Side label 1'), { target: { value: 'Top view' } });
+    fireEvent.change(screen.getByLabelText('Side filename value 1'), { target: { value: 'top' } });
+    fireEvent.click(screen.getByRole('tab', { name: 'General' }));
     fireEvent.change(screen.getByLabelText('Default colormap'), { target: { value: 'magma' } });
     fireEvent.change(screen.getByLabelText('Anomaly colormap'), { target: { value: 'grayscale' } });
     fireEvent.click(screen.getByLabelText('Use grayscale base image'));
@@ -1539,8 +1582,8 @@ describe('ProjectConfigurationPanel', () => {
     expect(savedConfig.image_modalities[0]).toEqual({
       id: 'thermal',
       label: 'Thermal image',
-      calibration_required: true,
-      example_image_uploaded: false,
+      calibration_required: false,
+      example_image_uploaded: true,
     });
     expect(savedConfig.defect_types[0]).toEqual({
       name: 'Crack',
@@ -1551,7 +1594,7 @@ describe('ProjectConfigurationPanel', () => {
       id: 'top',
       label: 'Top view',
       required_modalities: ['thermal'],
-      source: 'auto',
+      source: 'manual',
     });
   });
 
@@ -1692,7 +1735,7 @@ describe('ProjectConfigurationPanel', () => {
 
         await waitFor(() => expect(screen.getByTestId('project-configuration-summary')).toBeInTheDocument());
 
-        expect(screen.getAllByRole('heading', { name: 'Image Modalities' }).length).toBeGreaterThan(0);
+        expect(screen.getAllByRole('heading', { name: 'Modalities' }).length).toBeGreaterThan(0);
         expect(screen.getByRole('heading', { name: 'Serial Number Scheme' })).toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
 
@@ -1746,20 +1789,12 @@ describe('ProjectConfigurationPanel', () => {
         await openFilenameConventionSubtab();
 
         fireEvent.click(screen.getByRole('button', { name: 'Add Modality' }));
-        fireEvent.change(screen.getByLabelText(`Image modality label ${config.image_modalities.length + 1}`), {
+        fireEvent.change(screen.getByLabelText(`Modality label ${config.image_modalities.length + 1}`), {
           target: { value: `Synthetic ${projectType} ${syntheticUser}` },
         });
-        fireEvent.change(screen.getByLabelText(`Image modality id ${config.image_modalities.length + 1}`), {
+        fireEvent.change(screen.getByLabelText(`Modality filename value ${config.image_modalities.length + 1}`), {
           target: { value: `${projectType.toLowerCase()}-${syntheticUser}-custom` },
         });
-        fireEvent.click(screen.getByLabelText(`Image modality calibration required ${config.image_modalities.length + 1}`));
-        fireEvent.click(screen.getByLabelText(`Image modality example uploaded ${config.image_modalities.length + 1}`));
-        fireEvent.click(screen.getByRole('tab', { name: 'General' }));
-        await waitFor(() => expect(screen.getByLabelText('Part view required modalities 1')).toBeInTheDocument());
-        fireEvent.change(screen.getByLabelText('Part view required modalities 1'), {
-          target: { value: `${projectType.toLowerCase()}-${syntheticUser}-custom` },
-        });
-
         fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
 
         await waitFor(() => {
@@ -1816,6 +1851,7 @@ describe('ProjectConfigurationPanel', () => {
       
       test(`blocks save and shows validation errors for ${projectType} ${syntheticUser} synthetic user`, async () => {
         const config = makeConfig(projectType, syntheticUser);
+        config.part_views[0].required_modalities = ['nonexistent_modality'];
         mockFetch(config, projectType);
 
         render(<ProjectConfigurationPanel projectId="proj-1" />);
@@ -1828,10 +1864,6 @@ describe('ProjectConfigurationPanel', () => {
         fireEvent.change(screen.getByLabelText('Reject hotkey'), { target: { value: 'q' } });
         fireEvent.click(screen.getByRole('tab', { name: 'General' }));
         fireEvent.change(screen.getByLabelText('Defect type color 1'), { target: { value: 'red' } });
-        fireEvent.change(screen.getByLabelText('Part view required modalities 1'), {
-          target: { value: 'nonexistent_modality' },
-        });
-
         const putCallsBefore = global.fetch.mock.calls.filter(
           ([url, options = {}]) => url === '/api/projects/proj-1/configuration' && options.method === 'PUT',
         ).length;
@@ -1841,7 +1873,7 @@ describe('ProjectConfigurationPanel', () => {
         await waitFor(() => {
           expect(screen.getByText(/Hotkeys must be unique/)).toBeInTheDocument();
           expect(screen.getByText(/Defect type colors must be valid/)).toBeInTheDocument();
-          expect(screen.getByText(/Part views can only require modalities/)).toBeInTheDocument();
+          expect(screen.getByText(/Stored side modality requirements must reference configured modalities/)).toBeInTheDocument();
         });
 
         const putCallsAfter = global.fetch.mock.calls.filter(
@@ -1889,23 +1921,17 @@ describe('ProjectConfigurationPanel', () => {
 
         render(<ProjectConfigurationPanel projectId="proj-1" />);
 
-        await waitFor(() => expect(screen.getByLabelText('Part view label 1')).toBeInTheDocument());
+        await openFilenameConventionSubtab();
+        await waitFor(() => expect(screen.getByLabelText('Side label 1')).toBeInTheDocument());
 
-        fireEvent.click(screen.getByRole('button', { name: 'Add Part View' }));
-        fireEvent.change(screen.getByLabelText(`Part view label ${config.part_views.length + 1}`), {
+        fireEvent.click(screen.getByRole('button', { name: 'Add Side' }));
+        fireEvent.change(screen.getByLabelText(`Side label ${config.part_views.length + 1}`), {
           target: { value: `Expanded ${projectType} ${syntheticUser}` },
         });
-        fireEvent.change(screen.getByLabelText(`Part view id ${config.part_views.length + 1}`), {
+        fireEvent.change(screen.getByLabelText(`Side filename value ${config.part_views.length + 1}`), {
           target: { value: `${projectType.toLowerCase()}-${syntheticUser}-expanded-view` },
         });
-        fireEvent.change(screen.getByLabelText(`Part view required modalities ${config.part_views.length + 1}`), {
-          target: { value: `${projectType.toLowerCase()}-${syntheticUser}-modality-1` },
-        });
-        fireEvent.change(screen.getByLabelText(`Part view source ${config.part_views.length + 1}`), {
-          target: { value: 'auto' },
-        });
-
-        fireEvent.click(screen.getByLabelText('Remove part view 1'));
+        fireEvent.click(screen.getByLabelText('Remove side 1'));
         fireEvent.click(screen.getByRole('button', { name: 'Save Configuration' }));
 
         await waitFor(() => {
