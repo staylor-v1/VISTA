@@ -1999,6 +1999,48 @@ describe('InspectionWorkbenchPanel', () => {
     expect(within(modalityToggles).queryByRole('button', { name: 'UV' })).not.toBeInTheDocument();
   });
 
+  test('lists configured source modalities without duplicating overlays as modalities', async () => {
+    mockWorkbenchFetch({
+      user: 'configured-source-modalities',
+      batches: [{ id: 'batch-1', name: 'Batch 1' }],
+      workspaceState: { selected_batch_id: 'batch-1', selected_part_id: 'part-configured-modalities' },
+      projectConfiguration: {
+        image_modalities: [
+          { id: 'optical', label: 'Optical' },
+          { id: 'thermal', label: 'Thermal' },
+        ],
+      },
+      parts: [
+        {
+          id: 'part-configured-modalities',
+          batch_id: 'batch-1',
+          serial_number: 'SN-CONFIG-001',
+          display_name: 'Configured Modalities Part',
+          review_state: 'unreviewed',
+          metadata: {
+            configured_views: ['front'],
+            modalities: ['optical', 'thermal', 'segmentation'],
+            view_images: { front: 'front-optical.png' },
+            source_images: [
+              { filename: 'front-optical.png', image_id: 'img-optical', side: 'front', modality: 'optical', overlay: false },
+              { filename: 'front-thermal.png', image_id: 'img-thermal', side: 'front', modality: 'thermal', overlay: false },
+              { filename: 'front-segmentation.png', image_id: 'img-overlay', side: 'front', modality: 'segmentation', overlay: true },
+            ],
+            annotations: [],
+          },
+        },
+      ],
+    });
+
+    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
+
+    const modalityToggles = await screen.findByLabelText('Configured Modalities Part modality toggles');
+    expect(within(modalityToggles).getByRole('button', { name: 'OPTICAL' })).toBeInTheDocument();
+    expect(within(modalityToggles).getByRole('button', { name: 'THERMAL' })).toBeInTheDocument();
+    expect(within(modalityToggles).queryByRole('button', { name: 'SEGMENTATION' })).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText('Configured Modalities Part layer toggles')).getByRole('button', { name: 'OVERLAY' })).toBeInTheDocument();
+  });
+
   test('hides an image from the inspection workbench after moving it from a part to unassigned', async () => {
     let parts = [
       {
@@ -5355,6 +5397,12 @@ describe('InspectionWorkbenchPanel', () => {
         },
       ],
       workspaceState: { inspector: { image_enabled: true, modalities: ['visual'], view_name: 'front' } },
+      projectConfiguration: {
+        image_modalities: [
+          { id: 'visual', label: 'Visual' },
+          { id: 'thermal', label: 'Thermal' },
+        ],
+      },
       hotkeys: { accept_classification: 'a', reject_classification: 'r', toggle_shortcut_help: 'h' },
     });
 
@@ -5373,7 +5421,7 @@ describe('InspectionWorkbenchPanel', () => {
     await waitFor(() => expect(screen.queryByAltText('front view')).not.toBeInTheDocument());
   });
 
-  test('part summary segmentation and heatmap modality buttons toggle overlay images off and on', async () => {
+  test('part summary keeps segmentation and heatmap overlays in the layers row', async () => {
     mockWorkbenchFetch({
       user: 'overlay-modality-toggle',
       batches: [{ id: 'batch-overlay-modal', name: 'Batch Overlay Modal' }],
@@ -5413,6 +5461,9 @@ describe('InspectionWorkbenchPanel', () => {
         },
       ],
       workspaceState: { inspector: { image_enabled: true, modalities: ['visual'], view_name: 'front' } },
+      projectConfiguration: {
+        image_modalities: [{ id: 'visual', label: 'Visual' }],
+      },
       hotkeys: { accept_classification: 'a', reject_classification: 'r', toggle_shortcut_help: 'h' },
     });
 
@@ -5420,28 +5471,17 @@ describe('InspectionWorkbenchPanel', () => {
 
     await waitFor(() => expect(screen.getAllByText('Overlay Modality Part').length).toBeGreaterThan(0));
     const modalityToggles = screen.getByLabelText('Overlay Modality Part modality toggles');
-    const segmentationToggle = within(modalityToggles).getByRole('button', { name: 'SEGMENTATION' });
-    const heatmapToggle = within(modalityToggles).getByRole('button', { name: 'HEATMAP' });
+    expect(within(modalityToggles).getByRole('button', { name: 'VISUAL' })).toBeInTheDocument();
+    expect(within(modalityToggles).queryByRole('button', { name: 'SEGMENTATION' })).not.toBeInTheDocument();
+    expect(within(modalityToggles).queryByRole('button', { name: 'HEATMAP' })).not.toBeInTheDocument();
 
-    expect(screen.getAllByAltText('front view')).toHaveLength(1);
-    expect(segmentationToggle).toHaveAttribute('aria-pressed', 'false');
-    expect(heatmapToggle).toHaveAttribute('aria-pressed', 'false');
+    const layerToggles = screen.getByLabelText('Overlay Modality Part layer toggles');
+    const overlayToggle = within(layerToggles).getByRole('button', { name: 'OVERLAY' });
+    expect(overlayToggle).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getAllByAltText('front overlay')).toHaveLength(2);
 
-    fireEvent.click(segmentationToggle);
-    await waitFor(() => expect(screen.getByAltText('front overlay')).toHaveAttribute('src', '/api/images/overlay-modal-segmentation/content'));
-    expect(segmentationToggle).toHaveAttribute('aria-pressed', 'true');
-
-    fireEvent.click(segmentationToggle);
+    fireEvent.click(overlayToggle);
     await waitFor(() => expect(screen.queryByAltText('front overlay')).not.toBeInTheDocument());
-    expect(segmentationToggle).toHaveAttribute('aria-pressed', 'false');
-
-    fireEvent.click(heatmapToggle);
-    await waitFor(() => expect(screen.getByAltText('front overlay')).toHaveAttribute('src', '/api/images/overlay-modal-heatmap/content'));
-    expect(heatmapToggle).toHaveAttribute('aria-pressed', 'true');
-
-    fireEvent.click(heatmapToggle);
-    await waitFor(() => expect(screen.queryByAltText('front overlay')).not.toBeInTheDocument());
-    expect(heatmapToggle).toHaveAttribute('aria-pressed', 'false');
   });
 
   test('shows non-overlay mixed-modality source images alongside configured view images', async () => {

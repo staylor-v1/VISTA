@@ -983,14 +983,19 @@ function getModalities(part) {
   return DEFAULT_MODALITIES;
 }
 
-function getPartSummaryModalities(part, imageRefs = getPartImageRefs(part)) {
+function getPartSummaryModalities(part, imageRefs = getPartImageRefs(part), projectConfiguration = null) {
   const loadedModalities = new Set();
   imageRefs.forEach((entry) => {
     const modality = String(entry?.modality || '').trim().toLowerCase();
     if (!modality || modality === 'analyze-overlay' || modality === 'overlay') return;
     loadedModalities.add(modality);
   });
-  const configuredModalities = getModalities(part);
+  const projectModalities = Array.isArray(projectConfiguration?.image_modalities)
+    ? projectConfiguration.image_modalities
+      .map((modality) => String(modality?.id || '').trim())
+      .filter(Boolean)
+    : [];
+  const configuredModalities = projectModalities.length > 0 ? projectModalities : getModalities(part);
   if (loadedModalities.size === 0) {
     return imageRefs.length > 0 && configuredModalities.length === 1
       ? [configuredModalities[0]]
@@ -999,9 +1004,11 @@ function getPartSummaryModalities(part, imageRefs = getPartImageRefs(part)) {
   const orderedConfiguredModalities = configuredModalities.filter((modality) =>
     loadedModalities.has(String(modality || '').trim().toLowerCase()),
   );
-  const orderedLoadedModalities = Array.from(loadedModalities).filter((modality) =>
-    !orderedConfiguredModalities.some((configured) => String(configured || '').trim().toLowerCase() === modality),
-  );
+  const orderedLoadedModalities = projectModalities.length > 0
+    ? []
+    : Array.from(loadedModalities).filter((modality) =>
+      !orderedConfiguredModalities.some((configured) => String(configured || '').trim().toLowerCase() === modality),
+    );
   return [...orderedConfiguredModalities, ...orderedLoadedModalities];
 }
 
@@ -5033,6 +5040,11 @@ function InspectionWorkbenchPanel({
   const visibleSelectedPartImageRefs = useMemo(() => {
     const hidden = new Set(hiddenViewNames.map((name) => String(name).toLowerCase()));
     const enabled = new Set(enabledModalities.map((name) => String(name).toLowerCase()));
+    const configuredModalityIds = new Set(
+      (Array.isArray(projectConfiguration?.image_modalities) ? projectConfiguration.image_modalities : [])
+        .map((modality) => String(modality?.id || '').trim().toLowerCase())
+        .filter(Boolean),
+    );
     const categoryFiltered = selectedPartImageRefs.filter((entry) => {
       const category = entry.cropChild ? 'crop' : (entry.overlay ? 'overlay' : 'source');
       if (!(projectType === 'PT3' && category === 'overlay') && !renderCategories.includes(category)) return false;
@@ -5040,7 +5052,12 @@ function InspectionWorkbenchPanel({
       if (entry.overlay && !annotationsVisible) return false;
       if (hidden.has(String(entry.viewName || '').toLowerCase())) return false;
       const modality = String(entry.modality || '').toLowerCase();
-      const modalityVisible = entry.cropChild || !modality || modality === 'analyze-overlay' || modality === 'overlay' || enabled.has(modality);
+      const modalityVisible = entry.cropChild
+        || !modality
+        || modality === 'analyze-overlay'
+        || modality === 'overlay'
+        || (entry.overlay && configuredModalityIds.size > 0 && !configuredModalityIds.has(modality))
+        || enabled.has(modality);
       if (!modalityVisible) return false;
       if (entry.overlay && (entry.overlayBaseImageId || entry.overlayBaseFilename)) return true;
       return true;
@@ -5069,7 +5086,7 @@ function InspectionWorkbenchPanel({
       if (entry.overlay) return true;
       return !suppressedSourceEntryIds.has(entry.id);
     });
-  }, [annotationsVisible, enabledModalities, hiddenViewNames, projectType, renderCategories, selectedPartImageRefs]);
+  }, [annotationsVisible, enabledModalities, hiddenViewNames, projectConfiguration, projectType, renderCategories, selectedPartImageRefs]);
   const inspectionAnnotationItems = useMemo(
     () => buildInspectionAnnotationItems(annotations, selectedPartImageRefs),
     [annotations, selectedPartImageRefs],
@@ -8184,7 +8201,7 @@ function InspectionWorkbenchPanel({
                           viewName,
                         }, projectImageLookup)
                       ));
-                    const partModalities = getPartSummaryModalities(part, partImageRefs);
+                    const partModalities = getPartSummaryModalities(part, partImageRefs, projectConfiguration);
                     const hasAnalyzeOverlays = partImageRefs.some((entry) => entry.overlay);
                     const hasCropImages = partImageRefs.some((entry) => entry.cropChild);
                     const hasAnnotations = (Array.isArray(part.metadata?.annotations) && part.metadata.annotations.length > 0) || (Array.isArray(annotations) && annotations.length > 0);
