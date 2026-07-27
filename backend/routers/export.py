@@ -1972,7 +1972,7 @@ async def export_project_report_json(
 ):
     if schema_version not in {2, 3}:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="schema_version must be 2 or 3",
         )
     db_project = await _get_project_with_export_access(
@@ -2006,7 +2006,7 @@ async def export_project_report_pdf(
 ):
     if schema_version not in {2, 3}:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="schema_version must be 2 or 3",
         )
     db_project = await _get_project_with_export_access(
