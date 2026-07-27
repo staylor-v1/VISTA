@@ -81,7 +81,10 @@ FROM backend-runtime AS backend-dev
 
 COPY --chown=appuser:appuser ./test /app/test
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# The dependency manifests are bind-mounted by docker-compose.dev.yml. Reconcile the
+# environment on every start so an existing development image picks up newly added
+# packages without requiring developers to diagnose import errors and rebuild first.
+CMD ["sh", "-c", "uv sync --frozen --no-install-project && exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload"]
 
 # Optional heavyweight model service for Analyze/backend analyze toolbox execution.
 FROM backend-runtime AS toolbox-model-service

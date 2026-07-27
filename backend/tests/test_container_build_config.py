@@ -274,6 +274,17 @@ def test_production_run_parser_allows_non_bind_buildkit_mounts():
     assert _run_build_context_bind_mounts(stage) == []
 
 
+def test_backend_dev_reconciles_bind_mounted_dependencies_before_startup():
+    development_dockerfile = _read_repo_file("Dockerfile.dev")
+    backend_dev_stage = _dockerfile_stage(development_dockerfile, "backend-dev")
+
+    assert (
+        'CMD ["sh", "-c", "uv sync --frozen --no-install-project && exec uvicorn '
+        'main:app --host 0.0.0.0 --port 8000 --reload"]'
+        in backend_dev_stage
+    )
+
+
 @pytest.mark.parametrize(
     ("stage", "unsafe_source"),
     [
