@@ -14,7 +14,12 @@ module.exports = defineConfig({
   },
   fullyParallel: false,
   retries: 0,
-  reporter: [['list'], ['html', { outputFolder: 'artifacts/playwright-report', open: 'never' }]],
+  // Keep CI output to one character per test while retaining the HTML report
+  // and full failure details. Local runs remain descriptive and easy to scan.
+  reporter: [
+    [process.env.CI ? 'dot' : 'list'],
+    ['html', { outputFolder: 'artifacts/playwright-report', open: 'never' }],
+  ],
   use: {
     baseURL: 'http://127.0.0.1:3000',
     headless: true,
