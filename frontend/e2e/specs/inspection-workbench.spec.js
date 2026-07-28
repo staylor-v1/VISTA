@@ -17,6 +17,7 @@ const rgbaFullscreen3dScreenshotPath = path.resolve(__dirname, '../../artifacts/
 const rgbaFullscreen3dNarrowScreenshotPath = path.resolve(__dirname, '../../artifacts/rgba-segment-fullscreen-3d-narrow.png');
 const rgbaFullscreen3dCompactScreenshotPath = path.resolve(__dirname, '../../artifacts/rgba-segment-fullscreen-3d-compact.png');
 const annotationTransparencyScreenshotPath = path.resolve(__dirname, '../../artifacts/annotation-transparency-50.png');
+const annotationDefectTypeScreenshotPath = path.resolve(__dirname, '../../artifacts/annotation-edit-defect-type.png');
 const nsiproMetadataScreenshotPath = path.resolve(__dirname, '../../artifacts/nsipro-part-metadata.png');
 const imageDisplayOrderScreenshotPath = path.resolve(__dirname, '../../artifacts/image-display-order.png');
 const imageDisplayOrderNarrowScreenshotPath = path.resolve(__dirname, '../../artifacts/image-display-order-narrow.png');
@@ -1099,6 +1100,66 @@ test.describe('PT3 large NPY lazy MPR loading', () => {
 });
 
 test.describe('PR-09 annotation controls screenshot artifact', () => {
+  test('edits the defect type for annotations created by every 2D tool', async ({ page }) => {
+    const toolAnnotations = [
+      ['measurement', 'Measurement', 'Measure annotation'],
+      ['annotation', 'Bounding Box', 'Box annotation'],
+      ['annotation', 'Crop', 'Crop annotation'],
+      ['annotation', 'Other', 'Other annotation'],
+    ].map(([annotation_kind, defect_class, comment], index) => ({
+      id: `annotation-tool-${index}`,
+      annotation_kind,
+      defect_class,
+      comment,
+      disposition: 'open',
+      hidden: false,
+      measurements: {},
+      geometry: {},
+      metadata: {},
+      created_by: 'qa@example.com',
+      created_at: '2026-07-27T12:00:00Z',
+    }));
+    const { projectId } = await mockInspectionWorkbenchRoutes(page, {
+      type: 'PT1',
+      scenario: 'advanced',
+      seededAnnotations: toolAnnotations,
+    });
+    const patchBodies = [];
+    page.on('request', (request) => {
+      if (request.method() === 'PATCH' && request.url().includes('/annotations/')) {
+        patchBodies.push(request.postDataJSON());
+      }
+    });
+
+    await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });
+    await page.getByRole('tab', { name: 'Inspection' }).click();
+
+    for (const annotation of toolAnnotations) {
+      await page.getByRole('button', { name: `Edit annotation ${annotation.comment}`, exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Edit annotation' });
+      const defectType = dialog.getByLabel('Edit annotation defect type');
+      await expect(defectType).toHaveValue(annotation.defect_class);
+      await expect(defectType.locator('option')).toHaveText([
+        'Defect type',
+        'advanced-surface',
+        annotation.defect_class === 'Other' ? 'Other' : annotation.defect_class,
+        ...(annotation.defect_class === 'Other' ? [] : ['Other']),
+      ]);
+      await defectType.selectOption('advanced-surface');
+      await dialog.getByRole('button', { name: 'Save' }).click();
+      await expect(dialog).not.toBeVisible();
+    }
+
+    expect(patchBodies).toHaveLength(toolAnnotations.length);
+    expect(patchBodies.every((body) => body.defect_class === 'advanced-surface')).toBe(true);
+
+    await page.getByRole('button', { name: 'Edit annotation Measure annotation', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Edit annotation' });
+    await dialog.getByLabel('Edit annotation defect type').selectOption('');
+    await expect(dialog.getByRole('button', { name: 'Save' })).toBeDisabled();
+    await dialog.screenshot({ path: annotationDefectTypeScreenshotPath });
+  });
+
   test('captures PT1 annotation controls screenshot', async ({ page }) => {
     const { projectId } = await mockInspectionWorkbenchRoutes(page, { type: 'PT1', scenario: 'advanced' });
     await page.goto(`/project/${projectId}`, { waitUntil: 'networkidle' });

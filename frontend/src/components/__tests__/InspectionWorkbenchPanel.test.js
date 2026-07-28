@@ -4317,6 +4317,14 @@ describe('InspectionWorkbenchPanel', () => {
   test('renders measurement line and length text in both tile and fullscreen overlays', async () => {
     mockWorkbenchFetch({
       ...scenarioByUser[0],
+      projectConfiguration: {
+        defect_types: [
+          { name: ' Surface Crack ' },
+          { name: 'surface crack' },
+          { name: 'Porosity' },
+          { name: ' other ' },
+        ],
+      },
       parts: [{
         ...scenarioByUser[0].parts[0],
         metadata: {
@@ -4343,11 +4351,23 @@ describe('InspectionWorkbenchPanel', () => {
     expect(document.querySelector('.inspection-annotation-selected')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Edit annotation Line check' }));
     expect(screen.getByRole('dialog', { name: 'Edit annotation' })).toBeInTheDocument();
+    const defectTypeSelect = screen.getByLabelText('Edit annotation defect type');
+    expect(defectTypeSelect).toHaveValue('Measurement');
+    expect(within(defectTypeSelect).getAllByRole('option').map((option) => option.value)).toEqual([
+      '',
+      'Surface Crack',
+      'Porosity',
+      'Other',
+      'Measurement',
+    ]);
     fireEvent.change(screen.getByLabelText('Edit annotation comment'), { target: { value: 'Unsaved edit' } });
+    fireEvent.change(defectTypeSelect, { target: { value: '' } });
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel edit annotation' }));
     expect(screen.queryByRole('dialog', { name: 'Edit annotation' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Edit annotation Unsaved edit' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Edit annotation Line check' }));
+    fireEvent.change(screen.getByLabelText('Edit annotation defect type'), { target: { value: 'Surface Crack' } });
     fireEvent.change(screen.getByLabelText('Edit annotation comment'), { target: { value: 'Saved edit' } });
     fireEvent.change(screen.getByLabelText('Edit annotation color'), { target: { value: '#22c55e' } });
     fireEvent.change(screen.getByLabelText('Edit annotation fill opacity'), { target: { value: '0.35' } });
@@ -4358,7 +4378,9 @@ describe('InspectionWorkbenchPanel', () => {
       const body = JSON.parse(call[1].body);
       return body.comment === 'Saved edit';
     });
-    expect(JSON.parse(stylePatchCall[1].body).metadata).toEqual(expect.objectContaining({
+    const stylePatchBody = JSON.parse(stylePatchCall[1].body);
+    expect(stylePatchBody.defect_class).toBe('Surface Crack');
+    expect(stylePatchBody.metadata).toEqual(expect.objectContaining({
       annotation_color: '#22c55e',
       measurement_color: '#22c55e',
       annotation_fill_opacity: 0.35,

@@ -4116,9 +4116,18 @@ function InspectionWorkbenchPanel({
   );
   const annotationOpacityMultiplier = getAnnotationOpacityMultiplier(annotationTransparencyPercent);
   const [sessionCalibrationByImageId, setSessionCalibrationByImageId] = useState({});
-  const configuredDefectTypes = useMemo(() => (Array.isArray(projectConfiguration?.defect_types) ? projectConfiguration.defect_types
-    .map((entry) => String(entry?.name || '').trim())
-    .filter(Boolean) : []), [projectConfiguration]);
+  const configuredDefectTypes = useMemo(() => {
+    if (!Array.isArray(projectConfiguration?.defect_types)) return [];
+    const seen = new Set();
+    return projectConfiguration.defect_types
+      .map((entry) => String(typeof entry === 'string' ? entry : entry?.name || '').trim())
+      .filter((defectType) => {
+        const key = defectType.toLocaleLowerCase();
+        if (!defectType || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+  }, [projectConfiguration]);
   const visibleAnnotations = useMemo(
     () => annotations.filter((annotation) => annotation?.hidden !== true),
     [annotations],
@@ -7406,7 +7415,7 @@ function InspectionWorkbenchPanel({
     setSelectedAnnotationId(annotation.id);
     setAnnotationEditDraft({
       id: annotation.id,
-      defect_class: annotation.defect_class || '',
+      defect_class: String(annotation.defect_class || '').trim(),
       comment: annotation.comment || '',
       disposition: annotation.disposition || 'open',
       color: getAnnotationColor(annotation),
@@ -10014,6 +10023,8 @@ function InspectionWorkbenchPanel({
     const mutationScope = `${projectId}:${mutationPartId}`;
     const mutationGeneration = activePartMutationGeneration;
     const draft = annotationEditDraft || {};
+    const defectClass = String(draft.defect_class ?? selected.defect_class ?? '').trim();
+    if (!defectClass) return;
     const fillOpacity = clampRange(Number(draft.fill_opacity), 0, 1, getAnnotationFillOpacity(selected));
     const color = getAnnotationColor({ metadata: { annotation_color: draft.color } }, getAnnotationColor(selected));
     try {
@@ -10021,7 +10032,7 @@ function InspectionWorkbenchPanel({
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          defect_class: draft.defect_class ?? selected.defect_class,
+          defect_class: defectClass,
           comment: draft.comment ?? selected.comment,
           measurements: selected.measurements || {},
           disposition: draft.disposition || selected.disposition || 'open',
@@ -10050,12 +10061,25 @@ function InspectionWorkbenchPanel({
     const selected = annotations.find((annotation) => annotation.id === selectedAnnotationId);
     if (!selected) return null;
     const draft = annotationEditDraft || {
-      defect_class: selected.defect_class || '',
+      defect_class: String(selected.defect_class || '').trim(),
       comment: selected.comment || '',
       disposition: selected.disposition || 'open',
       color: getAnnotationColor(selected),
       fill_opacity: getAnnotationFillOpacity(selected),
     };
+    const currentDefectClass = String(draft.defect_class || '').trim();
+    const editDefectTypes = configuredDefectTypes.map((defectType) => (
+      currentDefectClass
+      && defectType.toLocaleLowerCase() === currentDefectClass.toLocaleLowerCase()
+        ? currentDefectClass
+        : (defectType.toLocaleLowerCase() === 'other' ? 'Other' : defectType)
+    ));
+    if (currentDefectClass && !editDefectTypes.includes(currentDefectClass)) {
+      editDefectTypes.push(currentDefectClass);
+    }
+    if (!editDefectTypes.some((defectType) => defectType.toLocaleLowerCase() === 'other')) {
+      editDefectTypes.push('Other');
+    }
     return (
       <div className="modal" style={{ display: 'flex' }} onClick={closeAnnotationEditModal}>
         <div className="modal-content workbench-utility-modal" role="dialog" aria-label="Edit annotation" onClick={(event) => event.stopPropagation()}>
@@ -10072,12 +10096,16 @@ function InspectionWorkbenchPanel({
           </div>
           <div className="modal-body">
             <div className="measurement-fields">
-              <input
-                type="text"
-                aria-label="Edit annotation defect class"
-                value={draft.defect_class}
+              <select
+                aria-label="Edit annotation defect type"
+                value={currentDefectClass}
                 onChange={(event) => setAnnotationEditDraft((prev) => ({ ...(prev || draft), defect_class: event.target.value }))}
-              />
+              >
+                <option value="">Defect type</option>
+                {editDefectTypes.map((defectType) => (
+                  <option key={defectType.toLocaleLowerCase()} value={defectType}>{defectType}</option>
+                ))}
+              </select>
               <select
                 aria-label="Edit annotation disposition"
                 value={draft.disposition}
@@ -10124,7 +10152,14 @@ function InspectionWorkbenchPanel({
             </div>
             <div className="modal-actions">
               <button type="button" className="btn btn-secondary" onClick={closeAnnotationEditModal}>Cancel</button>
-              <button type="button" className="btn btn-primary" onClick={updateAnnotationFromModal}>Save</button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={updateAnnotationFromModal}
+                disabled={!currentDefectClass}
+              >
+                Save
+              </button>
             </div>
           </div>
         </div>
