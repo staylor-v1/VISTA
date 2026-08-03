@@ -97,7 +97,10 @@ class ImageComponent(ToolkitComponent, ABC):
         if data.file is not None:
             return Image.open(data.file).convert("RGB")
         if data.image_data_base64 is not None:
-            return Image.open(io.BytesIO(base64.b64decode(data.image_data_base64))).convert("RGB")
+            encoded = data.image_data_base64
+            if encoded.startswith("data:") and "," in encoded:
+                encoded = encoded.split(",", 1)[1]
+            return Image.open(io.BytesIO(base64.b64decode(encoded))).convert("RGB")
         raise ValueError('Exactly one of "file", "image", or "image_data_base64" must be provided')
 
 
@@ -108,20 +111,14 @@ class SegmentationComponent(ImageComponent):
 
     def run(self, data: SegmentationInput) -> SegmentationOutput:
         integration_mode = str(data.options.get("integration_mode") or "placeholder")
-        self._load_image(data)  # validates image input before dispatch
+        image = self._load_image(data)  # validates image input before dispatch
 
         if integration_mode == "placeholder":
-            return SegmentationOutput(
-                backend=data.backend,
-                mode=data.mode,
-                masks=[],
-                metrics={
-                    "status": "placeholder",
-                    "message": f"{data.backend} segmentation placeholder is not connected to an implementation.",
-                },
-                raw_output=None,
+            adapter_data = data.model_copy(
+                update={"file": None, "image": None, "image_data_base64": pil_image_to_base64(image)}
             )
-        if integration_mode == "local_import":
+            raw = self._run_local_import(adapter_data, function_path=_DEFAULT_PLACEHOLDER_FUNCTIONS[data.backend])
+        elif integration_mode == "local_import":
             raw = self._run_local_import(data)
         elif integration_mode == "fastapi":
             raw = self._run_fastapi(data)
@@ -129,8 +126,8 @@ class SegmentationComponent(ImageComponent):
             raise ValueError(f"Unsupported segmentation integration_mode: {integration_mode}")
         return self._normalize_result(raw, data.backend, data.mode)
 
-    def _run_local_import(self, data: SegmentationInput) -> Any:
-        function_path = str(data.options.get("function_path") or "")
+    def _run_local_import(self, data: SegmentationInput, *, function_path: str | None = None) -> Any:
+        function_path = function_path or str(data.options.get("function_path") or "")
         if not function_path or "." not in function_path:
             raise ValueError("local_import mode requires options.function_path, e.g. my_package.segmenters.run")
         module_name, function_name = function_path.rsplit(".", 1)
@@ -161,11 +158,14 @@ class SegmentationComponent(ImageComponent):
         if isinstance(result, dict):
             masks_data = result.get("masks", []) or []
             metrics = result.get("metrics", {}) or {}
+            backend = str(result.get("backend") or backend)
+            mode = str(result.get("mode") or mode)
         elif isinstance(result, list):
             masks_data = result
 
         masks = [mask if isinstance(mask, SegmentationMask) else SegmentationMask.model_validate(mask) for mask in masks_data]
-        return SegmentationOutput(backend=backend, mode=mode, masks=masks, metrics=metrics, raw_output=result)
+        raw_output = result.get("raw_output") if isinstance(result, dict) else result
+        return SegmentationOutput(backend=backend, mode=mode, masks=masks, metrics=metrics, raw_output=raw_output)
 
     def cleanup(self) -> None:
         return None
@@ -182,4 +182,12 @@ SEGMENTATION_METHOD_BACKENDS = {
     "segmentation.anomalib.placeholder": "anomalib",
     "segmentation.sam.placeholder": "sam",
     "segmentation.opencv.placeholder": "opencv",
+}
+
+
+_DEFAULT_PLACEHOLDER_FUNCTIONS = {
+    "yolo": "backend.utils.segmentation_integrations.yolo_backend.run",
+    "anomalib": "backend.utils.segmentation_integrations.anomalib_backend.run",
+    "sam": "backend.utils.segmentation_integrations.sam_backend.run",
+    "opencv": "backend.utils.segmentation_integrations.opencv_backend.run",
 }

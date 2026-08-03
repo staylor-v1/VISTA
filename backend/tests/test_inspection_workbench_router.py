@@ -454,8 +454,9 @@ def test_slice_segmentation_selects_clicked_toolbox_region(client):
     payload = response.json()
     assert payload["status"] == "completed"
     assert payload["method_id"] == "segmentation.opencv.placeholder"
-    assert payload["summary"]["region_count"] == 0
-    assert payload["regions"] == []
+    assert payload["summary"]["region_count"] == 1
+    assert payload["regions"][0]["bbox"] == [24.0, 24.0, 40.0, 40.0]
+    assert payload["regions"][0]["area_px"] == 256.0
     assert payload["selected_region"] is None
 
 

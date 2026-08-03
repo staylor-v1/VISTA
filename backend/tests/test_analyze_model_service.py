@@ -96,14 +96,19 @@ def test_backend_analyze_toolbox_model_service_handlers_expose_health_manifest_a
     payload = result.model_dump(mode="json")
     assert payload["status"] == "completed"
     model_node = next(node for node in payload["node_results"] if node["node_id"] == "model")
-    assert model_node["status"] == "skipped"
+    assert model_node["status"] == "completed"
     assert model_node["summary"]["runtime"] == "placeholder"
-    assert model_node["summary"]["connection_required"] is True
-    assert any("Segmentation placeholders must be connected" in warning for warning in payload["warnings"])
+    assert model_node["summary"]["mask_count"] == 1
+    assert model_node["summary"]["detections"][0]["bbox"] == {
+        "x": 2.25,
+        "y": 2.25,
+        "width": 1.5,
+        "height": 1.5,
+    }
     output_node = next(node for node in payload["node_results"] if node["node_id"] == "output")
-    assert output_node["status"] == "skipped"
-    assert output_node["summary"]["artifact_count"] == 0
-    assert output_node["artifacts"] == []
+    assert output_node["status"] == "completed"
+    assert output_node["summary"]["artifact_count"] == 2
+    assert any(artifact["kind"] == "overlay_image" for artifact in output_node["artifacts"])
 
 
 def test_live_toolbox_model_service_health_and_manifest():

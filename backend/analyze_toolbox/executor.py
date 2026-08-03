@@ -882,7 +882,22 @@ def _apply_segmentation_component(state: ImageState, method, params: Dict[str, A
         bbox = [float(value) for value in (mask.bbox or [])[:4]]
         if len(bbox) == 4:
             x, y, w, h = bbox
-            draw.rectangle([x, y, x + w, y + h], fill=min(index, 255))
+            # Pillow rectangles include both endpoints. Convert VISTA's XYWH
+            # box (whose width and height are extents) to integer inclusive
+            # endpoints so rasterized masks do not gain an extra row/column.
+            raster_x = round(x)
+            raster_y = round(y)
+            raster_width = max(1, round(w))
+            raster_height = max(1, round(h))
+            draw.rectangle(
+                [
+                    raster_x,
+                    raster_y,
+                    raster_x + raster_width - 1,
+                    raster_y + raster_height - 1,
+                ],
+                fill=min(index, 255),
+            )
             detections.append({
                 "id": f"{backend}-{index}",
                 "class_name": mask.label or backend,
