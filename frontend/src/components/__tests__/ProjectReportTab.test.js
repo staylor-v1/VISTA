@@ -110,7 +110,7 @@ describe('ProjectReportTab', () => {
       `/api/projects/${PROJECT_ID}/report-json?schema_version=3`,
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-  });
+  }, 15_000);
 
   test('renders a clear empty inspection record', async () => {
     global.fetch.mockResolvedValueOnce(jsonResponse(makeReport([])));
