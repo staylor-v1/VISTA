@@ -21,6 +21,23 @@ def _dockerfile_stage(dockerfile: str, stage_name: str) -> str:
     return dockerfile[stage_start:].split("\nFROM ", maxsplit=1)[0]
 
 
+def _dockerfile_stages(dockerfile: str) -> list[str]:
+    """Return stage bodies in build order without coupling to stage aliases."""
+    headers = list(
+        re.finditer(
+            r"(?im)^[ \t]*FROM(?:[ \t]+--[^\s]+)*[ \t]+\S+"
+            r"(?:[ \t]+AS[ \t]+\S+)?[ \t]*$",
+            dockerfile,
+        )
+    )
+    return [
+        dockerfile[header.end() : headers[index + 1].start()]
+        if index + 1 < len(headers)
+        else dockerfile[header.end() :]
+        for index, header in enumerate(headers)
+    ]
+
+
 def _dockerfile_stage_parent(dockerfile: str, stage_name: str) -> str:
     stage_suffix = f" AS {stage_name}"
     stage_header = next(
@@ -222,9 +239,8 @@ def _stage_copies_root_test(stage: str) -> bool:
 
 def test_production_dockerfile_copies_only_runtime_test_data_assets():
     dockerfile = _read_repo_file("Dockerfile")
-    base_stage = _dockerfile_stage(dockerfile, "base")
-    builder_stage = _dockerfile_stage(dockerfile, "builder")
-    final_stage = _dockerfile_stage(dockerfile, "final")
+    stages = _dockerfile_stages(dockerfile)
+    build_stages, final_stage = stages[:-1], stages[-1]
     test_copy_instructions = [
         (
             [
@@ -243,15 +259,28 @@ def test_production_dockerfile_copies_only_runtime_test_data_assets():
     ]
 
     assert "test_toolbox" not in dockerfile
-    assert _root_test_transfer_sources(base_stage) == []
-    assert _root_test_transfer_sources(builder_stage) == []
-    assert _run_build_context_bind_mounts(base_stage) == []
-    assert _run_build_context_bind_mounts(builder_stage) == []
+    assert len(stages) >= 2
+    assert all(not _root_test_transfer_sources(stage) for stage in build_stages)
+    assert all(not _run_build_context_bind_mounts(stage) for stage in build_stages)
     assert _run_build_context_bind_mounts(final_stage) == []
     assert _unsafe_production_transfer_sources(final_stage) == []
-    assert _root_test_copy_sources(builder_stage) == []
+    assert all(not _root_test_copy_sources(stage) for stage in build_stages)
     assert _root_test_copy_sources(final_stage) == ["test/data"]
     assert test_copy_instructions == [(["test/data"], "/app/test/data")]
+
+
+def test_production_stage_parser_does_not_require_historical_aliases():
+    dockerfile = """  FROM --platform=linux/amd64 example.invalid/runtime AS compile-assets
+RUN echo build
+\tfrom example.invalid/runtime as production-runtime
+COPY ./test/data /app/test/data
+"""
+
+    stages = _dockerfile_stages(dockerfile)
+
+    assert len(stages) == 2
+    assert "RUN echo build" in stages[0]
+    assert _root_test_copy_sources(stages[-1]) == ["test/data"]
 
 
 @pytest.mark.parametrize(
@@ -402,7 +431,13 @@ def test_root_test_assets_are_scoped_to_backend_dev_and_production_data_only():
     ):
         assert not _stage_copies_root_test(test_free_stage)
 
-    production_builder = _dockerfile_stage(production_dockerfile, "builder")
-    production_final = _dockerfile_stage(production_dockerfile, "final")
-    assert not _stage_copies_root_test(production_builder)
+    production_stages = _dockerfile_stages(production_dockerfile)
+    production_build_stages, production_final = (
+        production_stages[:-1],
+        production_stages[-1],
+    )
+    assert len(production_stages) >= 2
+    assert all(
+        not _stage_copies_root_test(stage) for stage in production_build_stages
+    )
     assert _root_test_copy_sources(production_final) == ["test/data"]
