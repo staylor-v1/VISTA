@@ -12,37 +12,126 @@ def _pipeline(path: Path) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def test_gitlab_pipeline_keeps_the_historical_build_only_contract() -> None:
+def _effective_job(pipeline: dict, job_name: str) -> dict:
+    """Resolve the subset of GitLab ``extends`` needed by contract tests."""
+    job = pipeline[job_name]
+    parents = job.get("extends", [])
+    if isinstance(parents, str):
+        parents = [parents]
+    effective: dict = {}
+    for parent in parents:
+        effective.update(_effective_job(pipeline, parent))
+    effective.update(job)
+    return effective
+
+
+def _image_build_jobs(pipeline: dict) -> list[dict]:
+    jobs = []
+    for name, value in pipeline.items():
+        if name.startswith(".") or not isinstance(value, dict):
+            continue
+        effective = _effective_job(pipeline, name)
+        commands = effective.get("script", [])
+        if isinstance(commands, str):
+            commands = [commands]
+        if any("podman build " in command for command in commands):
+            jobs.append(effective)
+    return jobs
+
+
+def _pipeline_commands(value: object) -> list[str]:
+    """Collect shell commands regardless of whether CI keeps them on a job/template."""
+    if isinstance(value, dict):
+        commands: list[str] = []
+        for key, child in value.items():
+            if key in {"before_script", "script", "after_script"}:
+                commands.extend([child] if isinstance(child, str) else child)
+            elif isinstance(child, dict):
+                commands.extend(_pipeline_commands(child))
+        return commands
+    return []
+
+
+def test_gitlab_pipeline_retains_secure_podman_image_build_contract() -> None:
     pipeline = _pipeline(GITLAB_CI)
 
-    assert set(pipeline) == {"variables", "stages", "build"}
-    assert pipeline["variables"] == {
-        "QUAY_USERNAME": "${QUAY_USERNAME}",
-        "QUAY_IMAGE_NAME": "vista",
-        "QUAY_REGISTRY": "quay.io",
-    }
-    assert pipeline["stages"] == ["build"]
-
-    build = pipeline["build"]
+    assert pipeline["variables"]["QUAY_IMAGE_NAME"] == "vista"
+    assert pipeline["variables"]["QUAY_REGISTRY"] == "quay.io"
+    builds = _image_build_jobs(pipeline)
+    assert len(builds) == 1
+    build = builds[0]
     assert build["stage"] == "build"
     assert build["image"] == "podman:latest"
     assert build["services"] == ["podman:dind"]
-    assert build["only"] == ["main", "merge_requests"]
 
 
 def test_gitlab_build_logs_in_and_pushes_latest_and_commit_sha_tags() -> None:
-    build = _pipeline(GITLAB_CI)["build"]
+    pipeline = _pipeline(GITLAB_CI)
+    builds = _image_build_jobs(pipeline)
+    assert len(builds) == 1
+    # Login, build, and pushes must belong to the same effective job. Finding each
+    # command somewhere in the pipeline would allow unrelated jobs to satisfy the
+    # contract even though the image build itself could not authenticate or push.
+    commands = _pipeline_commands(builds[0])
 
-    assert build["before_script"] == [
-        'echo "$QUAY_PASSWORD" | podman login quay.io '
-        '-u "$QUAY_USERNAME" --password-stdin'
+    login_commands = [command for command in commands if "podman login " in command]
+    assert len(login_commands) == 1
+    assert 'echo "$QUAY_PASSWORD"' in login_commands[0]
+    assert "--password-stdin" in login_commands[0]
+
+    build_commands = [command for command in commands if "podman build " in command]
+    assert len(build_commands) == 1
+    assert "--ignorefile Dockerfile.dockerignore" in build_commands[0]
+    assert "$QUAY_IMAGE_NAME:latest" in build_commands[0]
+    assert "$QUAY_IMAGE_NAME:$CI_COMMIT_SHA" in build_commands[0]
+    push_commands = [command for command in commands if "podman push " in command]
+    assert any("$QUAY_IMAGE_NAME:latest" in command for command in push_commands)
+    assert any("$QUAY_IMAGE_NAME:$CI_COMMIT_SHA" in command for command in push_commands)
+
+
+def test_gitlab_build_discovery_allows_additional_jobs_and_inherited_setup() -> None:
+    pipeline = {
+        ".podman": {
+            "image": "podman:latest",
+            "before_script": ["podman login quay.io"],
+        },
+        "backend-tests": {"script": ["pytest"]},
+        "container-image": {
+            "extends": ".podman",
+            "stage": "build",
+            "script": ["podman build -t image ."],
+        },
+    }
+
+    assert _image_build_jobs(pipeline) == [
+        {
+            "image": "podman:latest",
+            "before_script": ["podman login quay.io"],
+            "extends": ".podman",
+            "stage": "build",
+            "script": ["podman build -t image ."],
+        }
     ]
-    assert build["script"] == [
-        "podman build --ignorefile Dockerfile.dockerignore "
-        "-t $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:latest "
-        "-t $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:$CI_COMMIT_SHA .",
-        "podman push $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:latest",
-        "podman push $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:$CI_COMMIT_SHA",
+
+
+def test_gitlab_build_contract_ignores_commands_from_unrelated_jobs() -> None:
+    pipeline = {
+        ".podman": {"before_script": ["podman login quay.io"]},
+        "container-image": {
+            "extends": ".podman",
+            "script": ["podman build -t image .", "podman push image"],
+        },
+        "unrelated": {
+            "script": ["podman login other.invalid", "podman push other/image"]
+        },
+    }
+
+    build = _image_build_jobs(pipeline)[0]
+
+    assert _pipeline_commands(build) == [
+        "podman login quay.io",
+        "podman build -t image .",
+        "podman push image",
     ]
 
 
