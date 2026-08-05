@@ -47,13 +47,11 @@ describe('ImageGroupPanel', () => {
     delete global.fetch;
   });
 
-  test('renders "Group Assignment" header', async () => {
-    setupFetch();
+  test('renders "Group Assignment" header', () => {
+    global.fetch = jest.fn(() => new Promise(() => {}));
     renderPanel();
 
-    await waitFor(() => {
-      expect(screen.getByText('Group Assignment')).toBeInTheDocument();
-    });
+    expect(screen.getByText('Group Assignment')).toBeInTheDocument();
   });
 
   test('shows "Not assigned" when groupId is null', async () => {
