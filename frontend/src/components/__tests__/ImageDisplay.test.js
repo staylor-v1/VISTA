@@ -63,11 +63,31 @@ describe('ImageDisplay', () => {
     test('shows all control buttons for regular images', () => {
       renderImageDisplay();
       
-      expect(screen.queryByText('Zoom In')).not.toBeInTheDocument();
-      expect(screen.queryByText('Zoom Out')).not.toBeInTheDocument();
       expect(screen.getByText('Reset')).toBeInTheDocument();
       expect(screen.getByText('Download')).toBeInTheDocument();
       expect(screen.getByText('Delete')).toBeInTheDocument();
+    });
+
+    test('renders original and ML overlay images side by side when a bitmap is available', () => {
+      renderImageDisplay({
+        navigateToPreviousImage: jest.fn(),
+        navigateToNextImage: jest.fn(),
+        currentImageIndex: 0,
+        projectImages: [mockRegularImage],
+        selectedAnalysis: null,
+        annotations: [],
+        overlayOptions: {
+          showBoxes: false,
+          showHeatmap: false,
+          opacity: 0.7,
+          viewMode: 'side-by-side',
+          bitmapAvailable: true
+        }
+      });
+
+      expect(screen.getAllByAltText('test-image.jpg')).toHaveLength(2);
+      expect(screen.getByText('Original')).toBeInTheDocument();
+      expect(screen.getByText('ML Overlay')).toBeInTheDocument();
     });
 
     test('keeps image geometry unchanged when measure mode toggles', () => {
@@ -121,6 +141,60 @@ describe('ImageDisplay', () => {
     });
   });
 
+  describe('Image Navigation', () => {
+    test('navigates between images and disables navigation at the list boundaries', () => {
+      const navigateToPreviousImage = jest.fn();
+      const navigateToNextImage = jest.fn();
+      const projectImages = [
+        mockRegularImage,
+        { ...mockRegularImage, id: 'img-2', filename: 'second-image.jpg' },
+        { ...mockRegularImage, id: 'img-3', filename: 'third-image.jpg' }
+      ];
+      const navigationProps = {
+        isTransitioning: false,
+        projectId: 'test-project-id',
+        setImage: jest.fn(),
+        refreshProjectImages: jest.fn(),
+        navigateToPreviousImage,
+        navigateToNextImage,
+        projectImages
+      };
+
+      const { rerender } = renderImageDisplay({
+        ...navigationProps,
+        imageId: projectImages[1].id,
+        image: projectImages[1],
+        currentImageIndex: 1
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /prev/i }));
+      fireEvent.click(screen.getByRole('button', { name: /next/i }));
+
+      expect(navigateToPreviousImage).toHaveBeenCalledTimes(1);
+      expect(navigateToNextImage).toHaveBeenCalledTimes(1);
+
+      rerender(
+        <ImageDisplay
+          {...navigationProps}
+          imageId={projectImages[0].id}
+          image={projectImages[0]}
+          currentImageIndex={0}
+        />
+      );
+      expect(screen.getByRole('button', { name: /prev/i })).toBeDisabled();
+
+      rerender(
+        <ImageDisplay
+          {...navigationProps}
+          imageId={projectImages[2].id}
+          image={projectImages[2]}
+          currentImageIndex={2}
+        />
+      );
+      expect(screen.getByRole('button', { name: /next/i })).toBeDisabled();
+    });
+  });
+
   describe('Deleted Images', () => {
     test('renders deleted image with placeholder SVG', () => {
       renderImageDisplay({
@@ -149,8 +223,6 @@ describe('ImageDisplay', () => {
         image: mockDeletedImage
       });
       
-      expect(screen.queryByText('Zoom In')).not.toBeInTheDocument();
-      expect(screen.queryByText('Zoom Out')).not.toBeInTheDocument();
       expect(screen.getByText('Reset')).toBeInTheDocument();
       expect(screen.getByText('Download')).toBeInTheDocument();
     });

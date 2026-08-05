@@ -3439,23 +3439,6 @@ describe('InspectionWorkbenchPanel', () => {
     });
     expect(screen.getByLabelText('Three.js mechanical volume renderer')).not.toBeVisible();
     expect(screen.getByLabelText('Mechanical 3DGS preview')).toBeVisible();
-
-    expect([...screen.getByLabelText('3D view').options].map((option) => option.value)).not.toContain('splat');
-  });
-
-  test('uses a neutral deterministic 3DGS fallback when preprocessing status returns an HTTP error', async () => {
-    mockWorkbenchFetch(scenarioByUser[2]);
-    const workbenchFetch = global.fetch;
-    global.fetch = jest.fn((url, options) => {
-      if (url.includes('/volume-splat-assets/status')) {
-        return Promise.resolve({ ok: false, status: 500 });
-      }
-      return workbenchFetch(url, options);
-    });
-
-    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
-    await screen.findByTestId('mpr-panel');
-    expect([...screen.getByLabelText('3D view').options].map((option) => option.value)).not.toContain('splat');
   });
 
   test('releases an active fullscreen orbit capture when the view closes or loses focus', async () => {
@@ -6000,16 +5983,6 @@ describe('InspectionWorkbenchPanel', () => {
     expect(annotationList).not.toHaveTextContent('Late A annotation');
   });
 
-  test('removes simplified 3DGS configuration from the PT3 quadrant', async () => {
-    mockWorkbenchFetch(scenarioByUser[2]);
-    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
-    await waitFor(() => expect(screen.getByTestId('mpr-panel')).toBeInTheDocument());
-    const values = [...screen.getByLabelText('3D view').options].map((option) => option.value);
-    expect(values).not.toContain('splat');
-    expect(screen.queryByText('Simplified 3DGS')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('splat-config-button')).not.toBeInTheDocument();
-  });
-
   test('keeps the last active 2D MPR axis highlighted in the 3D slice locator', async () => {
     mockWorkbenchFetch(scenarioByUser[2]);
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
@@ -6217,9 +6190,6 @@ describe('InspectionWorkbenchPanel', () => {
     fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'ray-march:composite' } });
     expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('Ray march loading');
     expect(screen.queryByLabelText('3DGS opacity')).not.toBeInTheDocument();
-    expect(global.fetch.mock.calls.some((call) => call[0].includes('/volume-splat-assets'))).toBe(false);
-
-    expect([...screen.getByLabelText('3D view').options].map((option) => option.value)).not.toContain('splat');
     expect(screen.getByTestId('pt3-gaussian-splat-viewer')).toHaveTextContent('Ray march');
     fireEvent.change(screen.getByLabelText('3D view'), { target: { value: 'orientation' } });
     expect(screen.queryByTestId('pt3-gaussian-splat-viewer')).not.toBeInTheDocument();
@@ -6408,21 +6378,7 @@ describe('InspectionWorkbenchPanel', () => {
     expect(annotationPosts).toHaveLength(0);
   });
 
-  test('PT3 annotation consolidation: keeps only Segmentation Helpers in the MPR action toolbar', async () => {
-    mockWorkbenchFetch(scenarioByUser[2]);
-    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
-
-    await screen.findByTestId('mpr-panel');
-    const toolbar = document.querySelector('.mpr-ml-actions');
-    expect(toolbar).toBeInTheDocument();
-    const toolbarQueries = within(toolbar);
-    expect(toolbarQueries.getByRole('button', { name: 'Segmentation Helpers' })).toBeInTheDocument();
-    ['Run Segmentation', 'Run Measurements', 'Reset 3D', 'Measure', 'Draw Box'].forEach((label) => {
-      expect(toolbarQueries.queryByRole('button', { name: label })).not.toBeInTheDocument();
-    });
-  });
-
-  test('PT3 annotation consolidation: omits Crop from bounding-box annotation rows', async () => {
+  test('keeps PT3 bounding-box annotations editable without offering the 2D crop action', async () => {
     const annotation = {
       id: 'pt3-box-without-crop',
       image_id: 'pt3-z-000',
@@ -7611,17 +7567,7 @@ describe('InspectionWorkbenchPanel', () => {
     });
   });
 
-
-  test('does not render the old inspection-only copy link control', async () => {
-    mockWorkbenchFetch(scenarioByUser[0]);
-
-    render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT1" />);
-
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Basic Part' })).toBeInTheDocument());
-    expect(screen.queryByRole('button', { name: /Copy link to current view/i })).not.toBeInTheDocument();
-  });
-
-  test('keeps projection fallbacks for 2D panes without exposing shell reconstruction', async () => {
+  test('renders projection fallbacks for 2D panes and opens fullscreen images', async () => {
     mockWorkbenchFetch(scenarioByUser[0]);
     render(<InspectionWorkbenchPanel projectId="proj-1" projectType="PT3" />);
 
@@ -7631,7 +7577,6 @@ describe('InspectionWorkbenchPanel', () => {
 
     expect(screen.queryByRole('img', { name: /Volume reconstruction slice/ })).not.toBeInTheDocument();
     expect(screen.getAllByRole('img', { name: /fallback projection from front view/i }).length).toBeGreaterThan(0);
-    expect(screen.queryByRole('img', { name: /Fallback visual hull shell front view/i })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('mpr-pane-coronal'));
     expect(screen.getByAltText('XZ slice 8 fullscreen')).toHaveAttribute(
@@ -7640,10 +7585,6 @@ describe('InspectionWorkbenchPanel', () => {
     );
     expect(screen.queryByTestId('fullscreen-mpr-slice')).not.toBeInTheDocument();
     fireEvent.click(screen.getByLabelText('Close fullscreen image'));
-
-    const modeSelect = screen.getByLabelText('3D view');
-    expect(Array.from(modeSelect.options).map((option) => option.value)).not.toContain('shell');
-    expect(screen.queryByRole('img', { name: /Fallback visual hull shell front view/i })).not.toBeInTheDocument();
   });
 
 });

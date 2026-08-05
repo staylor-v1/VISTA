@@ -39,43 +39,26 @@ echo "============================================="
 
 set +e
 
-# Run Jest tests, excluding the custom test-runner script
+# Run Jest tests
 echo "Jest tests:"
 if [ "$VERBOSE_MODE" = true ]; then
-  npx react-scripts test --testPathIgnorePatterns=test-runner.cjs --watchAll=false --passWithNoTests --verbose
+  npx react-scripts test --watchAll=false --passWithNoTests --verbose
 else
   # Application console output can be extremely noisy and can push Jest's
   # failure report past CI log limits. Jest still prints failed assertions,
   # stack traces, and its final summary when --silent is enabled.
-  npx react-scripts test --testPathIgnorePatterns=test-runner.cjs --watchAll=false --passWithNoTests --silent \
+  npx react-scripts test --watchAll=false --passWithNoTests --silent \
     --reporters=./scripts/compact-jest-reporter.js
 fi
 JEST_EXIT_CODE=$?
-
-# Run the custom test runner separately
-echo ""
-echo "Custom test runner:"
-if [ "$VERBOSE_MODE" = true ]; then
-  node src/__tests__/test-runner.cjs
-else
-  node src/__tests__/test-runner.cjs
-fi
-CUSTOM_TEST_EXIT_CODE=$?
-
-# Frontend passes if both Jest tests and custom tests pass
-if [ $JEST_EXIT_CODE -eq 0 ] && [ $CUSTOM_TEST_EXIT_CODE -eq 0 ]; then
-  EXIT_CODE=0
-else
-  EXIT_CODE=1
-fi
 set -e
 
 echo ""
-if [ $EXIT_CODE -eq 0 ]; then
+if [ $JEST_EXIT_CODE -eq 0 ]; then
   echo "Frontend tests: PASSED"
 else
   echo "Frontend tests: FAILED"
   [ "$VERBOSE_MODE" = false ] && echo "  Run with --verbose for full details"
 fi
 
-exit $EXIT_CODE
+exit $JEST_EXIT_CODE

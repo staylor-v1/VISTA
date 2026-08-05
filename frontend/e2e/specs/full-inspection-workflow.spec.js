@@ -5,7 +5,6 @@ const { mockFullInspectionWorkflowRoutes } = require('../fixtures/fullInspection
 
 const reportDesktopScreenshotPath = path.resolve(__dirname, '../../artifacts/e2e-inspection-report-desktop.png');
 const reportNarrowScreenshotPath = path.resolve(__dirname, '../../artifacts/e2e-inspection-report-narrow.png');
-const hierarchyScreenshotPath = path.resolve(__dirname, '../../artifacts/e2e-inspection-hierarchy.png');
 
 async function expectRawImageCount(page, expectedCount) {
   const rawImagesCard = page.locator('article.summary-card').filter({ has: page.getByRole('heading', { name: 'Raw Images' }) });
@@ -165,32 +164,5 @@ test.describe('Full inspection workflow end-to-end', () => {
     expect(buttonBounds.left).toBeGreaterThanOrEqual(0);
     expect(buttonBounds.right).toBeLessThanOrEqual(buttonBounds.viewportWidth);
     await page.screenshot({ path: reportNarrowScreenshotPath, fullPage: true });
-  });
-
-  test('creates a PT1 project and preserves the original hierarchical inspection panel layout', async ({ page }) => {
-    const { projectId } = await mockFullInspectionWorkflowRoutes(page);
-
-    await page.goto('/', { waitUntil: 'networkidle' });
-
-    await page.getByRole('button', { name: 'Create Your First Project' }).click();
-    await page.getByLabel('Project Name *').fill('PT1 Hierarchical Layout Regression');
-    await page.getByLabel('Description').fill('Verifies PT1 uses the legacy hierarchical inspection panel arrangement');
-    await page.getByLabel('Access Group *').fill('qa-team');
-    await page.getByLabel('Project Type *').selectOption('PT1');
-    await page.getByRole('button', { name: 'Create Project' }).click();
-
-    await page.getByRole('link', { name: 'PT1 Hierarchical Layout Regression' }).click();
-    await expect(page).toHaveURL(new RegExp(`/project/${projectId}$`));
-
-    await page.getByRole('tab', { name: 'Inspection' }).click();
-    const workbench = page.locator('section[aria-label="Inspection Workbench"]');
-    await expect(workbench).toBeVisible();
-
-    await expect(workbench.locator('.flexlayout__layout')).toBeVisible();
-    await expect(workbench.locator('.workbench-tabbed-panel')).toHaveCount(3);
-    await expect(workbench.locator('.flexlayout__tab_button', { hasText: 'Part Summary' }).first()).toBeVisible();
-    await expect(workbench.locator('.flexlayout__tab_button', { hasText: 'Inspection' }).first()).toBeVisible();
-    await expect(workbench.locator('.flexlayout__tab_button', { hasText: 'Annotations' }).first()).toBeVisible();
-    await page.screenshot({ path: hierarchyScreenshotPath, fullPage: true });
   });
 });

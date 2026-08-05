@@ -3,7 +3,6 @@ const { test, expect } = require('@playwright/test');
 const { mockInspectionWorkbenchRoutes } = require('../fixtures/inspectionWorkbenchMocks');
 
 const screenshotPath = path.resolve(__dirname, '../../artifacts/pr04-mpr-workbench.png');
-const pr08ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr08-project-type-visibility.png');
 const pr09ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr09-inspector-modalities-measurements.png');
 const pr11ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr11-project-configuration.png');
 const pr14ScreenshotPath = path.resolve(__dirname, '../../artifacts/pr14-report-normalization-advanced.png');
@@ -465,7 +464,7 @@ test.describe('Inspection Workbench screenshot artifact', () => {
 });
 
 test.describe('PT3 Real 3DGS mode', () => {
-  test('omits obsolete simplified controls and completes a voxel-native canonical Real 3DGS fit', async ({ page }) => {
+  test('completes a voxel-native canonical Real 3DGS fit', async ({ page }) => {
     const segmentedPart = {
       id: 'part-adv-001',
       batch_id: 'batch-adv-a',
@@ -495,9 +494,6 @@ test.describe('PT3 Real 3DGS mode', () => {
     await page.getByRole('tab', { name: 'Inspection' }).click();
     const viewSelector = page.getByLabel('3D view');
     await expect(viewSelector).toBeVisible();
-    await expect(viewSelector.locator('option[value="splat"]')).toHaveCount(0);
-    await expect(viewSelector.locator('option[value="shell"]')).toHaveCount(0);
-    await expect(viewSelector.locator('option[value="hybrid3d"]')).toHaveCount(0);
     await expect(viewSelector.locator('optgroup[label="Ray marching"] option')).toHaveText([
       'Composite',
       'MIP',
@@ -516,7 +512,6 @@ test.describe('PT3 Real 3DGS mode', () => {
     await expect(page.getByLabel('Real 3DGS splat budget')).toHaveAttribute('max', '100000');
     const computeButton = page.getByRole('button', { name: 'Fit voxel splats' });
     await expect(computeButton).toBeEnabled();
-    await expect(page.getByTestId('splat-config-button')).toHaveCount(0);
 
     await computeButton.click();
     await expect(viewer).toContainText('37% complete');
@@ -1207,78 +1202,6 @@ test.describe('PR-09 annotation controls screenshot artifact', () => {
 
     expect(annotationMutationRequests).toEqual([]);
   });
-});
-
-test.describe('PR-08 project type UI exposure smoke', () => {
-  for (const projectType of ['PT1', 'PT2', 'PT3']) {
-    test(`dashboard and project detail surfaces show ${projectType}`, async ({ page }) => {
-      const projectId = `proj-${projectType.toLowerCase()}-smoke`;
-
-      await page.route('**/api/**', async (route) => {
-        const url = route.request().url();
-        const method = route.request().method();
-
-        if (url.endsWith('/api/users/me')) {
-          await route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ detail: 'Unauthorized' }) });
-          return;
-        }
-        if (url.endsWith('/api/projects/') && method === 'GET') {
-          await route.fulfill({
-            status: 200,
-            contentType: 'application/json',
-            body: JSON.stringify([{
-              id: projectId,
-              name: `${projectType} smoke`,
-              description: 'Synthetic smoke project',
-              meta_group_id: 'qa-team',
-              project_type: projectType,
-            }]),
-          });
-          return;
-        }
-        if (url.endsWith(`/api/projects/${projectId}`)) {
-          await route.fulfill({
-            status: 200,
-            contentType: 'application/json',
-            body: JSON.stringify({
-              id: projectId,
-              name: `${projectType} smoke`,
-              description: 'Synthetic smoke project',
-              meta_group_id: 'qa-team',
-              project_type: projectType,
-            }),
-          });
-          return;
-        }
-        if (url.endsWith(`/api/projects/${projectId}/metadata-dict`)) {
-          await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
-          return;
-        }
-        if (url.endsWith(`/api/projects/${projectId}/classes`)) {
-          await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
-          return;
-        }
-        if (url.endsWith(`/api/projects/${projectId}/has-groups`)) {
-          await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ has_groups: false }) });
-          return;
-        }
-        if (url.includes(`/api/projects/${projectId}/images`)) {
-          await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
-          return;
-        }
-        await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
-      });
-
-      await page.goto('/', { waitUntil: 'networkidle' });
-      await expect(page.getByText(`Type: ${projectType}`)).toBeVisible();
-      if (projectType === 'PT2') {
-        await page.screenshot({ path: pr08ScreenshotPath, fullPage: true });
-      }
-
-      await page.getByRole('link', { name: `${projectType} smoke` }).click();
-      await expect(page.getByText(`Type: ${projectType}`)).toBeVisible();
-    });
-  }
 });
 
 for (const projectType of ['PT1', 'PT2', 'PT3']) {

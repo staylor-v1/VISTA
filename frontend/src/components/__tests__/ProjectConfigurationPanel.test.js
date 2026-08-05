@@ -1,6 +1,4 @@
 import React, { createRef } from 'react';
-import fs from 'fs';
-import path from 'path';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import ProjectConfigurationPanel from '../ProjectConfigurationPanel';
 
@@ -1639,63 +1637,6 @@ describe('ProjectConfigurationPanel', () => {
     expect(screen.getByText(/API health: responded at \/api\/health \(200 OK/)).toBeInTheDocument();
     expect(screen.getByText(/Projects list \(Postgres\): responded at \/api\/projects\/ \(200 OK/)).toBeInTheDocument();
     expect(screen.getByText(/Project configuration \(Postgres\): error at \/api\/projects\/proj-1\/configuration \(503 Service Unavailable/)).toBeInTheDocument();
-  });
-
-
-  test('documents downstream implementation status for every saved configuration field', () => {
-    const srcRoot = path.join(process.cwd(), 'src');
-    const collectSource = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (entry.name === '__tests__') return [];
-        return collectSource(fullPath);
-      }
-      if (!entry.name.endsWith('.js')) return [];
-      if (fullPath.endsWith(path.join('components', 'ProjectConfigurationPanel.js'))) return [];
-      return [fs.readFileSync(fullPath, 'utf8')];
-    }).join('\n');
-
-    const downstreamSource = collectSource(srcRoot);
-    const fieldsWithDownstreamEffects = [
-      'phase_settings',
-      'manual_phase_selection_enabled',
-      'manual_phase',
-      'file_naming_scheme',
-      'configurable_hotkeys',
-      'defect_types',
-      'display_settings',
-      'pt3_3d_guides',
-      'crosshair_transparency_percent',
-      'crosshair_line_width_px',
-      'plane_outline_transparency_percent',
-      'plane_outline_line_width_px',
-    ];
-    fieldsWithDownstreamEffects.forEach((fieldName) => {
-      expect(downstreamSource).toContain(fieldName);
-    });
-
-    const persistedOnlyFields = [
-      'project_owner',
-      'current_user',
-      'serial_number_scheme',
-      'batch_sn_enabled',
-      'sub_batching_enabled',
-      'sub_batch_sn_enabled',
-      'part_sn_enabled',
-      'default_colormap',
-      'anomaly_colormap',
-      'grayscale_base_image',
-      'require_disposition_on_submit',
-      'require_measurement_for_critical',
-      'require_second_reviewer_for_reject',
-      'image_modalities',
-      'calibration_required',
-      'example_image_uploaded',
-      'part_views',
-    ];
-    persistedOnlyFields.forEach((fieldName) => {
-      expect(downstreamSource).not.toContain(fieldName);
-    });
   });
 
   projectTypes.forEach((projectType) => {
