@@ -5,6 +5,8 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GITLAB_CI = REPO_ROOT / ".gitlab-ci.yml"
+LOCAL_DOCKERFILE = REPO_ROOT / "Dockerfile"
+DEPLOYED_DOCKERFILE = REPO_ROOT / "Dockerfile.prod"
 GITHUB_CI = REPO_ROOT / ".github" / "workflows" / "docker-image.yml"
 
 
@@ -34,7 +36,7 @@ def _image_build_jobs(pipeline: dict) -> list[dict]:
         commands = effective.get("script", [])
         if isinstance(commands, str):
             commands = [commands]
-        if any("podman build " in command for command in commands):
+        if any("buildah build " in command for command in commands):
             jobs.append(effective)
     return jobs
 
@@ -52,20 +54,31 @@ def _pipeline_commands(value: object) -> list[str]:
     return []
 
 
-def test_gitlab_pipeline_retains_secure_podman_image_build_contract() -> None:
+def test_production_dockerfile_stays_in_sync_with_local_build() -> None:
+    """Keep CI fixes mergeable with the historically deployed build recipe."""
+    assert DEPLOYED_DOCKERFILE.read_bytes() == LOCAL_DOCKERFILE.read_bytes()
+
+
+def test_gitlab_pipeline_matches_deployed_buildah_shape() -> None:
     pipeline = _pipeline(GITLAB_CI)
 
-    assert pipeline["variables"]["QUAY_IMAGE_NAME"] == "vista"
+    assert pipeline["variables"]["QUAY_USERNAME"] == "vista-tk"
     assert pipeline["variables"]["QUAY_REGISTRY"] == "quay.io"
+    assert pipeline["stages"] == ["build", "test", "deploy"]
     builds = _image_build_jobs(pipeline)
     assert len(builds) == 1
     build = builds[0]
     assert build["stage"] == "build"
-    assert build["image"] == "podman:latest"
-    assert build["services"] == ["podman:dind"]
+    assert build["image"] == "quay.io/buildah/stable"
+    assert build["variables"]["STORAGE_DRIVER"] == "vfs"
+    assert build["artifacts"] == {
+        "paths": ["build-image.tar"],
+        "expire_in": "1hr",
+    }
+    assert build["only"] == ["branches"]
 
 
-def test_gitlab_build_logs_in_and_pushes_latest_and_commit_sha_tags() -> None:
+def test_gitlab_build_uses_production_dockerfile_and_exports_deploy_artifact() -> None:
     pipeline = _pipeline(GITLAB_CI)
     builds = _image_build_jobs(pipeline)
     assert len(builds) == 1
@@ -74,74 +87,120 @@ def test_gitlab_build_logs_in_and_pushes_latest_and_commit_sha_tags() -> None:
     # contract even though the image build itself could not authenticate or push.
     commands = _pipeline_commands(builds[0])
 
-    login_commands = [command for command in commands if "podman login " in command]
+    login_commands = [command for command in commands if "buildah login " in command]
     assert len(login_commands) == 1
-    assert 'echo "$QUAY_PASSWORD"' in login_commands[0]
-    assert "--password-stdin" in login_commands[0]
+    assert "-u=$QUAY_ROBOT_NAME" in login_commands[0]
+    assert "-p=$QUAY_ROBOT_PASSWORD" in login_commands[0]
 
-    build_commands = [command for command in commands if "podman build " in command]
+    build_commands = [command for command in commands if "buildah build " in command]
     assert len(build_commands) == 1
-    assert "--ignorefile Dockerfile.dockerignore" in build_commands[0]
-    assert "$QUAY_IMAGE_NAME:latest" in build_commands[0]
-    assert "$QUAY_IMAGE_NAME:$CI_COMMIT_SHA" in build_commands[0]
-    assert '"$QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:latest"' in build_commands[0]
-    assert (
-        '"$QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:$CI_COMMIT_SHA"'
-        in build_commands[0]
-    )
-    push_commands = [command for command in commands if "podman push " in command]
-    assert any("$QUAY_IMAGE_NAME:latest" in command for command in push_commands)
-    assert any("$QUAY_IMAGE_NAME:$CI_COMMIT_SHA" in command for command in push_commands)
-    assert all(
-        command.removeprefix("podman push ").startswith('"')
-        and command.endswith('"')
+    assert "--storage-driver $STORAGE_DRIVER" in build_commands[0]
+    assert "$QUAY_USERNAME/build:latest" in build_commands[0]
+    assert "vista-tk-deployednetwork-qual:$CI_COMMIT_SHORT_SHA" in build_commands[0]
+    assert "-f Dockerfile.prod ." in build_commands[0]
+    push_commands = [command for command in commands if "buildah push " in command]
+    assert any(
+        "vista-tk-deployednetwork-qual:$CI_COMMIT_SHORT_SHA" in command
         for command in push_commands
     )
+    assert any("docker-archive:build-image.tar" in command for command in push_commands)
+
+
+def test_gitlab_test_jobs_match_deployed_commands_with_public_registries() -> None:
+    pipeline = _pipeline(GITLAB_CI)
+
+    backend = pipeline["backend-tests"]
+    assert backend["image"].endswith(
+        "vista-tk-deployednetwork-qual:$CI_COMMIT_SHORT_SHA"
+    )
+    assert backend["variables"] == {
+        "DEBUG": "true",
+        "SKIP_HEADER_CHECK": "true",
+        "FAST_TEST_MODE": "true",
+    }
+    assert backend["script"] == ["cd backend", "pytest -v -n 2 --tb=short tests/"]
+
+    frontend = pipeline["frontend-tests"]
+    assert frontend["image"] == "node:22-alpine"
+    assert frontend["needs"] == []
+    assert frontend["script"] == [
+        "cd frontend",
+        "npm config set registry https://registry.npmjs.org/",
+        "npm install",
+        "npm test -- --watchAll=false",
+    ]
+
+
+def test_gitlab_deploy_jobs_reuse_archived_image_and_preserve_targets() -> None:
+    pipeline = _pipeline(GITLAB_CI)
+    expected_targets = {
+        "Deploy to dev": ("vista-tk-deployednetwork-dev", "on_success"),
+        "Deploy to qual": ("vista-tk-deployednetwork-qual", "on_success"),
+        "Deploy to prod": ("vista-tk-deployednetwork-prod", "manual"),
+        "Deploy to deployednetwork2": ("vista-tk-deployednetwork2-prod", "manual"),
+    }
+
+    for name, (image_name, when) in expected_targets.items():
+        job = pipeline[name]
+        assert job["image"] == "quay.io/buildah/stable"
+        assert job["needs"] == ["build"]
+        assert job["variables"]["IMAGE_NAME"] == image_name
+        assert job["when"] == when
+        assert "buildah pull docker-archive:build-image.tar" in job["script"]
+        assert any("${IMAGE_NAME}:latest" in command for command in job["script"])
+
+    postgres_commands = pipeline["Update postgres image"]["script"]
+    assert postgres_commands[0] == "buildah pull docker.io/bitnami/postgresql:latest"
+    assert any(
+        "bitnami-postgresql-deployednetwork2:18.1" in command
+        for command in postgres_commands
+    )
+    assert any("bitnami-postgresql:18.1" in command for command in postgres_commands)
 
 
 def test_gitlab_build_discovery_allows_additional_jobs_and_inherited_setup() -> None:
     pipeline = {
-        ".podman": {
-            "image": "podman:latest",
-            "before_script": ["podman login quay.io"],
+        ".buildah": {
+            "image": "quay.io/buildah/stable",
+            "before_script": ["buildah login quay.io"],
         },
         "backend-tests": {"script": ["pytest"]},
         "container-image": {
-            "extends": ".podman",
+            "extends": ".buildah",
             "stage": "build",
-            "script": ["podman build -t image ."],
+            "script": ["buildah build -t image ."],
         },
     }
 
     assert _image_build_jobs(pipeline) == [
         {
-            "image": "podman:latest",
-            "before_script": ["podman login quay.io"],
-            "extends": ".podman",
+            "image": "quay.io/buildah/stable",
+            "before_script": ["buildah login quay.io"],
+            "extends": ".buildah",
             "stage": "build",
-            "script": ["podman build -t image ."],
+            "script": ["buildah build -t image ."],
         }
     ]
 
 
 def test_gitlab_build_contract_ignores_commands_from_unrelated_jobs() -> None:
     pipeline = {
-        ".podman": {"before_script": ["podman login quay.io"]},
+        ".buildah": {"before_script": ["buildah login quay.io"]},
         "container-image": {
-            "extends": ".podman",
-            "script": ["podman build -t image .", "podman push image"],
+            "extends": ".buildah",
+            "script": ["buildah build -t image .", "buildah push image"],
         },
         "unrelated": {
-            "script": ["podman login other.invalid", "podman push other/image"]
+            "script": ["buildah login other.invalid", "buildah push other/image"]
         },
     }
 
     build = _image_build_jobs(pipeline)[0]
 
     assert _pipeline_commands(build) == [
-        "podman login quay.io",
-        "podman build -t image .",
-        "podman push image",
+        "buildah login quay.io",
+        "buildah build -t image .",
+        "buildah push image",
     ]
 
 

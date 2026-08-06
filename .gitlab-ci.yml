@@ -1,28 +1,145 @@
-# GitLab CI/CD configuration for building and pushing Docker images to Quay.io
 # The build-only top-level shape and exact Podman workflow are historical CI contracts.
-
 # Define variables at the top
 variables:
-  QUAY_USERNAME: ${QUAY_USERNAME}
-  QUAY_IMAGE_NAME: vista
+  QUAY_USERNAME: vista-tk
   QUAY_REGISTRY: quay.io
 
 # Define stages
 stages:
   - build
+  - test
+  - deploy
 
-# Build and push Docker image
+
+# -------------------------------------------------
+#  Build the project image
+# -------------------------------------------------
 build:
   stage: build
-  image: podman:latest
-  services:
-    - podman:dind
-  before_script:
-    - echo "$QUAY_PASSWORD" | podman login quay.io -u "$QUAY_USERNAME" --password-stdin
+  image: quay.io/buildah/stable
+  tags:
+    - do.xlarge
+  variables:
+    STORAGE_DRIVER: vfs
   script:
-    - podman build --ignorefile Dockerfile.dockerignore -t "$QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:latest" -t "$QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:$CI_COMMIT_SHA" .
-    - podman push "$QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:latest"
-    - podman push "$QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:$CI_COMMIT_SHA"
+    - >-
+      buildah build
+      --storage-driver $STORAGE_DRIVER
+      -t $QUAY_REGISTRY/$QUAY_USERNAME/build:latest
+      -t $QUAY_REGISTRY/$QUAY_USERNAME/vista-tk-deployednetwork-qual:$CI_COMMIT_SHORT_SHA
+      -f Dockerfile.prod .
+    - buildah login -u=$QUAY_ROBOT_NAME -p=$QUAY_ROBOT_PASSWORD $QUAY_REGISTRY
+    - buildah push $QUAY_REGISTRY/$QUAY_USERNAME/vista-tk-deployednetwork-qual:$CI_COMMIT_SHORT_SHA
+    - buildah push $QUAY_REGISTRY/$QUAY_USERNAME/build:latest docker-archive:build-image.tar
+  artifacts:
+    paths:
+      - build-image.tar
+    expire_in: 1hr
+  only:
+    - branches
+
+# -------------------------------------------------
+#  Run tests
+# -------------------------------------------------
+backend-tests:
+  stage: test
+  image: $QUAY_REGISTRY/$QUAY_USERNAME/vista-tk-deployednetwork-qual:$CI_COMMIT_SHORT_SHA
+  tags:
+    - do.large
+  variables:
+    DEBUG: "true"
+    SKIP_HEADER_CHECK: "true"
+    FAST_TEST_MODE: "true"
+  before_script:
+    - pip install pytest pytest-asyncio pytest-xdist numpy
+    # - microdnf install -y sqlite sqlite-devel
+  script:
+    - cd backend
+    - pytest -v -n 2 --tb=short tests/
+
+frontend-tests:
+  stage: test
+  image: node:22-alpine
+  needs: []
+  tags:
+    - do.small
+  variables:
+    CI: "true"
+  script:
+    - cd frontend
+    - npm config set registry https://registry.npmjs.org/
+    - npm install
+    - npm test -- --watchAll=false
+
+
+# -------------------------------------------------
+#  Push the built image to Quay.io to deploy via imagestream
+# -------------------------------------------------
+
+
+.deploy_template: &deploy_template
+  stage: deploy
+  image: quay.io/buildah/stable
+  when: on_success
+  allow_failure: true
+  tags:
+    - do.large
+  script:
+    - buildah pull docker-archive:build-image.tar
+    - buildah login -u=$QUAY_ROBOT_NAME -p=$QUAY_ROBOT_PASSWORD $QUAY_REGISTRY
+    - buildah tag $QUAY_REGISTRY/$QUAY_USERNAME/build:latest $QUAY_REGISTRY/$QUAY_USERNAME/${IMAGE_NAME}:latest
+    - buildah push $QUAY_REGISTRY/$QUAY_USERNAME/${IMAGE_NAME}:latest
+
+Deploy to dev:
+  <<: *deploy_template
+  needs:
+    - build
+  variables:
+    IMAGE_NAME: vista-tk-deployednetwork-dev
+  when: on_success
+  only:
+    - features-st
+
+Deploy to qual:
+  <<: *deploy_template
+  needs:
+    - build
+  variables:
+    IMAGE_NAME: vista-tk-deployednetwork-qual
+  when: on_success
   only:
     - main
-    - merge_requests
+
+Deploy to prod:
+  <<: *deploy_template
+  needs:
+    - build
+  variables:
+    IMAGE_NAME: vista-tk-deployednetwork-prod
+  when: manual
+  only:
+    - main
+
+Deploy to deployednetwork2:
+  <<: *deploy_template
+  needs:
+    - build
+  variables:
+    IMAGE_NAME: vista-tk-deployednetwork2-prod
+  when: manual
+
+Update postgres image:
+  stage: deploy
+  image: quay.io/buildah/stable
+  when: manual
+  allow_failure: true
+  needs: []
+  tags:
+    - do.small
+  script:
+    - buildah pull docker.io/bitnami/postgresql:latest
+    - buildah login -u=$QUAY_ROBOT_NAME -p=$QUAY_ROBOT_PASSWORD $QUAY_REGISTRY
+    - buildah tag docker.io/bitnami/postgresql:latest $QUAY_REGISTRY/$QUAY_USERNAME/bitnami-postgresql-deployednetwork2:18.1
+    - buildah tag docker.io/bitnami/postgresql:latest $QUAY_REGISTRY/$QUAY_USERNAME/bitnami-postgresql:18.1
+    - buildah push $QUAY_REGISTRY/$QUAY_USERNAME/bitnami-postgresql-deployednetwork2:18.1
+    - buildah push $QUAY_REGISTRY/$QUAY_USERNAME/bitnami-postgresql:18.1
