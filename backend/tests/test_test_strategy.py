@@ -30,7 +30,10 @@ def test_frontend_exposes_deterministic_ci_test_scripts():
     package = json.loads((REPO_ROOT / "frontend" / "package.json").read_text())
     scripts = package["scripts"]
 
-    assert scripts["test:unit:ci"] == "CI=true react-scripts test --runInBand --watchAll=false"
+    assert scripts["test:unit:ci"] == (
+        "CI=true react-scripts test --runInBand --watchAll=false "
+        "--silent --reporters=./scripts/compact-jest-reporter.js"
+    )
     assert scripts["test:ci"] == "npm run test:unit:ci && npm run test:e2e"
 
 
