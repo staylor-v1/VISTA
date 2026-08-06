@@ -755,6 +755,16 @@ async def delete_inspection_part(
     if not part:
         return False
 
+    # Do not rely on the ORM relationship cascade here. The derived metadata
+    # collection is not necessarily loaded and some supported databases do not
+    # enforce the FK's ON DELETE cascade, which can leave the part delete
+    # blocked by its indexed metadata rows.
+    await db.execute(
+        delete(models.InspectionPartMetadataField).where(
+            models.InspectionPartMetadataField.project_id == project_id,
+            models.InspectionPartMetadataField.part_id == part_id,
+        )
+    )
     await db.delete(part)
     await db.commit()
     log_db_operation(

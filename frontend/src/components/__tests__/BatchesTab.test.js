@@ -82,6 +82,94 @@ describe('BatchesTab', () => {
     await waitFor(() => expect(onAssignmentsChanged).toHaveBeenCalled());
   });
 
+  test('uses the synchronous drag payload when a part is dropped immediately', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch')
+      .mockResolvedValueOnce({ ok: true, json: async () => [{ id: 'batch-1', name: 'Batch 1' }] })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    const values = new Map();
+    const dataTransfer = {
+      effectAllowed: '',
+      setData: jest.fn((type, value) => values.set(type, value)),
+      getData: jest.fn((type) => values.get(type) || ''),
+    };
+
+    render(<BatchesTab projectId="proj-1" parts={[{ id: 'part-fast', display_name: 'Fast Part' }]} />);
+
+    await screen.findByDisplayValue('Batch 1');
+    fireEvent.dragStart(screen.getByText('Fast Part').closest('.batch-part-chip'), { dataTransfer });
+    fireEvent.drop(screen.getByTestId('batch-target-batch-1'), { dataTransfer });
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(
+      '/api/projects/proj-1/parts/batch-assignments',
+      expect.objectContaining({ body: JSON.stringify({ part_id: 'part-fast', to_batch_id: 'batch-1' }) }),
+    ));
+  });
+
+  test('does not start marquee selection when native dragging begins on a part chip', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: async () => [{ id: 'batch-1', name: 'Batch 1' }],
+    });
+    render(<BatchesTab projectId="proj-1" parts={[{ id: 'part-1', display_name: 'Part A' }]} />);
+    await screen.findByDisplayValue('Batch 1');
+
+    const chip = screen.getByText('Part A').closest('.batch-part-chip');
+    const grid = document.querySelector('.batches-grid');
+    fireEvent.mouseDown(chip, { button: 0, clientX: 10, clientY: 10 });
+    fireEvent.mouseMove(grid, { clientX: 100, clientY: 100 });
+
+    expect(screen.queryByTestId('batch-selection-marquee')).not.toBeInTheDocument();
+  });
+
+  test('keeps the dragged part identity when dropping onto a new batch', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch')
+      .mockResolvedValueOnce({ ok: true, json: async () => [] })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: 'batch-new', name: 'Batch 1' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    const data = new Map();
+    const dataTransfer = {
+      setData: (type, value) => data.set(type, value),
+      getData: (type) => data.get(type) || '',
+    };
+    render(<BatchesTab projectId="proj-1" parts={[{ id: 'part-new', display_name: 'New Part' }]} />);
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+
+    fireEvent.dragStart(screen.getByText('New Part').closest('.batch-part-chip'), { dataTransfer });
+    fireEvent.drop(screen.getByTestId('batch-target-new'), { dataTransfer });
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(
+      '/api/projects/proj-1/parts/batch-assignments',
+      expect.objectContaining({ body: JSON.stringify({ part_id: 'part-new', to_batch_id: 'batch-new' }) }),
+    ));
+  });
+
+  test('does not submit stale selected part ids after the parts list changes', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch')
+      .mockResolvedValueOnce({ ok: true, json: async () => [{ id: 'batch-1', name: 'Batch 1' }] })
+      .mockResolvedValue({ ok: true, json: async () => ({}) });
+    const initialParts = [
+      { id: 'part-removed', display_name: 'Removed Part' },
+      { id: 'part-current', display_name: 'Current Part' },
+    ];
+    const { rerender } = render(<BatchesTab projectId="proj-1" parts={initialParts} />);
+    await screen.findByDisplayValue('Batch 1');
+
+    fireEvent.click(screen.getByText('Removed Part').closest('.batch-part-chip'));
+    fireEvent.click(screen.getByText('Current Part').closest('.batch-part-chip'), { ctrlKey: true });
+    rerender(<BatchesTab projectId="proj-1" parts={[initialParts[1]]} />);
+    fireEvent.dragStart(screen.getByText('Current Part').closest('.batch-part-chip'));
+    fireEvent.drop(screen.getByTestId('batch-target-batch-1'));
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(
+      '/api/projects/proj-1/parts/batch-assignments',
+      expect.objectContaining({ body: JSON.stringify({ part_id: 'part-current', to_batch_id: 'batch-1' }) }),
+    ));
+    expect(fetchSpy).not.toHaveBeenCalledWith(
+      '/api/projects/proj-1/parts/batch-assignments',
+      expect.objectContaining({ body: JSON.stringify({ part_id: 'part-removed', to_batch_id: 'batch-1' }) }),
+    );
+  });
+
   test('deletes a batch and refreshes assignments so parts move back to unbatched', async () => {
     const fetchSpy = jest.spyOn(global, 'fetch')
       .mockResolvedValueOnce({ ok: true, json: async () => [{ id: 'batch-1', name: 'Batch 1', status: 'not_started', owner: '' }] })
