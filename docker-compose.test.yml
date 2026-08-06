@@ -99,7 +99,7 @@ services:
     working_dir: /app/frontend
     environment:
       - CI=true
-    command: npm test -- --watchAll=false
+    command: npm test -- --watchAll=false --runInBand
     networks:
       - vista-test
 
