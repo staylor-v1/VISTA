@@ -20,9 +20,9 @@ build:
   before_script:
     - echo "$QUAY_PASSWORD" | podman login quay.io -u "$QUAY_USERNAME" --password-stdin
   script:
-    - podman build --ignorefile Dockerfile.dockerignore -t $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:latest -t $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:$CI_COMMIT_SHA .
-    - podman push $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:latest
-    - podman push $QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:$CI_COMMIT_SHA
+    - podman build --ignorefile Dockerfile.dockerignore -t "$QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:latest" -t "$QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:$CI_COMMIT_SHA" .
+    - podman push "$QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:latest"
+    - podman push "$QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:$CI_COMMIT_SHA"
   only:
     - main
     - merge_requests

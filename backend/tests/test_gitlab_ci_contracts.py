@@ -84,9 +84,19 @@ def test_gitlab_build_logs_in_and_pushes_latest_and_commit_sha_tags() -> None:
     assert "--ignorefile Dockerfile.dockerignore" in build_commands[0]
     assert "$QUAY_IMAGE_NAME:latest" in build_commands[0]
     assert "$QUAY_IMAGE_NAME:$CI_COMMIT_SHA" in build_commands[0]
+    assert '"$QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:latest"' in build_commands[0]
+    assert (
+        '"$QUAY_REGISTRY/$QUAY_USERNAME/$QUAY_IMAGE_NAME:$CI_COMMIT_SHA"'
+        in build_commands[0]
+    )
     push_commands = [command for command in commands if "podman push " in command]
     assert any("$QUAY_IMAGE_NAME:latest" in command for command in push_commands)
     assert any("$QUAY_IMAGE_NAME:$CI_COMMIT_SHA" in command for command in push_commands)
+    assert all(
+        command.removeprefix("podman push ").startswith('"')
+        and command.endswith('"')
+        for command in push_commands
+    )
 
 
 def test_gitlab_build_discovery_allows_additional_jobs_and_inherited_setup() -> None:
