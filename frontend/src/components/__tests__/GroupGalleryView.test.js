@@ -3,6 +3,11 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import GroupGalleryView from '../GroupGalleryView';
 
+// The complete frontend suite runs several CPU-heavy rendering tests in parallel.
+// Give this integration-style suite enough headroom for React to flush its async
+// fetch updates when a shared CI worker is under load.
+jest.setTimeout(15000);
+
 let mockParams = { id: 'proj-1', groupId: 'grp-1' };
 const mockNavigate = jest.fn();
 const mockLocation = { state: { groupIdentifier: 'SN001' } };
