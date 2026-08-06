@@ -3485,11 +3485,25 @@ def test_delete_part_removes_part_without_deleting_images(client):
     uploaded = _upload_part_test_image(client, project_id, headers, "survives-part-delete.png")
     part_response = client.post(
         f"/api/projects/{project_id}/parts",
-        json={"serial_number": "SN-DELETE", "display_name": "Delete Target"},
+        json={
+            "serial_number": "SN-DELETE",
+            "display_name": "Delete Target",
+            "metadata": {"indexed_delete_marker": "remove-with-part"},
+        },
         headers=headers,
     )
     assert part_response.status_code == 201, part_response.text
     part_id = part_response.json()["id"]
+    retained_part_response = client.post(
+        f"/api/projects/{project_id}/parts",
+        json={
+            "serial_number": "SN-KEEP",
+            "display_name": "Retained Target",
+            "metadata": {"indexed_delete_marker": "must-remain"},
+        },
+        headers=headers,
+    )
+    assert retained_part_response.status_code == 201, retained_part_response.text
     assign_response = client.post(
         f"/api/projects/{project_id}/parts/image-assignments",
         json={"filename": uploaded["filename"], "to_part_id": part_id},
@@ -3502,7 +3516,8 @@ def test_delete_part_removes_part_without_deleting_images(client):
 
     parts_response = client.get(f"/api/projects/{project_id}/parts", headers=headers)
     assert parts_response.status_code == 200
-    assert parts_response.json() == []
+    assert [part["serial_number"] for part in parts_response.json()] == ["SN-KEEP"]
+    assert parts_response.json()[0]["metadata"]["indexed_delete_marker"] == "must-remain"
     images_response = client.get(f"/api/projects/{project_id}/images", headers=headers)
     assert images_response.status_code == 200
     assert [image["filename"] for image in images_response.json()] == [uploaded["filename"]]

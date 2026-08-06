@@ -35,6 +35,7 @@ function BatchesTab({ projectId, parts = [], onAssignmentsChanged, setError, onI
   const [hasDraggedSelection, setHasDraggedSelection] = useState(false);
   const [deletedBatchIds, setDeletedBatchIds] = useState([]);
   const partsPaneRef = useRef(null);
+  const movingPartIdRef = useRef('');
 
   useEffect(() => {
     let cancelled = false;
@@ -107,6 +108,12 @@ function BatchesTab({ projectId, parts = [], onAssignmentsChanged, setError, onI
     return grouped;
   }, [deletedBatchIds, parts]);
 
+  const currentPartsById = useMemo(() => new Map(
+    parts
+      .filter((part) => part?.id !== undefined && part?.id !== null)
+      .map((part) => [String(part.id), part.id]),
+  ), [parts]);
+
   const updateBatch = async (batchId, patch) => {
     try {
       const resp = await fetch(`/api/projects/${projectId}/batches/${batchId}`, {
@@ -124,8 +131,18 @@ function BatchesTab({ projectId, parts = [], onAssignmentsChanged, setError, onI
   };
 
   const assignPartToBatch = async (partId, toBatchId) => {
-    const partIds = selectedPartIds.includes(partId) ? selectedPartIds : [partId];
-    if (!partIds.length || !partIds[0]) return;
+    const currentPartId = currentPartsById.get(String(partId));
+    if (currentPartId === undefined) return;
+
+    const selectedCurrentPartIds = Array.from(new Set(
+      selectedPartIds
+        .map((selectedPartId) => currentPartsById.get(String(selectedPartId)))
+        .filter((selectedPartId) => selectedPartId !== undefined),
+    ));
+    const draggedPartIsSelected = selectedCurrentPartIds.some(
+      (selectedPartId) => String(selectedPartId) === String(currentPartId),
+    );
+    const partIds = draggedPartIsSelected ? selectedCurrentPartIds : [currentPartId];
     try {
       for (const selectedPartId of partIds) {
         const resp = await fetch(`/api/projects/${projectId}/parts/batch-assignments`, {
@@ -140,9 +157,17 @@ function BatchesTab({ projectId, parts = [], onAssignmentsChanged, setError, onI
     } catch (err) {
       if (setError) setError(err.message || 'Failed to assign batch for part');
     } finally {
+      movingPartIdRef.current = '';
       setMovingPartId('');
     }
   };
+
+  const draggedPartId = (event) => (
+    event?.dataTransfer?.getData('application/x-vista-part-id')
+    || event?.dataTransfer?.getData('text/plain')
+    || movingPartIdRef.current
+    || movingPartId
+  );
 
   const createBatch = async () => {
     const nextNumber = batches.length + 1;
@@ -190,9 +215,19 @@ function BatchesTab({ projectId, parts = [], onAssignmentsChanged, setError, onI
         }
         selectPartFromClick(part.id, event);
       }}
-      onDragStart={() => {
+      onDragStart={(event) => {
+        movingPartIdRef.current = part.id;
         setMovingPartId(part.id);
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('application/x-vista-part-id', part.id);
+          event.dataTransfer.setData('text/plain', part.id);
+        }
         if (!selectedPartIds.includes(part.id)) commitSelectedPartIds([part.id], part.id);
+      }}
+      onDragEnd={() => {
+        movingPartIdRef.current = '';
+        setMovingPartId('');
       }}
     >
       <div className="batch-part-chip-header">{part.display_name || part.serial_number}</div>
@@ -215,7 +250,10 @@ function BatchesTab({ projectId, parts = [], onAssignmentsChanged, setError, onI
           ref={partsPaneRef}
           onMouseDown={(event) => {
             if (event.button !== 0) return;
-            if (event.target.closest('input, select, button, textarea')) return;
+            // Native chip dragging owns pointer movement that starts on a chip;
+            // starting the marquee too causes drag/drop to be cancelled or to
+            // collide with selection state updates in some browsers.
+            if (event.target.closest('.batch-part-chip, input, select, button, textarea')) return;
             setHasDraggedSelection(false);
             setSelectionStart({ x: event.clientX, y: event.clientY });
             setSelectionRect({ x: event.clientX, y: event.clientY, width: 0, height: 0 });
@@ -268,7 +306,7 @@ function BatchesTab({ projectId, parts = [], onAssignmentsChanged, setError, onI
           <div
             className="images-to-parts-column assignment-source-column sticky-assignment-column"
             onDragOver={(event) => event.preventDefault()}
-            onDrop={() => assignPartToBatch(movingPartId, null)}
+            onDrop={(event) => assignPartToBatch(draggedPartId(event), null)}
             data-testid="batch-target-unbatched"
           >
             <h3>Unbatched Parts</h3>
@@ -280,7 +318,7 @@ function BatchesTab({ projectId, parts = [], onAssignmentsChanged, setError, onI
           </div>
 
           <div className="images-to-parts-column parts-column">
-            <article className="images-to-parts-part-card batch-card" onDragOver={(event) => event.preventDefault()} onDrop={async () => { try { const created = await createBatch(); await assignPartToBatch(movingPartId, created.id); } catch (err) { if (setError) setError(err.message); } }}><div className="batch-card-header"><h3>New Batch</h3></div><p className="muted">Drag part(s) here to create a new batch.</p></article>
+            <article className="images-to-parts-part-card batch-card" data-testid="batch-target-new" onDragOver={(event) => event.preventDefault()} onDrop={async (event) => { try { const partId = draggedPartId(event); if (!partId) return; const created = await createBatch(); await assignPartToBatch(partId, created.id); } catch (err) { if (setError) setError(err.message); } }}><div className="batch-card-header"><h3>New Batch</h3></div><p className="muted">Drag part(s) here to create a new batch.</p></article>
             {batches.map((batch) => {
               const batchParts = partsByBatch.get(batch.id) || [];
               const summary = summaryForParts(batchParts);
@@ -289,7 +327,7 @@ function BatchesTab({ projectId, parts = [], onAssignmentsChanged, setError, onI
                   key={batch.id}
                   className="images-to-parts-part-card batch-card"
                   onDragOver={(event) => event.preventDefault()}
-                  onDrop={() => assignPartToBatch(movingPartId, batch.id)}
+                  onDrop={(event) => assignPartToBatch(draggedPartId(event), batch.id)}
                   data-testid={`batch-target-${batch.id}`}
                 >
                   <div className="batch-card-header">
