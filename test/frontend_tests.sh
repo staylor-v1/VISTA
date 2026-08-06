@@ -42,12 +42,12 @@ set +e
 # Run Jest tests
 echo "Jest tests:"
 if [ "$VERBOSE_MODE" = true ]; then
-  npx react-scripts test --watchAll=false --passWithNoTests --verbose
+  npx react-scripts test --watchAll=false --passWithNoTests --runInBand --verbose
 else
   # Application console output can be extremely noisy and can push Jest's
   # failure report past CI log limits. Jest still prints failed assertions,
   # stack traces, and its final summary when --silent is enabled.
-  npx react-scripts test --watchAll=false --passWithNoTests --silent \
+  npx react-scripts test --watchAll=false --passWithNoTests --runInBand --silent \
     --reporters=./scripts/compact-jest-reporter.js
 fi
 JEST_EXIT_CODE=$?
