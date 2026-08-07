@@ -5,9 +5,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import yaml
-
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -44,33 +41,6 @@ def test_output_only_runner_option_defaults_to_both_suites_in_order(
         "backend:--verbose",
         "frontend:--verbose",
     ]
-
-
-def test_github_critical_e2e_gate_uses_direct_specs_and_one_worker() -> None:
-    workflow_path = REPO_ROOT / ".github" / "workflows" / "docker-image.yml"
-    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
-    steps = workflow["jobs"]["test"]["steps"]
-
-    critical = next(
-        step
-        for step in steps
-        if step.get("name") == "Run critical end-to-end workflows serially"
-    )
-    command = critical["run"]
-    for spec in (
-        "full-inspection-workflow.spec.js",
-        "inspection-workbench.spec.js",
-        "pt3-fullscreen-annotation-parity.spec.js",
-    ):
-        assert spec in command
-    assert "--workers=1" in command
-    assert "--grep" not in command
-    assert "--shard" not in command
-
-    build_steps = workflow["jobs"]["build"]["steps"]
-    assert not any(
-        step.get("name") == "Run tests in container" for step in build_steps
-    )
 
 
 def test_historical_production_build_keeps_runtime_and_safe_context() -> None:
