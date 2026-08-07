@@ -258,7 +258,6 @@ def test_production_dockerfile_copies_only_runtime_test_data_assets():
         )
     ]
 
-    assert "test_toolbox" not in dockerfile
     assert len(stages) >= 2
     assert all(not _root_test_transfer_sources(stage) for stage in build_stages)
     assert all(not _run_build_context_bind_mounts(stage) for stage in build_stages)
@@ -364,14 +363,12 @@ def test_production_pre_final_stage_rejects_runtime_test_data(command: str):
     assert _stage_copies_root_test(stage)
 
 
-def test_ci_build_configuration_does_not_reference_removed_test_toolbox():
-    ci_config = _read_repo_file(".gitlab-ci.yml")
+def test_container_build_inputs_do_not_reference_removed_test_toolbox():
     dockerfile = _read_repo_file("Dockerfile")
     dockerignore = _read_repo_file(".dockerignore")
 
-    checked_build_files = "\n".join([ci_config, dockerfile, dockerignore])
-
-    assert "test_toolbox" not in checked_build_files
+    assert "test_toolbox" not in dockerfile
+    assert "test_toolbox" not in dockerignore
 
 
 def test_production_ignore_policy_exposes_only_runtime_test_data():

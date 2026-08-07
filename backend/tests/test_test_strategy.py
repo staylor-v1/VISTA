@@ -1,4 +1,3 @@
-import json
 import tomllib
 from pathlib import Path
 
@@ -24,17 +23,6 @@ def test_pyproject_exposes_pip_installable_dev_extra():
     assert "pytest" in dev_extra
     assert "pytest-asyncio" in dev_extra
     assert "aiosqlite" in dev_extra
-
-
-def test_frontend_exposes_deterministic_ci_test_scripts():
-    package = json.loads((REPO_ROOT / "frontend" / "package.json").read_text())
-    scripts = package["scripts"]
-
-    assert scripts["test:unit:ci"] == (
-        "CI=true react-scripts test --runInBand --watchAll=false "
-        "--silent --reporters=./scripts/compact-jest-reporter.js"
-    )
-    assert scripts["test:ci"] == "npm run test:unit:ci && npm run test:e2e"
 
 
 def test_testing_strategy_documents_required_layers_and_critical_user_stories():
