@@ -57,9 +57,9 @@ def test_historical_production_build_keeps_runtime_and_safe_context() -> None:
     assert "COPY --from=builder /app/frontend/build /app/ui2" in dockerfile
     assert "ENV FRONTEND_BUILD_PATH=/app/ui2" in dockerfile
     assert (
-        'CMD ["uvicorn", "main:app", "--host", "0.0.0.0", '
-        '"--port", "8000"]'
-    ) in dockerfile
+        'CMD ["bash", "/app/backend/scripts/start_production_server.sh"]'
+        in dockerfile
+    )
 
     for excluded in (
         ".venv/",

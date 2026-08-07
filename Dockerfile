@@ -109,7 +109,7 @@ ENV FRONTEND_BUILD_PATH=/app/ui2
 WORKDIR /app
 EXPOSE 8000
 
-# Use uvicorn to run the FastAPI app (remove --reload for production)
-# Change to backend directory so imports work correctly
+# Apply the database schema before accepting requests, then replace the shell
+# with uvicorn so container signals are delivered to the server process.
 WORKDIR /app/backend
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["bash", "/app/backend/scripts/start_production_server.sh"]
