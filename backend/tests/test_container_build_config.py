@@ -1,7 +1,9 @@
 import json
+import os
 import posixpath
 import re
 import shlex
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -311,6 +313,75 @@ def test_backend_dev_reconciles_bind_mounted_dependencies_before_startup():
         'main:app --host 0.0.0.0 --port 8000 --reload"]'
         in backend_dev_stage
     )
+
+
+def test_production_backend_runs_migrations_before_starting_server():
+    dockerfile = _read_repo_file("Dockerfile")
+    final_stage = _dockerfile_stages(dockerfile)[-1]
+    startup_script = _read_repo_file("backend/scripts/start_production_server.sh")
+
+    expected_command = (
+        'CMD ["bash", "/app/backend/scripts/start_production_server.sh"]'
+    )
+    assert expected_command in final_stage
+    assert "set -euo pipefail" in startup_script
+    assert "DATABASE_URL is required to start the production server" in startup_script
+    assert 'python "$BACKEND_DIR/scripts/run_migrations.py"' in startup_script
+    assert 'exec uvicorn main:app --host 0.0.0.0 --port "$PORT"' in startup_script
+    assert startup_script.index("run_migrations.py") < startup_script.index(
+        "exec uvicorn"
+    )
+
+
+def test_production_backend_requires_database_url():
+    script = REPO_ROOT / "backend/scripts/start_production_server.sh"
+    environment = os.environ.copy()
+    environment.pop("DATABASE_URL", None)
+
+    result = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        check=False,
+        env=environment,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "DATABASE_URL is required to start the production server" in result.stderr
+
+
+def test_production_backend_honors_configured_port(tmp_path):
+    command_log = tmp_path / "commands.log"
+    for command in ("python", "uvicorn"):
+        executable = tmp_path / command
+        executable.write_text(
+            '#!/usr/bin/env bash\nprintf \'%s\\n\' "$0 $*" >> "$COMMAND_LOG"\n',
+            encoding="utf-8",
+        )
+        executable.chmod(0o755)
+
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "COMMAND_LOG": str(command_log),
+            "DATABASE_URL": "postgresql+asyncpg://user:pass@db/vista",
+            "PATH": f"{tmp_path}:{environment['PATH']}",
+            "PORT": "9123",
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "backend/scripts/start_production_server.sh")],
+        capture_output=True,
+        check=False,
+        env=environment,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = command_log.read_text(encoding="utf-8").splitlines()
+    assert commands[0].endswith("backend/scripts/run_migrations.py")
+    assert commands[1].endswith("main:app --host 0.0.0.0 --port 9123")
 
 
 @pytest.mark.parametrize(
